@@ -8,6 +8,7 @@ import type { Capsule } from "../lib/torsoCapsule";
 import { FABRIC_PRESETS } from "../lib/fabricPresets";
 import { pinCorners } from "../lib/buildGarmentSim";
 import { buildUnifiedGarmentSim, rebuildWithNewSleeve } from "../lib/buildUnifiedGarmentSim";
+import { pinSleeveSeamRing } from "../lib/buildSleeveSim";
 import type { SleeveShape } from "../lib/buildSleeveSim";
 import { pullShoulderCapToSurface } from "../lib/garmentStitch";
 import {
@@ -201,6 +202,11 @@ ctx.onmessage = (event) => {
     case "step": {
       if (!sim) return;
       pinCorners(sim, msg.pinLeft, msg.pinRight, PANEL_FRONT, PANEL_BACK);
+      // 소매 이음매 링도 몸판 어깨선과 같은 타이밍에 매 프레임 다시
+      // 고정한다 — 자세한 이유는 buildSleeveSim.ts의 pinSleeveSeamRing
+      // 주석 참고(이게 없으면 소매 전체가 자기 무게로 처지면서 재봉
+      // 제약을 타고 몸판 어깨까지 끌어내린다).
+      pinSleeveSeamRing(sim, PANEL_SLEEVE_LEFT, PANEL_SLEEVE_RIGHT, toShape(msg.sleeveLeft), toShape(msg.sleeveRight));
       sleeveCapsules = [...buildArmCapsules(msg.sleeveLeft), ...buildArmCapsules(msg.sleeveRight)];
 
       const preset = FABRIC_PRESETS[msg.fabric];

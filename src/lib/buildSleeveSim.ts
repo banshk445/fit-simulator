@@ -121,12 +121,6 @@ export function addSleeveWrapConstraints(sim: ClothSimulation, panelLeft: number
 }
 
 // 이음매 근처 행(rowT, 0=이음매 자체)의 "원형 기준" 목표 위치를 계산한다.
-// 30번(병합) 이후로는 이 원형 위치를 그대로 파티클에 심어두기만 하고(아래
-// buildSleeveLayout), 실제로 몸판 암홀에 붙이는 일은 더 이상 매 프레임
-// 위치를 억지로 갖다 놓는 방식(예전 blendSeamRing+pinSleeveRing 하드 핀)이
-// 아니라, 몸판 진동둘레 경계와 소매 이음매 링 사이에 실제 재봉 제약
-// (armholeSeam.ts)을 걸어 물리 스스로 붙어있게 한다 — rowT=0(이음매)
-// 자체의 "출발" 위치를 정하는 용도로만 남는다.
 export function seamCircularRing(shape: SleeveShape, rowT = 0): Vec3Like[] {
   const { right, up } = perpendicularBasis(shape.dir);
   const radius = radiusAt(shape, rowT);
@@ -138,13 +132,43 @@ export function seamCircularRing(shape: SleeveShape, rowT = 0): Vec3Like[] {
   return ring;
 }
 
+// 30번(병합) 직후 소매 이음매 핀을 완전히 없애 봤더니(실제 재봉 제약만
+// 남기고), 소매 전체가 이제 다른 어디에도 안 붙들린 자유낙하하는 몸통이 돼
+// 자기 무게로 팔 방향으로 축 처지고, 그 처짐이 새로 건 재봉 제약을 타고
+// 몸판 어깨~목선까지 함께 끌어내리는 회귀가 실측(사용자 스크린샷 — 쇄골이
+// 훤히 드러나는 보트넥처럼 처짐)으로 확인됐다 — 사용자가 "여전히 어깨
+// 쇄골이 드러나 있다"고 재지적한 원인이었다. 이음매 링을 예전처럼 이
+// 함수로 매 프레임 실제 어깨 위치 기준 원형 위치에 다시 고정한다 — 몸판
+// 어깨선(row 0)이 pinCorners로 고정되는 것과 똑같은 역할: 소매가 안정된
+// "닻"을 가져야 처지지 않고, 그 닻에 재봉 제약(garmentStitch.ts의
+// addArmholeSeamConstraints)이 몸판 경계를 진짜로 끌어당겨 준다 — 이
+// 조합이 "소매도 안 처지고 + 몸판도 소매 쪽으로 진짜 물리적으로 당겨짐"
+// 둘 다를 만족한다.
+export function pinSleeveSeamRing(
+  sim: ClothSimulation,
+  panelLeft: number,
+  panelRight: number,
+  left: SleeveShape,
+  right: SleeveShape,
+): void {
+  for (const [panel, shape] of [
+    [panelLeft, left],
+    [panelRight, right],
+  ] as const) {
+    const ring = seamCircularRing(shape, 0);
+    for (let x = 0; x < SLEEVE_COLS; x++) {
+      const pt = ring[x];
+      sim.pin(sim.index(panel, x, 0), pt.x, pt.y, pt.z);
+    }
+  }
+}
+
 // 좌/우 소매를 기존 sim(몸판과 공유하는 병합 인스턴스, 30번)의 지정된
 // 패널 위치에 배치한다. 격자 내부 제약은 호출부가 모든 패널을 다 배치한
 // 뒤 한 번에 sim.buildConstraints()로 만든다 — buildGarmentSim.ts의
 // layoutTorsoPanels와 같은 이유로 배치와 제약 생성을 분리했다. 이음매
-// 링(0번 행)을 예전처럼 pin()으로 고정하지 않는다 — 몸판 암홀 경계와의
-// 실제 재봉 제약(armholeSeam.ts)이 그 역할을 대신하므로, 여기서는 그저
-// 물리적으로 그럴듯한 "시작 위치"만 심어둔다.
+// 링(0번 행) 고정은 여기서 하지 않는다 — pinSleeveSeamRing이 매 프레임
+// (몸판 어깨선의 pinCorners와 같은 타이밍에) 다시 고정한다.
 export function layoutSleevePanels(
   sim: ClothSimulation,
   panelLeft: number,

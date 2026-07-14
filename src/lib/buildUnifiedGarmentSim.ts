@@ -2,7 +2,7 @@ import { ClothSimulation } from "./clothPhysics";
 import type { PanelDims } from "./clothPhysics";
 import type { Vec3Like } from "./clothProtocol";
 import { addTorsoSideSeamConstraints, layoutTorsoPanels, pinCorners } from "./buildGarmentSim";
-import { addSleeveWrapConstraints, layoutSleevePanels } from "./buildSleeveSim";
+import { addSleeveWrapConstraints, layoutSleevePanels, pinSleeveSeamRing } from "./buildSleeveSim";
 import type { SleeveShape } from "./buildSleeveSim";
 import { addArmholeSeamConstraints } from "./garmentStitch";
 import {
@@ -60,6 +60,7 @@ export function buildUnifiedGarmentSim(
   addArmholeSeamConstraints(sim, PANEL_FRONT, PANEL_BACK, PANEL_SLEEVE_RIGHT, COLS - 1, armholeStartRow);
 
   pinCorners(sim, pinLeft, pinRight, PANEL_FRONT, PANEL_BACK);
+  pinSleeveSeamRing(sim, PANEL_SLEEVE_LEFT, PANEL_SLEEVE_RIGHT, sleeveLeft, sleeveRight);
 
   return sim;
 }
