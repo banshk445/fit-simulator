@@ -57,12 +57,7 @@ export function FitCanvas() {
   const garmentImage = useFitStore((s) => s.garmentImage);
 
   return (
-    <Canvas
-      camera={{ position: [0, 1.3, 3], fov: 45 }}
-      onCreated={(state) => {
-        (window as unknown as { __scene?: unknown }).__scene = state.scene;
-      }}
-    >
+    <Canvas camera={{ position: [0, 1.3, 3], fov: 45 }}>
       <ambientLight intensity={0.5} />
       <directionalLight position={[3, 5, 2]} intensity={1} />
       <Suspense fallback={null}>

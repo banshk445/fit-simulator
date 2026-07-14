@@ -372,35 +372,6 @@ export function Garment({ imageUrl }: Props) {
       leftShoulder.getWorldPosition(shoulderVec);
       rightShoulder.getWorldPosition(rightShoulderVec);
 
-      // TEMP DIAGNOSTIC: 어깨 관절(핀 기준점) 근처의 실제 마네킹 표면
-      // 최고 높이를 재서, 지금 핀 Y가 진짜 "어깨 꼭대기"보다 얼마나
-      // 낮은지 확인한다.
-      {
-        const pinsForDebug = computeShoulderPin(shoulderVec, rightShoulderVec);
-        const radius = 0.08;
-        let maxYNearLeft = -Infinity;
-        let maxYNearRight = -Infinity;
-        for (let i = 0; i < position.length; i += 3) {
-          const px = position[i];
-          const py = position[i + 1];
-          const pz = position[i + 2];
-          const dxL = px - pinsForDebug.left.x;
-          const dzL = pz - pinsForDebug.left.z;
-          if (dxL * dxL + dzL * dzL < radius * radius && py > maxYNearLeft) maxYNearLeft = py;
-          const dxR = px - pinsForDebug.right.x;
-          const dzR = pz - pinsForDebug.right.z;
-          if (dxR * dxR + dzR * dzR < radius * radius && py > maxYNearRight) maxYNearRight = py;
-        }
-        (window as unknown as { __fitDebugShoulderTop?: unknown }).__fitDebugShoulderTop = {
-          pinLeftY: pinsForDebug.left.y,
-          pinRightY: pinsForDebug.right.y,
-          maxSurfaceYNearLeft: maxYNearLeft,
-          maxSurfaceYNearRight: maxYNearRight,
-          deltaLeft: maxYNearLeft - pinsForDebug.left.y,
-          deltaRight: maxYNearRight - pinsForDebug.right.y,
-        };
-      }
-
       const { capsules, centerZ } = buildTorsoProxyCapsules(
         { x: shoulderVec.x, y: shoulderVec.y, z: shoulderVec.z },
         { x: rightShoulderVec.x, y: rightShoulderVec.y, z: rightShoulderVec.z },

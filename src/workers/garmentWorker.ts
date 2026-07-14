@@ -252,24 +252,40 @@ ctx.onmessage = (event) => {
         accumulator -= SUBSTEP_DT;
       }
 
-      // 큰 재설계(3D 곡면 어깨): 위 substep 루프가 중력+구조 제약으로 다시
-      // 안쪽으로 처지게 만든 어깨~겨드랑이 구간을, 실제 마네킹 표면 쪽으로
-      // 매 프레임 능동적으로 재보정한다 — 자세한 이유는 garmentStitch.ts의
-      // pullShoulderCapToSurface 주석 참고. smoothColumns/smoothRows보다
-      // 먼저 실행해 이 재보정이 남긴 인접 열 사이의 잔물결을 스무딩이
-      // 마저 정리하게 한다.
+      // 29번(스무딩-보정 순서 버그): smoothColumns/smoothRows는 원래 BVH
+      // 충돌의 삼각형 단위 잔물결(고주파 노이즈)만 지우려고 만들었는데,
+      // 이 둘도 정확히 어깨 캡 구간(rows 1..armholeStartRow)에 대해
+      // 이웃과의 평균으로 끌어당기는 라플라시안 스무딩이다 — 그런데
+      // 지금까지는 pullShoulderCapToSurface(어깨를 실제 마네킹 표면에
+      // 정밀하게 스냅)와 stitchTorsoAndSleeve(몸판-소매 재봉) *바로 뒤에*
+      // 실행되고 있었다. 즉 두 정밀 보정이 방금 딱 붙여놓은 위치를, 그
+      // 직후 8회 반복되는 스무딩이 "덜 보정된 이웃 점들의 평균" 쪽으로
+      // 다시 희석시켜버리는 순서였다 — 사용자가 3/4 뒷모습에서 재지적한
+      // "소매가 어깨 위에 붕 뜬 별도 조각처럼 보이고 그 밑에 맨살이
+      // 드러나는" 잔여 틈이 바로 이 순서 문제였을 가능성이 높다(스무딩
+      // 자체가 필요 없는 게 아니라, 스무딩→정밀 보정 순서여야 정밀 보정이
+      // 최종적으로 이긴다). 순서를 뒤집는다: 먼저 스무딩으로 충돌의 고주파
+      // 잔물결을 지우고, 그 다음에 어깨 표면 스냅과 재봉선을 "마지막
+      // 발언권"으로 적용한다.
+      for (let i = 0; i < 8; i++) torsoSim.smoothColumns(armholeStartRow + 1, 0.5);
+      for (let i = 0; i < 8; i++) torsoSim.smoothRows(armholeStartRow + 1, 0.5);
+      torsoSim.preserveColumnOrder(dirX, dirY, dirZ, undefined, false);
+      torsoSim.preserveColumnOrder(dirX, dirY, dirZ, undefined, true);
+
+      // 큰 재설계(3D 곡면 어깨): 위 substep 루프(+ 방금 위의 스무딩)가
+      // 중력+구조 제약+이웃 평균으로 다시 안쪽으로 처지게/희석되게 만든
+      // 어깨~겨드랑이 구간을, 실제 마네킹 표면 쪽으로 매 프레임 능동적으로
+      // 재보정한다 — 자세한 이유는 garmentStitch.ts의
+      // pullShoulderCapToSurface 주석 참고. 스무딩 이후에 실행해 이
+      // 보정이 스무딩에 다시 희석되지 않고 최종 위치로 남게 한다.
       pullShoulderCapToSurface(torsoSim, armholeStartRow, COLS, dirX, dirY, dirZ, bodySurface);
       // 몸판과 소매를 서로를 향해 동시에 당기는 진짜 재봉선 — 자세한
       // 이유는 garmentStitch.ts의 stitchTorsoAndSleeve 주석 참고
       // (everyIterationExtra로 옮겨봤다가 소매 쪽 반복에 걸면 오히려
       // 불안정해지는 걸 실측으로 확인해 이 프레임당 한 번 방식으로
-      // 되돌렸다).
+      // 되돌렸다). 이것도 스무딩 뒤에 실행해 재봉 결과가 최종적으로 남게
+      // 한다.
       stitchTorsoAndSleeve(torsoSim, sleeveSim, armholeStartRow, COLS);
-
-      for (let i = 0; i < 8; i++) torsoSim.smoothColumns(armholeStartRow + 1, 0.5);
-      for (let i = 0; i < 8; i++) torsoSim.smoothRows(armholeStartRow + 1, 0.5);
-      torsoSim.preserveColumnOrder(dirX, dirY, dirZ, undefined, false);
-      torsoSim.preserveColumnOrder(dirX, dirY, dirZ, undefined, true);
 
       const ppp = torsoSim.particlesPerPanel;
       const front = torsoSim.positions.slice(0, ppp * 3);
