@@ -47,20 +47,28 @@ interface Constraint {
   restLength: number;
 }
 
-// Verlet(질량-스프링) 적분 기반의 간이 천 시뮬레이션. 범용 물리 엔진이 아니라
-// "평면 천이 콜라이더에 걸쳐 늘어지는" 이 프로젝트의 시나리오에 맞춰 최소한으로
-// 구현했다. 구조(structural) + 전단(shear) + 벤드(bend) 제약을 반복적으로
-// 이완(relax)시키는 Jakobsen 방식.
-//
-// panels: 옷을 이루는 독립된 격자 패널 수(예: 앞판+뒤판=2). 각 패널은 내부적으로
-// 같은 cols x rows 격자 위상을 갖고, 패널 사이는 buildConstraints()가 만드는
-// 격자 내부 제약과 별개로 addConstraint()로 이어붙인 시접(seam) 제약을 통해서만
-// 연결된다.
+export interface PanelDims {
+  cols: number;
+  rows: number;
+}
+
+// 30번(진짜 물리적 병합): 예전엔 모든 패널이 같은 cols x rows 격자여야 했다
+// (몸판 2패널 vs 소매 2패널이 서로 다른 그리드 크기라 하나의 인스턴스로
+// 못 합치고 별개 ClothSimulation 두 개 + 매 프레임 근사 스티칭으로 이어붙일
+// 수밖에 없었던 근본 이유 — garmentStitch.ts 주석 참고). 패널마다 자기만의
+// cols/rows를 갖도록(PanelDims 배열) 일반화해서, 몸판(앞/뒤판)과 소매(좌/우)
+// 를 진짜 하나의 파티클 배열·하나의 제약 조건 집합으로 합칠 수 있게 한다.
+// index()는 각 패널의 시작 오프셋(panelOffsets)만 미리 계산해두면 이전과
+// 똑같은 방식으로 동작해, 이 클래스를 쓰는 코드 대부분(index()만 쓰는 코드)은
+// 안 바뀐다 — 격자 크기를 직접 참조하던 몇몇 메서드(buildConstraints,
+// preserveColumnOrder/RowOrder, smoothColumns/Rows)만 패널별 cols/rows를
+// 쓰도록, 그리고 특정 패널 구간에만 적용하도록(fromPanel/toPanelExclusive)
+// 고쳤다 — 소매처럼 이 안전장치들이 애초에 안 쓰이던 패널까지 실수로
+// 건드리지 않기 위해서다.
 export class ClothSimulation {
-  readonly cols: number;
-  readonly rows: number;
+  readonly panelDims: readonly PanelDims[];
   readonly panels: number;
-  readonly particlesPerPanel: number;
+  private readonly panelOffsets: number[];
   positions: Float32Array;
   prevPositions: Float32Array;
   pinned: Uint8Array;
@@ -71,12 +79,16 @@ export class ClothSimulation {
   // 만들어 재사용한다.
   private startPositions: Float32Array;
 
-  constructor(cols: number, rows: number, panels = 1) {
-    this.cols = cols;
-    this.rows = rows;
-    this.panels = panels;
-    this.particlesPerPanel = cols * rows;
-    const n = this.particlesPerPanel * panels;
+  constructor(panelDims: readonly PanelDims[]) {
+    this.panelDims = panelDims;
+    this.panels = panelDims.length;
+    this.panelOffsets = [];
+    let offset = 0;
+    for (const d of panelDims) {
+      this.panelOffsets.push(offset);
+      offset += d.cols * d.rows;
+    }
+    const n = offset;
     this.positions = new Float32Array(n * 3);
     this.prevPositions = new Float32Array(n * 3);
     this.pinned = new Uint8Array(n);
@@ -84,7 +96,19 @@ export class ClothSimulation {
   }
 
   index(panel: number, x: number, y: number): number {
-    return panel * this.particlesPerPanel + y * this.cols + x;
+    return this.panelOffsets[panel] + y * this.panelDims[panel].cols + x;
+  }
+
+  // panel이 시작하는 파티클 인덱스(포함) — 예: panelParticleStart(2)는
+  // 0/1번 패널(몸판 앞+뒤)이 차지하는 파티클 수와 같아서, "몸판 범위만"
+  // 슬라이싱(자체충돌 등)하는 데 쓴다.
+  panelParticleStart(panel: number): number {
+    return this.panelOffsets[panel];
+  }
+
+  panelParticleCount(panel: number): number {
+    const d = this.panelDims[panel];
+    return d.cols * d.rows;
   }
 
   setParticle(i: number, x: number, y: number, z: number): void {
@@ -118,17 +142,18 @@ export class ClothSimulation {
       this.constraints.push({ a, b, restLength });
     };
     for (let p = 0; p < this.panels; p++) {
-      for (let y = 0; y < this.rows; y++) {
-        for (let x = 0; x < this.cols; x++) {
+      const { cols, rows } = this.panelDims[p];
+      for (let y = 0; y < rows; y++) {
+        for (let x = 0; x < cols; x++) {
           const i = this.index(p, x, y);
-          if (x < this.cols - 1) add(i, this.index(p, x + 1, y)); // structural
-          if (y < this.rows - 1) add(i, this.index(p, x, y + 1)); // structural
-          if (x < this.cols - 1 && y < this.rows - 1) {
+          if (x < cols - 1) add(i, this.index(p, x + 1, y)); // structural
+          if (y < rows - 1) add(i, this.index(p, x, y + 1)); // structural
+          if (x < cols - 1 && y < rows - 1) {
             add(i, this.index(p, x + 1, y + 1)); // shear
             add(this.index(p, x + 1, y), this.index(p, x, y + 1)); // shear
           }
-          if (x < this.cols - 2) add(i, this.index(p, x + 2, y)); // bend
-          if (y < this.rows - 2) add(i, this.index(p, x, y + 2)); // bend
+          if (x < cols - 2) add(i, this.index(p, x + 2, y)); // bend
+          if (y < rows - 2) add(i, this.index(p, x, y + 2)); // bend
         }
       }
     }
@@ -161,7 +186,7 @@ export class ClothSimulation {
     maxDisplacement = Infinity,
     everyIterationExtra?: CollisionResolver,
   ): void {
-    const n = this.particlesPerPanel * this.panels;
+    const n = this.positions.length / 3;
     const dt2 = dt * dt;
     this.startPositions.set(this.positions);
 
@@ -287,11 +312,24 @@ export class ClothSimulation {
   // 정방향/역방향을 번갈아 고쳤더니 옷 왼쪽 절반은 평평해졌는데 오른쪽은
   // 여전히 늘어져 있었다(원인이 여기 하나 더 있었던 것). 호출부에서
   // 정방향 한 번 + 역방향 한 번으로 짝을 지어 불러야 편향이 상쇄된다.
-  preserveColumnOrder(dirX: number, dirY: number, dirZ: number, minGap = 0.006, reverse = false): void {
-    for (let p = 0; p < this.panels; p++) {
-      for (let y = 0; y < this.rows; y++) {
-        for (let i = 0; i < this.cols - 1; i++) {
-          const x = reverse ? this.cols - 2 - i : i;
+  // 30번(병합): 이제 패널마다 격자 크기가 다를 수 있어(몸판 vs 소매) 이
+  // 안전장치가 원래 적용되던 범위 밖(예: 소매 패널)까지 실수로 건드리지
+  // 않도록 fromPanel/toPanelExclusive로 대상 패널 구간을 좁힐 수 있게
+  // 했다 — 기본값(전체)은 이전 동작과 동일하다.
+  preserveColumnOrder(
+    dirX: number,
+    dirY: number,
+    dirZ: number,
+    minGap = 0.006,
+    reverse = false,
+    fromPanel = 0,
+    toPanelExclusive = this.panels,
+  ): void {
+    for (let p = fromPanel; p < toPanelExclusive; p++) {
+      const { cols, rows } = this.panelDims[p];
+      for (let y = 0; y < rows; y++) {
+        for (let i = 0; i < cols - 1; i++) {
+          const x = reverse ? cols - 2 - i : i;
           this.enforcePairGap(this.index(p, x, y), this.index(p, x + 1, y), dirX, dirY, dirZ, minGap);
         }
       }
@@ -305,11 +343,12 @@ export class ClothSimulation {
   // 기준 방향은 어깨 방향(dir)이 아니라 월드 아래 방향(중력 방향)으로
   // 고정한다 — 어느 행이든 "물리적으로 더 아래"에 있어야 할 다음 행이
   // 실제로도 더 아래에 있도록 강제한다.
-  preserveRowOrder(minGap = 0.006, reverse = false): void {
-    for (let p = 0; p < this.panels; p++) {
-      for (let x = 0; x < this.cols; x++) {
-        for (let i = 0; i < this.rows - 1; i++) {
-          const y = reverse ? this.rows - 2 - i : i;
+  preserveRowOrder(minGap = 0.006, reverse = false, fromPanel = 0, toPanelExclusive = this.panels): void {
+    for (let p = fromPanel; p < toPanelExclusive; p++) {
+      const { cols, rows } = this.panelDims[p];
+      for (let x = 0; x < cols; x++) {
+        for (let i = 0; i < rows - 1; i++) {
+          const y = reverse ? rows - 2 - i : i;
           this.enforcePairGap(this.index(p, x, y), this.index(p, x, y + 1), 0, -1, 0, minGap);
         }
       }
@@ -327,10 +366,11 @@ export class ClothSimulation {
   // 스무딩) 이 고주파 잔물결만 지우고 테이퍼의 저주파(전체 모양)는 그대로
   // 둔다. 0번 행(어깨 핀)과 맨 끝 열은 원래도 고정/기준점이라 건드리지
   // 않는다.
-  smoothColumns(rowEndExclusive: number, blend = 0.5): void {
-    for (let p = 0; p < this.panels; p++) {
+  smoothColumns(rowEndExclusive: number, blend = 0.5, fromPanel = 0, toPanelExclusive = this.panels): void {
+    for (let p = fromPanel; p < toPanelExclusive; p++) {
+      const { cols } = this.panelDims[p];
       for (let y = 1; y < rowEndExclusive; y++) {
-        for (let x = 1; x < this.cols - 1; x++) {
+        for (let x = 1; x < cols - 1; x++) {
           const i = this.index(p, x, y);
           if (this.pinned[i]) continue;
           const left = this.index(p, x - 1, y) * 3;
@@ -356,10 +396,11 @@ export class ClothSimulation {
   // 로 하는 라플라시안 스무딩을 세로 방향(같은 열의 위아래 이웃)으로도
   // 적용해, 고정된 0번 행과 그 아래 자유롭게 움직이는 행 사이의 급격한
   // 전환을 완화한다.
-  smoothRows(rowEndExclusive: number, blend = 0.5): void {
-    for (let p = 0; p < this.panels; p++) {
-      for (let y = 1; y < rowEndExclusive && y < this.rows - 1; y++) {
-        for (let x = 0; x < this.cols; x++) {
+  smoothRows(rowEndExclusive: number, blend = 0.5, fromPanel = 0, toPanelExclusive = this.panels): void {
+    for (let p = fromPanel; p < toPanelExclusive; p++) {
+      const { cols, rows } = this.panelDims[p];
+      for (let y = 1; y < rowEndExclusive && y < rows - 1; y++) {
+        for (let x = 0; x < cols; x++) {
           const i = this.index(p, x, y);
           if (this.pinned[i]) continue;
           const above = this.index(p, x, y - 1) * 3;

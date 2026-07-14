@@ -6,10 +6,10 @@ import { SelfCollision } from "../lib/selfCollision";
 import { applyCapsuleCollision, applyFrontBackSidedness } from "../lib/torsoCapsule";
 import type { Capsule } from "../lib/torsoCapsule";
 import { FABRIC_PRESETS } from "../lib/fabricPresets";
-import { buildGarmentSim, pinCorners } from "../lib/buildGarmentSim";
-import { buildSleeveSim, pinSleeveRing, seamCircularRing } from "../lib/buildSleeveSim";
+import { pinCorners } from "../lib/buildGarmentSim";
+import { buildUnifiedGarmentSim, rebuildWithNewSleeve } from "../lib/buildUnifiedGarmentSim";
 import type { SleeveShape } from "../lib/buildSleeveSim";
-import { blendSeamRing, pullShoulderCapToSurface, stitchTorsoAndSleeve } from "../lib/garmentStitch";
+import { pullShoulderCapToSurface } from "../lib/garmentStitch";
 import {
   ARMHOLE_ROW_FRACTION,
   COLLISION_DETECTION_RADIUS,
@@ -19,44 +19,42 @@ import {
   GRAVITY_BASE,
   MAX_DISPLACEMENT_PER_SUBSTEP,
   MAX_SUBSTEPS,
+  PANEL_BACK,
+  PANEL_FRONT,
+  PANEL_SLEEVE_LEFT,
+  PANEL_SLEEVE_RIGHT,
   PARTICLES_PER_PANEL,
   ROWS,
   SELF_COLLISION_MIN_DIST,
-  SLEEVE_DAMPING,
-  SLEEVE_ITERATIONS,
   SUBSTEP_DT,
 } from "../lib/clothConfig";
 import type { MainToGarmentWorkerMessage, GarmentWorkerToMainMessage, SleeveShapeMsg } from "../lib/garmentProtocol";
 
-// 큰 재설계: 몸판(clothWorker.ts)과 소매(sleeveWorker.ts)를 이 워커
-// 하나로 합쳤다 — 두 ClothSimulation 인스턴스(그리드 크기가 달라 하나로
-// 합칠 순 없음)를 같은 워커 안에서 함께 들고 있으면서, garmentStitch.ts로
-// 소매 이음매 링을 몸판의 "이번 프레임" 진동둘레 가장자리 위치에 직접
-// 붙인다. 이전(가벼운 재설계)엔 몸판이 메인 스레드로 위치를 보내고,
-// 메인 스레드가 다시 소매 워커로 보내는 두 단계를 거쳐야 해서 최소
-// 한 프레임 지연이 있었다 — 이제 같은 워커 안에서 두 시뮬레이션이 바로
-// 옆에 있으므로 그 지연이 없다.
-//
-// (처음엔 진짜 양방향 물리 제약(서로 당기는 스티치 짝)으로 구현했었는데,
-// "가까운 정점만 스티치·먼 정점은 원형 핀"이라는 하드 컷오프의 경계에서
-// 눈에 띄는 이음새가 생기는 게 실측(확대 화면)으로 확인돼, 모든 정점을
-// 거리 기반으로 부드럽게 블렌딩하는 이 방식으로 되돌렸다 — 자세한 이유는
-// garmentStitch.ts 참고.)
+// 30번(진짜 물리적 병합): 몸판(앞/뒤)과 소매(좌/우)를 이제 하나의
+// ClothSimulation 인스턴스(4개 패널)로 함께 짓고 하나의 step()으로 함께
+// 완화한다 — 예전(18~29번)에는 두 개의 독립된 ClothSimulation을 각자
+// step() 시킨 뒤 매 프레임 근사적으로("가까운 점끼리 당기기") 갖다
+// 붙였는데, 사용자가 "어깨가 두 개의 원통으로 분리돼 있고 하나의 옷처럼
+// 안 보인다"고 반복해서 지적한 근본 원인이 바로 이 구조였다 — 자세한
+// 이유는 garmentStitch.ts의 addArmholeSeamConstraints 주석 참고.
 interface WorkerScope {
   postMessage(message: GarmentWorkerToMainMessage, transfer: Transferable[]): void;
   onmessage: ((event: MessageEvent<MainToGarmentWorkerMessage>) => void) | null;
 }
 const ctx = self as unknown as WorkerScope;
 
-let torsoSim: ClothSimulation | null = null;
-let sleeveSim: ClothSimulation | null = null;
+let sim: ClothSimulation | null = null;
 let accumulator = 0;
+// "reinitSleeve"(반팔↔긴팔 전환)는 몸판 치수 메시지를 다시 안 받으므로,
+// 몸판을 처음부터 다시 배치할 때 쓸 마지막 치수를 기억해둔다 —
+// buildUnifiedGarmentSim.ts의 rebuildWithNewSleeve 주석 참고.
+let lastTorsoLayout: { widthM: number; heightM: number; topY: number; centerZ: number } | null = null;
 
-// --- 몸판 충돌(기존 clothWorker.ts와 동일) ---
+// --- 몸판 충돌 ---
 const frontCollisionMesh = new ArrayBvhCollision();
 const backCollisionMesh = new ArrayBvhCollision();
-// 팔 제외 없는 몸 전체 충돌 메시 — 소매 이음매 링을 실제 어깨 곡면에
-// 직접 스냅시키는 용도(garmentStitch.ts의 snapToBodySurface, 자세한
+// 팔 제외 없는 몸 전체 충돌 메시 — 어깨 캡을 실제 마네킹 표면에 직접
+// 스냅시키는 용도(garmentStitch.ts의 pullShoulderCapToSurface, 자세한
 // 경위는 meshCollision.ts의 wholeBodyIndex 주석 참고). frontCollisionMesh/
 // backCollisionMesh와 달리 팔 영역을 일부러 빼지 않은 원본이라야 어깨
 // 곡면이 남아있다.
@@ -90,24 +88,7 @@ const torsoResolver: CollisionResolver = (positions, pinned, n) => {
   applyFrontBackSidedness(positions, pinned, PARTICLES_PER_PANEL, centerZ);
 };
 
-const columnOrderExtra: CollisionResolver = () => {
-  torsoSim?.preserveColumnOrder(dirX, dirY, dirZ, undefined, false);
-  torsoSim?.preserveColumnOrder(dirX, dirY, dirZ, undefined, true);
-  torsoSim?.preserveRowOrder(undefined, false);
-  torsoSim?.preserveRowOrder(undefined, true);
-};
-
-const armholeStartRow = Math.round(ROWS * ARMHOLE_ROW_FRACTION);
-const selfCollision = new SelfCollision(PARTICLES_PER_PANEL, COLS, armholeStartRow);
-const selfCollisionResolver = selfCollision.createResolver(SELF_COLLISION_MIN_DIST);
-
-const gravityBase = new THREE.Vector3(...GRAVITY_BASE);
-const scratchGravity = new THREE.Vector3();
-const sleeveGravity = new THREE.Vector3(...GRAVITY_BASE);
-// 몸판 충돌 메시가 아직 준비 안 됐을 때 중력을 끄는 용도(아래 "step" 참고).
-const ZERO_VEC3 = new THREE.Vector3(0, 0, 0);
-
-// --- 소매 충돌(기존 sleeveWorker.ts와 동일) ---
+// --- 소매 충돌 ---
 function buildArmCapsules(shape: SleeveShapeMsg): Capsule[] {
   const midLength = shape.length * 0.55;
   const endLength = shape.length * 1.25;
@@ -143,21 +124,70 @@ const sleeveResolver: CollisionResolver = (positions, pinned, n) => {
   applyCapsuleCollision(positions, pinned, n, sleeveCapsules, 0.006);
 };
 
+// 몸판(앞+뒤, 메시+캡슐+앞뒤판 분리)과 소매(캡슐)는 여전히 서로 다른 충돌
+// 방식을 쓴다 — 소매는 훨씬 가벼운 캡슐 근사만으로도 충분하고, 몸판과
+// 똑같이 무거운 BVH 메시 충돌을 소매까지 매 프레임 돌리면 파티클이 늘어난
+// 만큼 비용만 늘고 시각적 이득은 적다(소매는 원통형이라 캡슐과 실제 팔
+// 굵기 차이가 몸판-마네킹 굴곡 차이보다 훨씬 작다). torsoParticleCount로
+// 병합된 positions/pinned 배열을 두 구간으로 나눠 각자의 리졸버에 넘긴다.
+function buildMergedResolver(torsoParticleCount: number): CollisionResolver {
+  return (positions, pinned, n) => {
+    torsoResolver(positions.subarray(0, torsoParticleCount * 3), pinned.subarray(0, torsoParticleCount), torsoParticleCount);
+    const sleeveCount = n - torsoParticleCount;
+    sleeveResolver(
+      positions.subarray(torsoParticleCount * 3, n * 3),
+      pinned.subarray(torsoParticleCount, n),
+      sleeveCount,
+    );
+  };
+}
+
+const armholeStartRow = Math.round(ROWS * ARMHOLE_ROW_FRACTION);
+// 자체충돌은 몸판(앞+뒤)에만 적용한다 — 예전부터 소매는 원통형이라 자기
+// 자신과 겹칠 일이 거의 없고, 검사 대상을 늘리면 비용만 커진다.
+const selfCollision = new SelfCollision(PARTICLES_PER_PANEL, COLS, armholeStartRow);
+const selfCollisionResolver = selfCollision.createResolver(SELF_COLLISION_MIN_DIST);
+
+const gravityBase = new THREE.Vector3(...GRAVITY_BASE);
+const scratchGravity = new THREE.Vector3();
+// 몸판 충돌 메시가 아직 준비 안 됐을 때 중력을 끄는 용도(아래 "step" 참고).
+const ZERO_VEC3 = new THREE.Vector3(0, 0, 0);
+
 ctx.onmessage = (event) => {
   const msg = event.data;
   switch (msg.type) {
     case "init": {
-      torsoSim = buildGarmentSim(msg.widthM, msg.heightM, msg.topY, msg.centerZ, msg.pinLeft, msg.pinRight);
-      // buildSleeveSim이 내부적으로 이음매를 원형 공식으로 한 번 고정해둔다
-      // — 몸판과 대조한 블렌딩은 바로 다음 "step" 메시지에서 적용된다.
-      sleeveSim = buildSleeveSim(msg.sleeveRows, toShape(msg.sleeveLeft), toShape(msg.sleeveRight));
+      lastTorsoLayout = { widthM: msg.widthM, heightM: msg.heightM, topY: msg.topY, centerZ: msg.centerZ };
+      sim = buildUnifiedGarmentSim(
+        msg.widthM,
+        msg.heightM,
+        msg.topY,
+        msg.centerZ,
+        msg.pinLeft,
+        msg.pinRight,
+        msg.sleeveRows,
+        toShape(msg.sleeveLeft),
+        toShape(msg.sleeveRight),
+      );
       accumulator = 0;
       break;
     }
     case "reinitSleeve": {
-      // 소매 종류(반팔/긴팔)만 바뀐 경우 — 몸판(torsoSim)은 건드리지
-      // 않고 소매만 새로 짓는다. 자세한 이유는 garmentProtocol.ts 참고.
-      sleeveSim = buildSleeveSim(msg.sleeveRows, toShape(msg.sleeveLeft), toShape(msg.sleeveRight));
+      // 소매 종류(반팔/긴팔)만 바뀐 경우 — 몸판은 처음부터 다시 짓되 바로
+      // 그 직후 기존에 돌고 있던 몸판의 실제 위치로 덮어써서, 몸판이 이미
+      // 자연스럽게 늘어져 있던 상태를 그대로 이어간다. 자세한 이유는
+      // buildUnifiedGarmentSim.ts의 rebuildWithNewSleeve 주석 참고.
+      if (!sim || !lastTorsoLayout) break;
+      sim = rebuildWithNewSleeve(
+        sim,
+        lastTorsoLayout.widthM,
+        lastTorsoLayout.heightM,
+        lastTorsoLayout.topY,
+        lastTorsoLayout.centerZ,
+        msg.sleeveRows,
+        toShape(msg.sleeveLeft),
+        toShape(msg.sleeveRight),
+      );
       break;
     }
     case "rebuildCollision": {
@@ -169,33 +199,8 @@ ctx.onmessage = (event) => {
       break;
     }
     case "step": {
-      if (!torsoSim || !sleeveSim) return;
-      pinCorners(torsoSim, msg.pinLeft, msg.pinRight);
-      const leftShape = toShape(msg.sleeveLeft);
-      const rightShape = toShape(msg.sleeveRight);
-      // 소매 이음매 링을 몸판의 "이번 프레임" 진동둘레 가장자리(방금 위에서
-      // pinCorners로 갱신한 어깨선 포함, 그 아래는 지난 프레임 물리 결과)
-      // 쪽으로 거리 기반 블렌딩한 뒤, 그걸로 안 닿는 나머지는 실제 마네킹
-      // 어깨 표면에 직접 스냅시킨다 — 자세한 이유는 garmentStitch.ts 참고.
-      // wholeBodyCollisionMesh가 아직 rebuildCollision을 못 받았으면(마운트
-      // 직후 한두 프레임) ready=false이니 null을 넘겨 안전하게 폴백한다.
-      const bodySurface = wholeBodyCollisionMesh.ready ? wholeBodyCollisionMesh : null;
-      const leftRing = blendSeamRing(torsoSim, 0, seamCircularRing(leftShape), bodySurface);
-      const rightRing = blendSeamRing(torsoSim, 1, seamCircularRing(rightShape), bodySurface);
-      pinSleeveRing(sleeveSim, 0, leftRing);
-      pinSleeveRing(sleeveSim, 1, rightRing);
-      // (실측 기록: 0번 행 바로 다음 행까지 같은 방식으로 붙여 탑다운 각도의
-      // 잔여 틈을 더 줄여보려는 시도를 두 가지 해봤다 — (1) pinSleeveRing으로
-      // 완전히 고정: 인접한 두 행을 동시에 완전 고정하면 이 완화 솔버가
-      // 과잉구속을 못 버티고 옷감이 뒤틀리는(텍스처가 대각선으로 찢어진
-      // 것처럼 보이는) 회귀가 실측(정면 화면)으로 재현됐다(buildGarmentSim.ts
-      // 의 목선 관련 주석에 이미 같은 교훈이 있었다). (2) 완전 고정 대신
-      // 서브스텝 루프 시작 전 목표 쪽으로 일부만 당기는 부드러운 버전
-      // (nudgeSleeveRing, weight 0.3과 0.7 둘 다 실측): 뒤틀림 회귀는
-      // 없었지만, 그 정도 세기로는 경쟁하는 물리력(중력, 인접 행과의 구조
-      // 제약)에 밀려 매 프레임 당겨봐야 정착 상태에서 눈에 띄는 개선이
-      // 없었다 — 두 시도 모두 폐기하고 0번 행만 고정하는 이 상태로
-      // 되돌린다. 남은 잔여 틈은 알려진 한계로 남겨둔다.)
+      if (!sim) return;
+      pinCorners(sim, msg.pinLeft, msg.pinRight, PANEL_FRONT, PANEL_BACK);
       sleeveCapsules = [...buildArmCapsules(msg.sleeveLeft), ...buildArmCapsules(msg.sleeveRight)];
 
       const preset = FABRIC_PRESETS[msg.fabric];
@@ -204,18 +209,8 @@ ctx.onmessage = (event) => {
       // 거쳐야 도착한다 — 그 사이엔 frontCollisionMesh/backCollisionMesh
       // (BVH)와 torsoCapsules가 전부 비어 있어(ArrayBvhCollision.ready가
       // false거나 capsules=[]) torsoResolver가 사실상 아무 일도 안 한다.
-      // 즉 그 짧은 초기 구간 동안은 몸판이 마네킹 표면과 전혀 충돌하지
-      // 않은 채 중력만으로 자유낙하한다 — 대부분의 환경에서는 이 구간이
-      // 워낙 짧아(수 프레임) 눈에 안 띄지만, 이 구간이 더 길어지는
-      // 환경(느린 CPU, 무거운 다른 탭 등 — Safari에서 재현된 "어깨가
-      // 훤히 드러나 보이는 처짐" 문제가 실측으로 확인됨: 콘솔로 직접
-      // 찍어본 어깨 핀 좌표는 항상 정확했는데도 화면은 간헐적으로 무너져
-      // 보였다)에서는, 충돌 없이 여러 프레임 자유낙하한 옷감이 뒤늦게
-      // 충돌이 활성화돼도 완전히 회복 못 하고 늘어진 채로 굳어버릴 수
-      // 있다. 충돌 메시가 아직 준비 안 됐으면 중력을 꺼서(구조 제약과
-      // 핀만으로 유지) 이 구간에서 옷감이 무너지지 않게 막는다 — 충돌이
-      // 준비되는 즉시(보통 1초 이내) 정상적으로 중력이 들어와 자연스럽게
-      // 늘어진다.
+      // 충돌 메시가 아직 준비 안 됐으면 중력을 꺼서(구조 제약과 핀만으로
+      // 유지) 이 구간에서 옷감이 무너지지 않게 막는다.
       const collisionReady = frontCollisionMesh.ready && backCollisionMesh.ready;
       scratchGravity.copy(collisionReady ? gravityBase : ZERO_VEC3).multiplyScalar(preset.gravityScale);
 
@@ -227,88 +222,69 @@ ctx.onmessage = (event) => {
       dirY = rawDirY / dirLen;
       dirZ = rawDirZ / dirLen;
 
+      const torsoParticleCount = sim.panelParticleStart(PANEL_SLEEVE_LEFT);
+      const mergedResolver = buildMergedResolver(torsoParticleCount);
+
       accumulator = Math.min(accumulator + msg.dt, SUBSTEP_DT * MAX_SUBSTEPS);
       while (accumulator >= SUBSTEP_DT) {
-        torsoSim.step(
+        // 30번 병합: 몸판과 소매(그리고 그 사이 새 암홀 재봉 제약)가 이제
+        // 같은 제약 목록 안에 있어 한 번의 step()에서 함께 완화된다 —
+        // 예전엔 fabric preset(면/데님/실크/니트별 감쇠·반복 횟수)이
+        // 몸판에만 적용되고 소매는 항상 고정값(SLEEVE_DAMPING/ITERATIONS)
+        // 을 썼는데, 이제 같은 물리 스텝을 공유하니 원단 선택이 소매에도
+        // 자연스럽게 반영된다(부수 효과지만 오히려 더 맞는 동작 — 소매도
+        // 같은 원단이니까).
+        sim.step(
           SUBSTEP_DT,
           scratchGravity,
-          torsoResolver,
+          mergedResolver,
           preset.iterations,
           COLLISION_EVERY,
           preset.damping,
           MAX_DISPLACEMENT_PER_SUBSTEP,
-          columnOrderExtra,
         );
-        selfCollisionResolver(torsoSim.positions, torsoSim.pinned, torsoSim.particlesPerPanel * torsoSim.panels);
-        torsoSim.preserveColumnOrder(dirX, dirY, dirZ, undefined, false);
-        torsoSim.preserveColumnOrder(dirX, dirY, dirZ, undefined, true);
-        torsoSim.preserveRowOrder(undefined, false);
-        torsoSim.preserveRowOrder(undefined, true);
-        torsoSim.clampOverstretchedConstraints();
-
-        sleeveSim.step(SUBSTEP_DT, sleeveGravity, sleeveResolver, SLEEVE_ITERATIONS, 1, SLEEVE_DAMPING, MAX_DISPLACEMENT_PER_SUBSTEP);
-        sleeveSim.clampOverstretchedConstraints();
+        selfCollisionResolver(sim.positions.subarray(0, torsoParticleCount * 3), sim.pinned.subarray(0, torsoParticleCount), torsoParticleCount);
+        // 순서 보존 안전장치와 스무딩은 몸판(패널 0,1)에만 의미가 있다 —
+        // 소매는 원통형이라 이 문제가 원래도 없었고, 그 범위까지 건드리면
+        // 소매 모양을 실수로 흐트러뜨릴 수 있다(29번의 회귀 교훈과 같은
+        // 이유로 panelFilter를 명시한다).
+        sim.preserveColumnOrder(dirX, dirY, dirZ, undefined, false, PANEL_FRONT, PANEL_BACK + 1);
+        sim.preserveColumnOrder(dirX, dirY, dirZ, undefined, true, PANEL_FRONT, PANEL_BACK + 1);
+        sim.preserveRowOrder(undefined, false, PANEL_FRONT, PANEL_BACK + 1);
+        sim.preserveRowOrder(undefined, true, PANEL_FRONT, PANEL_BACK + 1);
+        sim.clampOverstretchedConstraints();
 
         accumulator -= SUBSTEP_DT;
       }
 
-      // 29번(스무딩-보정 순서 버그): smoothColumns/smoothRows는 원래 BVH
-      // 충돌의 삼각형 단위 잔물결(고주파 노이즈)만 지우려고 만들었는데,
-      // 이 둘도 정확히 어깨 캡 구간(rows 1..armholeStartRow)에 대해
-      // 이웃과의 평균으로 끌어당기는 라플라시안 스무딩이다 — 그런데
-      // 지금까지는 pullShoulderCapToSurface(어깨를 실제 마네킹 표면에
-      // 정밀하게 스냅)와 stitchTorsoAndSleeve(몸판-소매 재봉) *바로 뒤에*
-      // 실행되고 있었다. 즉 두 정밀 보정이 방금 딱 붙여놓은 위치를, 그
-      // 직후 8회 반복되는 스무딩이 "덜 보정된 이웃 점들의 평균" 쪽으로
-      // 다시 희석시켜버리는 순서였다 — 사용자가 3/4 뒷모습에서 재지적한
-      // "소매가 어깨 위에 붕 뜬 별도 조각처럼 보이고 그 밑에 맨살이
-      // 드러나는" 잔여 틈이 바로 이 순서 문제였을 가능성이 높다(스무딩
-      // 자체가 필요 없는 게 아니라, 스무딩→정밀 보정 순서여야 정밀 보정이
-      // 최종적으로 이긴다). 순서를 뒤집는다: 먼저 스무딩으로 충돌의 고주파
-      // 잔물결을 지우고, 그 다음에 어깨 표면 스냅과 재봉선을 "마지막
-      // 발언권"으로 적용한다.
-      for (let i = 0; i < 8; i++) torsoSim.smoothColumns(armholeStartRow + 1, 0.5);
-      for (let i = 0; i < 8; i++) torsoSim.smoothRows(armholeStartRow + 1, 0.5);
-      torsoSim.preserveColumnOrder(dirX, dirY, dirZ, undefined, false);
-      torsoSim.preserveColumnOrder(dirX, dirY, dirZ, undefined, true);
+      // 29번(스무딩-보정 순서 버그, 30번 병합에도 그대로 적용): 스무딩을
+      // 먼저 실행해 BVH 충돌의 고주파 잔물결을 지우고, 그 다음에 어깨
+      // 표면 스냅을 "마지막 발언권"으로 적용한다 — 순서를 반대로 하면
+      // 스무딩이 정밀 보정을 다시 희석시킨다(자세한 경위는 git 히스토리
+      // 참고). 몸판 재봉 스티칭(stitchTorsoAndSleeve)은 30번에서 실제
+      // 거리 제약(addArmholeSeamConstraints)으로 대체돼 더 이상 필요
+      // 없다 — 이제 재봉선이 매 반복(iteration) 안에서 다른 구조 제약과
+      // 함께 자동으로 풀린다.
+      sim.smoothColumns(armholeStartRow + 1, 0.5, PANEL_FRONT, PANEL_BACK + 1);
+      sim.smoothRows(armholeStartRow + 1, 0.5, PANEL_FRONT, PANEL_BACK + 1);
+      sim.preserveColumnOrder(dirX, dirY, dirZ, undefined, false, PANEL_FRONT, PANEL_BACK + 1);
+      sim.preserveColumnOrder(dirX, dirY, dirZ, undefined, true, PANEL_FRONT, PANEL_BACK + 1);
 
-      // 큰 재설계(3D 곡면 어깨): 위 substep 루프(+ 방금 위의 스무딩)가
-      // 중력+구조 제약+이웃 평균으로 다시 안쪽으로 처지게/희석되게 만든
-      // 어깨~겨드랑이 구간을, 실제 마네킹 표면 쪽으로 매 프레임 능동적으로
-      // 재보정한다 — 자세한 이유는 garmentStitch.ts의
-      // pullShoulderCapToSurface 주석 참고. 스무딩 이후에 실행해 이
-      // 보정이 스무딩에 다시 희석되지 않고 최종 위치로 남게 한다.
-      pullShoulderCapToSurface(torsoSim, armholeStartRow, COLS, dirX, dirY, dirZ, bodySurface);
-      // 몸판과 소매를 서로를 향해 동시에 당기는 진짜 재봉선 — 자세한
-      // 이유는 garmentStitch.ts의 stitchTorsoAndSleeve 주석 참고
-      // (everyIterationExtra로 옮겨봤다가 소매 쪽 반복에 걸면 오히려
-      // 불안정해지는 걸 실측으로 확인해 이 프레임당 한 번 방식으로
-      // 되돌렸다). 이것도 스무딩 뒤에 실행해 재봉 결과가 최종적으로 남게
-      // 한다.
-      stitchTorsoAndSleeve(torsoSim, sleeveSim, armholeStartRow, COLS);
+      const bodySurface = wholeBodyCollisionMesh.ready ? wholeBodyCollisionMesh : null;
+      pullShoulderCapToSurface(sim, PANEL_FRONT, PANEL_BACK, armholeStartRow, COLS, dirX, dirY, dirZ, bodySurface);
+      sim.preserveColumnOrder(dirX, dirY, dirZ, undefined, false, PANEL_FRONT, PANEL_BACK + 1);
+      sim.preserveColumnOrder(dirX, dirY, dirZ, undefined, true, PANEL_FRONT, PANEL_BACK + 1);
 
-      // 29번 수정 직후 발견한 회귀: 스무딩을 앞으로 옮기면서
-      // preserveColumnOrder(순서 역전 방지 안전장치, 21번 항목의 초기
-      // 배치 부호 버그와 같은 계열)가 pullShoulderCapToSurface/
-      // stitchTorsoAndSleeve *앞에서만* 실행되고 그 뒤에는 한 번도
-      // 실행되지 않게 돼버렸다 — 원래(수정 전) 순서에서는 이 두 정밀
-      // 보정 바로 뒤에 스무딩이 왔고, 그 스무딩이 우연히 열 순서를
-      // 안정시키는 역할까지 겸하고 있었던 것으로 보인다. 그 안전장치가
-      // 완전히 사라지자, 두 정밀 보정(특히 stitchTorsoAndSleeve의
-      // 가장-가까운-점 탐색)이 만드는 열 순서 역전을 아무도 못 잡아
-      // 몸판이 어깨 부위에서 매듭처럼 뒤엉켜 붕괴하는 심각한 회귀가
-      // 실측(탑다운 각도, 사용자 스크린샷)으로 확인됐다. 두 정밀 보정
-      // 뒤에도 안전장치를 다시 걸어 최종 출력이 항상 순서가 보존된
-      // 상태이도록 한다.
-      torsoSim.preserveColumnOrder(dirX, dirY, dirZ, undefined, false);
-      torsoSim.preserveColumnOrder(dirX, dirY, dirZ, undefined, true);
-
-      const ppp = torsoSim.particlesPerPanel;
-      const front = torsoSim.positions.slice(0, ppp * 3);
-      const back = torsoSim.positions.slice(ppp * 3, ppp * 6);
-      const sppp = sleeveSim.particlesPerPanel;
-      const sleeveLeft = sleeveSim.positions.slice(0, sppp * 3);
-      const sleeveRight = sleeveSim.positions.slice(sppp * 3, sppp * 6);
+      const ppp = sim.panelParticleCount(PANEL_FRONT);
+      const sppp = sim.panelParticleCount(PANEL_SLEEVE_LEFT);
+      const frontStart = sim.panelParticleStart(PANEL_FRONT) * 3;
+      const backStart = sim.panelParticleStart(PANEL_BACK) * 3;
+      const sleeveLeftStart = sim.panelParticleStart(PANEL_SLEEVE_LEFT) * 3;
+      const sleeveRightStart = sim.panelParticleStart(PANEL_SLEEVE_RIGHT) * 3;
+      const front = sim.positions.slice(frontStart, frontStart + ppp * 3);
+      const back = sim.positions.slice(backStart, backStart + ppp * 3);
+      const sleeveLeft = sim.positions.slice(sleeveLeftStart, sleeveLeftStart + sppp * 3);
+      const sleeveRight = sim.positions.slice(sleeveRightStart, sleeveRightStart + sppp * 3);
       ctx.postMessage(
         { type: "positions", front, back, sleeveLeft, sleeveRight, generation: msg.generation },
         [front.buffer, back.buffer, sleeveLeft.buffer, sleeveRight.buffer],

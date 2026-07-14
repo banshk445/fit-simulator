@@ -19,6 +19,18 @@ export const COLS = 22;
 export const ROWS = 28;
 export const PARTICLES_PER_PANEL = COLS * ROWS;
 
+// 30번(진짜 물리적 병합): 몸판(앞/뒤)과 소매(좌/우)를 이제 하나의
+// ClothSimulation 인스턴스 안에 4개 패널로 함께 둔다(clothPhysics.ts의
+// PanelDims 일반화 참고) — 패널 번호를 여기저기서 매직 넘버(0/1)로 흩어
+// 쓰지 않도록 이름을 붙여둔다. 순서가 중요하다: 몸판 두 패널이 먼저 와야
+// (0,1) 몸판만의 파티클 범위가 항상 [0, panelParticleStart(PANEL_SLEEVE_LEFT))
+// 로 연속되어, 자체충돌/앞뒤판 분리 충돌 리졸버가 지금처럼 "몸판 범위만"
+// 간단히 슬라이싱해서 쓸 수 있다.
+export const PANEL_FRONT = 0;
+export const PANEL_BACK = 1;
+export const PANEL_SLEEVE_LEFT = 2;
+export const PANEL_SLEEVE_RIGHT = 3;
+
 export const SUBSTEP_DT = 1 / 60;
 // 워커가 한 번에 몰아서 따라잡을 수 있는 서브스텝 상한. 너무 크게 잡으면
 // 워커 자신이 느려졌을 때 처리 시간이 계속 늘어나는 악순환에 빠진다.
@@ -169,5 +181,7 @@ export const SLEEVE_LENGTH_LONG_FRACTION = 0.92;
 // 보여 자연스러운 소매 느낌이 덜하다. 긴팔은 손목 쪽이라 플레어를 거의
 // 주지 않는다(오히려 좁아짐 — SLEEVE_RADIUS_WRIST로 이미 반영).
 export const SLEEVE_FLARE_SHORT = 0.12;
-export const SLEEVE_ITERATIONS = 14;
-export const SLEEVE_DAMPING = 0.97;
+// 30번(병합) 이전에는 소매가 독립된 ClothSimulation이라 감쇠/반복 횟수를
+// 여기 고정값으로 따로 뒀다(SLEEVE_DAMPING/SLEEVE_ITERATIONS). 이제 몸판과
+// 하나의 step()을 공유하므로 fabricPresets.ts의 원단별 damping/iterations를
+// 그대로 쓴다(소매도 같은 원단이니 오히려 더 맞는 동작).

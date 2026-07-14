@@ -1,255 +1,144 @@
 import { ClothSimulation } from "./clothPhysics";
-import type { Vec3Like } from "./clothProtocol";
 import type { ArrayBvhCollision } from "./bvhFromArrays";
-import { ARMHOLE_ROW_FRACTION, COLS, ROWS, SLEEVE_COLS } from "./clothConfig";
+import { SLEEVE_COLS } from "./clothConfig";
 
-// 큰 재설계(3D 곡면 어깨, 27번, 28번에서 한 차례 시도 후 되돌림): 사용자가
-// "어깨를 분리하지 말고 하나의 옷으로 해달라"고 직접 지적한 게 정확한
-// 진단이었다 — 몸판과 소매는 이 코드베이스에서 애초에 그리드 크기가
-// 달라(몸판 COLS x ROWS, 소매 SLEEVE_COLS x rows) 하나의 ClothSimulation
-// 으로 합쳐진 적이 없고(18번부터 계속 별개 인스턴스), 그래서 "한 벌의
-// 천"이 아니라 두 조각을 매 프레임 근사적으로 갖다 붙이는 것이었다.
+// 30번(진짜 물리적 병합): 사용자가 "어깨를 분리하지 말고 하나의 옷으로
+// 해달라"고 여러 차례 지적한 게 정확한 진단이었다 — 18~29번까지 이
+// 파일의 이전 버전(blendSeamRing/stitchTorsoAndSleeve)이 하던 일은 결국
+// 몸판과 소매라는 "물리적으로 완전히 분리된 두 시뮬레이션"을 매 프레임
+// 근사적으로("가까운 점끼리 절반씩 당기기") 갖다 붙이는 것이었다. 이
+// 방식은 두 가지 근본적 한계가 있었다: (1) 몸판이 이번 프레임 다 풀린
+// "뒤"에 소매를 갖다 붙이므로, 소매 쪽의 장력/접힘이 몸판의 구조 제약에
+// 같은 반복(iteration) 안에서 되먹임되지 못한다 — 즉 진짜 재봉선이라면
+// 소매를 당기면 몸판도 같이 딸려와야 하는데, 그게 "같은 완화 루프 안"이
+// 아니라 "그 다음에 한 번" 일어나므로 늘 한 박자 늦고 약하다. (2) 대응
+// 관계(어느 소매 점이 어느 몸판 점과 짝인지)를 매 프레임 최근접 탐색으로
+// 다시 구했으므로, 완전히 고정된 관계가 아니라 미세하게 흔들릴 수 있었다.
 //
-// 진짜로 하나의 ClothSimulation으로 합치는 안(패널마다 다른 grid 크기를
-// 지원하도록 클래스 자체를 확장)도 검토했지만, 이 프로젝트의 물리
-// 엔진·워커·렌더링 코드 전반(collision resolver의 앞/뒤판 분리, 자체
-// 충돌, 소매 전용 감쇠/반복 횟수, 세그멘테이션된 postMessage 프로토콜
-// 등)이 "몸판과 소매는 별개 시뮬레이션"이라는 전제를 깊이 깔고 있어,
-// 이 시점에 억지로 합치면 회귀 위험이 이번 수정의 이득보다 커진다고
-// 판단했다.
-//
-// 28번: ClothSimulation.step()의 everyIterationExtra 훅(원래
-// preserveColumnOrder용)을 재사용해 몸판 내부 완화 반복마다(원단별
-// 8~24회) 이 보정을 실행해보면 프레임당 한 번보다 훨씬 강할 거라
-// 예상했는데, 실측(정면 각도, 틈 수치)해보니 몸판 쪽 반복에만 걸었을
-// 땐 이 아래(프레임당 한 번, 6회 내부 반복) 방식과 수치가 거의
-// 동일했고, 소매 쪽 반복(sleeveSim.step())에도 같이 걸었더니 오히려
-// 틈이 8.6cm→11.1cm로 더 벌어졌다 — Verlet 적분은 속도를 "이전 위치와
-// 현재 위치의 차이"로 암묵적으로 계산하는데, 위치만 직접 여러 번(수십
-// 회) 홱홱 옮기고 prevPositions는 안 건드리니 매번 그 점프가 암묵적인
-// "가짜 속도"로 누적돼, 다음 프레임 적분에서 오히려 더 크게 튕겨
-// 나가는 불안정을 만든 것으로 보인다 — 프레임당 한 번(아래) 방식은
-// 이 문제가 없다(실측: 8.6cm대로 안정적).
-const STITCH_ITERATIONS = 6;
-const STITCH_SLEEVE_ROWS = 3;
-
-export function stitchTorsoAndSleeve(
-  torsoSim: ClothSimulation,
-  sleeveSim: ClothSimulation,
+// 이제 몸판과 소매가 clothPhysics.ts의 PanelDims 일반화 덕분에 진짜 같은
+// ClothSimulation 인스턴스(같은 파티클 배열, 같은 제약 목록) 안에 있으므로,
+// "당기기"가 아니라 진짜 거리 제약(addConstraint)으로 이어붙일 수 있다 —
+// 다른 모든 구조/전단/벤드/시접 제약과 똑같은 방식으로 매 반복(iteration)
+// 안에서 함께 풀리므로, 장력이 이음매를 가로질러 양방향으로 실시간
+// 전파된다(소매를 당기면 몸판도 그 반복 안에서 같이 움직인다). 대응
+// 관계도 빌드 시점에 한 번만 계산해 고정한다(매 프레임 재탐색 없음).
+export function addArmholeSeamConstraints(
+  sim: ClothSimulation,
+  frontPanel: number,
+  backPanel: number,
+  sleevePanel: number,
+  torsoOuterX: number,
   armholeStartRow: number,
-  cols: number,
 ): void {
-  const n = sleeveSim.particlesPerPanel;
-  const candidateCount = Math.min(STITCH_SLEEVE_ROWS * SLEEVE_COLS, n);
+  const boundary = torsoBoundaryIndices(sim, frontPanel, backPanel, torsoOuterX, armholeStartRow);
+  if (boundary.length < 2) return;
 
-  for (let iter = 0; iter < STITCH_ITERATIONS; iter++) {
-    for (let torsoPanel = 0; torsoPanel < 2; torsoPanel++) {
-      for (let y = 1; y <= armholeStartRow; y++) {
-        for (let x = 0; x < cols; x++) {
-          const u = x / (cols - 1) - 0.5;
-          const outerness = Math.min(Math.abs(u) * 2, 1);
-          if (outerness <= 0) continue;
-          // torsoBoundaryPositions와 같은 대응 관계: 몸판 x=0 열은 소매
-          // 패널 0(왼쪽), x=COLS-1 열은 패널 1(오른쪽)과 짝지어진다.
-          const sleevePanel = u >= 0 ? 0 : 1;
-          const ti = torsoSim.index(torsoPanel, x, y);
-          const torsoPinned = torsoSim.pinned[ti] === 1;
-          const tix = ti * 3;
-          const tx = torsoSim.positions[tix];
-          const ty = torsoSim.positions[tix + 1];
-          const tz = torsoSim.positions[tix + 2];
-
-          let bestDistSq = Infinity;
-          let bestIdx = -1;
-          const base = sleevePanel * n;
-          for (let k = 0; k < candidateCount; k++) {
-            const si = base + k;
-            const sIx = si * 3;
-            const dx = sleeveSim.positions[sIx] - tx;
-            const dy = sleeveSim.positions[sIx + 1] - ty;
-            const dz = sleeveSim.positions[sIx + 2] - tz;
-            const distSq = dx * dx + dy * dy + dz * dz;
-            if (distSq < bestDistSq) {
-              bestDistSq = distSq;
-              bestIdx = si;
-            }
-          }
-          if (bestIdx < 0) continue;
-          const sleevePinned = sleeveSim.pinned[bestIdx] === 1;
-          if (torsoPinned && sleevePinned) continue;
-
-          const sIx = bestIdx * 3;
-          const dx = sleeveSim.positions[sIx] - tx;
-          const dy = sleeveSim.positions[sIx + 1] - ty;
-          const dz = sleeveSim.positions[sIx + 2] - tz;
-
-          const moveT = torsoPinned ? 0 : sleevePinned ? 1 : 0.5;
-          const moveS = sleevePinned ? 0 : torsoPinned ? 1 : 0.5;
-
-          if (!torsoPinned) {
-            torsoSim.positions[tix] += dx * moveT * outerness;
-            torsoSim.positions[tix + 1] += dy * moveT * outerness;
-            torsoSim.positions[tix + 2] += dz * moveT * outerness;
-          }
-          if (!sleevePinned) {
-            sleeveSim.positions[sIx] -= dx * moveS * outerness;
-            sleeveSim.positions[sIx + 1] -= dy * moveS * outerness;
-            sleeveSim.positions[sIx + 2] -= dz * moveS * outerness;
-          }
-        }
-      }
-    }
+  for (let x = 0; x < SLEEVE_COLS; x++) {
+    const ringIndex = sim.index(sleevePanel, x, 0);
+    const seg = nearestBoundarySegment(sim, boundary, ringIndex);
+    if (!seg || seg.distSq > SEAM_ATTACH_THRESHOLD * SEAM_ATTACH_THRESHOLD) continue;
+    // 두 끝점 모두에 짧게 연결한다(하나의 최근접 정점 하나에만 연결하면,
+    // 소매 링(24개)이 몸판 경계 표본(~11개)보다 촘촘해서 여러 링 점이 같은
+    // 표본 하나로 한꺼번에 쏠려 뭉치는 문제가 16번 항목에서 이미 실측으로
+    // 확인된 바 있다 — 두 끝점에 걸치면 사실상 그 선분 위 지점에
+    // 삼각측량되듯 자연스럽게 분산된다).
+    sim.addConstraint(ringIndex, seg.a, SEAM_CONSTRAINT_REST_LENGTH);
+    sim.addConstraint(ringIndex, seg.b, SEAM_CONSTRAINT_REST_LENGTH);
   }
 }
 
-// 큰 재설계: 몸판과 소매를 어깨 한 점(또는 "가장 가까운 점으로 끌어당기는"
-// 근사)이 아니라, 몸판이 실제로 계산한 진동둘레(암홀) 가장자리에 소매
-// 이음매 링을 매 프레임 직접 붙인다. 두 ClothSimulation(몸판/소매)은
-// 그리드 크기가 달라(몸판 COLS x ROWS, 소매 SLEEVE_COLS x rows) 하나로
-// 합칠 수 없어서 여전히 별개 인스턴스로 두지만, 같은 워커
-// (garmentWorker.ts) 안에서 함께 관리되므로 몸판의 "이번 프레임" 위치를
-// 프레임 지연 없이(메인 스레드를 거치지 않고) 바로 읽어 소매 핀 목표로
-// 쓸 수 있다 — 이게 이전(가벼운) 재설계와의 핵심 차이다.
-//
-// 처음엔 "가까운 정점만 스티치, 먼 정점은 완전히 별개로 원형 핀"이라는
-// 이분법(하드 컷오프)으로 구현했는데, 그 경계에서 두 목표 위치가 서로
-// 안 이어져 눈에 띄는 이음새/틈이 생기는 게 실측(확대 화면)으로
-// 확인됐다. 모든 정점을 "원형 위치 → 가장 가까운 진동둘레 점" 방향으로
-// 거리 기반 가중치로 부드럽게 블렌딩(가까울수록 강하게, PULL_RADIUS보다
-// 멀면 0)하는 방식으로 바꿔 이 이음새를 없앴다 — 소매 재설계 1차
-// 버전(computeSeamRing, 메인 스레드에서 계산)과 같은 블렌딩 수식이지만,
-// 이제 몸판과 같은 워커 안에서 그 프레임의 실제 최신 위치로 계산되므로
-// 한 프레임 지연이 없다.
-const armholeStartRow = Math.round(ROWS * ARMHOLE_ROW_FRACTION);
-// 링(circularRing)의 반지름은 이음매 부분이라 radiusSeam(약 2cm) 수준으로
-// 작다 — PULL_RADIUS를 그보다 훨씬 크게(예전 0.12=12cm) 잡으면, 이음매
-// 원 위의 24개 정점 전부가 진동둘레 가장자리에서 100%에 가까운 가중치로
-// 끌려가 원형이 통째로 무너지는 버그가 실측(디버그 좌표 덤프)으로
-// 드러났다 — 당시엔 경계를 "가장 가까운 점(꼭짓점 하나)"으로만 찾아서,
-// 24개 링 정점 중 다수가 성긴 경계 표본(9개 안팎) 중 같은 하나로
-// 한꺼번에 쏠려 이음매 링이 지름 3~4mm짜리 점 무더기로 찌그러졌었다.
-// 이후 closestPointOnPolyline로 바꿔 선분 위 연속 투영점을 쓰게 되면서
-// (뭉침의 근본 원인이 사라짐) 실측(디버그 거리 덤프)해보니 실제 링→
-// 경계 거리는 대부분 0.001~0.02m(1~20mm) 범위였다 — PULL_RADIUS를 이
-// 범위를 넉넉히 덮는 0.045로 잡아, 사실상 모든 정점이 진동둘레에 확실히
-// 밀착하면서도(피부 비침 틈 제거) 폴리라인 투영 덕에 뭉치지 않는다.
-//
-// 그런데 탑다운(위에서 내려다보는) 각도에서 사용자가 어깨에 여전히 피부가
-// 비쳐 보인다고 재지적해 실측(디버그 좌표 덤프 + weight를 강제로 1로
-// 고정해 완전 스냅까지 시도)해보니, PULL_RADIUS를 아무리 키워도(심지어
-// weight=1 완전 스냅에서도!) 그 틈이 전혀 줄어들지 않았다 — 즉 이 틈은
-// blendSeamRing/PULL_RADIUS와 무관하다는 게 확정됐다. 근본 원인은
-// 몸판이 진짜 3D 곡면이 아니라 평평한 패널 2장이 어깨 "점 하나"에서
-// 맞닿는 구조라는 것 — 평면은 애초에 마네킹의 둥근 어깨를 감쌀 수 없어서,
-// 소매를 아무리 완벽하게 그 경계에 붙여도 평면 자체가 없는 영역(경계
-// 폴리라인이 도달 못 하는, 어깨 위/뒤로 곡면이 필요한 부분)은 어차피
-// 못 채운다.
-//
-// 몸판을 3D 곡면 메쉬로 재설계하는 대신(별도 프로젝트급 작업), 이미 정확한
-// 마네킹 3D 표면 데이터를 갖고 있는 충돌 메시(BVH)를 재사용해 소매 쪽에서
-// 그 빈 영역을 메운다 — snapToBodySurface() 참고. 몸판 경계 블렌딩(아래)이
-// 먼저 링을 옆선/암홀 경계에 붙이고, 그걸로 안 닿는(경계 폴리라인이 원래
-// 없는 어깨 위쪽) 나머지를 실제 마네킹 표면에 직접 스냅시켜 닫는다.
-// PULL_RADIUS는 이 틈과 무관하다는 게 확인됐으니, 원래 목적(뭉침 방지
-// 범위를 넉넉히 덮기)에 맞는 값으로 되돌린다.
-const PULL_RADIUS = 0.045;
-// snapToBodySurface: 마네킹 표면과 옷감 사이 여유(원단 두께 근사) — 몸판
-// 충돌(COLLISION_MARGIN=0.015)과 비슷한 수준으로 잡는다.
-const SURFACE_MARGIN = 0.012;
-// 이 반경 안에서 마네킹 표면을 찾는다 — 실측(디버그 덤프)한 최악의 경우
-// 링→경계 거리가 약 6~7cm였던 것을 넉넉히 덮는다.
-//
-// (처음엔 여기도 거리 기반 가중치로 "살짝만" 당겼는데 — 실측해보니 문제의
-// 정점들은 이미 경계 블렌딩으로 어느 정도 당겨진 상태라 실제 표면까지
-// 남은 거리가 7cm 안팎이었고, PULL_RADIUS 스타일의 완만한 falloff로는
-// weight가 10% 안팎에 그쳐 화면상 변화가 전혀 안 보였다. 이 2단계는
-// "가까우면 살짝, 멀면 무시"가 아니라 "탐지 반경 안에서 진짜 표면을
-// 찾았으면 그냥 그 자리로 보낸다"는 게 맞는 의도였다 — 그래서 falloff 없이
-// 찾으면 100% 스냅하도록 단순화했다.)
-const SURFACE_DETECTION_RADIUS = 0.1;
+// 이 거리보다 먼 소매 링 정점은 재봉 제약을 안 건다 — 몸판이 평평한
+// 패널이라 진짜 3D 곡면 어깨를 감쌀 수 없는 한계(17번 항목에서 실측으로
+// 확정)는 이 병합으로도 사라지지 않는다: 소매 링의 "몸 바깥쪽을 향한"
+// 절반은 애초에 근처에 붙일 몸판 경계 자체가 없다. 억지로 먼 표본에
+// 붙이면(예전 PULL_RADIUS를 너무 크게 잡았을 때처럼) 엉뚱한 방향으로
+// 세게 당겨져 비틀림/뭉침이 생기므로, 문턱 밖은 재봉하지 않고 소매 자체
+// 구조+어깨 표면 스냅(pullShoulderCapToSurface)+캡슐 충돌에 맡겨 자연스럽게
+// 드레이프되게 둔다.
+const SEAM_ATTACH_THRESHOLD = 0.06;
+// 재봉 제약의 목표 간격 — 옆선 시접(SEAM_REST_LENGTH, 6mm)과 같은
+// 수준으로 바짝 당겨 붙인다.
+const SEAM_CONSTRAINT_REST_LENGTH = 0.006;
 
-// 몸판의 진동둘레 가장자리 위치를 겨드랑이(뒤판)→어깨→겨드랑이(앞판)
-// 순서로 나열한다.
-function torsoBoundaryPositions(torsoSim: ClothSimulation, x: number): Vec3Like[] {
-  const pts: Vec3Like[] = [];
-  const push = (panel: number, y: number) => {
-    const i = torsoSim.index(panel, x, y) * 3;
-    pts.push({ x: torsoSim.positions[i], y: torsoSim.positions[i + 1], z: torsoSim.positions[i + 2] });
-  };
-  for (let y = armholeStartRow; y >= 1; y--) push(1, y); // 뒤판
-  for (let y = 0; y <= armholeStartRow; y++) push(0, y); // 앞판
-  return pts;
+// 몸판의 진동둘레(암홀) 가장자리를 겨드랑이(뒤판)→어깨→겨드랑이(앞판)
+// 순서로 나열한 파티클 인덱스 목록. 이 순서(뒤판 위로, 앞판 아래로)가
+// 실제 3D 공간에서 연속된 폴리라인이 되도록 만든다 — 어깨 핀(row 0)이
+// 앞/뒤판이 겹치는 공유 지점이라 이 목록에서 정확히 한 번만 나온다.
+function torsoBoundaryIndices(
+  sim: ClothSimulation,
+  frontPanel: number,
+  backPanel: number,
+  x: number,
+  armholeStartRow: number,
+): number[] {
+  const idx: number[] = [];
+  for (let y = armholeStartRow; y >= 1; y--) idx.push(sim.index(backPanel, x, y)); // 뒤판
+  for (let y = 0; y <= armholeStartRow; y++) idx.push(sim.index(frontPanel, x, y)); // 앞판(어깨 핀 포함)
+  return idx;
 }
 
-// 점 p에서 몸판 경계 "폴리라인"(점들을 선분으로 이은 곡선) 위 가장 가까운
-// 점을 구한다. 경계를 점(꼭짓점) 목록으로만 보고 그중 가장 가까운 점
-// 하나를 고르면(이전 방식), 24개 링 정점 중 여럿이 성긴 표본(9개 안팎)
-// 중 같은 하나로 동시에 쏠려 뭉치는 문제가 생긴다 — 선분 위 투영점을
-// 쓰면 연속적으로 위치가 바뀌어 뭉침 없이 부드럽게 분산된다.
-function closestPointOnPolyline(boundary: Vec3Like[], p: Vec3Like): { point: Vec3Like; distSq: number } {
-  let best: Vec3Like = boundary[0];
-  let bestDistSq = Infinity;
+// 소매 링 정점 하나(ringIndex)에서 몸판 경계 폴리라인(boundary, 인덱스
+// 목록) 위 가장 가까운 "선분"을 찾아 그 두 끝점 인덱스를 돌려준다. 빌드
+// 시점의 현재 위치(sim.positions)를 한 번만 읽어 계산하고, 그 뒤로는 이
+// 함수를 다시 부르지 않는다 — 대응 관계 자체가 고정 제약이 되기 때문에
+// 매 프레임 다시 찾을 필요가 없다(이전 blendSeamRing과의 핵심 차이).
+function nearestBoundarySegment(
+  sim: ClothSimulation,
+  boundary: number[],
+  ringIndex: number,
+): { a: number; b: number; distSq: number } | null {
+  const px = sim.positions[ringIndex * 3];
+  const py = sim.positions[ringIndex * 3 + 1];
+  const pz = sim.positions[ringIndex * 3 + 2];
+
+  let best: { a: number; b: number; distSq: number } | null = null;
   for (let i = 0; i < boundary.length - 1; i++) {
     const a = boundary[i];
     const b = boundary[i + 1];
-    const abx = b.x - a.x;
-    const aby = b.y - a.y;
-    const abz = b.z - a.z;
+    const ax = sim.positions[a * 3];
+    const ay = sim.positions[a * 3 + 1];
+    const az = sim.positions[a * 3 + 2];
+    const bx = sim.positions[b * 3];
+    const by = sim.positions[b * 3 + 1];
+    const bz = sim.positions[b * 3 + 2];
+    const abx = bx - ax;
+    const aby = by - ay;
+    const abz = bz - az;
     const abLenSq = abx * abx + aby * aby + abz * abz || 1e-9;
-    let t = ((p.x - a.x) * abx + (p.y - a.y) * aby + (p.z - a.z) * abz) / abLenSq;
+    let t = ((px - ax) * abx + (py - ay) * aby + (pz - az) * abz) / abLenSq;
     t = Math.max(0, Math.min(1, t));
-    const cx = a.x + abx * t;
-    const cy = a.y + aby * t;
-    const cz = a.z + abz * t;
-    const dx = p.x - cx;
-    const dy = p.y - cy;
-    const dz = p.z - cz;
+    const cx = ax + abx * t;
+    const cy = ay + aby * t;
+    const cz = az + abz * t;
+    const dx = px - cx;
+    const dy = py - cy;
+    const dz = pz - cz;
     const distSq = dx * dx + dy * dy + dz * dz;
-    if (distSq < bestDistSq) {
-      bestDistSq = distSq;
-      best = { x: cx, y: cy, z: cz };
-    }
+    if (!best || distSq < best.distSq) best = { a, b, distSq };
   }
-  return { point: best, distSq: bestDistSq };
+  return best;
 }
 
-// 몸판 경계 블렌딩이 도달 못 하는 점을, 실제 마네킹 표면(팔 제외 없는
-// 전신 BVH — meshCollision.ts의 wholeBodyIndex 참고)에 직접 스냅시킨다.
-// bodySurface가 아직 준비 안 됐거나(마운트 직후 rebuildCollision 전) 반경
-// 안에서 표면을 못 찾으면 입력을 그대로 반환 — 몸판 경계 블렌딩만으로도
-// 이미 대부분 정상 동작하므로 안전한 폴백이다.
-function snapToBodySurface(p: Vec3Like, bodySurface: ArrayBvhCollision | null): Vec3Like {
-  if (!bodySurface) return p;
-  const target = bodySurface.closestSurfacePoint(p.x, p.y, p.z, SURFACE_MARGIN, SURFACE_DETECTION_RADIUS);
-  if (!target) return p;
-  return { x: target.x, y: target.y, z: target.z };
-}
-
-// 큰 재설계(3D 곡면 어깨, 21번 이후): halfWidthAtRow의 클램프를 없애 어깨
-// 쪽 초기 배치/rest length를 넓혀도, 그 구간을 붙잡아줄 활성 지지가 전혀
-// 없어(0번 행만 핀으로 고정, 옆선 시접은 armholeStartRow부터 시작) 중력+
-// 구조 제약이 매 프레임 다시 안쪽으로 처지게 만든다는 게 실측(Playwright
-// evaluate로 몸판 바깥쪽 열과 소매 이음매 링의 실제 정착 좌표를 직접
-// 대조)으로 드러났다 — armholeStartRow를 3→5행으로 늘려봐도 정착 좌표는
-// 거의 그대로였다(초기 배치만으로는 부족, 매 프레임 능동적으로 다시
-// 당겨줘야 유지된다).
+// 어깨 뼈대(관절)에서 수평으로만 밀어내던 것과 별개로, 실제로는 수직으로도
+// 살짝 낮다 — 실측(핀 좌표 반경 8cm 안의 최고 Y를 직접 스캔)해보니 핀 Y가
+// 실제 어깨 표면 꼭대기보다 항상 약 1.8cm 낮았다. 사용자가 "옷이 어깨가
+// 아니라 가슴에 있다"고 지적한 원인 중 하나였다 — shoulderPin.ts의
+// SHOULDER_PIN_LIFT로 고쳤다.
 //
-// snapToBodySurface처럼 "현재 위치에서 가장 가까운 표면"을 그대로 찾으면
-// 안 된다 — 현재 위치가 이미 안쪽으로 처져 있으면 그 근처(가슴/목 표면)
-// 만 찾을 뿐 바깥쪽(어깨 캡) 표면을 "발견"하지 못한다(검색 자체에
-// 방향성이 없으므로). 그래서 검색 시작점을 어깨선 방향(dirX/Y/Z, 왼쪽
-// 어깨→오른쪽 어깨)을 기준으로 각 열이 속한 쪽(u의 부호)으로
-// SHOULDER_SURFACE_PUSH만큼 인위적으로 밀어낸 뒤, 그 지점에서 가장 가까운
-// 실제 표면을 찾는다 — 옷이 얼마나 처져 있든 항상 "바깥쪽"을 먼저
-// 살펴보게 만드는 것. 찾은 진짜 표면 쪽으로 매 프레임 일부만(0.35,
-// 하드 핀이 아님 — 인접 행을 완전 고정하면 뒤틀리는 회귀가 이 코드베이스
-// 전반에서 반복 확인됐다) 당겨, 중력이 다시 끌어내리기 전에 계속
-// 재보정한다.
+// 아래 pullShoulderCapToSurface는 그와는 별개로, 어깨~겨드랑이 구간
+// 전체를 매 프레임 실제 마네킹 표면 쪽으로 능동적으로 재보정한다 — 자체
+// 충돌을 꺼둔 상태에서 이 구간은 중력만으로도 안쪽으로 처지려는 경향이
+// 있어(halfWidthAtRow가 초기 배치를 넓혀도 활성 지지가 없으면 도로
+// 좁아짐), 옆선 시접(armholeStartRow부터 시작)이 잡아주기 전까지는 이
+// 능동 보정이 필요하다. 30번 병합 이후에도 몸판은 여전히 평평한 패널
+// 2장이라(진짜 3D 곡면 메쉬가 아님) 이 보정의 필요성 자체는 그대로다.
 const SHOULDER_SURFACE_PUSH = 0.13;
 const SHOULDER_SURFACE_PULL_WEIGHT = 0.7;
 
 export function pullShoulderCapToSurface(
-  torsoSim: ClothSimulation,
+  sim: ClothSimulation,
+  frontPanel: number,
+  backPanel: number,
   armholeStartRow: number,
   cols: number,
   dirX: number,
@@ -258,15 +147,15 @@ export function pullShoulderCapToSurface(
   bodySurface: ArrayBvhCollision | null,
 ): void {
   if (!bodySurface) return;
-  for (let panel = 0; panel < 2; panel++) {
+  for (const panel of [frontPanel, backPanel]) {
     for (let y = 1; y <= armholeStartRow; y++) {
       for (let x = 0; x < cols; x++) {
-        const i = torsoSim.index(panel, x, y);
-        if (torsoSim.pinned[i]) continue;
+        const i = sim.index(panel, x, y);
+        if (sim.pinned[i]) continue;
         const ix = i * 3;
-        const px = torsoSim.positions[ix];
-        const py = torsoSim.positions[ix + 1];
-        const pz = torsoSim.positions[ix + 2];
+        const px = sim.positions[ix];
+        const py = sim.positions[ix + 1];
+        const pz = sim.positions[ix + 2];
         const u = x / (cols - 1) - 0.5;
         const outwardSign = u >= 0 ? 1 : -1;
         const qx = px + dirX * outwardSign * SHOULDER_SURFACE_PUSH;
@@ -274,57 +163,15 @@ export function pullShoulderCapToSurface(
         const qz = pz + dirZ * outwardSign * SHOULDER_SURFACE_PUSH;
         const target = bodySurface.closestSurfacePoint(qx, qy, qz, SURFACE_MARGIN, SURFACE_DETECTION_RADIUS);
         if (!target) continue;
-        torsoSim.positions[ix] = px + (target.x - px) * SHOULDER_SURFACE_PULL_WEIGHT;
-        torsoSim.positions[ix + 1] = py + (target.y - py) * SHOULDER_SURFACE_PULL_WEIGHT;
-        torsoSim.positions[ix + 2] = pz + (target.z - pz) * SHOULDER_SURFACE_PULL_WEIGHT;
+        sim.positions[ix] = px + (target.x - px) * SHOULDER_SURFACE_PULL_WEIGHT;
+        sim.positions[ix + 1] = py + (target.y - py) * SHOULDER_SURFACE_PULL_WEIGHT;
+        sim.positions[ix + 2] = pz + (target.z - pz) * SHOULDER_SURFACE_PULL_WEIGHT;
       }
     }
   }
 }
 
-// 몸판 경계 블렌딩(아래)이 얼마나 확실하게 이 정점을 붙잡았는지의
-// 가중치가 이 값보다 낮으면(=경계 폴리라인이 이 정점 근처에 아예 없다는
-// 뜻) 몸 표면 스냅 대상으로 본다. 처음엔 "모든 정점마다 항상 몸 표면을
-// 먼저 찾고, 찾으면 무조건 그걸로 확정"하는 방식으로 짰는데 — 실측(정면
-// 화면)해보니 이음매 링 대부분(경계 블렌딩이 이미 옆선에 잘 붙여둔
-// 점들까지) 각자 가장 가까운 팔/어깨 표면 점으로 따로따로 스냅되면서
-// 원형 단면이 뭉개져, 소매가 원통이 아니라 어깨에서 옆으로 펄럭이는 깃발/
-// 박쥐 날개처럼 납작해지는 심각한 회귀가 나왔다 — 경계 블렌딩이 잘 커버하는
-// 대다수 정점은 건드리지 말고, 진짜 안 닿는(탑다운 각도에서 보이던 그
-// 틈에 해당하는) 소수 정점만 몸 표면 스냅 대상으로 좁혀야 한다.
-const BODY_SURFACE_SNAP_THRESHOLD = 0.5;
-
-// 소매 이음매 링 정점의 "원형 기준 위치"(circularRing, buildSleeveSim.ts의
-// seamCircularRing이 계산)를 받아 최종 목표 위치를 돌려준다. 먼저 몸판
-// 경계로 거리 기반 블렌딩하고(대다수 정점은 이걸로 충분), 그 가중치가
-// BODY_SURFACE_SNAP_THRESHOLD보다 낮은(=경계 폴리라인이 근처에 없는, 탑다운
-// 각도에서 피부가 비쳐 보이던 소수 정점만) 경우에 한해 실제 마네킹 표면
-// (어깨 곡면 포함, snapToBodySurface)에 직접 스냅시킨다 — 원형 기준 위치
-// (경계 블렌딩 전)에서 찾는다, 이미 옆선 쪽으로 당겨진 위치에서 다시
-// 찾으면 정작 채워야 할 어깨 위쪽과는 다른 표면을 찾아버리기 때문.
-export function blendSeamRing(
-  torsoSim: ClothSimulation,
-  sleevePanel: number,
-  circularRing: Vec3Like[],
-  bodySurface: ArrayBvhCollision | null,
-): Vec3Like[] {
-  const torsoX = sleevePanel === 0 ? 0 : COLS - 1;
-  const boundary = torsoBoundaryPositions(torsoSim, torsoX);
-
-  return circularRing.map((circ) => {
-    const { point: best, distSq } = closestPointOnPolyline(boundary, circ);
-    const dist = Math.sqrt(distSq);
-    const weight = Math.max(0, 1 - dist / PULL_RADIUS);
-
-    if (weight < BODY_SURFACE_SNAP_THRESHOLD) {
-      const surfaceSnapped = snapToBodySurface(circ, bodySurface);
-      if (surfaceSnapped !== circ) return surfaceSnapped;
-    }
-
-    return {
-      x: circ.x + (best.x - circ.x) * weight,
-      y: circ.y + (best.y - circ.y) * weight,
-      z: circ.z + (best.z - circ.z) * weight,
-    };
-  });
-}
+// snapToBodySurface: 마네킹 표면과 옷감 사이 여유(원단 두께 근사) — 몸판
+// 충돌(COLLISION_MARGIN=0.015)과 비슷한 수준으로 잡는다.
+const SURFACE_MARGIN = 0.012;
+const SURFACE_DETECTION_RADIUS = 0.1;

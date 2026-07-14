@@ -46,8 +46,11 @@ function shoulderCapZBulge(y: number, u: number, armholeStartRow: number): numbe
 // 어깨선(0번 행) 위의 한 점(u = -0.5~0.5, panel 0=앞/1=뒤)이 목선 파임으로
 // 인해 얼마나 아래로 내려가는지 계산한다. 중심(u=0)에서 최대, 어깨 쪽
 // (|u|가 NECKLINE_WIDTH_FRACTION/2 이상)에서는 0으로 부드럽게 줄어든다.
-function necklineDip(panel: number, u: number): number {
-  const depth = panel === 0 ? NECKLINE_DEPTH_FRONT : NECKLINE_DEPTH_BACK;
+// isFrontPanel: 30번 병합 이후 패널 번호가 더 이상 항상 0=앞/1=뒤가
+// 아니게 됐으므로(파라미터로 어느 쪽이 앞판인지 넘겨받음), panel===0
+// 대신 이 값으로 앞/뒤 깊이 차이를 구분한다.
+function necklineDip(isFrontPanel: boolean, u: number): number {
+  const depth = isFrontPanel ? NECKLINE_DEPTH_FRONT : NECKLINE_DEPTH_BACK;
   const closeness = Math.max(0, 1 - Math.abs(u) / (NECKLINE_WIDTH_FRACTION / 2));
   return depth * closeness * closeness;
 }
@@ -95,33 +98,50 @@ function halfWidthAtRow(y: number, widthM: number, pinLeft: Vec3Like, pinRight: 
 // 과잉구속되어 옷감이 뒤틀리는(정점 순서가 꼬여 텍스처가 대각선으로
 // 찢어진 것처럼 보임) 심각한 회귀가 실측으로 확인돼 되돌렸다 — 이 완화
 // 방식의 솔버는 인접 행을 동시에 완전 고정하는 것을 잘 버티지 못한다.)
-export function pinCorners(sim: ClothSimulation, pinLeft: Vec3Like, pinRight: Vec3Like): void {
-  for (let panel = 0; panel < 2; panel++) {
+//
+// 30번(병합): 어느 패널이 몸판 앞/뒤인지 이제 호출부가 넘겨줘야 한다(더
+// 이상 항상 0/1이 아님 — clothConfig.ts의 PANEL_FRONT/PANEL_BACK 참고).
+export function pinCorners(
+  sim: ClothSimulation,
+  pinLeft: Vec3Like,
+  pinRight: Vec3Like,
+  frontPanel: number,
+  backPanel: number,
+): void {
+  for (const [panel, isFront] of [
+    [frontPanel, true],
+    [backPanel, false],
+  ] as const) {
     for (let x = 0; x < COLS; x++) {
       const t = x / (COLS - 1); // 0(왼쪽 어깨) ~ 1(오른쪽 어깨)
       const u = t - 0.5;
       const baseX = pinLeft.x + (pinRight.x - pinLeft.x) * t;
       const baseY = pinLeft.y + (pinRight.y - pinLeft.y) * t;
       const baseZ = pinLeft.z + (pinRight.z - pinLeft.z) * t;
-      const dip = necklineDip(panel, u);
+      const dip = necklineDip(isFront, u);
       sim.pin(sim.index(panel, x, 0), baseX, baseY - dip, baseZ);
     }
   }
 }
 
-// 앞판(패널 0)+뒤판(패널 1)을 어깨선 아래로 평평하게 배치하고, 격자 내부
-// 제약(구조/전단/벤드)과 옆선 시접 제약을 만든 뒤 상단 모서리를 고정한다.
-// 순수 함수라(THREE 수학 외 DOM/React 의존성 없음) 메인 스레드와 물리
-// 워커 양쪽에서 재사용할 수 있다.
-export function buildGarmentSim(
+// 앞판+뒤판을 어깨선 아래로 평평하게 배치하고 상단 모서리를 고정한다.
+// 격자 내부 제약(구조/전단/벤드)은 이 함수가 아니라 호출부가(모든 패널을
+// 다 배치한 뒤 한 번에) sim.buildConstraints()로 만든다 — 30번 병합
+// 이전에는 이 함수가 자기 몫의 ClothSimulation을 직접 만들고 그 안에서
+// buildConstraints까지 호출했지만, 이제 몸판+소매가 한 인스턴스를
+// 공유하므로 "다른 패널(소매)이 아직 배치되기 전에 내부 제약부터
+// 만들어버리는" 순서 문제를 피하려면 배치와 제약 생성을 분리해야 한다.
+export function layoutTorsoPanels(
+  sim: ClothSimulation,
+  frontPanel: number,
+  backPanel: number,
   widthM: number,
   heightM: number,
   topY: number,
   centerZ: number,
   pinLeft: Vec3Like,
   pinRight: Vec3Like,
-): ClothSimulation {
-  const sim = new ClothSimulation(COLS, ROWS, 2);
+): void {
   const armholeStartRow = Math.round(ROWS * ARMHOLE_ROW_FRACTION);
   // 열 방향 부호. 아래 X 배치 공식(u*2*halfWidth)은 x=0(u=-0.5)을 항상
   // 음의 X로, x=COLS-1(u=+0.5)을 항상 양의 X로 놓는데, pinCorners()가
@@ -144,9 +164,12 @@ export function buildGarmentSim(
   // 폭으로 넓어지도록, 초기 배치(=제약 조건의 rest length)를 그렇게
   // 좁혀서 잡는다 — 물리가 진행돼도 rest length가 유지되므로 이 모양이
   // 그대로 이어진다.
-  for (let panel = 0; panel < 2; panel++) {
-    const panelZOffset = panel === 0 ? FRONT_BACK_HALF_GAP : -FRONT_BACK_HALF_GAP;
-    const panelSign = panel === 0 ? 1 : -1;
+  for (const [panel, isFront] of [
+    [frontPanel, true],
+    [backPanel, false],
+  ] as const) {
+    const panelZOffset = isFront ? FRONT_BACK_HALF_GAP : -FRONT_BACK_HALF_GAP;
+    const panelSign = isFront ? 1 : -1;
     for (let y = 0; y < ROWS; y++) {
       const v = y / (ROWS - 1); // 0 어깨선 ~ 1 밑단
       const halfWidth = halfWidthAtRow(y, widthM, pinLeft, pinRight);
@@ -155,7 +178,7 @@ export function buildGarmentSim(
         // 0번 행은 목선 파임만큼 미리 내려서 배치해 둔다 — 그래야 이
         // 위치에서 계산되는 구조/전단 제약의 rest length가 핀으로 고정될
         // 최종 목선 모양과 맞아서, 목 둘레에 불필요한 인장이 생기지 않는다.
-        const dip = y === 0 ? necklineDip(panel, u) : 0;
+        const dip = y === 0 ? necklineDip(isFront, u) : 0;
         const capZ = shoulderCapZBulge(y, u, armholeStartRow);
         sim.setParticle(
           sim.index(panel, x, y),
@@ -166,24 +189,28 @@ export function buildGarmentSim(
       }
     }
   }
-  sim.buildConstraints();
+}
 
-  // 옆선 시접을 armholeStartRow에서 곧바로 꽉 조인 간격(SEAM_REST_LENGTH,
-  // 6mm)으로 시작하면, 시접 바로 안쪽 열(자유롭게 몸 곡면을 따라가는 열)과
-  // 너무 튀는 차이가 생겨 옆에서 보면 그 경계가 접힌 것처럼 뾰족하게
-  // 튀어나와 보이는 문제가 실측(측면 카메라 각도, 소매를 꺼도 재현)으로
-  // 확인됐다 — 소매와 무관한 몸판 자체의 문제였다. 시접 시작 지점에서
-  // 몇 행에 걸쳐 넉넉한 간격에서 원래 목표 간격까지 서서히 좁혀가면(이즈인),
-  // 이 급격한 전환이 완화된다.
+// 옆선 시접이 armholeStartRow에서 곧바로 꽉 조인 간격(SEAM_REST_LENGTH,
+// 6mm)으로 시작하면, 시접 바로 안쪽 열(자유롭게 몸 곡면을 따라가는 열)과
+// 너무 튀는 차이가 생겨 옆에서 보면 그 경계가 접힌 것처럼 뾰족하게
+// 튀어나와 보이는 문제가 실측(측면 카메라 각도, 소매를 꺼도 재현)으로
+// 확인됐다 — 소매와 무관한 몸판 자체의 문제였다. 시접 시작 지점에서
+// 몇 행에 걸쳐 넉넉한 간격에서 원래 목표 간격까지 서서히 좁혀가면(이즈인),
+// 이 급격한 전환이 완화된다. sim.buildConstraints() 호출 "이후"에
+// 불러야 한다(그 전에 부르면 buildConstraints가 이 제약까지 지워버린다).
+export function addTorsoSideSeamConstraints(
+  sim: ClothSimulation,
+  frontPanel: number,
+  backPanel: number,
+  armholeStartRow: number,
+): void {
   const SEAM_EASE_ROWS = 4;
   const SEAM_EASE_START = 0.03;
   for (let y = armholeStartRow; y < ROWS; y++) {
     const easeT = Math.min((y - armholeStartRow) / SEAM_EASE_ROWS, 1);
     const restLength = SEAM_EASE_START + (SEAM_REST_LENGTH - SEAM_EASE_START) * easeT;
-    sim.addConstraint(sim.index(0, 0, y), sim.index(1, 0, y), restLength);
-    sim.addConstraint(sim.index(0, COLS - 1, y), sim.index(1, COLS - 1, y), restLength);
+    sim.addConstraint(sim.index(frontPanel, 0, y), sim.index(backPanel, 0, y), restLength);
+    sim.addConstraint(sim.index(frontPanel, COLS - 1, y), sim.index(backPanel, COLS - 1, y), restLength);
   }
-
-  pinCorners(sim, pinLeft, pinRight);
-  return sim;
 }
