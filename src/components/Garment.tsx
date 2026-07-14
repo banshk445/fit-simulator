@@ -170,7 +170,20 @@ export function Garment({ imageUrl }: Props) {
     return averageGarmentColor(image);
   }, [texture]);
 
-  const boxWidthM = garmentSize.width / 100 / 2;
+  // 30번 이후 사용자가 "옷이 가슴 위쪽에서 뚝 끊긴다"고 지적해 실측(Playwright로
+  // 몸판 메시의 실제 정점 Y 범위를 직접 측정)해보니, 총장 슬라이더를 70cm로
+  // 둬도 몸판이 실제로는 약 25cm 높이만 차지하고 있었다 — 원인은 이 아래
+  // "이미지 비율에 맞춰 박스 안에 맞추기"(object-fit: contain과 같은 의도)
+  // 계산에서 `boxWidthM`을 `garmentSize.width/100/2`로 미리 절반을 냈던 것.
+  // `buildGarmentSim.ts`의 `halfWidthAtRow`가 전달받은 widthM을 "전체 폭"으로
+  // 보고 자기 안에서 또 한 번 절반을 내므로(`fullHalfWidth = widthM/2`), 여기서
+  // 미리 절반 낸 값을 넘기면 실질적으로 폭이 1/4로 줄어들고 — 그 축소된 폭이
+  // 다시 boxAspect(가로세로 비율) 계산에 들어가 비교 기준 자체를 왜곡시켜,
+  // 세그멘테이션으로 크롭된 이미지(예: 723×668, 비율 약 1.08)가 실제보다 훨씬
+  // "가로로 넓은 이미지"인 것처럼 취급되면서 heightM까지 실제 설정값(0.7m)의
+  // 1/3 수준으로 줄어드는 연쇄 오류였다. `boxWidthM`은 전체 폭(절반 내지 않은
+  // 값)이어야 한다 — 절반 내는 건 buildGarmentSim.ts 한 곳에서만 해야 한다.
+  const boxWidthM = garmentSize.width / 100;
   const boxHeightM = garmentSize.length / 100;
   const image = texture.image as HTMLImageElement | undefined;
   const imageAspect = image && image.width && image.height ? image.width / image.height : 1;
