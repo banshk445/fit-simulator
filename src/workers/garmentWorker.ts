@@ -287,6 +287,22 @@ ctx.onmessage = (event) => {
       // 한다.
       stitchTorsoAndSleeve(torsoSim, sleeveSim, armholeStartRow, COLS);
 
+      // 29번 수정 직후 발견한 회귀: 스무딩을 앞으로 옮기면서
+      // preserveColumnOrder(순서 역전 방지 안전장치, 21번 항목의 초기
+      // 배치 부호 버그와 같은 계열)가 pullShoulderCapToSurface/
+      // stitchTorsoAndSleeve *앞에서만* 실행되고 그 뒤에는 한 번도
+      // 실행되지 않게 돼버렸다 — 원래(수정 전) 순서에서는 이 두 정밀
+      // 보정 바로 뒤에 스무딩이 왔고, 그 스무딩이 우연히 열 순서를
+      // 안정시키는 역할까지 겸하고 있었던 것으로 보인다. 그 안전장치가
+      // 완전히 사라지자, 두 정밀 보정(특히 stitchTorsoAndSleeve의
+      // 가장-가까운-점 탐색)이 만드는 열 순서 역전을 아무도 못 잡아
+      // 몸판이 어깨 부위에서 매듭처럼 뒤엉켜 붕괴하는 심각한 회귀가
+      // 실측(탑다운 각도, 사용자 스크린샷)으로 확인됐다. 두 정밀 보정
+      // 뒤에도 안전장치를 다시 걸어 최종 출력이 항상 순서가 보존된
+      // 상태이도록 한다.
+      torsoSim.preserveColumnOrder(dirX, dirY, dirZ, undefined, false);
+      torsoSim.preserveColumnOrder(dirX, dirY, dirZ, undefined, true);
+
       const ppp = torsoSim.particlesPerPanel;
       const front = torsoSim.positions.slice(0, ppp * 3);
       const back = torsoSim.positions.slice(ppp * 3, ppp * 6);
