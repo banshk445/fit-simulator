@@ -160,10 +160,30 @@ export async function cropToGarmentRegion(file: File): Promise<string> {
         }
       }
     }
-    if (bgCount === 0) return URL.createObjectURL(file);
-    const bg = { r: bgR / bgCount, g: bgG / bgCount, b: bgB / bgCount };
+    // 네 귀퉁이가 전부 투명(이미 배경 제거된 PNG를 올린 경우)이면 색상
+    // 거리로 배경을 추정할 방법이 없다 — 예전엔 이 경우 그냥 원본을 그대로
+    // 반환했는데, 그러면 실제 옷 주위의 투명 여백(캔버스 크기 그대로,
+    // 흔히 상당히 넓다)이 하나도 안 잘려나간 채 몸판 텍스처 전체에
+    // 매핑돼, 어깨~목선 근처에 빈 여백이 넓게 자리잡는 문제가 실측
+    // (사용자가 배경 제거된 사진으로 직접 재요청, 원본 그대로 쓰는
+    // 정확히 이 경로를 타는 것을 확인)으로 드러났다. 색상 배경 추정이
+    // 안 될 뿐 알파 채널 자체가 이미 완벽한 전경/배경 신호이므로, 이
+    // 경우엔 색상 비교를 건너뛰고 알파만으로 전경을 가른다(bg를 null로
+    // 남겨 아래 fg 계산이 알파만 보게 한다).
+    const bg = bgCount > 0 ? { r: bgR / bgCount, g: bgG / bgCount, b: bgB / bgCount } : null;
+    if (!bg) {
+      let hasOpaquePixel = false;
+      for (let i = 3; i < data.length; i += 4) {
+        if (data[i] >= 10) {
+          hasOpaquePixel = true;
+          break;
+        }
+      }
+      if (!hasOpaquePixel) return URL.createObjectURL(file); // 완전히 빈 이미지 — 분석 불가
+    }
 
     const isBackground = (r: number, g: number, b: number) => {
+      if (!bg) return false; // 알파만으로 이미 걸러졌으니 색상 배경 판정은 안 한다.
       if (r > 240 && g > 240 && b > 240) return true;
       return Math.hypot(r - bg.r, g - bg.g, b - bg.b) < BG_DIST_THRESHOLD;
     };
