@@ -6,7 +6,7 @@ import { useFitStore } from "../store/useFitStore";
 import { MannequinCollisionMesh } from "../lib/meshCollision";
 import { mannequinRootRef } from "../lib/mannequinRef";
 import { buildTorsoProxyCapsules } from "../lib/torsoCapsule";
-import { findArmDirection, findHandBone, findShoulderBones } from "../lib/boneUtils";
+import { findArmDirection, findHandBone, findShortSleeveDirection, findShoulderBones } from "../lib/boneUtils";
 import { computeShoulderPin } from "../lib/shoulderPin";
 import { averageGarmentColor } from "../lib/garmentColor";
 import {
@@ -328,8 +328,18 @@ export function Garment({ imageUrl }: Props) {
     rightBone.getWorldPosition(rightShoulderVec);
     const pins = computeShoulderPin(shoulderVec, rightShoulderVec);
 
-    leftDirVec.copy(findArmDirection(leftBone));
-    rightDirVec.copy(findArmDirection(rightBone));
+    // 33번: 반팔은 위팔(어깨~팔꿈치) 방향을 따라야 한다 — 어깨~손 직선
+    // 방향(findArmDirection)은 팔꿈치가 굽은 포즈에서 위팔 구간과 상당히
+    // 어긋나, 반팔 소매가 어깨에서 뚝 떨어져 팔꿈치 쪽으로 삐져나가는
+    // 원인이었다(자세한 경위는 boneUtils.ts의 findShortSleeveDirection
+    // 주석 참고). 긴팔은 손목까지 닿아야 하므로 기존 방향을 그대로 쓴다.
+    if (sleeveType === "long") {
+      leftDirVec.copy(findArmDirection(leftBone));
+      rightDirVec.copy(findArmDirection(rightBone));
+    } else {
+      leftDirVec.copy(findShortSleeveDirection(leftBone));
+      rightDirVec.copy(findShortSleeveDirection(rightBone));
+    }
 
     let length: number;
     if (sleeveType === "long") {
@@ -350,6 +360,7 @@ export function Garment({ imageUrl }: Props) {
     return {
       left: {
         shoulder: toMsg(pins.left),
+        trueShoulder: toMsg(shoulderVec),
         dir: toMsg(leftDirVec),
         length,
         radiusSeam: SLEEVE_RADIUS_SEAM,
@@ -358,6 +369,7 @@ export function Garment({ imageUrl }: Props) {
       },
       right: {
         shoulder: toMsg(pins.right),
+        trueShoulder: toMsg(rightShoulderVec),
         dir: toMsg(rightDirVec),
         length,
         radiusSeam: SLEEVE_RADIUS_SEAM,

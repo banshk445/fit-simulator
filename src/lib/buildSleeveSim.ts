@@ -32,35 +32,52 @@ export function perpendicularBasis(dir: Vec3Like): { right: Vec3Like; up: Vec3Li
 // 풀어야 하고, 드물게 아예 못 풀고 뒤엉킨다" 문제를 실측으로 겪었다
 // (buildGarmentSim.ts 참고) — 소매에서 그 실수를 반복하지 않기 위해 이
 // 함수 하나로 통일한다.
-function ringPoint(
-  shoulder: Vec3Like,
-  dir: Vec3Like,
-  right: Vec3Like,
-  up: Vec3Like,
-  radius: number,
-  t: number,
-  length: number,
-  angle: number,
-): Vec3Like {
-  const cx = shoulder.x + dir.x * t * length;
-  const cy = shoulder.y + dir.y * t * length;
-  const cz = shoulder.z + dir.z * t * length;
+function ringPoint(center: Vec3Like, right: Vec3Like, up: Vec3Like, radius: number, angle: number): Vec3Like {
   const cos = Math.cos(angle);
   const sin = Math.sin(angle);
   return {
-    x: cx + (right.x * cos + up.x * sin) * radius,
-    y: cy + (right.y * cos + up.y * sin) * radius,
-    z: cz + (right.z * cos + up.z * sin) * radius,
+    x: center.x + (right.x * cos + up.x * sin) * radius,
+    y: center.y + (right.y * cos + up.y * sin) * radius,
+    z: center.z + (right.z * cos + up.z * sin) * radius,
   };
 }
 
 export interface SleeveShape {
   shoulder: Vec3Like;
+  // buildSleeveSim.ts의 centerAt() 참고 — shoulder(몸판 어깨 모서리와
+  // 맞추기 위해 바깥으로 민 값)와 이 실제 어깨 관절 위치 사이를 t에 따라
+  // 보간해 소매 중심축을 잡는다.
+  trueShoulder: Vec3Like;
   dir: Vec3Like; // 단위 벡터(어깨→팔꿈치 방향)
   length: number;
   radiusSeam: number;
   radiusMax: number;
   radiusHem: number;
+}
+
+// 33번: 소매 중심축이 shoulder(SHOULDER_PIN_OUTSET만큼 밖으로 민 몸판용
+// 좌표)에서 그대로 dir 방향으로 쭉 뻗으면, 실제 마네킹 팔 중심선보다
+// 계속 바깥쪽에 떠 있게 된다 — 몸판 어깨 모서리는 원래 평평한 패널을
+// 둥근 어깨 밖으로 밀어내려고 만든 보정인데, 원통 소매의 중심축까지 같이
+// 밀려버린 것. 실측(마네킹을 숨겨 소매 지오메트리 자체는 멀쩡함을 확인한
+// 뒤 다시 보이면 대부분이 마네킹 팔에 가려 어깨 옆 작은 조각만 남음)으로
+// 확인했다. 이음매(t=0)는 몸판 가장자리와 맞아야 하니 shoulder를 그대로
+// 쓰되, t가 커질수록(SEAM_T 지점까지) 실제 어깨 관절(trueShoulder) 기준
+// 축으로 수렴시켜, 소매 대부분이 진짜 팔 중심선 위에 자리잡게 한다.
+function centerAt(shape: SleeveShape, t: number): Vec3Like {
+  const axial = Math.min(t, 1);
+  const outsetX = shape.shoulder.x + shape.dir.x * axial * shape.length;
+  const outsetY = shape.shoulder.y + shape.dir.y * axial * shape.length;
+  const outsetZ = shape.shoulder.z + shape.dir.z * axial * shape.length;
+  const trueX = shape.trueShoulder.x + shape.dir.x * axial * shape.length;
+  const trueY = shape.trueShoulder.y + shape.dir.y * axial * shape.length;
+  const trueZ = shape.trueShoulder.z + shape.dir.z * axial * shape.length;
+  const blend = Math.min(t / SEAM_T, 1);
+  return {
+    x: outsetX + (trueX - outsetX) * blend,
+    y: outsetY + (trueY - outsetY) * blend,
+    z: outsetZ + (trueZ - outsetZ) * blend,
+  };
 }
 
 // 몸판의 암홀(팔 구멍)은 원형이 아니라 어깨 핀 한 점에서 시작해 아래로
@@ -124,10 +141,11 @@ export function addSleeveWrapConstraints(sim: ClothSimulation, panelLeft: number
 export function seamCircularRing(shape: SleeveShape, rowT = 0): Vec3Like[] {
   const { right, up } = perpendicularBasis(shape.dir);
   const radius = radiusAt(shape, rowT);
+  const center = centerAt(shape, rowT);
   const ring: Vec3Like[] = [];
   for (let x = 0; x < SLEEVE_COLS; x++) {
     const angle = (x / SLEEVE_COLS) * Math.PI * 2;
-    ring.push(ringPoint(shape.shoulder, shape.dir, right, up, radius, rowT, shape.length, angle));
+    ring.push(ringPoint(center, right, up, radius, angle));
   }
   return ring;
 }
@@ -186,9 +204,10 @@ export function layoutSleevePanels(
     for (let y = 0; y < rows; y++) {
       const t = y / (rows - 1);
       const radiusAtY = radiusAt(shape, t);
+      const center = centerAt(shape, t);
       for (let x = 0; x < SLEEVE_COLS; x++) {
         const angle = (x / SLEEVE_COLS) * Math.PI * 2;
-        const pt = ringPoint(shape.shoulder, shape.dir, rightVec, up, radiusAtY, t, shape.length, angle);
+        const pt = ringPoint(center, rightVec, up, radiusAtY, angle);
         sim.setParticle(sim.index(panel, x, y), pt.x, pt.y, pt.z);
       }
     }

@@ -110,28 +110,34 @@ const torsoResolver: CollisionResolver = (positions, pinned, n) => {
 };
 
 // --- 소매 충돌 ---
+// 33번: 이 캡슐은 실제 마네킹 팔을 근사하는 충돌 표면이므로, 몸판용으로
+// 바깥으로 민 shoulder가 아니라 실제 어깨 관절(trueShoulder)을 축으로
+// 써야 한다 — shoulder를 쓰면 캡슐 자체가 진짜 팔에서 벗어나 있어 소매가
+// 진짜 팔 위에 앉도록 밀어주지 못한다(buildSleeveSim.ts의 centerAt()과
+// 같은 원인·같은 수정).
 function buildArmCapsules(shape: SleeveShapeMsg): Capsule[] {
   const midLength = shape.length * 0.55;
   const endLength = shape.length * 1.25;
   const mid = {
-    x: shape.shoulder.x + shape.dir.x * midLength,
-    y: shape.shoulder.y + shape.dir.y * midLength,
-    z: shape.shoulder.z + shape.dir.z * midLength,
+    x: shape.trueShoulder.x + shape.dir.x * midLength,
+    y: shape.trueShoulder.y + shape.dir.y * midLength,
+    z: shape.trueShoulder.z + shape.dir.z * midLength,
   };
   const end = {
-    x: shape.shoulder.x + shape.dir.x * endLength,
-    y: shape.shoulder.y + shape.dir.y * endLength,
-    z: shape.shoulder.z + shape.dir.z * endLength,
+    x: shape.trueShoulder.x + shape.dir.x * endLength,
+    y: shape.trueShoulder.y + shape.dir.y * endLength,
+    z: shape.trueShoulder.z + shape.dir.z * endLength,
   };
   return [
-    { top: shape.shoulder, bottom: mid, radius: shape.radiusMax * 0.78 },
-    { top: mid, bottom: end, radius: shape.radiusHem * 0.78 },
+    { top: shape.trueShoulder, bottom: mid, radius: shape.radiusMax * 0.9 },
+    { top: mid, bottom: end, radius: shape.radiusHem * 0.9 },
   ];
 }
 
 function toShape(msg: SleeveShapeMsg): SleeveShape {
   return {
     shoulder: msg.shoulder,
+    trueShoulder: msg.trueShoulder,
     dir: msg.dir,
     length: msg.length,
     radiusSeam: msg.radiusSeam,

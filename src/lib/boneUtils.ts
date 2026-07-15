@@ -126,6 +126,42 @@ export function findArmDirection(armRoot: THREE.Object3D): THREE.Vector3 {
   return dir.lengthSq() > 1e-9 ? dir.normalize() : new THREE.Vector3(0, -1, 0);
 }
 
+// findHandBone과 같은 방식으로 체인을 내려가되, 이름에 "forearm"이 들어간
+// 첫 뼈대(아래팔 시작 = 팔꿈치)에서 멈춘다. 못 찾으면 손 뼈대로 폴백한다
+// (Mixamo가 아닌 다른 리그라도 최소한 크래시 없이 예전 동작으로 돌아간다).
+export function findElbowBone(armRoot: THREE.Object3D): THREE.Object3D {
+  let current = armRoot;
+  while (true) {
+    if (current !== armRoot && current.name.toLowerCase().includes("forearm")) return current;
+    if (current.name.toLowerCase().includes("hand")) return current;
+    const child = current.children.find((c) => isBone(c));
+    if (!child) return current;
+    current = child;
+  }
+}
+
+// 33번: 반팔은 위팔(어깨~팔꿈치)만 덮으므로, 이 구간의 실제 방향을 축으로
+// 써야 한다. findArmDirection(어깨→손)은 애초에 "몇몇 리그는 어깨 바로
+// 아래 자식이 트위스트 뼈대라 방향이 틀어진다"는 문제 때문에 손까지
+// 내려가도록 설계됐는데(위 주석 참고), 이 마네킹처럼 팔꿈치가 굽어있는
+// 포즈에서는 어깨→손 직선이 위팔 구간의 실제 방향과 상당히 어긋난다(실측:
+// 어깨→손 벡터가 수평에서 56도나 꺾여 있었는데, 실제 위팔은 훨씬 수평에
+// 가까웠다) — 반팔 소매가 위팔 겉면을 따라가지 못하고 팔꿈치 쪽을 향해
+// 대각선으로 삐져나가, 어깨에서 뚝 떨어진 뭉툭한 쐐기처럼 보이는 문제의
+// 원인이었다. 긴팔은 손목까지 닿아야 하므로 기존 findArmDirection을 그대로
+// 쓴다(이미 극단값 테스트로 검증된 동작이라 건드리지 않는다).
+export function findShortSleeveDirection(armRoot: THREE.Object3D): THREE.Vector3 {
+  const elbow = findElbowBone(armRoot);
+  const shoulder = new THREE.Vector3();
+  armRoot.updateWorldMatrix(true, false);
+  armRoot.getWorldPosition(shoulder);
+  elbow.updateWorldMatrix(true, false);
+  const childPos = new THREE.Vector3();
+  elbow.getWorldPosition(childPos);
+  const dir = childPos.sub(shoulder);
+  return dir.lengthSq() > 1e-9 ? dir.normalize() : findArmDirection(armRoot);
+}
+
 // 옷감의 어깨 핀으로 쓸 두 팔 최상단 뼈대를 월드 X 좌표 부호로 나눈다 —
 // 뼈대 이름("Left"/"Right" 등)에 기대지 않으므로 이름 규칙이 다른 모델도
 // 그대로 동작한다. 어느 쪽을 "left"/"right"라 부르는지는 중요하지 않고,

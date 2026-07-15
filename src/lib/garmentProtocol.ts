@@ -8,6 +8,16 @@ import type { FabricType } from "./fabricPresets";
 // 워커 안에 있어서 메시지도 하나로 합친다.
 export interface SleeveShapeMsg {
   shoulder: Vec3Like;
+  // 33번: shoulder는 SHOULDER_PIN_OUTSET(11.5cm)만큼 밖으로 민 값이라
+  // 몸판(평평한 패널)의 어깨 모서리와는 잘 맞지만, 그 값을 그대로 원통
+  // 소매의 중심축 시작점으로 쓰면 소매 전체가 실제 팔 중심선보다 계속
+  // 바깥쪽에 떠 있게 된다(실측: 마네킹을 숨기면 소매 모양 자체는 멀쩡한데
+  // 다시 보이면 대부분 마네킹 팔에 가려 어깨 옆 작은 조각만 남음 — 오클루전
+  // 진단으로 확인). trueShoulder는 그 보정 전의 실제 어깨 관절 뼈대 월드
+  // 좌표다. 이음매 링(t=0)은 shoulder를 쓰고, 그 아래로는 trueShoulder
+  // 쪽으로 중심을 수렴시켜 실제 팔 위에 소매가 올라가게 한다 — 자세한
+  // 이유는 buildSleeveSim.ts의 centerAt() 주석 참고.
+  trueShoulder: Vec3Like;
   dir: Vec3Like; // 단위 벡터(어깨→팔꿈치 방향)
   length: number;
   radiusSeam: number;
