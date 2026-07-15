@@ -201,12 +201,18 @@ ctx.onmessage = (event) => {
     }
     case "step": {
       if (!sim) return;
-      pinCorners(sim, msg.pinLeft, msg.pinRight, PANEL_FRONT, PANEL_BACK);
+      // torsoOrderExtra는 클로저라 sim이 나중에(예: 다음 메시지 처리로)
+      // null로 바뀔 수 있다고 타입체커가 보수적으로 판단해 위 null 체크로
+      // 좁혀지지 않는다(tsc --noEmit은 못 잡지만 tsc -b는 잡는 차이가
+      // 실측으로 확인됨) — 지역 상수에 담아 이 case 블록 안에서는 항상
+      // non-null임을 명시한다.
+      const activeSim = sim;
+      pinCorners(activeSim, msg.pinLeft, msg.pinRight, PANEL_FRONT, PANEL_BACK);
       // 소매 이음매 링도 몸판 어깨선과 같은 타이밍에 매 프레임 다시
       // 고정한다 — 자세한 이유는 buildSleeveSim.ts의 pinSleeveSeamRing
       // 주석 참고(이게 없으면 소매 전체가 자기 무게로 처지면서 재봉
       // 제약을 타고 몸판 어깨까지 끌어내린다).
-      pinSleeveSeamRing(sim, PANEL_SLEEVE_LEFT, PANEL_SLEEVE_RIGHT, toShape(msg.sleeveLeft), toShape(msg.sleeveRight));
+      pinSleeveSeamRing(activeSim, PANEL_SLEEVE_LEFT, PANEL_SLEEVE_RIGHT, toShape(msg.sleeveLeft), toShape(msg.sleeveRight));
       sleeveCapsules = [...buildArmCapsules(msg.sleeveLeft), ...buildArmCapsules(msg.sleeveRight)];
 
       const preset = FABRIC_PRESETS[msg.fabric];
@@ -228,7 +234,7 @@ ctx.onmessage = (event) => {
       dirY = rawDirY / dirLen;
       dirZ = rawDirZ / dirLen;
 
-      const torsoParticleCount = sim.panelParticleStart(PANEL_SLEEVE_LEFT);
+      const torsoParticleCount = activeSim.panelParticleStart(PANEL_SLEEVE_LEFT);
       const mergedResolver = buildMergedResolver(torsoParticleCount);
 
       // 31번: 30번 병합 리라이트에서 이 훅이 통째로 빠져 있었다 — 병합 전
@@ -247,10 +253,10 @@ ctx.onmessage = (event) => {
       // 닿지도 않아 이 회귀 자체가 가려져 있었다). everyIterationExtra를
       // 되살려 원래 있던 매 반복 보정을 복원한다.
       const torsoOrderExtra: CollisionResolver = () => {
-        sim.preserveColumnOrder(dirX, dirY, dirZ, undefined, false, PANEL_FRONT, PANEL_BACK + 1);
-        sim.preserveColumnOrder(dirX, dirY, dirZ, undefined, true, PANEL_FRONT, PANEL_BACK + 1);
-        sim.preserveRowOrder(undefined, false, PANEL_FRONT, PANEL_BACK + 1);
-        sim.preserveRowOrder(undefined, true, PANEL_FRONT, PANEL_BACK + 1);
+        activeSim.preserveColumnOrder(dirX, dirY, dirZ, undefined, false, PANEL_FRONT, PANEL_BACK + 1);
+        activeSim.preserveColumnOrder(dirX, dirY, dirZ, undefined, true, PANEL_FRONT, PANEL_BACK + 1);
+        activeSim.preserveRowOrder(undefined, false, PANEL_FRONT, PANEL_BACK + 1);
+        activeSim.preserveRowOrder(undefined, true, PANEL_FRONT, PANEL_BACK + 1);
       };
 
       accumulator = Math.min(accumulator + msg.dt, SUBSTEP_DT * MAX_SUBSTEPS);
@@ -262,7 +268,7 @@ ctx.onmessage = (event) => {
         // 을 썼는데, 이제 같은 물리 스텝을 공유하니 원단 선택이 소매에도
         // 자연스럽게 반영된다(부수 효과지만 오히려 더 맞는 동작 — 소매도
         // 같은 원단이니까).
-        sim.step(
+        activeSim.step(
           SUBSTEP_DT,
           scratchGravity,
           mergedResolver,
@@ -272,12 +278,12 @@ ctx.onmessage = (event) => {
           MAX_DISPLACEMENT_PER_SUBSTEP,
           torsoOrderExtra,
         );
-        selfCollisionResolver(sim.positions.subarray(0, torsoParticleCount * 3), sim.pinned.subarray(0, torsoParticleCount), torsoParticleCount);
+        selfCollisionResolver(activeSim.positions.subarray(0, torsoParticleCount * 3), activeSim.pinned.subarray(0, torsoParticleCount), torsoParticleCount);
         // step() 안에서도 매 반복 돌긴 하지만, 자체충돌(step() 밖에서
         // 실행)이 그 직후 다시 순서를 흐트러뜨릴 수 있어 여기서도 한 번
         // 더 정리한다 — 병합 이전부터 있던 이중 안전장치.
-        torsoOrderExtra(sim.positions, sim.pinned, sim.positions.length / 3);
-        sim.clampOverstretchedConstraints();
+        torsoOrderExtra(activeSim.positions, activeSim.pinned, activeSim.positions.length / 3);
+        activeSim.clampOverstretchedConstraints();
 
         accumulator -= SUBSTEP_DT;
       }
@@ -290,26 +296,26 @@ ctx.onmessage = (event) => {
       // 거리 제약(addArmholeSeamConstraints)으로 대체돼 더 이상 필요
       // 없다 — 이제 재봉선이 매 반복(iteration) 안에서 다른 구조 제약과
       // 함께 자동으로 풀린다.
-      sim.smoothColumns(armholeStartRow + 1, 0.5, PANEL_FRONT, PANEL_BACK + 1);
-      sim.smoothRows(armholeStartRow + 1, 0.5, PANEL_FRONT, PANEL_BACK + 1);
-      sim.preserveColumnOrder(dirX, dirY, dirZ, undefined, false, PANEL_FRONT, PANEL_BACK + 1);
-      sim.preserveColumnOrder(dirX, dirY, dirZ, undefined, true, PANEL_FRONT, PANEL_BACK + 1);
+      activeSim.smoothColumns(armholeStartRow + 1, 0.5, PANEL_FRONT, PANEL_BACK + 1);
+      activeSim.smoothRows(armholeStartRow + 1, 0.5, PANEL_FRONT, PANEL_BACK + 1);
+      activeSim.preserveColumnOrder(dirX, dirY, dirZ, undefined, false, PANEL_FRONT, PANEL_BACK + 1);
+      activeSim.preserveColumnOrder(dirX, dirY, dirZ, undefined, true, PANEL_FRONT, PANEL_BACK + 1);
 
       const bodySurface = wholeBodyCollisionMesh.ready ? wholeBodyCollisionMesh : null;
-      pullShoulderCapToSurface(sim, PANEL_FRONT, PANEL_BACK, armholeStartRow, COLS, dirX, dirY, dirZ, bodySurface);
-      sim.preserveColumnOrder(dirX, dirY, dirZ, undefined, false, PANEL_FRONT, PANEL_BACK + 1);
-      sim.preserveColumnOrder(dirX, dirY, dirZ, undefined, true, PANEL_FRONT, PANEL_BACK + 1);
+      pullShoulderCapToSurface(activeSim, PANEL_FRONT, PANEL_BACK, armholeStartRow, COLS, dirX, dirY, dirZ, bodySurface);
+      activeSim.preserveColumnOrder(dirX, dirY, dirZ, undefined, false, PANEL_FRONT, PANEL_BACK + 1);
+      activeSim.preserveColumnOrder(dirX, dirY, dirZ, undefined, true, PANEL_FRONT, PANEL_BACK + 1);
 
-      const ppp = sim.panelParticleCount(PANEL_FRONT);
-      const sppp = sim.panelParticleCount(PANEL_SLEEVE_LEFT);
-      const frontStart = sim.panelParticleStart(PANEL_FRONT) * 3;
-      const backStart = sim.panelParticleStart(PANEL_BACK) * 3;
-      const sleeveLeftStart = sim.panelParticleStart(PANEL_SLEEVE_LEFT) * 3;
-      const sleeveRightStart = sim.panelParticleStart(PANEL_SLEEVE_RIGHT) * 3;
-      const front = sim.positions.slice(frontStart, frontStart + ppp * 3);
-      const back = sim.positions.slice(backStart, backStart + ppp * 3);
-      const sleeveLeft = sim.positions.slice(sleeveLeftStart, sleeveLeftStart + sppp * 3);
-      const sleeveRight = sim.positions.slice(sleeveRightStart, sleeveRightStart + sppp * 3);
+      const ppp = activeSim.panelParticleCount(PANEL_FRONT);
+      const sppp = activeSim.panelParticleCount(PANEL_SLEEVE_LEFT);
+      const frontStart = activeSim.panelParticleStart(PANEL_FRONT) * 3;
+      const backStart = activeSim.panelParticleStart(PANEL_BACK) * 3;
+      const sleeveLeftStart = activeSim.panelParticleStart(PANEL_SLEEVE_LEFT) * 3;
+      const sleeveRightStart = activeSim.panelParticleStart(PANEL_SLEEVE_RIGHT) * 3;
+      const front = activeSim.positions.slice(frontStart, frontStart + ppp * 3);
+      const back = activeSim.positions.slice(backStart, backStart + ppp * 3);
+      const sleeveLeft = activeSim.positions.slice(sleeveLeftStart, sleeveLeftStart + sppp * 3);
+      const sleeveRight = activeSim.positions.slice(sleeveRightStart, sleeveRightStart + sppp * 3);
       ctx.postMessage(
         { type: "positions", front, back, sleeveLeft, sleeveRight, generation: msg.generation },
         [front.buffer, back.buffer, sleeveLeft.buffer, sleeveRight.buffer],
