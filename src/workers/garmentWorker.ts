@@ -231,6 +231,28 @@ ctx.onmessage = (event) => {
       const torsoParticleCount = sim.panelParticleStart(PANEL_SLEEVE_LEFT);
       const mergedResolver = buildMergedResolver(torsoParticleCount);
 
+      // 31번: 30번 병합 리라이트에서 이 훅이 통째로 빠져 있었다 — 병합 전
+      // 코드는 이걸 everyIterationExtra로 넘겨 매 Gauss-Seidel 반복(원단별
+      // 12~24회)마다 무조건 실행했는데(clothPhysics.ts의 step() 주석 참고:
+      // "값싼 순서 보존을 비싼 메시 충돌과 같은 주기로 스로틀링하면 그
+      // 사이 반복들에서 구조 제약이 순서를 뒤집을 기회를 열어준다"), 병합
+      // 리라이트는 서브스텝당 딱 한 번만(step() 밖에서) 부르는 것으로
+      // 바뀌어 있었다. 그 결과 몸판 배(허리~엉덩이 높이) 부분에서 마네킹
+      // 배 충돌이 특정 행을 바깥으로 밀어내는 동안 구조 제약 반복이 그
+      // 위아래 행과 순서를 뒤집어(정점 Y좌표를 행 순서대로 찍어보면 15번
+      // 행 아래에서 19번 행이 다시 위로 튀어 오르는 것을 실측으로 확인)
+      // 옷자락이 실제로 접혀 겹치는 회귀가 있었다 — 사용자가 "옷이 가슴에
+      // 있다"고 지적한 원인 중 상당 부분이 총장 버그가 아니라 이 접힘
+      // 이었던 것으로 보인다(총장 버그를 먼저 고치기 전엔 셔츠가 배까지
+      // 닿지도 않아 이 회귀 자체가 가려져 있었다). everyIterationExtra를
+      // 되살려 원래 있던 매 반복 보정을 복원한다.
+      const torsoOrderExtra: CollisionResolver = () => {
+        sim.preserveColumnOrder(dirX, dirY, dirZ, undefined, false, PANEL_FRONT, PANEL_BACK + 1);
+        sim.preserveColumnOrder(dirX, dirY, dirZ, undefined, true, PANEL_FRONT, PANEL_BACK + 1);
+        sim.preserveRowOrder(undefined, false, PANEL_FRONT, PANEL_BACK + 1);
+        sim.preserveRowOrder(undefined, true, PANEL_FRONT, PANEL_BACK + 1);
+      };
+
       accumulator = Math.min(accumulator + msg.dt, SUBSTEP_DT * MAX_SUBSTEPS);
       while (accumulator >= SUBSTEP_DT) {
         // 30번 병합: 몸판과 소매(그리고 그 사이 새 암홀 재봉 제약)가 이제
@@ -248,16 +270,13 @@ ctx.onmessage = (event) => {
           COLLISION_EVERY,
           preset.damping,
           MAX_DISPLACEMENT_PER_SUBSTEP,
+          torsoOrderExtra,
         );
         selfCollisionResolver(sim.positions.subarray(0, torsoParticleCount * 3), sim.pinned.subarray(0, torsoParticleCount), torsoParticleCount);
-        // 순서 보존 안전장치와 스무딩은 몸판(패널 0,1)에만 의미가 있다 —
-        // 소매는 원통형이라 이 문제가 원래도 없었고, 그 범위까지 건드리면
-        // 소매 모양을 실수로 흐트러뜨릴 수 있다(29번의 회귀 교훈과 같은
-        // 이유로 panelFilter를 명시한다).
-        sim.preserveColumnOrder(dirX, dirY, dirZ, undefined, false, PANEL_FRONT, PANEL_BACK + 1);
-        sim.preserveColumnOrder(dirX, dirY, dirZ, undefined, true, PANEL_FRONT, PANEL_BACK + 1);
-        sim.preserveRowOrder(undefined, false, PANEL_FRONT, PANEL_BACK + 1);
-        sim.preserveRowOrder(undefined, true, PANEL_FRONT, PANEL_BACK + 1);
+        // step() 안에서도 매 반복 돌긴 하지만, 자체충돌(step() 밖에서
+        // 실행)이 그 직후 다시 순서를 흐트러뜨릴 수 있어 여기서도 한 번
+        // 더 정리한다 — 병합 이전부터 있던 이중 안전장치.
+        torsoOrderExtra(sim.positions, sim.pinned, sim.positions.length / 3);
         sim.clampOverstretchedConstraints();
 
         accumulator -= SUBSTEP_DT;
