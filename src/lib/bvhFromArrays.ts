@@ -96,12 +96,36 @@ export class ArrayBvhCollision {
   // 군집이 표면 밖으로 다시 못 나옴). 탐지 반경은 넉넉하게 잡아 "몸통 속에
   // 갇힌" 파티클도 구조해내고, 실제로 밀어내는 거리는 원단 두께 근사치인
   // 좁은 margin 그대로 유지한다.
-  createResolver(margin: number, detectionRadius = margin): CollisionResolver {
+  //
+  // 32번: 이 리졸버는 "뚫고 들어갔을 때만 밀어내기"가 아니라 탐지 반경
+  // 안의 모든 점을 항상 margin 거리로 끌어당긴다(위 주석에도 이미
+  // "탐지 반경을 15cm로 넓히자 옷이 목 주변의 작은 조각으로 쪼그라듦"이라는
+  // 같은 증상이 기록돼 있었다) — 어깨 캡(목~겨드랑이) 구간은 원래
+  // 마네킹 표면과 가까운 거리(0~9cm)에 있어 이 탐지 반경 안에 항상
+  // 들어오는데, 이 구간은 pullShoulderCapToSurface가 "핀 쪽으로 넓게
+  // 유지"와 "표면에 밀착"을 행 위치에 따라 직접 보간해서 관리하도록
+  // 32번에서 새로 설계했다 — 그런데 이 일반 메시 충돌 리졸버가 서브스텝
+  // 내부에서 훨씬 자주(반복마다) 돌면서 매번 표면 margin 거리로 다시
+  // 끌어당겨버려, pullShoulderCapToSurface의 "넓게 유지" 목표를 매번
+  // 무효화시키고 있었다(실측: 초기 배치·런타임 보정 목표를 둘 다
+  // 바꿔봐도 결과가 거의 그대로였던 이유). skipLocalStart/End로 이
+  // 리졸버가 건드리지 않을 로컬 인덱스 구간(패널 하나 안에서, 어깨 캡
+  // 행들)을 지정할 수 있게 한다 — 기본값(둘 다 undefined)은 예전과
+  // 동일하게 전체 범위에 적용된다.
+  createResolver(
+    margin: number,
+    detectionRadius = margin,
+    skipLocalStart?: number,
+    skipLocalEndExclusive?: number,
+  ): CollisionResolver {
     return (positions, pinned, n) => {
       const bvh = this.bvh;
       if (!bvh) return;
       for (let i = 0; i < n; i++) {
         if (pinned[i]) continue;
+        if (skipLocalStart !== undefined && skipLocalEndExclusive !== undefined && i >= skipLocalStart && i < skipLocalEndExclusive) {
+          continue;
+        }
         const ix = i * 3;
         scratchPoint.set(positions[ix], positions[ix + 1], positions[ix + 2]);
         const hit = bvh.closestPointToPoint(scratchPoint, this.hitInfo, 0, detectionRadius);

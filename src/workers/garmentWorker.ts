@@ -60,8 +60,28 @@ const backCollisionMesh = new ArrayBvhCollision();
 // backCollisionMesh와 달리 팔 영역을 일부러 빼지 않은 원본이라야 어깨
 // 곡면이 남아있다.
 const wholeBodyCollisionMesh = new ArrayBvhCollision();
-const frontMeshResolver = frontCollisionMesh.createResolver(COLLISION_MARGIN, COLLISION_DETECTION_RADIUS);
-const backMeshResolver = backCollisionMesh.createResolver(COLLISION_MARGIN, COLLISION_DETECTION_RADIUS);
+// 32번: 어깨 캡(목~겨드랑이, rows 1..armholeStartRow) 구간은 이 일반 메시
+// 충돌에서 제외한다 — bvhFromArrays.ts의 createResolver 주석 참고. 이
+// 구간은 pullShoulderCapToSurface가 "어깨 쪽은 넓게, 겨드랑이 쪽은
+// 표면에 밀착"으로 직접 관리하는데, 일반 메시 충돌이 서브스텝마다 훨씬
+// 자주 돌면서 그 목표를 매번 표면 margin 거리로 되돌려버려 무효화시키고
+// 있었다(실측: 초기 배치·런타임 보정 목표를 둘 다 바꿔도 결과가 거의
+// 그대로였던 진짜 원인).
+const armholeStartRow = Math.round(ROWS * ARMHOLE_ROW_FRACTION);
+const SHOULDER_CAP_SKIP_START = COLS * 1;
+const SHOULDER_CAP_SKIP_END = COLS * (armholeStartRow + 1);
+const frontMeshResolver = frontCollisionMesh.createResolver(
+  COLLISION_MARGIN,
+  COLLISION_DETECTION_RADIUS,
+  SHOULDER_CAP_SKIP_START,
+  SHOULDER_CAP_SKIP_END,
+);
+const backMeshResolver = backCollisionMesh.createResolver(
+  COLLISION_MARGIN,
+  COLLISION_DETECTION_RADIUS,
+  SHOULDER_CAP_SKIP_START,
+  SHOULDER_CAP_SKIP_END,
+);
 
 function createPanelSplitResolver(
   frontResolver: CollisionResolver,
@@ -143,7 +163,6 @@ function buildMergedResolver(torsoParticleCount: number): CollisionResolver {
   };
 }
 
-const armholeStartRow = Math.round(ROWS * ARMHOLE_ROW_FRACTION);
 // 자체충돌은 몸판(앞+뒤)에만 적용한다 — 예전부터 소매는 원통형이라 자기
 // 자신과 겹칠 일이 거의 없고, 검사 대상을 늘리면 비용만 커진다.
 const selfCollision = new SelfCollision(PARTICLES_PER_PANEL, COLS, armholeStartRow);

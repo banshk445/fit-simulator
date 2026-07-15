@@ -132,8 +132,26 @@ function nearestBoundarySegment(
 // 좁아짐), 옆선 시접(armholeStartRow부터 시작)이 잡아주기 전까지는 이
 // 능동 보정이 필요하다. 30번 병합 이후에도 몸판은 여전히 평평한 패널
 // 2장이라(진짜 3D 곡면 메쉬가 아님) 이 보정의 필요성 자체는 그대로다.
+//
+// 32번(가중치를 낮추는 것만으로는 안 통한 이유, 그리고 진짜 수정): 처음엔
+// 핀 근처 행일수록 pullWeight를 낮춰(0.15) "약하게만" 당기게 해봤는데
+// 실측해보니 거의 변화가 없었다 — 이 함수는 매 프레임(초당 60회) 계속
+// 다시 호출되므로, 가중치가 아무리 작아도(0이 아닌 한) 결국 무한히 같은
+// 목표점(진짜 마네킹 표면)으로 수렴한다 — 가중치는 "얼마나 빨리
+// 수렴하는가"만 바꿀 뿐 "최종적으로 어디에 정착하는가"는 못 바꾼다. 이미
+// 여러 초 동안 돌고 있는 시뮬레이션이라 사실상 가중치 크기와 무관하게
+// 이미 다 수렴해 있었던 것.
+//
+// 진짜 고쳐야 했던 건 수렴 "속도"가 아니라 수렴 "목표점" 자체였다 — 목표
+// 점 자체를 행 위치에 따라 보간한다: 핀 바로 아래(row 1)에서는 목표점을
+// (핀의 실제 좌표)에 가깝게, 겨드랑이(armholeStartRow)에서는 목표점을
+// (마네킹 진짜 표면)에 가깝게 잡고 그 사이는 선형 보간한다. 핀 좌표는
+// pinCorners가 매 프레임 채워둔 row 0을 그대로 읽어 쓴다(항상 정확).
+// 이러면 가중치는 그냥 "얼마나 빨리 그 목표에 도달하는가"로만 쓰이고,
+// 목표 자체가 이미 원하는 그라데이션(어깨 캡은 넓게, 겨드랑이는 몸통을
+// 따라 좁게)을 담고 있어 weight 크기와 무관하게 올바른 자리에 정착한다.
 const SHOULDER_SURFACE_PUSH = 0.13;
-const SHOULDER_SURFACE_PULL_WEIGHT = 0.7;
+const SHOULDER_SURFACE_PULL_WEIGHT = 0.6;
 
 export function pullShoulderCapToSurface(
   sim: ClothSimulation,
@@ -149,6 +167,7 @@ export function pullShoulderCapToSurface(
   if (!bodySurface) return;
   for (const panel of [frontPanel, backPanel]) {
     for (let y = 1; y <= armholeStartRow; y++) {
+      const rowT = armholeStartRow > 1 ? (y - 1) / (armholeStartRow - 1) : 1;
       for (let x = 0; x < cols; x++) {
         const i = sim.index(panel, x, y);
         if (sim.pinned[i]) continue;
@@ -161,11 +180,18 @@ export function pullShoulderCapToSurface(
         const qx = px + dirX * outwardSign * SHOULDER_SURFACE_PUSH;
         const qy = py + dirY * outwardSign * SHOULDER_SURFACE_PUSH;
         const qz = pz + dirZ * outwardSign * SHOULDER_SURFACE_PUSH;
-        const target = bodySurface.closestSurfacePoint(qx, qy, qz, SURFACE_MARGIN, SURFACE_DETECTION_RADIUS);
-        if (!target) continue;
-        sim.positions[ix] = px + (target.x - px) * SHOULDER_SURFACE_PULL_WEIGHT;
-        sim.positions[ix + 1] = py + (target.y - py) * SHOULDER_SURFACE_PULL_WEIGHT;
-        sim.positions[ix + 2] = pz + (target.z - pz) * SHOULDER_SURFACE_PULL_WEIGHT;
+        const surface = bodySurface.closestSurfacePoint(qx, qy, qz, SURFACE_MARGIN, SURFACE_DETECTION_RADIUS);
+        if (!surface) continue;
+        const pinIx = sim.index(panel, x, 0) * 3;
+        const pinX = sim.positions[pinIx];
+        const pinY = sim.positions[pinIx + 1];
+        const pinZ = sim.positions[pinIx + 2];
+        const targetX = pinX + (surface.x - pinX) * rowT;
+        const targetY = pinY + (surface.y - pinY) * rowT;
+        const targetZ = pinZ + (surface.z - pinZ) * rowT;
+        sim.positions[ix] = px + (targetX - px) * SHOULDER_SURFACE_PULL_WEIGHT;
+        sim.positions[ix + 1] = py + (targetY - py) * SHOULDER_SURFACE_PULL_WEIGHT;
+        sim.positions[ix + 2] = pz + (targetZ - pz) * SHOULDER_SURFACE_PULL_WEIGHT;
       }
     }
   }

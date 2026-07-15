@@ -76,13 +76,33 @@ function necklineDip(isFrontPanel: boolean, u: number): number {
 // 반폭으로 좁아짐)" 방향으로 자연스럽게 좁아지는 곡선을 만든다 — 실제
 // 티셔츠도 어깨 솔기가 가슴 폭보다 넓게 시작해 암홀 쪽으로 좁아지는
 // 경우가 흔하므로 해부학적으로도 맞는 방향이다.
+// 32번(진짜 원인 — 런타임 보정으로는 못 이기는 초기 배치 문제): 사용자가
+// "목선이 어깨가 아니라 가슴에 처져 있다"고 재차 지적해 실측(핀 바로
+// 아래 행들의 X좌표를 소매 링과 대조)해보니, garmentStitch.ts의
+// pullShoulderCapToSurface가 목표점을 아무리 바꿔도(가중치를 낮춰도,
+// 심지어 목표점 자체를 핀 쪽으로 보간해도) 결과가 거의 안 바뀌었다 —
+// 진짜 원인은 여기 있었다. taperT를 y/armholeStartRow로 "선형" 보간하면
+// row 1(armholeStartRow=5 기준 전체의 1/5 지점)에서 이미 전체 좁아짐의
+// 20%가 반영된 반폭이 나오고, 그 반폭이 곧 row 0(핀, 고정)↔row 1 구조
+// 제약의 "자연 길이"가 된다. 이 구조 제약은 서브스텝마다 원단별 12~24회
+// 반복 완화되는데, pullShoulderCapToSurface는 프레임당 딱 한 번만 실행돼
+// 그 반복 횟수를 못 이기고 매번 다시 좁은 자연 길이로 끌려갔다(실측:
+// 목표점을 바꿔도 결과 좌표가 소수점 단위까지 거의 그대로였음 — 런타임
+// 보정이 사실상 아무 효과가 없었다는 뜻).
+// 실제 티셔츠의 어깨 캡은 목~소매 이음매 사이 상당 구간을 넓게 유지하다
+// 겨드랑이 근처에서야 좁아진다 — 그 모양을 taperT 자체에 반영해야
+// 런타임 보정이 이길 필요 없이 애초에 올바른 형태로 정착한다. 선형 대신
+// 제곱(quadratic ease-in)으로 바꿔, 어깨선 근처(작은 y)에서는 거의
+// shoulderHalfWidth 그대로 유지되다가 armholeStartRow에 가까워질수록
+// 급격히 fullHalfWidth로 좁아지게 한다.
 function halfWidthAtRow(y: number, widthM: number, pinLeft: Vec3Like, pinRight: Vec3Like): number {
   const armholeStartRow = Math.round(ROWS * ARMHOLE_ROW_FRACTION);
   const fullHalfWidth = widthM / 2;
   const dx = pinRight.x - pinLeft.x;
   const dz = pinRight.z - pinLeft.z;
   const shoulderHalfWidth = Math.hypot(dx, dz) / 2;
-  const taperT = armholeStartRow > 0 ? Math.min(y / armholeStartRow, 1) : 1;
+  const linearT = armholeStartRow > 0 ? Math.min(y / armholeStartRow, 1) : 1;
+  const taperT = linearT * linearT;
   return shoulderHalfWidth + (fullHalfWidth - shoulderHalfWidth) * taperT;
 }
 
