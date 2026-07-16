@@ -38,15 +38,30 @@ const PUSH_RELAXATION = 0.35;
 // 통째로 교체되는데, 매 반복(step()의 iterations × substeps × 60fps)마다
 // 새 클로저를 만들면서 그 배열을 캡처하면 불필요한 할당이 쌓인다. 호출부
 // (clothWorker.ts)에서 최신 capsules를 직접 넘기면 그럴 필요가 없다.
+// 37번: 어깨 캡(목선 상승부) 구간은 pullShoulderCapToSurface가 매 프레임
+// "핀 쪽으로 넓게/높게 유지" 목표를 직접 관리하도록 이미 설계돼 있는데
+// (bvhFromArrays.ts의 메시 충돌 리졸버는 33번에서 이 구간을 건너뛰게
+// 고쳤다), 이 캡슐 충돌은 그 스킵 대상에서 빠져 있었다 — 몸통 전체를
+// 뭉뚱그린 거친 캡슐이 이 구간에도 여전히 매 반복 적용돼, 방금 목선을
+// 위로 끌어올린 결과를 다시 캡슐 표면 쪽으로 끌어내리며 경쟁하고
+// 있었다(실측: 어깨-목 전환부 근처 열에서 0번-1번 행 사이 수직 간격이
+// 정상보다 훨씬 크게 벌어져 그 틈으로 마네킹이 비쳐 보임 — 메시 충돌
+// 리졸버만 스킵하고 캡슐 충돌은 안 건너뛴 게 원인이었다). 메시 충돌과
+// 똑같은 스킵 구간을 여기도 적용한다.
 export function applyCapsuleCollision(
   positions: Float32Array,
   pinned: Uint8Array,
   n: number,
   capsules: readonly Capsule[],
   margin: number,
+  skipLocalStart?: number,
+  skipLocalEndExclusive?: number,
 ): void {
   for (let i = 0; i < n; i++) {
     if (pinned[i]) continue;
+    if (skipLocalStart !== undefined && skipLocalEndExclusive !== undefined && i >= skipLocalStart && i < skipLocalEndExclusive) {
+      continue;
+    }
     const ix = i * 3;
 
     for (const capsule of capsules) {

@@ -2,18 +2,35 @@ import { ClothSimulation } from "./clothPhysics";
 import type { Vec3Like } from "./clothProtocol";
 import { ARMHOLE_ROW_FRACTION, COLS, FRONT_BACK_HALF_GAP, ROWS, SEAM_REST_LENGTH } from "./clothConfig";
 
-// 목선(칼라) 모양. 앞판은 깊게(스쿱넥), 뒤판은 얕게 파인 크루넥 티셔츠를
-// 기준으로 잡았다. 중심에서 얼마나 넓은 범위까지 파임의 영향을 받는지는
-// 어깨 폭 대비 비율(NECKLINE_WIDTH_FRACTION)로 잡아, 어깨너비 슬라이더가
-// 바뀌어도 비례해서 따라온다.
-// 실측 결과 이전 값(앞 9cm, 폭 35%)은 어깨 대부분이 훤히 드러나는
-// "오프숄더" 느낌이 났다 — 파임 영향 구간(WIDTH_FRACTION)이 너무 넓어서
-// 목 중심부만이 아니라 어깨선 전체가 처져 보였다. 일반적인 크루넥
-// 티셔츠에 가깝게 깊이를 줄이고(9cm→4cm) 영향 폭도 중앙으로 좁혔다
-// (35%→20%) — 목 중심에서만 살짝 파이고 어깨 쪽은 핀 위치 그대로 남는다.
-const NECKLINE_DEPTH_FRONT = 0.04;
-const NECKLINE_DEPTH_BACK = 0.02;
-const NECKLINE_WIDTH_FRACTION = 0.2;
+// 37번(목선 재설계): 이전 두 차례(9cm/35%→4cm/20%) 모두 "중심에서 아래로
+// 파임"만 다뤘는데, 실측(확대 스크린샷)해보니 이 방식은 애초에 크루넥이
+// 될 수 없는 구조였다 — 파임 영향 구간 밖(전체 폭의 80%!)은 그냥 어깨선
+// 그대로 평평하게 남아, 목 중심의 작은 노치를 빼면 전체 목둘레가 "어깨
+// 쪽에서 어깨 쪽으로 거의 일직선"으로 이어지는 셈이었다. 이건 정의상
+// 보트넥/오프숄더 모양이다 — 깊이를 얼마로 조정해도 모양 자체가 안 바뀐다.
+// 실제 크루넥은 반대다: 목둘레 대부분(가슴/등 중앙 쪽)이 어깨선보다
+// 확실히 높게(목에 가깝게) 올라가 있고, 오직 어깨 솔기 바로 근처에서만
+// 빠르게 어깨 높이로 떨어진다. "중심에서 파임"이 아니라 "어깨 근처에서만
+// 떨어지고 나머지는 목 높이로 들어올려짐"으로 뒤집어야 한다.
+// NECKLINE_HOLE_WIDTH_FRACTION: 목 구멍 자체가 차지하는 폭(전체 어깨너비
+// 대비) — 실제 크루넥 목둘레(약 19cm)/평균 어깨너비(약 45cm) 비율에서
+// 가져왔다. 이 구간 안쪽은 거의 목 높이로 평평(살짝 U자로만 굴곡).
+const NECKLINE_HOLE_WIDTH_FRACTION = 0.42;
+// 앞판은 깊게(스쿱넥 느낌으로 중심이 살짝 더 내려감), 뒤판은 거의 평평한
+// 크루넥 기준.
+const NECKLINE_RISE_FRONT = 0.045;
+const NECKLINE_RISE_BACK = 0.025;
+// 목 구멍 중심이 구멍 가장자리보다 살짝만 더 내려가게(완전히 평평하면
+// 부자연스러워 보임) 하는 비율 — RISE 대비 몇 %만큼 중심을 낮출지.
+const NECKLINE_CENTER_DIP_FRACTION = 0.25;
+// rise를 0번 행(어깨선)에만 적용했을 때 실측으로 확인된 어깨-목 전환부
+// 삼각 틈(아래 layoutTorsoPanels 주석 참고)을 막기 위해, 몇 개 행에 걸쳐
+// rise 영향을 서서히 줄인다 — armholeStartRow(겨드랑이선) 대비 이 비율
+// 지점에서 영향이 0이 된다. 0.5(행 2~3에서 소멸)로는 부족해서(정점 실측:
+// 어깨 근처 열에서 0번-1번 행 사이 수직 간격이 여전히 3.5cm 이상 벌어져
+// 그 사이로 마네킹이 비쳐 보임) 1.0(armholeStartRow 끝까지 서서히 줄어듦)
+// 으로 늘려 전환을 훨씬 완만하게 한다.
+const NECKLINE_RISE_FADE_FRACTION = 1.0;
 
 // 큰 재설계(3D 곡면 어깨): 20/21번 수정(소매 스냅 문턱값, 어깨 폭 클램프
 // 제거) 이후에도 사용자가 3/4 측면 각도에서 "여전히 똑같다"고 재지적해
@@ -43,16 +60,31 @@ function shoulderCapZBulge(y: number, u: number, armholeStartRow: number): numbe
   return SHOULDER_CAP_BULGE * rowFalloff * outerness;
 }
 
-// 어깨선(0번 행) 위의 한 점(u = -0.5~0.5, panel 0=앞/1=뒤)이 목선 파임으로
-// 인해 얼마나 아래로 내려가는지 계산한다. 중심(u=0)에서 최대, 어깨 쪽
-// (|u|가 NECKLINE_WIDTH_FRACTION/2 이상)에서는 0으로 부드럽게 줄어든다.
+// 어깨선(0번 행) 위의 한 점(u = -0.5~0.5, panel 0=앞/1=뒤)이 기준 어깨
+// 높이(baseY)보다 얼마나 "위로" 올라가는지 계산한다(음수면 오히려 아래로
+// 내려감 — 목 구멍 중심의 얕은 U자 굴곡). 목 구멍 안쪽(|u| ≤
+// NECKLINE_HOLE_WIDTH_FRACTION/2)에서는 거의 최대 높이를 유지하고, 그
+// 밖에서는 어깨점(|u|=0.5)에 다다를 때까지 빠르게 0으로 떨어진다 — 실제
+// 크루넥처럼 목 대부분은 높게, 어깨 솔기 근처에서만 떨어지는 모양.
 // isFrontPanel: 30번 병합 이후 패널 번호가 더 이상 항상 0=앞/1=뒤가
 // 아니게 됐으므로(파라미터로 어느 쪽이 앞판인지 넘겨받음), panel===0
 // 대신 이 값으로 앞/뒤 깊이 차이를 구분한다.
-function necklineDip(isFrontPanel: boolean, u: number): number {
-  const depth = isFrontPanel ? NECKLINE_DEPTH_FRONT : NECKLINE_DEPTH_BACK;
-  const closeness = Math.max(0, 1 - Math.abs(u) / (NECKLINE_WIDTH_FRACTION / 2));
-  return depth * closeness * closeness;
+function necklineRise(isFrontPanel: boolean, u: number): number {
+  const rise = isFrontPanel ? NECKLINE_RISE_FRONT : NECKLINE_RISE_BACK;
+  const holeHalf = NECKLINE_HOLE_WIDTH_FRACTION / 2;
+  const absU = Math.abs(u);
+  if (absU <= holeHalf) {
+    // 목 구멍 안쪽: 가장자리는 거의 rise 그대로, 중심으로 갈수록 완만한
+    // U자로 살짝 더 낮아진다.
+    const t = holeHalf > 0 ? absU / holeHalf : 1; // 0(중심)~1(구멍 가장자리)
+    return rise * (1 - NECKLINE_CENTER_DIP_FRACTION * (1 - t * t));
+  }
+  // 목 구멍 밖(어깨 쪽): 구멍 가장자리(rise)에서 어깨점(0)까지 어깨
+  // 쪽으로 갈수록 빠르게 떨어지는 이즈아웃 곡선.
+  const outerSpan = 0.5 - holeHalf;
+  const t = outerSpan > 0 ? (absU - holeHalf) / outerSpan : 1; // 0(구멍 가장자리)~1(어깨점)
+  const falloff = 1 - t * t;
+  return rise * falloff;
 }
 
 // 특정 행(y)에서 좌우 절반 폭이 얼마나 테이퍼됐는지 계산한다(어깨선의 어깨
@@ -108,10 +140,10 @@ function halfWidthAtRow(y: number, widthM: number, pinLeft: Vec3Like, pinRight: 
 
 // 어깨선(0번 행) 전체를 목선 곡선을 따라 고정한다 — 양 끝(어깨)만 고정하고
 // 나머지를 물리에 맡기면 직선 그대로 축 처지거나 뻣뻣하게 남아 "실제로
-// 입은" 느낌이 안 난다. pinLeft~pinRight를 선형보간한 기준선에서, 중심에
-// 가까울수록 necklineDip만큼 아래로 내려서 고정하면 목 파임이 유지된다.
-// 앞판/뒤판이 어깨 양 끝에서는 같은 지점에 고정되므로 실제 어깨 시접처럼
-// 동작한다.
+// 입은" 느낌이 안 난다. pinLeft~pinRight를 선형보간한 기준선에서,
+// necklineRise만큼 목 구멍 쪽은 위로 끌어올리고(대부분의 폭) 어깨 쪽만
+// 원래 어깨선 높이로 남겨 크루넥 모양을 만든다. 앞판/뒤판이 어깨 양
+// 끝에서는 같은 지점에 고정되므로 실제 어깨 시접처럼 동작한다.
 //
 // (한때 1번 행도 함께 고정해 크루넥 옷깃 골지 밴드를 흉내 내보려 했으나,
 // 인접한 두 행을 통째로 고정하면 그 아래 행들과의 구조/전단 제약이
@@ -138,8 +170,8 @@ export function pinCorners(
       const baseX = pinLeft.x + (pinRight.x - pinLeft.x) * t;
       const baseY = pinLeft.y + (pinRight.y - pinLeft.y) * t;
       const baseZ = pinLeft.z + (pinRight.z - pinLeft.z) * t;
-      const dip = necklineDip(isFront, u);
-      sim.pin(sim.index(panel, x, 0), baseX, baseY - dip, baseZ);
+      const rise = necklineRise(isFront, u);
+      sim.pin(sim.index(panel, x, 0), baseX, baseY + rise, baseZ);
     }
   }
 }
@@ -195,15 +227,25 @@ export function layoutTorsoPanels(
       const halfWidth = halfWidthAtRow(y, widthM, pinLeft, pinRight);
       for (let x = 0; x < COLS; x++) {
         const u = x / (COLS - 1) - 0.5; // -0.5 ~ 0.5
-        // 0번 행은 목선 파임만큼 미리 내려서 배치해 둔다 — 그래야 이
-        // 위치에서 계산되는 구조/전단 제약의 rest length가 핀으로 고정될
-        // 최종 목선 모양과 맞아서, 목 둘레에 불필요한 인장이 생기지 않는다.
-        const dip = y === 0 ? necklineDip(isFront, u) : 0;
+        // 0번 행은 목선 곡선만큼 미리 올려서(또는 중심부는 살짝 내려서)
+        // 배치해 둔다 — 그래야 이 위치에서 계산되는 구조/전단 제약의 rest
+        // length가 핀으로 고정될 최종 목선 모양과 맞아서, 목 둘레에
+        // 불필요한 인장이 생기지 않는다.
+        // 37번: rise를 0번 행에만 적용하면, 목 구멍 폭 안쪽 열(예: x=1~3)에서
+        // 0번 행이 갑자기 몇 cm 위로 뛰는데 1번 행은(v로만 배치돼) 그대로라
+        // 두 행 사이 거리가 열마다 크게 달라져(중심 열은 멀고 어깨 쪽은
+        // 가까움) 실측(확대 스크린샷)해보니 어깨-목 전환 구간에 마네킹이
+        // 비쳐 보이는 작은 삼각 틈이 생겼다 — 이 두 행 사이 rest length가
+        // 열마다 너무 급하게 바뀌면서 그 구간 전단 제약이 뒤틀린 것으로
+        // 보인다. shoulderCapZBulge와 같은 방식으로 rise 영향을 몇 개 행에
+        // 걸쳐 서서히 줄여, 0→1→2번 행으로 갈수록 완만하게 이어지게 한다.
+        const riseRowFalloff = armholeStartRow > 0 ? Math.max(0, 1 - y / (armholeStartRow * NECKLINE_RISE_FADE_FRACTION)) : y === 0 ? 1 : 0;
+        const rise = necklineRise(isFront, u) * riseRowFalloff;
         const capZ = shoulderCapZBulge(y, u, armholeStartRow);
         sim.setParticle(
           sim.index(panel, x, y),
           sideSign * -u * 2 * halfWidth,
-          topY - v * heightM - dip,
+          topY - v * heightM + rise,
           centerZ + panelZOffset + panelSign * capZ,
         );
       }

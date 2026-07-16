@@ -103,9 +103,32 @@ let dirX = 1;
 let dirY = 0;
 let dirZ = 0;
 
+// 37번: 캡슐 충돌도 meshResolver와 똑같이 앞판/뒤판을 나눠서, 각 패널
+// 로컬 인덱스 기준으로 어깨 캡 스킵 구간을 적용한다 — 하나로 합쳐서 그냥
+// SHOULDER_CAP_SKIP_START/END를 넘기면 뒤판 쪽 어깨 캡 구간(로컬 인덱스가
+// PARTICLES_PER_PANEL만큼 밀려 있음)은 전혀 스킵되지 않는다.
 const torsoResolver: CollisionResolver = (positions, pinned, n) => {
   meshResolver(positions, pinned, n);
-  applyCapsuleCollision(positions, pinned, n, torsoCapsules, COLLISION_MARGIN);
+  const frontCount = PARTICLES_PER_PANEL;
+  const backCount = n - frontCount;
+  applyCapsuleCollision(
+    positions.subarray(0, frontCount * 3),
+    pinned.subarray(0, frontCount),
+    frontCount,
+    torsoCapsules,
+    COLLISION_MARGIN,
+    SHOULDER_CAP_SKIP_START,
+    SHOULDER_CAP_SKIP_END,
+  );
+  applyCapsuleCollision(
+    positions.subarray(frontCount * 3, n * 3),
+    pinned.subarray(frontCount, n),
+    backCount,
+    torsoCapsules,
+    COLLISION_MARGIN,
+    SHOULDER_CAP_SKIP_START,
+    SHOULDER_CAP_SKIP_END,
+  );
   applyFrontBackSidedness(positions, pinned, PARTICLES_PER_PANEL, centerZ);
 };
 
