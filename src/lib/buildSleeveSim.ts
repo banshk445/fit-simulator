@@ -62,8 +62,20 @@ export interface SleeveShape {
 // 밀려버린 것. 실측(마네킹을 숨겨 소매 지오메트리 자체는 멀쩡함을 확인한
 // 뒤 다시 보이면 대부분이 마네킹 팔에 가려 어깨 옆 작은 조각만 남음)으로
 // 확인했다. 이음매(t=0)는 몸판 가장자리와 맞아야 하니 shoulder를 그대로
-// 쓰되, t가 커질수록(SEAM_T 지점까지) 실제 어깨 관절(trueShoulder) 기준
-// 축으로 수렴시켜, 소매 대부분이 진짜 팔 중심선 위에 자리잡게 한다.
+// 쓰되, t가 커질수록(CENTER_CONVERGE_T 지점까지) 실제 어깨 관절
+// (trueShoulder) 기준 축으로 수렴시켜, 소매 대부분이 진짜 팔 중심선 위에
+// 자리잡게 한다.
+// 38번: 처음엔 이 수렴 거리로 SEAM_T(0.12, 반지름 전환용)를 그대로
+// 재사용했는데, 실측(정점 좌표 직접 대조)해보니 소매 1번 행(짧은 소매
+// 기준 t≈0.11)에서 이미 블렌드가 93%까지 끝나 있어, 몸판 어깨 캡이
+// "겨드랑이 근처까지 넓게 유지"하도록 설계된 구간(halfWidthAtRow의
+// 제곱 이즈인, armholeStartRow까지)과 정면으로 어긋났다 — 몸판은 계속
+// 넓게 남아있는데 소매는 몇 행 만에 이미 진짜 팔 쪽으로 확 좁혀 들어가,
+// 그 사이에 삼각형 모양의 마네킹 피부 틈이 생겼다(이음매 자체는 안
+// 어긋나 있어서 못 보고 지나칠 뻔함 — 0번 행만 보면 정상으로 보임).
+// 반지름 전환(SEAM_T)과 중심축 수렴은 서로 다른 의미라 별도 상수로
+// 분리하고, 몸판의 "넓게 유지" 구간과 보조를 맞추도록 훨씬 느리게 잡는다.
+const CENTER_CONVERGE_T = 0.4;
 function centerAt(shape: SleeveShape, t: number): Vec3Like {
   const axial = Math.min(t, 1);
   const outsetX = shape.shoulder.x + shape.dir.x * axial * shape.length;
@@ -72,7 +84,7 @@ function centerAt(shape: SleeveShape, t: number): Vec3Like {
   const trueX = shape.trueShoulder.x + shape.dir.x * axial * shape.length;
   const trueY = shape.trueShoulder.y + shape.dir.y * axial * shape.length;
   const trueZ = shape.trueShoulder.z + shape.dir.z * axial * shape.length;
-  const blend = Math.min(t / SEAM_T, 1);
+  const blend = Math.min(t / CENTER_CONVERGE_T, 1);
   return {
     x: outsetX + (trueX - outsetX) * blend,
     y: outsetY + (trueY - outsetY) * blend,
