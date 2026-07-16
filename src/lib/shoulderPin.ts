@@ -46,6 +46,17 @@ import * as THREE from "three";
 // 좌우 어느 쪽이 살짝 덜 수렴해도 여전히 표면을 확실히 벗어나게 한다.
 export const SHOULDER_PIN_OUTSET = 0.115;
 
+// 36번(큰 재설계): 예전엔 이 OUTSET이 핀 위치를 결정하는 유일한 변수였다
+// — 옷의 어깨선이 항상 "몸 어깨 관절 + 고정 여유"에 고정되니, 옷 자체의
+// 어깨너비를 아무리 다르게 입력해도 어깨 핀 위치(그리고 그로부터 계산되는
+// 몸판 폭 테이퍼·소매 시작점)는 절대 안 바뀌는 구조였다 — "옷이 너무
+// 좁다/넓다"는 핏을 확인할 방법이 애초에 없었다. 이제 핀은 "몸 중심에서
+// 어깨 방향으로 옷의 실제 어깨너비/2만큼" 위치한다 — 옷이 좁으면 핀이
+// 몸 중심 쪽으로 당겨지고(타이트/오프숄더가 아니라 좁은 핏), 넓으면
+// 어깨 밖으로 늘어난다(드롭숄더). 목~어깨 관절 사이로 완전히 파고들어
+// 렌더링이 깨지는 극단만 막는 최소 바닥값이다(크루넥 옷깃 폭 정도).
+const MIN_SHOULDER_HALF_WIDTH = 0.1;
+
 // 어깨 뼈대(관절)에서 수평으로만 밀어내던 것과 별개로, 실제로는 수직으로도
 // 살짝 낮다 — 실측(Playwright evaluate로 굽힌 마네킹 표면 중 핀 좌표
 // 반경 8cm 안의 최고 Y를 직접 스캔)해보니 핀 Y가 실제 어깨 표면
@@ -55,14 +66,24 @@ export const SHOULDER_PIN_OUTSET = 0.115;
 // 2cm 위로 올린다(SHOULDER_PIN_OUTSET처럼 수평 오프셋과는 별개 축).
 export const SHOULDER_PIN_LIFT = 0.02;
 
-export function computeShoulderPin(left: THREE.Vector3, right: THREE.Vector3): { left: THREE.Vector3; right: THREE.Vector3 } {
+// garmentHalfWidthM: 옷의 실제 어깨너비(실측 입력)/2. 생략하면(디버그 등
+// 옛 호출부 호환용) 예전처럼 "몸 어깨 관절 + OUTSET"을 그대로 쓴다.
+export function computeShoulderPin(
+  left: THREE.Vector3,
+  right: THREE.Vector3,
+  garmentHalfWidthM?: number,
+): { left: THREE.Vector3; right: THREE.Vector3 } {
   const center = left.clone().add(right).multiplyScalar(0.5);
   const leftDir = left.clone().sub(center);
   const rightDir = right.clone().sub(center);
   if (leftDir.lengthSq() > 1e-9) leftDir.normalize();
   if (rightDir.lengthSq() > 1e-9) rightDir.normalize();
-  const pinLeft = left.clone().addScaledVector(leftDir, SHOULDER_PIN_OUTSET);
-  const pinRight = right.clone().addScaledVector(rightDir, SHOULDER_PIN_OUTSET);
+  const halfWidth =
+    garmentHalfWidthM === undefined
+      ? center.distanceTo(left) + SHOULDER_PIN_OUTSET
+      : Math.max(garmentHalfWidthM, MIN_SHOULDER_HALF_WIDTH);
+  const pinLeft = center.clone().addScaledVector(leftDir, halfWidth);
+  const pinRight = center.clone().addScaledVector(rightDir, halfWidth);
   pinLeft.y += SHOULDER_PIN_LIFT;
   pinRight.y += SHOULDER_PIN_LIFT;
   return { left: pinLeft, right: pinRight };

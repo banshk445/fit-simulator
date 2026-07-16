@@ -45,6 +45,9 @@ export function Controls() {
   const setShoulderWidth = useFitStore((s) => s.setShoulderWidth);
   const setGarmentLength = useFitStore((s) => s.setGarmentLength);
   const setGarmentWidth = useFitStore((s) => s.setGarmentWidth);
+  const setGarmentShoulderWidth = useFitStore((s) => s.setGarmentShoulderWidth);
+  const setGarmentSleeveLength = useFitStore((s) => s.setGarmentSleeveLength);
+  const setGarmentSleeveWidth = useFitStore((s) => s.setGarmentSleeveWidth);
   const garmentImage = useFitStore((s) => s.garmentImage);
   const setGarmentImage = useFitStore((s) => s.setGarmentImage);
   const fabric = useFitStore((s) => s.fabric);
@@ -153,6 +156,13 @@ export function Controls() {
 
         <Slider label="총장" value={garmentSize.length} min={40} max={120} onChange={setGarmentLength} />
         <Slider label="품" value={garmentSize.width} min={80} max={160} onChange={setGarmentWidth} />
+        <Slider
+          label="어깨너비"
+          value={garmentSize.shoulderWidth}
+          min={30}
+          max={70}
+          onChange={setGarmentShoulderWidth}
+        />
 
         <div className="mb-1 text-sm text-slate-300">소매</div>
         <div className="mb-4 grid grid-cols-2 gap-1.5">
@@ -179,6 +189,21 @@ export function Controls() {
             긴팔
           </button>
         </div>
+
+        <Slider
+          label="소매길이"
+          value={garmentSize.sleeveLength}
+          min={sleeveType === "short" ? 10 : 35}
+          max={sleeveType === "short" ? 35 : 75}
+          onChange={setGarmentSleeveLength}
+        />
+        <Slider
+          label="소매통"
+          value={garmentSize.sleeveWidth}
+          min={10}
+          max={35}
+          onChange={setGarmentSleeveWidth}
+        />
 
         <div className="mb-1 text-sm text-slate-300">원단</div>
         <div className="grid grid-cols-4 gap-1.5">

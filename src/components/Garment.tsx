@@ -6,7 +6,7 @@ import { useFitStore } from "../store/useFitStore";
 import { MannequinCollisionMesh } from "../lib/meshCollision";
 import { mannequinRootRef } from "../lib/mannequinRef";
 import { buildTorsoProxyCapsules } from "../lib/torsoCapsule";
-import { findArmDirection, findHandBone, findShortSleeveDirection, findShoulderBones } from "../lib/boneUtils";
+import { findArmDirection, findShortSleeveDirection, findShoulderBones } from "../lib/boneUtils";
 import { computeShoulderPin } from "../lib/shoulderPin";
 import { averageGarmentColor } from "../lib/garmentColor";
 import {
@@ -16,11 +16,8 @@ import {
   ROWS,
   SLEEVE_COLS,
   SLEEVE_FLARE_SHORT,
-  SLEEVE_LENGTH_LONG_FRACTION,
-  SLEEVE_LENGTH_SHORT,
-  SLEEVE_RADIUS,
   SLEEVE_RADIUS_SEAM,
-  SLEEVE_RADIUS_WRIST,
+  SLEEVE_TAPER_LONG_FRACTION,
   SLEEVE_ROWS_LONG,
   SLEEVE_ROWS_SHORT,
 } from "../lib/clothConfig";
@@ -35,8 +32,6 @@ const shoulderVec = new THREE.Vector3();
 const rightShoulderVec = new THREE.Vector3();
 const leftDirVec = new THREE.Vector3();
 const rightDirVec = new THREE.Vector3();
-const leftHandVec = new THREE.Vector3();
-const rightHandVec = new THREE.Vector3();
 
 // 큰 재설계: 몸판(GarmentCloth.tsx)과 소매(SleeveCloth.tsx)를 이 컴포넌트
 // 하나로 합쳤다 — 진동둘레 다중 스티칭(garmentStitch.ts)이 두 시뮬레이션을
@@ -183,13 +178,20 @@ export function Garment({ imageUrl }: Props) {
   // "가로로 넓은 이미지"인 것처럼 취급되면서 heightM까지 실제 설정값(0.7m)의
   // 1/3 수준으로 줄어드는 연쇄 오류였다. `boxWidthM`은 전체 폭(절반 내지 않은
   // 값)이어야 한다 — 절반 내는 건 buildGarmentSim.ts 한 곳에서만 해야 한다.
-  const boxWidthM = garmentSize.width / 100;
-  const boxHeightM = garmentSize.length / 100;
-  const image = texture.image as HTMLImageElement | undefined;
-  const imageAspect = image && image.width && image.height ? image.width / image.height : 1;
-  const boxAspect = boxWidthM / boxHeightM;
-  const widthM = imageAspect > boxAspect ? boxWidthM : boxHeightM * imageAspect;
-  const heightM = imageAspect > boxAspect ? boxWidthM / imageAspect : boxHeightM;
+  //
+  // 36번(큰 재설계): 그런데 그 수정 뒤에도 이 함수는 여전히 "이미지 비율에
+  // 맞춰 박스 안에 맞추기"(object-fit: contain) 방식으로 widthM/heightM 중
+  // 하나를 사진 비율에 맞춰 사용자가 입력한 총장/품보다 더 작게 줄이고
+  // 있었다 — 즉 사용자가 총장 70cm/품 110cm를 입력해도 사진 비율이 안 맞으면
+  // 실제 렌더링 치수는 그보다 작아졌다. "실측을 입력하면 그 치수 그대로
+  // 핏이 보여야 한다"는 목적과 정면으로 배치되는 동작이었다 — 사진이 옷을
+  // 정확히 어느 비율로 담았는지와 무관하게, 3D 형태는 항상 사용자가 입력한
+  // 실측 치수를 그대로 따라야 한다. 사진 비율이 안 맞으면 텍스처가 약간
+  // 눌리거나 늘어나 보일 수 있지만(세그멘테이션 크롭이 이미 옷 실루엣에
+  // 맞춰 잘라내므로 대부분 크게 어긋나지 않는다), 그 정도가 "치수가 아예
+  // 사용자 입력과 달라지는 것"보다는 훨씬 나은 트레이드오프다.
+  const widthM = garmentSize.width / 100;
+  const heightM = garmentSize.length / 100;
 
   // --- 소매 지오메트리 ---
   const sleeveRows = sleeveType === "long" ? SLEEVE_ROWS_LONG : SLEEVE_ROWS_SHORT;
@@ -335,7 +337,10 @@ export function Garment({ imageUrl }: Props) {
     rightBone.updateWorldMatrix(true, false);
     leftBone.getWorldPosition(shoulderVec);
     rightBone.getWorldPosition(rightShoulderVec);
-    const pins = computeShoulderPin(shoulderVec, rightShoulderVec);
+    // 36번: 어깨 핀도 이제 몸이 아니라 옷의 실제 어깨너비(실측)로 정한다
+    // — shoulderPin.ts의 computeShoulderPin 주석 참고.
+    const garmentShoulderHalfWidthM = garmentSize.shoulderWidth / 100 / 2;
+    const pins = computeShoulderPin(shoulderVec, rightShoulderVec, garmentShoulderHalfWidthM);
 
     // 33번: 반팔은 위팔(어깨~팔꿈치) 방향을 따라야 한다 — 어깨~손 직선
     // 방향(findArmDirection)은 팔꿈치가 굽은 포즈에서 위팔 구간과 상당히
@@ -350,21 +355,15 @@ export function Garment({ imageUrl }: Props) {
       rightDirVec.copy(findShortSleeveDirection(rightBone));
     }
 
-    let length: number;
-    if (sleeveType === "long") {
-      const leftHandBone = findHandBone(leftBone);
-      const rightHandBone = findHandBone(rightBone);
-      leftHandBone.updateWorldMatrix(true, false);
-      rightHandBone.updateWorldMatrix(true, false);
-      leftHandBone.getWorldPosition(leftHandVec);
-      rightHandBone.getWorldPosition(rightHandVec);
-      const leftArmSpan = pins.left.distanceTo(leftHandVec);
-      const rightArmSpan = pins.right.distanceTo(rightHandVec);
-      length = Math.min(leftArmSpan, rightArmSpan) * SLEEVE_LENGTH_LONG_FRACTION;
-    } else {
-      length = SLEEVE_LENGTH_SHORT;
-    }
-    const radiusHem = sleeveType === "long" ? SLEEVE_RADIUS_WRIST : SLEEVE_RADIUS * (1 + SLEEVE_FLARE_SHORT);
+    // 36번(큰 재설계): 길이/반지름은 이제 몸 치수에서 계산하지 않고 옷
+    // 실측(garmentSize.sleeveLength/sleeveWidth) 그대로 쓴다 — 예전엔
+    // 긴팔 길이가 "몸 팔길이 × 0.92"로 항상 손목 근처까지 자동으로
+    // 늘어나서, 실제 옷 소매가 사용자 팔보다 짧은지/긴지 확인할 방법이
+    // 없었다. 이제는 옷이 짧으면 손목에 못 미치고, 길면 손을 덮는 게
+    // 그대로 드러난다 — 이게 "핏을 확인한다"는 것의 핵심이다.
+    const length = garmentSize.sleeveLength / 100;
+    const radiusMax = garmentSize.sleeveWidth / 100 / 2;
+    const radiusHem = sleeveType === "long" ? radiusMax * SLEEVE_TAPER_LONG_FRACTION : radiusMax * (1 + SLEEVE_FLARE_SHORT);
 
     return {
       left: {
@@ -373,7 +372,7 @@ export function Garment({ imageUrl }: Props) {
         dir: toMsg(leftDirVec),
         length,
         radiusSeam: SLEEVE_RADIUS_SEAM,
-        radiusMax: SLEEVE_RADIUS,
+        radiusMax,
         radiusHem,
       },
       right: {
@@ -382,7 +381,7 @@ export function Garment({ imageUrl }: Props) {
         dir: toMsg(rightDirVec),
         length,
         radiusSeam: SLEEVE_RADIUS_SEAM,
-        radiusMax: SLEEVE_RADIUS,
+        radiusMax,
         radiusHem,
       },
     };
@@ -436,7 +435,7 @@ export function Garment({ imageUrl }: Props) {
     rightShoulder.updateWorldMatrix(true, false);
     leftShoulder.getWorldPosition(shoulderVec);
     rightShoulder.getWorldPosition(rightShoulderVec);
-    const pins = computeShoulderPin(shoulderVec, rightShoulderVec);
+    const pins = computeShoulderPin(shoulderVec, rightShoulderVec, garmentSize.shoulderWidth / 100 / 2);
     const topY = Math.max(pins.left.y, pins.right.y);
     const centerZ = (pins.left.z + pins.right.z) / 2;
 
@@ -456,7 +455,7 @@ export function Garment({ imageUrl }: Props) {
     pendingDtRef.current = 0;
     pendingRef.current = false;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [nodes, widthM, heightM, bodySize.armLength, bodySize.shoulderWidth, bodySize.height]);
+  }, [nodes, widthM, heightM, bodySize.armLength, bodySize.shoulderWidth, bodySize.height, garmentSize.shoulderWidth]);
 
   // 소매 종류(반팔/긴팔)만 바뀌면 소매만 다시 짓는다 — 몸판(torsoSim)은
   // 건드리지 않아, 이미 늘어져 자리 잡은 몸판이 소매 전환 때마다 평평한
@@ -475,7 +474,7 @@ export function Garment({ imageUrl }: Props) {
       sleeveRight: sleeveShapes.right,
     } satisfies MainToGarmentWorkerMessage);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sleeveRows, sleeveType]);
+  }, [sleeveRows, sleeveType, garmentSize.sleeveLength, garmentSize.sleeveWidth]);
 
   useFrame((_, delta) => {
     const worker = workerRef.current;
@@ -490,7 +489,7 @@ export function Garment({ imageUrl }: Props) {
     rightShoulder.updateWorldMatrix(true, false);
     leftShoulder.getWorldPosition(shoulderVec);
     rightShoulder.getWorldPosition(rightShoulderVec);
-    const pins = computeShoulderPin(shoulderVec, rightShoulderVec);
+    const pins = computeShoulderPin(shoulderVec, rightShoulderVec, garmentSize.shoulderWidth / 100 / 2);
 
     // 임시 디버그 훅 — Safari에서만 재현되는 어깨 처짐 문제를 사용자
     // 브라우저 콘솔에서 직접 확인하기 위해 추가(원인 확정되면 제거할 것).

@@ -31,12 +31,25 @@ export const MODEL_URL = `${import.meta.env.BASE_URL}models/mannequin.glb`;
 // 버린다(실측으로 확인한 실제 사례가 있다).
 const HIDDEN_MESH_KEYWORDS = ["visor", "joints"];
 
-type BoneCategory = "arm" | "leg" | "shoulder";
+type BoneCategory = "arm" | "leg" | "shoulder" | "torso";
 type Axis = "x" | "y" | "z";
 
 interface ScalableBone {
   bone: THREE.Object3D;
   axis: Axis;
+}
+
+// 36번(큰 재설계): 가슴둘레(bodySize.chest) 슬라이더가 지금껏 collisionMesh
+// 재빌드 effect의 의존성 배열에는 이미 들어있었지만(마치 작동하는 것처럼
+// 보였다), 정작 마네킹 메시 자체는 전혀 스케일되지 않았다 — arm/leg/
+// shoulder만 뼈대 카테고리로 분류돼 있었고 몸통(spine)은 아예 대상이
+// 아니었다. 즉 가슴둘레를 아무리 바꿔도 마네킹은 항상 같은 두께였고,
+// 그 위에 걸리는 옷만 슬라이더에 반응해 "몸은 그대론데 옷만 이상하게
+// 커지거나 작아지는" 상황이었다 — "신체 사이즈도 조절하며 핏을
+// 확인한다"는 목적을 몸 쪽에서 이미 못 지키고 있었다.
+interface GirthBone {
+  bone: THREE.Object3D;
+  axes: Axis[]; // 길이 축이 아닌 나머지 두 축(둘레 방향)
 }
 
 // 모델마다 뼈대 이름이 달라도 대응할 수 있도록 이름 기반으로 느슨하게 분류한다.
@@ -52,8 +65,11 @@ function classifyBone(name: string): BoneCategory | null {
   if (n.includes("shoulder")) return "shoulder";
   if (n.includes("arm")) return "arm";
   if (n.includes("leg")) return "leg";
+  if (n.includes("spine")) return "torso";
   return null;
 }
+
+const ALL_AXES: Axis[] = ["x", "y", "z"];
 
 // "길이 방향" 축은 모델마다 다를 수 있다 (Soldier.glb는 로컬 Y가 길이 방향이지만
 // Xbot.glb는 로컬 X였다 — Y로 하드코딩했다가 팔이 길어지는 대신 두꺼워지는
@@ -140,7 +156,7 @@ export function Mannequin() {
   // 하위의 ForeArm/Hand는 계층 구조를 통해 함께 늘어나므로 중복 적용 불필요).
   // 각 최상단 뼈대에는 자식 위치로부터 판별한 길이축도 함께 저장한다.
   const boneGroups = useMemo(() => {
-    const grouped: Record<BoneCategory, THREE.Object3D[]> = { arm: [], leg: [], shoulder: [] };
+    const grouped: Record<BoneCategory, THREE.Object3D[]> = { arm: [], leg: [], shoulder: [], torso: [] };
     for (const [name, node] of Object.entries(nodes)) {
       if (!isBone(node)) continue;
       const category = classifyBone(name);
@@ -156,6 +172,48 @@ export function Mannequin() {
     }
     return rootsOnly;
   }, [nodes]);
+
+  // torso(spine)는 길이 방향(위아래로 키를 늘림)이 아니라 둘레 방향(가슴
+  // 두께)을 스케일해야 하므로, 위 boneGroups.torso(길이축 하나만 저장)와는
+  // 별도로 "길이축이 아닌 나머지 두 축"을 계산해 둔다 — Spine 하나만
+  // 최상단으로 남기는 조상-자손 필터링은 boneGroups와 동일한 결과를 그대로
+  // 재사용한다(어차피 rootsOnly.torso가 이미 최상단 Spine 하나만 갖고 있음).
+  const torsoGirthBones: GirthBone[] = useMemo(() => {
+    return boneGroups.torso.map(({ bone, axis }) => ({
+      bone,
+      axes: ALL_AXES.filter((a) => a !== axis),
+    }));
+  }, [boneGroups.torso]);
+
+  // Three.js는 부모 뼈대의 스케일을 자손이 그대로 물려받는다 — Spine을
+  // 둘레 방향으로 스케일하면 그 아래 매달린 어깨/팔/목/머리까지 같이
+  // 굵어지거나 가늘어져 버린다(극단값 조합 스트레스 테스트로 실측: 가슴둘레
+  // 140cm에서 팔·손·머리까지 부풀어 마네킹 자세 자체가 일그러져 보임 —
+  // 어깨/팔은 "부풀어야 할 이유가 없는" 부위인데 부모 스케일이 새어 들어간
+  // 것). 팔 쪽은 boneGroups.shoulder(팔이 매달리는 분기점)에, 목/머리
+  // 쪽은 별도로 찾은 neck 뼈대에 역스케일(1/chestMultiplier)을 걸어
+  // 상쇄한다 — 어깨/팔/머리 자체의 길이 스케일과는 다른 축(girth 축)이라
+  // 서로 간섭하지 않는다.
+  // 상쇄 대상 축은 어깨 자신의 길이축이 아니라 spine이 "실제로 스케일한"
+  // 축이어야 한다(대부분 같은 축이지만, 다른 모델에서 우연히 다를 경우를
+  // 대비해 spine 기준 축을 그대로 재사용한다).
+  const shoulderGirthAxes: GirthBone[] = useMemo(() => {
+    const torsoAxes = torsoGirthBones[0]?.axes ?? [];
+    return boneGroups.shoulder.map(({ bone }) => ({ bone, axes: torsoAxes }));
+  }, [boneGroups.shoulder, torsoGirthBones]);
+
+  const neckCounterScaleBones: GirthBone[] = useMemo(() => {
+    const necks: THREE.Object3D[] = [];
+    for (const [name, node] of Object.entries(nodes)) {
+      if (isBone(node) && name.toLowerCase().includes("neck")) necks.push(node);
+    }
+    const set = new Set(necks);
+    // 목/머리 쪽에 상쇄해야 할 축은 spine이 "실제로 스케일한" 둘레 축
+    // 뿐이다(spine의 길이 축은 애초에 안 건드렸으니 거기까지 상쇄하면
+    // 오히려 목이 위아래로 눌리는 새 왜곡이 생긴다).
+    const torsoAxes = torsoGirthBones[0]?.axes ?? [];
+    return necks.filter((node) => !isDescendantOfAny(node, set)).map((bone) => ({ bone, axes: torsoAxes }));
+  }, [nodes, torsoGirthBones]);
 
   // T-pose(바인드 포즈)는 팔이 수평으로 뻗어 있어 부자연스럽다. 팔 뼈대가
   // 현재 향하고 있는 방향을 측정해서, 완전히 수직(월드 -Y)이 아니라 몸
@@ -213,6 +271,9 @@ export function Mannequin() {
     const armMultiplier = bodySize.armLength / DEFAULT_BODY_SIZE.armLength;
     const legMultiplier = bodySize.legLength / DEFAULT_BODY_SIZE.legLength;
     const shoulderMultiplier = bodySize.shoulderWidth / DEFAULT_BODY_SIZE.shoulderWidth;
+    // 둘레(circumference) = 2π×반지름이라, 둘레 비율 = 반지름(둘레축 스케일) 비율과
+    // 같다 — 가슴둘레 슬라이더 비율을 girth 축 스케일에 그대로 곱해도 된다.
+    const chestMultiplier = bodySize.chest / DEFAULT_BODY_SIZE.chest;
 
     const s = THREE.MathUtils.lerp(outer.scale.x, heightMultiplier, t);
     outer.scale.setScalar(s);
@@ -225,6 +286,25 @@ export function Mannequin() {
     }
     for (const { bone, axis } of boneGroups.shoulder) {
       bone.scale[axis] = THREE.MathUtils.lerp(bone.scale[axis], shoulderMultiplier, t);
+    }
+    for (const { bone, axes } of torsoGirthBones) {
+      for (const axis of axes) {
+        bone.scale[axis] = THREE.MathUtils.lerp(bone.scale[axis], chestMultiplier, t);
+      }
+    }
+    // 위 torsoGirthBones 스케일이 어깨/팔/목/머리 쪽으로 새어 들어가는 걸
+    // 상쇄한다 — 자세한 이유는 shoulderGirthAxes/neckCounterScaleBones
+    // 선언부 주석 참고.
+    const counterChestMultiplier = 1 / chestMultiplier;
+    for (const { bone, axes } of shoulderGirthAxes) {
+      for (const axis of axes) {
+        bone.scale[axis] = THREE.MathUtils.lerp(bone.scale[axis], counterChestMultiplier, t);
+      }
+    }
+    for (const { bone, axes } of neckCounterScaleBones) {
+      for (const axis of axes) {
+        bone.scale[axis] = THREE.MathUtils.lerp(bone.scale[axis], counterChestMultiplier, t);
+      }
     }
   });
 
