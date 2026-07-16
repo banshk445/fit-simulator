@@ -271,12 +271,21 @@ export function Garment({ imageUrl }: Props) {
       // 처지기 시작하는지 곡선 전체를 본다.
       const frontRow0Y: number[] = [];
       for (let x = 0; x < COLS; x++) frontRow0Y.push(msg.front[x * 3 + 1]);
+      // 34번: 밑단(마지막 행)이 좌우 대각선으로 찌그러지는 비대칭 확인용 —
+      // 마지막 행 전체의 x/y좌표를 뽑아 왼쪽 절반과 오른쪽 절반의 y(높이)가
+      // 대칭인지 직접 비교한다.
+      const lastRow = ROWS - 1;
+      const frontLastRowXY: Array<[number, number]> = [];
+      for (let x = 0; x < COLS; x++) {
+        frontLastRowXY.push([msg.front[(lastRow * COLS + x) * 3], msg.front[(lastRow * COLS + x) * 3 + 1]]);
+      }
       (window as unknown as { __fitDebugActual?: unknown }).__fitDebugActual = {
         frontRow0Y,
         frontRow0First3: Array.from(msg.front.slice(0, 3)),
         backRow0First3: Array.from(msg.back.slice(0, 3)),
         sleeveLeftRow0First3: Array.from(msg.sleeveLeft.slice(0, 3)),
         sleeveRightRow0First3: Array.from(msg.sleeveRight.slice(0, 3)),
+        frontLastRowXY,
       };
 
       // sleeveRows가 막 바뀐 직후 한두 프레임은 워커가 아직 이전 치수로

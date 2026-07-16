@@ -10,7 +10,7 @@ import { pinCorners } from "../lib/buildGarmentSim";
 import { buildUnifiedGarmentSim, rebuildWithNewSleeve } from "../lib/buildUnifiedGarmentSim";
 import { pinSleeveSeamRing } from "../lib/buildSleeveSim";
 import type { SleeveShape } from "../lib/buildSleeveSim";
-import { pullShoulderCapToSurface } from "../lib/garmentStitch";
+import { pullShoulderCapToSurface, enforceLeftRightSymmetry } from "../lib/garmentStitch";
 import {
   ARMHOLE_ROW_FRACTION,
   COLLISION_DETECTION_RADIUS,
@@ -328,6 +328,7 @@ ctx.onmessage = (event) => {
 
       const bodySurface = wholeBodyCollisionMesh.ready ? wholeBodyCollisionMesh : null;
       pullShoulderCapToSurface(activeSim, PANEL_FRONT, PANEL_BACK, armholeStartRow, COLS, dirX, dirY, dirZ, bodySurface);
+      enforceLeftRightSymmetry(activeSim, PANEL_FRONT, PANEL_BACK, COLS, ROWS);
       activeSim.preserveColumnOrder(dirX, dirY, dirZ, undefined, false, PANEL_FRONT, PANEL_BACK + 1);
       activeSim.preserveColumnOrder(dirX, dirY, dirZ, undefined, true, PANEL_FRONT, PANEL_BACK + 1);
 
