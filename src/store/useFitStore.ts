@@ -69,7 +69,19 @@ export const useFitStore = create<FitState>((set) => ({
   bodySize: { ...DEFAULT_BODY_SIZE },
   garmentSize: {
     length: 70,
-    width: 110,
+    // 36번 배포 직후 발견한 회귀: 이전 기본값(110)은 앞판 "패널 하나"의
+    // 전체 폭으로 그대로 쓰이는데(buildGarmentSim.ts의 halfWidthAtRow —
+    // fullHalfWidth = widthM/2, 앞판·뒤판 각각 독립적으로 이 폭을 씀),
+    // 실제 가슴단면(품)은 가슴둘레의 절반 안팎이 정상이라(100cm 가슴둘레
+    // 기준 약 50~55cm) 110은 애초에 실측 관례에 안 맞는 값이었다 — 그동안
+    // "이미지 비율에 맞춰 박스 안에 맞추기" 버그(Garment.tsx, 36번에서
+    // 제거함)가 이 값을 사진 비율에 따라 몰래 훨씬 작게(약 58cm) 줄이고
+    // 있어서 우연히 정상 범위로 보였을 뿐이다. 그 버그를 고치자 110이
+    // 그대로 적용돼 어깨(핀 반폭 약 29.5cm)에서 겨드랑이(55cm 반폭)까지
+    // 거의 두 배로 벌어지는 극단적인 테이퍼가 되어, 어깨가 붕 뜨고
+    // 목선이 가슴 쪽으로 무너지는 것처럼 보였다(실측: 사용자 스크린샷).
+    // 실제 가슴단면 관례에 맞춰 55로 되돌린다.
+    width: 55,
     shoulderWidth: 45,
     sleeveLength: DEFAULT_SLEEVE_LENGTH_SHORT,
     sleeveWidth: 18,

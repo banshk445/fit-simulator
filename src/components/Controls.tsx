@@ -155,7 +155,7 @@ export function Controls() {
         </div>
 
         <Slider label="총장" value={garmentSize.length} min={40} max={120} onChange={setGarmentLength} />
-        <Slider label="품" value={garmentSize.width} min={80} max={160} onChange={setGarmentWidth} />
+        <Slider label="품" value={garmentSize.width} min={35} max={90} onChange={setGarmentWidth} />
         <Slider
           label="어깨너비"
           value={garmentSize.shoulderWidth}

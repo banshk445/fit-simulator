@@ -53,9 +53,24 @@ export const SHOULDER_PIN_OUTSET = 0.115;
 // 좁다/넓다"는 핏을 확인할 방법이 애초에 없었다. 이제 핀은 "몸 중심에서
 // 어깨 방향으로 옷의 실제 어깨너비/2만큼" 위치한다 — 옷이 좁으면 핀이
 // 몸 중심 쪽으로 당겨지고(타이트/오프숄더가 아니라 좁은 핏), 넓으면
-// 어깨 밖으로 늘어난다(드롭숄더). 목~어깨 관절 사이로 완전히 파고들어
-// 렌더링이 깨지는 극단만 막는 최소 바닥값이다(크루넥 옷깃 폭 정도).
-const MIN_SHOULDER_HALF_WIDTH = 0.1;
+// 어깨 밖으로 늘어난다(드롭숄더).
+//
+// 36번 배포 직후 발견한 회귀(중요): 처음엔 이 바닥값을 고정 10cm로
+// 잡았는데, 기본 어깨너비(45cm) 자체가 그 절반(22.5cm)이라 이 마네킹의
+// 실제 어깨 표면을 벗어나는 데 필요한 거리(위 OUTSET 이력에서 실측·확정된
+// 약 29.5cm = 관절 거리 18cm + OUTSET 11.5cm)보다 짧았다 — 기본값에서부터
+// 핀이 마네킹 어깨 표면 안쪽에 박혀, 어깨가 충돌 처리로 밀려나며
+// 부풀어보이고 목선이 가슴 쪽으로 무너지는(이전에 29~32번에서 이미
+// 여러 차례 겪었던 것과 똑같은 증상) 회귀가 실측(사용자 스크린샷)으로
+// 확인됐다. 바닥값은 고정 상수가 아니라 "이 몸에서 렌더링이 깨지지 않는
+// 최소 거리"(관절 거리 + OUTSET, 즉 옛 기본 공식 그 자체)여야 한다 —
+// 실제 옷 어깨너비가 이보다 넓으면 그 값을 그대로 따르고(정상적인 핏
+// 차이가 보임), 이보다 좁으면(마네킹 골격보다 좁은 옷은 실제로도
+// 어차피 옷이 아니라 골격 위에 얹힌 것처럼 보일 수밖에 없다) 렌더링이
+// 깨지지 않는 선에서 멈춘다.
+function surfaceClearanceHalfWidth(center: THREE.Vector3, joint: THREE.Vector3): number {
+  return center.distanceTo(joint) + SHOULDER_PIN_OUTSET;
+}
 
 // 어깨 뼈대(관절)에서 수평으로만 밀어내던 것과 별개로, 실제로는 수직으로도
 // 살짝 낮다 — 실측(Playwright evaluate로 굽힌 마네킹 표면 중 핀 좌표
@@ -78,12 +93,12 @@ export function computeShoulderPin(
   const rightDir = right.clone().sub(center);
   if (leftDir.lengthSq() > 1e-9) leftDir.normalize();
   if (rightDir.lengthSq() > 1e-9) rightDir.normalize();
-  const halfWidth =
-    garmentHalfWidthM === undefined
-      ? center.distanceTo(left) + SHOULDER_PIN_OUTSET
-      : Math.max(garmentHalfWidthM, MIN_SHOULDER_HALF_WIDTH);
-  const pinLeft = center.clone().addScaledVector(leftDir, halfWidth);
-  const pinRight = center.clone().addScaledVector(rightDir, halfWidth);
+  const leftClearance = surfaceClearanceHalfWidth(center, left);
+  const rightClearance = surfaceClearanceHalfWidth(center, right);
+  const leftHalfWidth = garmentHalfWidthM === undefined ? leftClearance : Math.max(garmentHalfWidthM, leftClearance);
+  const rightHalfWidth = garmentHalfWidthM === undefined ? rightClearance : Math.max(garmentHalfWidthM, rightClearance);
+  const pinLeft = center.clone().addScaledVector(leftDir, leftHalfWidth);
+  const pinRight = center.clone().addScaledVector(rightDir, rightHalfWidth);
   pinLeft.y += SHOULDER_PIN_LIFT;
   pinRight.y += SHOULDER_PIN_LIFT;
   return { left: pinLeft, right: pinRight };
