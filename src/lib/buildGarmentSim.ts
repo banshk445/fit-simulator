@@ -1,6 +1,17 @@
 import { ClothSimulation } from "./clothPhysics";
 import type { Vec3Like } from "./clothProtocol";
-import { ARMHOLE_ROW_FRACTION, COLS, FRONT_BACK_HALF_GAP, ROWS, SEAM_REST_LENGTH } from "./clothConfig";
+import { ARMHOLE_ROW_FRACTION, ARM_ROWS, COLS, FRONT_BACK_HALF_GAP, ROWS, SEAM_REST_LENGTH } from "./clothConfig";
+
+// 46번(전면 재설계 — 통합 단일 패널): 사용자가 소매를 별도 원통 패널로
+// 두지 말고 몸판(앞/뒤판)과 이어진 하나의 넓은 천으로 만들어 달라고
+// 요청했다. 몸판 패널 자체를 어깨 폭보다 훨씬 넓게(소매 끝까지) 만들어,
+// 열(column) x가 몸통 폭 안쪽이면 기존과 똑같이 몸통 표면을 따라가고,
+// 그 바깥이면 어깨 지점에서 실제 팔 방향(dir)으로 뻗어나가게 한다 —
+// 봉제선/이음매 없이 같은 격자, 같은 정점이 자연스럽게 이어진다.
+export interface ArmDir {
+  dir: Vec3Like; // 단위 벡터(어깨→팔꿈치 방향)
+  length: number; // 소매 길이(m)
+}
 
 // 37번(목선 재설계): 이전 두 차례(9cm/35%→4cm/20%) 모두 "중심에서 아래로
 // 파임"만 다뤘는데, 실측(확대 스크린샷)해보니 이 방식은 애초에 크루넥이
@@ -12,121 +23,72 @@ import { ARMHOLE_ROW_FRACTION, COLS, FRONT_BACK_HALF_GAP, ROWS, SEAM_REST_LENGTH
 // 확실히 높게(목에 가깝게) 올라가 있고, 오직 어깨 솔기 바로 근처에서만
 // 빠르게 어깨 높이로 떨어진다. "중심에서 파임"이 아니라 "어깨 근처에서만
 // 떨어지고 나머지는 목 높이로 들어올려짐"으로 뒤집어야 한다.
-// NECKLINE_HOLE_WIDTH_FRACTION: 목 구멍 자체가 차지하는 폭(전체 어깨너비
-// 대비) — 실제 크루넥 목둘레(약 19cm)/평균 어깨너비(약 45cm) 비율에서
+// NECKLINE_HOLE_WIDTH_FRACTION: 목 구멍 자체가 차지하는 폭(어깨 실측
+// 반폭 대비) — 실제 크루넥 목둘레(약 19cm)/평균 어깨너비(약 45cm) 비율에서
 // 가져왔다. 이 구간 안쪽은 거의 목 높이로 평평(살짝 U자로만 굴곡).
-const NECKLINE_HOLE_WIDTH_FRACTION = 0.42;
+//
+// 46번 실측(재조정): 물리 복구 후 스크린샷으로 확인해보니, 이 폭(0.42)
+// 밖의 "목 구멍 가장자리→어깨점" 전환 구간이 전체 반폭의 29%(0.5-0.21)
+// 나 차지해서, 목선이 어깨까지 완만하게 미끄러지듯 내려가는 보트넥/
+// 오프숄더처럼 보였다(쇄골이 넓게 드러남) — 크루넥은 이 전환이 어깨
+// 솔기 바로 근처에서만 빠르게 끝나야 한다. 0.62로 늘려 전환 구간을
+// 반폭의 19%로 좁히고, 그만큼 "목 높이 그대로 유지"되는 구간을 어깨
+// 쪽으로 더 넓힌다.
+const NECKLINE_HOLE_WIDTH_FRACTION = 0.62;
 // 앞판은 깊게(스쿱넥 느낌으로 중심이 살짝 더 내려감), 뒤판은 거의 평평한
 // 크루넥 기준.
-const NECKLINE_RISE_FRONT = 0.045;
-const NECKLINE_RISE_BACK = 0.025;
+const NECKLINE_RISE_FRONT = 0.06;
+const NECKLINE_RISE_BACK = 0.052;
 // 목 구멍 중심이 구멍 가장자리보다 살짝만 더 내려가게(완전히 평평하면
 // 부자연스러워 보임) 하는 비율 — RISE 대비 몇 %만큼 중심을 낮출지.
-const NECKLINE_CENTER_DIP_FRACTION = 0.25;
+//
+// 46번 실측(진짜 원인 발견): 이 값을 0.25로 뒀을 때, 목 구멍 가장자리
+// (u=±holeHalf)에서 rise가 "최대"이고 중심(u=0)에서 이 비율만큼 "내려가는"
+// 구조라, 대칭으로 펼치면 좌우 두 개의 봉우리와 그 사이 골짜기가 있는
+// M자(박쥐 날개) 곡선이 수학적으로 나올 수밖에 없었다 — "살짝 U자"로
+// 의도했던 것보다 시각적으로 훨씬 도드라졌다. 0.06으로 크게 줄여 거의
+// 평평하게(정말 "살짝"만 내려가게) 만든다.
+const NECKLINE_CENTER_DIP_FRACTION = 0.06;
 // rise를 0번 행(어깨선)에만 적용했을 때 실측으로 확인된 어깨-목 전환부
 // 삼각 틈(아래 layoutTorsoPanels 주석 참고)을 막기 위해, 몇 개 행에 걸쳐
 // rise 영향을 서서히 줄인다 — armholeStartRow(겨드랑이선) 대비 이 비율
-// 지점에서 영향이 0이 된다. 0.5(행 2~3에서 소멸)로는 부족해서(정점 실측:
-// 어깨 근처 열에서 0번-1번 행 사이 수직 간격이 여전히 3.5cm 이상 벌어져
-// 그 사이로 마네킹이 비쳐 보임) 1.0(armholeStartRow 끝까지 서서히 줄어듦)
-// 으로 늘려 전환을 훨씬 완만하게 한다.
+// 지점에서 영향이 0이 된다.
 const NECKLINE_RISE_FADE_FRACTION = 1.0;
 
-// 큰 재설계(3D 곡면 어깨): 20/21번 수정(소매 스냅 문턱값, 어깨 폭 클램프
-// 제거) 이후에도 사용자가 3/4 측면 각도에서 "여전히 똑같다"고 재지적해
-// 실측해보니, 어깨~겨드랑이 구간(y=0..armholeStartRow)의 Z(앞뒤 깊이)
-// 좌표가 지금껏 단 한 번도 행/열에 따라 변한 적이 없었다 — panelZOffset
-// (앞판/뒤판 간격) 하나로 완전히 평평했다. 즉 20/21번은 이 구간이
-// "좌우로" 얼마나 넓은지만 고쳤을 뿐, 실제 둥근 어깨 캡이 카메라 쪽으로
-// (앞판은 앞으로, 뒤판은 뒤로) 볼록하게 휘어나오는 "앞뒤 곡률"은 전혀
-// 반영한 적이 없었다 — 정면에서는 이 곡률이 거의 안 보이지만, 사용자가
-// 계속 문제를 지적한 3/4 측면 각도는 정확히 이 앞뒤 곡률이 가장 잘 보이는
-// 각도라 아무리 X(좌우) 쪽을 고쳐도 그 각도에서는 여전히 평평한 판자처럼
-// 보였던 것 — 이게 진짜 "3D 곡면이 아니다"의 실체였다.
-//
-// 소매 원통(buildSleeveSim.ts)과 같은 파라메트릭 접근으로, 어깨선(0번 행,
-// 이음매라 앞뒤판이 겹치므로 건드리지 않음) 바로 아래부터 겨드랑이까지
-// 열(u, 중심 0~가장자리 ±0.5)이 가장자리(어깨 쪽)에 가까울수록, 행(y)이
-// 어깨선에 가까울수록 앞판은 +Z(앞), 뒤판은 -Z(뒤)로 볼록하게 부풀려
-// 실제 둥근 삼각근 표면을 흉내낸다 — 목 중심(u=0) 쪽은 부풀리지 않아
-// 목선 자체는 그대로 평평하게 남는다.
+// 큰 재설계(3D 곡면 어깨): 어깨선(0번 행) 바로 아래부터 겨드랑이까지,
+// 어깨 쪽(shoulderU 절대값이 클수록)일수록·어깨선에 가까울수록 앞판은
+// +Z(앞), 뒤판은 -Z(뒤)로 볼록하게 부풀려 실제 둥근 삼각근 표면을
+// 흉내낸다 — 목 중심 쪽은 부풀리지 않아 목선 자체는 평평하게 남는다.
 const SHOULDER_CAP_BULGE = 0.06;
 
-function shoulderCapZBulge(y: number, u: number, armholeStartRow: number): number {
+function shoulderCapZBulge(y: number, shoulderU: number, armholeStartRow: number): number {
   if (y <= 0 || armholeStartRow <= 0) return 0;
   const rowT = Math.min(y / armholeStartRow, 1);
-  const rowFalloff = 1 - rowT; // 어깨선 바로 아래(1번 행)에서 최대, 겨드랑이선에서 0
-  const outerness = Math.min(Math.abs(u) * 2, 1); // 목 중심(0)에서 0, 어깨 가장자리(±0.5)에서 1
+  const rowFalloff = 1 - rowT;
+  const outerness = Math.min(Math.abs(shoulderU) * 2, 1);
   return SHOULDER_CAP_BULGE * rowFalloff * outerness;
 }
 
-// 어깨선(0번 행) 위의 한 점(u = -0.5~0.5, panel 0=앞/1=뒤)이 기준 어깨
-// 높이(baseY)보다 얼마나 "위로" 올라가는지 계산한다(음수면 오히려 아래로
-// 내려감 — 목 구멍 중심의 얕은 U자 굴곡). 목 구멍 안쪽(|u| ≤
-// NECKLINE_HOLE_WIDTH_FRACTION/2)에서는 거의 최대 높이를 유지하고, 그
-// 밖에서는 어깨점(|u|=0.5)에 다다를 때까지 빠르게 0으로 떨어진다 — 실제
-// 크루넥처럼 목 대부분은 높게, 어깨 솔기 근처에서만 떨어지는 모양.
-// isFrontPanel: 30번 병합 이후 패널 번호가 더 이상 항상 0=앞/1=뒤가
-// 아니게 됐으므로(파라미터로 어느 쪽이 앞판인지 넘겨받음), panel===0
-// 대신 이 값으로 앞/뒤 깊이 차이를 구분한다.
-function necklineRise(isFrontPanel: boolean, u: number): number {
+// shoulderU(-0.5~0.5, 0=목 중심, ±0.5=어깨점)가 기준 어깨 높이(baseY)보다
+// 얼마나 "위로" 올라가는지 계산한다. isFrontPanel: 30번 병합 이후 패널
+// 번호가 더 이상 항상 0=앞/1=뒤가 아니므로 이 값으로 앞/뒤 깊이 차이를
+// 구분한다.
+function necklineRise(isFrontPanel: boolean, shoulderU: number): number {
   const rise = isFrontPanel ? NECKLINE_RISE_FRONT : NECKLINE_RISE_BACK;
   const holeHalf = NECKLINE_HOLE_WIDTH_FRACTION / 2;
-  const absU = Math.abs(u);
+  const absU = Math.abs(shoulderU);
   if (absU <= holeHalf) {
-    // 목 구멍 안쪽: 가장자리는 거의 rise 그대로, 중심으로 갈수록 완만한
-    // U자로 살짝 더 낮아진다.
-    const t = holeHalf > 0 ? absU / holeHalf : 1; // 0(중심)~1(구멍 가장자리)
+    const t = holeHalf > 0 ? absU / holeHalf : 1;
     return rise * (1 - NECKLINE_CENTER_DIP_FRACTION * (1 - t * t));
   }
-  // 목 구멍 밖(어깨 쪽): 구멍 가장자리(rise)에서 어깨점(0)까지 어깨
-  // 쪽으로 갈수록 빠르게 떨어지는 이즈아웃 곡선.
   const outerSpan = 0.5 - holeHalf;
-  const t = outerSpan > 0 ? (absU - holeHalf) / outerSpan : 1; // 0(구멍 가장자리)~1(어깨점)
+  const t = outerSpan > 0 ? (absU - holeHalf) / outerSpan : 1;
   const falloff = 1 - t * t;
   return rise * falloff;
 }
 
 // 특정 행(y)에서 좌우 절반 폭이 얼마나 테이퍼됐는지 계산한다(어깨선의 어깨
-// 핀 간격 → 겨드랑이선의 전체 폭). buildGarmentSim의 초기 격자 배치가 쓴다.
-//
-// 큰 재설계(3D 곡면 어깨 마감): shoulderHalfWidth를 fullHalfWidth로
-// 클램프(Math.min)하던 걸 없앴다. shoulderPin.ts가 어깨 핀을 관절
-// 위치에서 실제 어깨 표면 쪽으로 밀어내는 SHOULDER_PIN_OUTSET을 여러 차례
-// (6.0→7.5→9.5→11.5cm) 키워왔는데, 그때마다 사용자가 "여전히 어깨가
-// 분리돼 보인다"고 재지적한 근본 원인이 바로 이 클램프였다 — 기본
-// 슬라이더 값(어깨너비 45cm, 품 110cm)에서 핀 간격(약 68cm, 반폭 34cm)이
-// 이미 몸통 반폭(fullHalfWidth, 약 27.5cm)보다 넓은데, 이 클램프가
-// shoulderHalfWidth를 fullHalfWidth로 깎아버려 0번 행의 "초기 배치 및
-// 그로부터 계산되는 rest length"는 계속 27.5cm 기준으로 좁게 잡히고,
-// 그 직후 pinCorners()가 0번 행을 실제 핀 위치(34cm)로 강제로 잡아당겨
-// 버렸다 — 즉 SHOULDER_PIN_OUTSET을 아무리 키워도 핀 "위치"만 바깥으로
-// 갈 뿐, 그 아래 몇 행이 따라 넓어질 근거(rest length)가 전혀 안 바뀌어
-// 곧바로 다시 좁아져 보였다(사용자가 어깨너비를 키울수록 더 크게
-// 체감했을 이유이기도 하다). 클램프를 없애면 shoulderHalfWidth가
-// fullHalfWidth보다 넓을 때 taperT가 그대로 "어깨(넓다)→겨드랑이(몸통
-// 반폭으로 좁아짐)" 방향으로 자연스럽게 좁아지는 곡선을 만든다 — 실제
-// 티셔츠도 어깨 솔기가 가슴 폭보다 넓게 시작해 암홀 쪽으로 좁아지는
-// 경우가 흔하므로 해부학적으로도 맞는 방향이다.
-// 32번(진짜 원인 — 런타임 보정으로는 못 이기는 초기 배치 문제): 사용자가
-// "목선이 어깨가 아니라 가슴에 처져 있다"고 재차 지적해 실측(핀 바로
-// 아래 행들의 X좌표를 소매 링과 대조)해보니, garmentStitch.ts의
-// pullShoulderCapToSurface가 목표점을 아무리 바꿔도(가중치를 낮춰도,
-// 심지어 목표점 자체를 핀 쪽으로 보간해도) 결과가 거의 안 바뀌었다 —
-// 진짜 원인은 여기 있었다. taperT를 y/armholeStartRow로 "선형" 보간하면
-// row 1(armholeStartRow=5 기준 전체의 1/5 지점)에서 이미 전체 좁아짐의
-// 20%가 반영된 반폭이 나오고, 그 반폭이 곧 row 0(핀, 고정)↔row 1 구조
-// 제약의 "자연 길이"가 된다. 이 구조 제약은 서브스텝마다 원단별 12~24회
-// 반복 완화되는데, pullShoulderCapToSurface는 프레임당 딱 한 번만 실행돼
-// 그 반복 횟수를 못 이기고 매번 다시 좁은 자연 길이로 끌려갔다(실측:
-// 목표점을 바꿔도 결과 좌표가 소수점 단위까지 거의 그대로였음 — 런타임
-// 보정이 사실상 아무 효과가 없었다는 뜻).
-// 실제 티셔츠의 어깨 캡은 목~소매 이음매 사이 상당 구간을 넓게 유지하다
-// 겨드랑이 근처에서야 좁아진다 — 그 모양을 taperT 자체에 반영해야
-// 런타임 보정이 이길 필요 없이 애초에 올바른 형태로 정착한다. 선형 대신
-// 제곱(quadratic ease-in)으로 바꿔, 어깨선 근처(작은 y)에서는 거의
-// shoulderHalfWidth 그대로 유지되다가 armholeStartRow에 가까워질수록
-// 급격히 fullHalfWidth로 좁아지게 한다.
+// 핀 간격 → 겨드랑이선의 전체 폭).
 function halfWidthAtRow(y: number, widthM: number, pinLeft: Vec3Like, pinRight: Vec3Like): number {
   const armholeStartRow = Math.round(ROWS * ARMHOLE_ROW_FRACTION);
   const fullHalfWidth = widthM / 2;
@@ -138,51 +100,267 @@ function halfWidthAtRow(y: number, widthM: number, pinLeft: Vec3Like, pinRight: 
   return shoulderHalfWidth + (fullHalfWidth - shoulderHalfWidth) * taperT;
 }
 
-// 어깨선(0번 행) 전체를 목선 곡선을 따라 고정한다 — 양 끝(어깨)만 고정하고
-// 나머지를 물리에 맡기면 직선 그대로 축 처지거나 뻣뻣하게 남아 "실제로
-// 입은" 느낌이 안 난다. pinLeft~pinRight를 선형보간한 기준선에서,
-// necklineRise만큼 목 구멍 쪽은 위로 끌어올리고(대부분의 폭) 어깨 쪽만
-// 원래 어깨선 높이로 남겨 크루넥 모양을 만든다. 앞판/뒤판이 어깨 양
-// 끝에서는 같은 지점에 고정되므로 실제 어깨 시접처럼 동작한다.
-//
-// (한때 1번 행도 함께 고정해 크루넥 옷깃 골지 밴드를 흉내 내보려 했으나,
-// 인접한 두 행을 통째로 고정하면 그 아래 행들과의 구조/전단 제약이
-// 과잉구속되어 옷감이 뒤틀리는(정점 순서가 꼬여 텍스처가 대각선으로
-// 찢어진 것처럼 보임) 심각한 회귀가 실측으로 확인돼 되돌렸다 — 이 완화
-// 방식의 솔버는 인접 행을 동시에 완전 고정하는 것을 잘 버티지 못한다.)
-//
-// 30번(병합): 어느 패널이 몸판 앞/뒤인지 이제 호출부가 넘겨줘야 한다(더
-// 이상 항상 0/1이 아님 — clothConfig.ts의 PANEL_FRONT/PANEL_BACK 참고).
+// 46번: 어깨선(0번 행) 중 몸통 쪽(frac<=1)만 목선 곡선을 따라 고정한다 —
+// 사용자 요청대로 그 바깥(소매 쪽으로 뻗은 부분)은 핀을 전혀 걸지 않고
+// 중력·구조 제약에만 맡긴다. frac 계산은 layoutTorsoPanels와 반드시
+// 같은 공식을 써야 한다(레이아웃 때 놓은 위치와 핀 목표가 어긋나면 큰
+// 초기 위반이 생긴다) — columnLayout()으로 공유한다.
 export function pinCorners(
   sim: ClothSimulation,
   pinLeft: Vec3Like,
   pinRight: Vec3Like,
   frontPanel: number,
   backPanel: number,
+  armLeft: ArmDir,
+  armRight: ArmDir,
+  necklineLift?: readonly number[],
 ): void {
+  const sideSign = Math.sign(pinLeft.x - pinRight.x) || 1;
+  const thw0 = halfWidthAtRow(0, 0, pinLeft, pinRight); // widthM 무관(row0은 항상 shoulderHalfWidth)
+  const armSpanHalf = thw0 + Math.max(armLeft.length, armRight.length);
+
   for (const [panel, isFront] of [
     [frontPanel, true],
     [backPanel, false],
   ] as const) {
     for (let x = 0; x < COLS; x++) {
-      const t = x / (COLS - 1); // 0(왼쪽 어깨) ~ 1(오른쪽 어깨)
-      const u = t - 0.5;
-      const baseX = pinLeft.x + (pinRight.x - pinLeft.x) * t;
-      const baseY = pinLeft.y + (pinRight.y - pinLeft.y) * t;
-      const baseZ = pinLeft.z + (pinRight.z - pinLeft.z) * t;
-      const rise = necklineRise(isFront, u);
-      sim.pin(sim.index(panel, x, 0), baseX, baseY + rise, baseZ);
+      const u = x / (COLS - 1) - 0.5;
+      const s = u >= 0 ? 1 : -1;
+      const frac = thw0 > 0 ? (Math.abs(u) * 2 * armSpanHalf) / thw0 : 0;
+      if (frac > 1) continue; // 소매 쪽 — 핀 없음(중력에 맡김)
+      const shoulderU = s * frac * 0.5;
+      const baseX = -sideSign * shoulderU * 2 * thw0;
+      const baseY = pinLeft.y + (pinRight.y - pinLeft.y) * ((shoulderU + 0.5) / 1);
+      const baseZ = pinLeft.z + (pinRight.z - pinLeft.z) * ((shoulderU + 0.5) / 1);
+      const rise = necklineRise(isFront, shoulderU);
+      const lift = necklineLift?.[x] ?? 0;
+      sim.pin(sim.index(panel, x, 0), baseX, baseY + rise + lift, baseZ);
     }
   }
 }
 
-// 앞판+뒤판을 어깨선 아래로 평평하게 배치하고 상단 모서리를 고정한다.
-// 격자 내부 제약(구조/전단/벤드)은 이 함수가 아니라 호출부가(모든 패널을
-// 다 배치한 뒤 한 번에) sim.buildConstraints()로 만든다 — 30번 병합
-// 이전에는 이 함수가 자기 몫의 ClothSimulation을 직접 만들고 그 안에서
-// buildConstraints까지 호출했지만, 이제 몸판+소매가 한 인스턴스를
-// 공유하므로 "다른 패널(소매)이 아직 배치되기 전에 내부 제약부터
-// 만들어버리는" 순서 문제를 피하려면 배치와 제약 생성을 분리해야 한다.
+// 앞판+뒤판을 배치한다. 몸통 폭 안쪽(frac<=1) 열은 기존과 동일한 방식으로
+// 어깨~겨드랑이~밑단 테이퍼를 따라가고, 그 바깥(frac>1) 열은 어깨 지점
+// (frac=1 경계)에서 실제 팔 방향(armLeft/armRight.dir)으로 뻗어나간다 —
+// 뻗어나가는 길이는 armRowFactor(y)로 어깨선(y=0)에서 최대이고
+// ARM_ROWS(겨드랑이 근처)에 이르면 0으로 줄어, 그 아래 행에서는 이
+// 열들도 자연스럽게 몸통 가장자리에 다시 합류한다(별도 봉제선 없이
+// 같은 격자라 이 합류도 매끈하게 이어진다).
+//
+// 46번 실측(재조정): 처음엔 y=0에서만 factor=1이고 그 즉시 y가 커질수록
+// 줄어드는 곡선(1-t²)을 썼는데, 실측(긴팔 스크린샷)해보니 소매 끝(가장
+// 바깥 열)이 row 0 "한 점"에서만 최대 길이에 닿고 바로 다음 행부터
+// 급격히 줄어들어, 실제 소매(대략 네모꼴 천을 원통으로 만 모양)가 아니라
+// 어깨에서 뾰족하게 튀어나온 "가시" 모양으로 보였다 — 소매 끝단(손목
+// 쪽)이 한 점이 아니라 어느 정도 폭이 있는 가장자리여야 하는데, row 0
+// 근방 몇 행은 거의 최대 길이를 그대로 유지하다가 겨드랑이 쪽에서야
+// 급격히 줄어들게(정체 구간 + 테이퍼 구간) 바꾼다.
+const ARM_ROW_PLATEAU_FRACTION = 0.45;
+function armRowFactor(y: number): number {
+  const plateauRows = ARM_ROWS * ARM_ROW_PLATEAU_FRACTION;
+  if (y <= plateauRows) return 1;
+  const taperSpan = ARM_ROWS - plateauRows || 1;
+  const t = Math.min((y - plateauRows) / taperSpan, 1);
+  return 1 - t * t;
+}
+
+// 46번(형태 재설계 — 진짜 원통 수학): Z축으로만 부풀리는 근사(위 이전
+// 버전)는 목선 찢어짐(강한 지지로 고침) → 각진 갑옷 모양(해상도를
+// 올려도 그대로, 실측으로 확인)으로 이어져, 사용자가 "같은 평면 공식
+// 안에서, 소매 구간만 진짜 각도 기반 원통 수학으로 다시 설계"를
+// 선택했다(위험 감수 확인). 열(column)은 그대로 "팔 방향을 따라 얼마나
+// 뻗었는지"(sleeveT, 0=몸통 경계~1=소매 끝)를 맡고, 행(row)이 새로
+// "팔 둘레를 얼마나 돌았는지"(각도)를 맡는다 — 앞판은 팔 위쪽(행 0)에서
+// 시작해 팔 앞쪽으로, 뒤판은 같은 위쪽에서 시작해 팔 뒤쪽으로 각각
+// ANGLE_MAX만큼 돌아 내려가며(합쳐서 팔 위쪽 대부분을 덮는 원통면),
+// ARM_ROWS에 이르면 armFactor가 0이 되어 원통 성분 전체가 사라지고 그
+// 행의 몸통 가장자리로 되돌아온다(별도 봉제선 없이 매끈하게 합류).
+function armPerpBasis(dir: Vec3Like): { up: Vec3Like; side: Vec3Like } {
+  // dir와 수직인 "위쪽" 성분 — 월드 업(0,1,0)에서 dir 방향 성분을 뺀
+  // 나머지. 실제 마네킹 팔이 수직에 아주 가깝게 들리지 않는 한(T/A포즈,
+  // 팔을 내린 포즈 모두 해당) 안정적으로 계산된다.
+  const dot = dir.y; // dir·(0,1,0)
+  let ux = -dir.x * dot;
+  let uy = 1 - dir.y * dot;
+  let uz = -dir.z * dot;
+  const ulen = Math.hypot(ux, uy, uz) || 1;
+  ux /= ulen;
+  uy /= ulen;
+  uz /= ulen;
+  // side = dir × up — up과 dir 둘 다에 수직, 앞/뒤(대략 월드 Z)로 향한다.
+  let sx = dir.y * uz - dir.z * uy;
+  let sy = dir.z * ux - dir.x * uz;
+  let sz = dir.x * uy - dir.y * ux;
+  const slen = Math.hypot(sx, sy, sz) || 1;
+  sx /= slen;
+  sy /= slen;
+  sz /= slen;
+  return { up: { x: ux, y: uy, z: uz }, side: { x: sx, y: sy, z: sz } };
+}
+
+// 팔 둘레를 얼마나 도는지(라디안, 편측). 두 반쪽(앞판+뒤판)을 합치면
+// 2*ANGLE_MAX(현재 약 243°)만큼 덮는다 — 완전한 360도는 아니지만(가장
+// 헐렁한 팔 안쪽/겨드랑이 쪽은 애초에 armhole로 트여 있어야 하는 부분과
+// 겹쳐 실제로도 안 보임), 대부분의 각도를 덮어 "위에서/옆에서/살짝
+// 아래서" 어느 각도로 봐도 납작한 판이 아니라 둥근 단면으로 보인다.
+const ARM_ANGLE_MAX = Math.PI * 0.675;
+// 소매가 몸통 가장자리(sleeveT=0)에서 0부터 시작해 이 지점부터 최대
+// 반지름을 유지하는 비율 — smoothstep으로 매끄럽게 올린다(각진 접힘선
+// 방지, 이전 WRAP_RAMP_T와 같은 이유).
+const ARM_TUBE_RADIUS_RAMP_T = 0.3;
+// 46번 실측(풍선 소매): 0.085(팔 충돌 반경 0.065보다 넉넉히 큼)로 뒀더니
+// 실제 팔보다 훨씬 굵게 부풀어 폼핏 반팔이 아니라 퍼프소매처럼 보였다 —
+// 사용자가 직접 스크린샷으로 확인. 실제 팔 충돌 반경(ARM_COLLISION_RADIUS)
+// 에 옷감 여유 정도만 더한 값으로 줄여, 팔에 붙는 느낌에 가깝게 한다.
+const ARM_TUBE_RADIUS = 0.055;
+
+// 소매 쪽(frac>1) 한 정점의 "이상적" 위치. layoutTorsoPanels(초기 배치)와
+// applyArmSoftPull(매 프레임 약한 지지, 아래)이 이 공식을 공유한다 — 두
+// 곳이 서로 다른 공식을 쓰면 소프트 풀이 매 프레임 엉뚱한 목표로
+// 당기게 된다.
+function sleeveExtensionPoint(
+  y: number,
+  v: number,
+  s: number,
+  frac: number,
+  thw: number,
+  thw0: number,
+  armSpanHalf: number,
+  arm: ArmDir,
+  armBasis: { up: Vec3Like; side: Vec3Like },
+  topY: number,
+  heightM: number,
+  centerZ: number,
+  panelZOffset: number,
+  panelSign: number,
+  sideSign: number,
+  armholeStartRow: number,
+  armFactor: number,
+): { x: number; y: number; z: number } {
+  const edgeShoulderU = s * 0.5;
+  const edgeX = -sideSign * edgeShoulderU * 2 * thw;
+  const edgeY = topY - v * heightM; // rise(edgeShoulderU=±0.5)는 항상 0
+  const edgeCapZ = shoulderCapZBulge(y, edgeShoulderU, armholeStartRow);
+  const edgeZ = centerZ + panelZOffset + panelSign * edgeCapZ;
+  const maxFrac = thw0 > 0 ? armSpanHalf / thw0 : 1;
+  const sleeveT = maxFrac > 1 ? Math.min((frac - 1) / (maxFrac - 1), 1) : 0;
+  // 열(sleeveT) → 팔 축 방향(길이) 성분. 행(y) → 둘레 각도(아래 angle).
+  const reach = arm.length * sleeveT;
+  const radiusRampRaw = ARM_TUBE_RADIUS_RAMP_T > 0 ? Math.min(Math.max(sleeveT / ARM_TUBE_RADIUS_RAMP_T, 0), 1) : 1;
+  const radiusT = radiusRampRaw * radiusRampRaw * (3 - 2 * radiusRampRaw);
+  const tubeRadius = ARM_TUBE_RADIUS * radiusT;
+  // 행 진행도(0=어깨선~1=ARM_ROWS) → 각도. smoothstep으로 양 끝(팔
+  // 맨 위=0, ARM_ROWS 경계=최대각)에서 미분이 0이 되게 해 몸통과의
+  // 합류부·정수리부 모두 매끄럽다.
+  const rowT = ARM_ROWS > 0 ? Math.min(y / ARM_ROWS, 1) : 1;
+  const rowSmooth = rowT * rowT * (3 - 2 * rowT);
+  const angle = rowSmooth * ARM_ANGLE_MAX;
+  const cosA = Math.cos(angle);
+  const sinA = Math.sin(angle) * panelSign; // 앞판은 +쪽, 뒤판은 -쪽으로 돈다
+  const offsetX = arm.dir.x * reach + (armBasis.up.x * cosA + armBasis.side.x * sinA) * tubeRadius;
+  const offsetY = arm.dir.y * reach + (armBasis.up.y * cosA + armBasis.side.y * sinA) * tubeRadius;
+  const offsetZ = arm.dir.z * reach + (armBasis.up.z * cosA + armBasis.side.z * sinA) * tubeRadius;
+  return {
+    x: edgeX + offsetX * armFactor,
+    y: edgeY + offsetY * armFactor,
+    z: edgeZ + offsetZ * armFactor,
+  };
+}
+
+// 46번 실측(약한 지지 추가): 소매 열을 완전 무핀으로 두니(사용자 명시적
+// 요청) 중력이 곧바로 끌어내려, 실측(긴팔 측면 스크린샷)해보니 팔 축
+// 위에 아무 지지가 없어 어깨에 매달린 짧은 자락처럼 처지고 긴팔조차 팔
+// 대부분이 노출됐다. 사용자에게 "완전 무핀 유지 + 소매가 팔 쪽으로
+// 자연스럽게 끌려가는 부드러운 힘 추가" vs "지금 상태 그대로" vs "일부
+// 열만 다시 핀 고정"을 물어봤고, 첫 번째를 명시적으로 선택했다
+// (AskUserQuestion). 매 프레임 소매 열의 "이상적 팔 위 지점"(팔이
+// 움직이면 이 목표도 같이 움직인다)으로 아주 약하게(가중치, 완전 스냅이
+// 아님) 끌어당긴다 — 핀처럼 강제로 고정하지 않으므로 여전히 중력/충돌의
+// 영향을 받아 자연스럽게 늘어지지만, 이 힘이 없을 때처럼 완전히 무너지지는
+// 않는다.
+// 46번 실측(버그): 0.08로는 눈에 띄는 변화가 전혀 없었다 — 이 보정은
+// 프레임당 딱 한 번만 적용되는데, 그 사이 중력+구조 제약 완화가 서브스텝
+// (최대 2회)마다 원단별 12~24회씩 돌아 훨씬 큰 "표"를 행사하므로, 작은
+// 가중치로는 매 프레임 도로 씻겨 내려간다. 이 보정이 실제로 체감될
+// 정도로 무게를 키운다 — 그래도 1.0(완전 스냅)은 아니므로 여전히 처짐
+// 자체는 남는다.
+//
+// 46번 실측(진짜 원인 — 거리 제약은 방향을 모른다): 0.45로도 앞판/뒤판이
+// 같은 소매 열(x=0, row0)에서 Y가 5cm나 벌어지는 게 실측(정점 좌표
+// 직접 대조: 앞 y=1.246 대 뒤 y=1.296)으로 확인됐다 — addNecklineSeamConstraints
+// 가 이 열도 이어주고 있지만, 그건 "거리"만 고정하는 제약이라 그 거리가
+// Z 차이(의도한 랩)로 나타나든 Y 차이(중력이 만든 처짐)로 나타나든
+// 상관하지 않는다. 매 프레임 중력+구조 완화가 12~24회(서브스텝 최대
+// 2회)씩 돌며 이 방향을 계속 Y 쪽으로 밀어붙이는데, 소프트 풀은 프레임당
+// 딱 한 번(0.45)만 되돌리니 남은 절반 이상이 매번 다시 중력에 잠식된다
+// — 그 결과가 화면에서 목선/소매 경계의 들쭉날쭉한 찢어짐으로 보였다.
+// 1.0(완전 스냅)에 훨씬 가깝게 올려, 목표 지점과의 잔차가 매 프레임
+// 거의 다 지워지게 한다 — 그래도 완전 핀(sim.pin)은 아니므로 순간적인
+// 충돌 반발 등에는 여전히 밀릴 수 있어 "완전히 뻣뻣하게 고정"까지는
+// 아니다.
+//
+// 46번 실측(재조정 — 뻣뻣함 완화): 사용자가 "소매가 중력을 못 이기고
+// 뻣뻣하게 고정돼 보인다"고 재지적했다. 0.85는 찢어짐(위 설명)을 막으려고
+// 올린 값인데, 그 찢어짐의 진짜 원인은 가중치가 아니라 0번 행에서
+// 앞판/뒤판이 서로 다른 지점으로 수렴하던 것이었고, 이후 형태 재설계
+// (진짜 원통 각도 수학)로 0번 행은 각도=0이라 앞판/뒤판이 공식 자체에서
+// 항상 같은 지점으로 계산되도록 이미 구조적으로 고쳐졌다 — 즉 이 가중치를
+// 낮춰도 그 찢어짐이 재발하지 않을 가능성이 높다(실측으로 검증 필요).
+// 낮춰서 중력이 더 이기게 하고, 낮춘 뒤에도 0번 행 앞/뒤 간격이 다시
+// 벌어지지 않는지 반드시 재확인한다.
+const ARM_SOFT_PULL_WEIGHT = 0.02;
+
+export function applyArmSoftPull(
+  sim: ClothSimulation,
+  frontPanel: number,
+  backPanel: number,
+  widthM: number,
+  heightM: number,
+  topY: number,
+  centerZ: number,
+  pinLeft: Vec3Like,
+  pinRight: Vec3Like,
+  armLeft: ArmDir,
+  armRight: ArmDir,
+): void {
+  const armholeStartRow = Math.round(ROWS * ARMHOLE_ROW_FRACTION);
+  const sideSign = Math.sign(pinLeft.x - pinRight.x) || 1;
+  const thw0 = halfWidthAtRow(0, widthM, pinLeft, pinRight);
+  const armSpanHalf = thw0 + Math.max(armLeft.length, armRight.length);
+  if (armSpanHalf <= thw0) return;
+  const armLeftBasis = armPerpBasis(armLeft.dir);
+  const armRightBasis = armPerpBasis(armRight.dir);
+
+  for (const [panel, isFront] of [
+    [frontPanel, true],
+    [backPanel, false],
+  ] as const) {
+    const panelZOffset = isFront ? FRONT_BACK_HALF_GAP : -FRONT_BACK_HALF_GAP;
+    const panelSign = isFront ? 1 : -1;
+    for (let y = 0; y < ROWS; y++) {
+      const armFactor = armRowFactor(y);
+      if (armFactor <= 0) continue;
+      const v = y / (ROWS - 1);
+      const thw = halfWidthAtRow(y, widthM, pinLeft, pinRight);
+      for (let x = 0; x < COLS; x++) {
+        const u = x / (COLS - 1) - 0.5;
+        const s = u >= 0 ? 1 : -1;
+        const frac = thw0 > 0 ? (Math.abs(u) * 2 * armSpanHalf) / thw0 : 0;
+        if (frac <= 1) continue;
+        const arm = u < 0 ? armLeft : armRight;
+        const armBasis = u < 0 ? armLeftBasis : armRightBasis;
+        const i = sim.index(panel, x, y);
+        if (sim.pinned[i]) continue;
+        const target = sleeveExtensionPoint(y, v, s, frac, thw, thw0, armSpanHalf, arm, armBasis, topY, heightM, centerZ, panelZOffset, panelSign, sideSign, armholeStartRow, armFactor);
+        const ix = i * 3;
+        sim.positions[ix] += (target.x - sim.positions[ix]) * ARM_SOFT_PULL_WEIGHT;
+        sim.positions[ix + 1] += (target.y - sim.positions[ix + 1]) * ARM_SOFT_PULL_WEIGHT;
+        sim.positions[ix + 2] += (target.z - sim.positions[ix + 2]) * ARM_SOFT_PULL_WEIGHT;
+      }
+    }
+  }
+}
+
 export function layoutTorsoPanels(
   sim: ClothSimulation,
   frontPanel: number,
@@ -193,29 +371,18 @@ export function layoutTorsoPanels(
   centerZ: number,
   pinLeft: Vec3Like,
   pinRight: Vec3Like,
+  armLeft: ArmDir,
+  armRight: ArmDir,
 ): void {
   const armholeStartRow = Math.round(ROWS * ARMHOLE_ROW_FRACTION);
-  // 열 방향 부호. 아래 X 배치 공식(u*2*halfWidth)은 x=0(u=-0.5)을 항상
-  // 음의 X로, x=COLS-1(u=+0.5)을 항상 양의 X로 놓는데, pinCorners()가
-  // 0번 행을 고정하는 방향(x=0 → pinLeft, x=COLS-1 → pinRight)은 실제
-  // pinLeft/pinRight의 실제 좌표 부호와 무관하게 항상 고정이다. 이 마네킹
-  // 장면에서는 pinLeft.x가 양수(+), pinRight.x가 음수(-)라 두 부호가
-  // 서로 반대로 어긋난다 — 즉 0번 행을 다 배치한 직후 pinCorners가 그
-  // 자리를 반대쪽(양→음 전체 폭만큼)으로 홱 뒤집어버리는 셈이라, 1번
-  // 행과의 구조 제약이 시작부터 실제 폭의 2배에 달하는 거리를 억지로
-  // 줄여야 하는 거대한 초기 위반 상태로 출발한다. 몇 프레임 안에 저절로
-  // 풀리기도 하지만(대부분의 경우), 드물게 못 풀고 매듭처럼 영구히
-  // 뒤엉킨 채로 굳어버리는 문제가 실측으로 확인됐다(특히 옷 치수를 이미
-  // 돌고 있는 시뮬레이션에서 바꿔 다시 짓는 경우 재현율이 높았다). 부호를
-  // 실제 pinLeft/pinRight 방향에 맞춰 동적으로 계산해 이 불일치 자체를
-  // 없앤다.
+  // 열 방향 부호 — pinCorners와 반드시 같은 공식을 써야 한다(자세한 이유는
+  // 그 함수 주석 참고).
   const sideSign = Math.sign(pinLeft.x - pinRight.x) || 1;
-  // 옆선 시접이 없는 암홀 구간(어깨~겨드랑이)을 폭 그대로 두면 사각형
-  // 조각이 어깨 밖으로 뻣뻣하게 튀어나와 보인다. 어깨선에서는 실제 어깨 핀
-  // 간격만큼 좁게 시작해서 겨드랑이 선(armholeStartRow)까지 점점 전체
-  // 폭으로 넓어지도록, 초기 배치(=제약 조건의 rest length)를 그렇게
-  // 좁혀서 잡는다 — 물리가 진행돼도 rest length가 유지되므로 이 모양이
-  // 그대로 이어진다.
+  const thw0 = halfWidthAtRow(0, widthM, pinLeft, pinRight);
+  const armSpanHalf = thw0 + Math.max(armLeft.length, armRight.length);
+  const armLeftBasis = armPerpBasis(armLeft.dir);
+  const armRightBasis = armPerpBasis(armRight.dir);
+
   for (const [panel, isFront] of [
     [frontPanel, true],
     [backPanel, false],
@@ -224,43 +391,80 @@ export function layoutTorsoPanels(
     const panelSign = isFront ? 1 : -1;
     for (let y = 0; y < ROWS; y++) {
       const v = y / (ROWS - 1); // 0 어깨선 ~ 1 밑단
-      const halfWidth = halfWidthAtRow(y, widthM, pinLeft, pinRight);
+      const thw = halfWidthAtRow(y, widthM, pinLeft, pinRight);
+      const armFactor = armRowFactor(y);
       for (let x = 0; x < COLS; x++) {
-        const u = x / (COLS - 1) - 0.5; // -0.5 ~ 0.5
-        // 0번 행은 목선 곡선만큼 미리 올려서(또는 중심부는 살짝 내려서)
-        // 배치해 둔다 — 그래야 이 위치에서 계산되는 구조/전단 제약의 rest
-        // length가 핀으로 고정될 최종 목선 모양과 맞아서, 목 둘레에
-        // 불필요한 인장이 생기지 않는다.
-        // 37번: rise를 0번 행에만 적용하면, 목 구멍 폭 안쪽 열(예: x=1~3)에서
-        // 0번 행이 갑자기 몇 cm 위로 뛰는데 1번 행은(v로만 배치돼) 그대로라
-        // 두 행 사이 거리가 열마다 크게 달라져(중심 열은 멀고 어깨 쪽은
-        // 가까움) 실측(확대 스크린샷)해보니 어깨-목 전환 구간에 마네킹이
-        // 비쳐 보이는 작은 삼각 틈이 생겼다 — 이 두 행 사이 rest length가
-        // 열마다 너무 급하게 바뀌면서 그 구간 전단 제약이 뒤틀린 것으로
-        // 보인다. shoulderCapZBulge와 같은 방식으로 rise 영향을 몇 개 행에
-        // 걸쳐 서서히 줄여, 0→1→2번 행으로 갈수록 완만하게 이어지게 한다.
-        const riseRowFalloff = armholeStartRow > 0 ? Math.max(0, 1 - y / (armholeStartRow * NECKLINE_RISE_FADE_FRACTION)) : y === 0 ? 1 : 0;
-        const rise = necklineRise(isFront, u) * riseRowFalloff;
-        const capZ = shoulderCapZBulge(y, u, armholeStartRow);
-        sim.setParticle(
-          sim.index(panel, x, y),
-          sideSign * -u * 2 * halfWidth,
-          topY - v * heightM + rise,
-          centerZ + panelZOffset + panelSign * capZ,
-        );
+        const u = x / (COLS - 1) - 0.5;
+        const s = u >= 0 ? 1 : -1;
+        const frac = thw0 > 0 ? (Math.abs(u) * 2 * armSpanHalf) / thw0 : 0;
+        const arm = u < 0 ? armLeft : armRight;
+        const armBasis = u < 0 ? armLeftBasis : armRightBasis;
+
+        if (frac <= 1) {
+          // 몸통 폭 안쪽 — 기존과 동일(테이퍼에 비례해 매 행마다 폭이
+          // 자연스럽게 넓어지는 원뿔형 실루엣을 유지).
+          const shoulderU = s * frac * 0.5;
+          const riseRowFalloff =
+            armholeStartRow > 0 ? Math.max(0, 1 - y / (armholeStartRow * NECKLINE_RISE_FADE_FRACTION)) : y === 0 ? 1 : 0;
+          const rise = necklineRise(isFront, shoulderU) * riseRowFalloff;
+          const capZ = shoulderCapZBulge(y, shoulderU, armholeStartRow);
+          sim.setParticle(
+            sim.index(panel, x, y),
+            -sideSign * shoulderU * 2 * thw,
+            topY - v * heightM + rise,
+            centerZ + panelZOffset + panelSign * capZ,
+          );
+        } else {
+          const p = sleeveExtensionPoint(y, v, s, frac, thw, thw0, armSpanHalf, arm, armBasis, topY, heightM, centerZ, panelZOffset, panelSign, sideSign, armholeStartRow, armFactor);
+          sim.setParticle(sim.index(panel, x, y), p.x, p.y, p.z);
+        }
       }
     }
   }
 }
 
+// 46번: 몸통 폭 안쪽(frac<=1) 열의 [xMin, xMax] 범위 — pinCorners/
+// layoutTorsoPanels와 같은 frac 공식을 재사용해, garmentStitch.ts의
+// pullShoulderCapToSurface가 소매 쪽(핀 풀린) 열을 건드리지 않고 딱
+// 몸통 열만 마네킹 표면으로 보정하도록 범위를 알려준다.
+export function torsoColumnRange(
+  cols: number,
+  pinLeft: Vec3Like,
+  pinRight: Vec3Like,
+  armLeft: ArmDir,
+  armRight: ArmDir,
+): { xMin: number; xMax: number } {
+  const thw0 = halfWidthAtRow(0, 0, pinLeft, pinRight);
+  const armSpanHalf = thw0 + Math.max(armLeft.length, armRight.length);
+  let xMin = 0;
+  let xMax = cols - 1;
+  for (let x = 0; x < cols; x++) {
+    const u = x / (cols - 1) - 0.5;
+    const frac = thw0 > 0 ? (Math.abs(u) * 2 * armSpanHalf) / thw0 : 0;
+    if (frac <= 1) {
+      xMin = x;
+      break;
+    }
+  }
+  for (let x = cols - 1; x >= 0; x--) {
+    const u = x / (cols - 1) - 0.5;
+    const frac = thw0 > 0 ? (Math.abs(u) * 2 * armSpanHalf) / thw0 : 0;
+    if (frac <= 1) {
+      xMax = x;
+      break;
+    }
+  }
+  return { xMin, xMax };
+}
+
 // 옆선 시접이 armholeStartRow에서 곧바로 꽉 조인 간격(SEAM_REST_LENGTH,
 // 6mm)으로 시작하면, 시접 바로 안쪽 열(자유롭게 몸 곡면을 따라가는 열)과
 // 너무 튀는 차이가 생겨 옆에서 보면 그 경계가 접힌 것처럼 뾰족하게
-// 튀어나와 보이는 문제가 실측(측면 카메라 각도, 소매를 꺼도 재현)으로
-// 확인됐다 — 소매와 무관한 몸판 자체의 문제였다. 시접 시작 지점에서
-// 몇 행에 걸쳐 넉넉한 간격에서 원래 목표 간격까지 서서히 좁혀가면(이즈인),
-// 이 급격한 전환이 완화된다. sim.buildConstraints() 호출 "이후"에
-// 불러야 한다(그 전에 부르면 buildConstraints가 이 제약까지 지워버린다).
+// 튀어나와 보이는 문제가 실측(측면 카메라 각도)으로 확인됐다. 시접 시작
+// 지점에서 몇 행에 걸쳐 넉넉한 간격에서 원래 목표 간격까지 서서히
+// 좁혀가면(이즈인), 이 급격한 전환이 완화된다. sim.buildConstraints()
+// 호출 "이후"에 불러야 한다(그 전에 부르면 buildConstraints가 이 제약까지
+// 지워버린다).
 export function addTorsoSideSeamConstraints(
   sim: ClothSimulation,
   frontPanel: number,
@@ -274,5 +478,25 @@ export function addTorsoSideSeamConstraints(
     const restLength = SEAM_EASE_START + (SEAM_REST_LENGTH - SEAM_EASE_START) * easeT;
     sim.addConstraint(sim.index(frontPanel, 0, y), sim.index(backPanel, 0, y), restLength);
     sim.addConstraint(sim.index(frontPanel, COLS - 1, y), sim.index(backPanel, COLS - 1, y), restLength);
+  }
+}
+
+// 46번(물리 복구 후 실측): 목선~겨드랑이 사이(암홀 시접이 시작되기 전,
+// y=0 어깨선 자체) 구간은 앞판과 뒤판을 잇는 제약이 하나도 없었다 — 둘은
+// 어깨 양 끝(핀 코너, u=±0.5)에서만 만나고, 그 안쪽은 목선 높이
+// (necklineRise)가 앞판/뒤판마다 다르게 설계돼 서로 다른 높이로 완전히
+// 따로 논다. 옆선 시접(addTorsoSideSeamConstraints)과 같은 방식으로
+// 진짜 거리 제약을 추가해 이어붙인다. 목표 간격은 0(딱 붙임)이 아니라
+// layoutTorsoPanels가 배치한 "원래 의도한 간격"을 그대로 유지해야
+// 하므로, 이 함수는 sim.buildConstraints() 직후(아직 물리가 한 스텝도
+// 안 돈, 배치 그대로인 상태)에 호출해 그 시점의 실제 거리를 그대로 잰다.
+export function addNecklineSeamConstraints(sim: ClothSimulation, frontPanel: number, backPanel: number): void {
+  for (let x = 0; x < COLS; x++) {
+    const a = sim.index(frontPanel, x, 0);
+    const b = sim.index(backPanel, x, 0);
+    const dx = sim.positions[b * 3] - sim.positions[a * 3];
+    const dy = sim.positions[b * 3 + 1] - sim.positions[a * 3 + 1];
+    const dz = sim.positions[b * 3 + 2] - sim.positions[a * 3 + 2];
+    sim.addConstraint(a, b, Math.hypot(dx, dy, dz));
   }
 }

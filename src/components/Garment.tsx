@@ -8,20 +8,9 @@ import { mannequinRootRef } from "../lib/mannequinRef";
 import { buildTorsoProxyCapsules } from "../lib/torsoCapsule";
 import { findArmDirection, findShortSleeveDirection, findShoulderBones } from "../lib/boneUtils";
 import { computeShoulderPin } from "../lib/shoulderPin";
-import { averageGarmentColor } from "../lib/garmentColor";
-import {
-  COLS,
-  PARTICLES_PER_PANEL,
-  REBUILD_DEBOUNCE_MS,
-  ROWS,
-  SLEEVE_COLS,
-  SLEEVE_FLARE_SHORT,
-  SLEEVE_RADIUS_SEAM,
-  SLEEVE_TAPER_LONG_FRACTION,
-  SLEEVE_ROWS_LONG,
-  SLEEVE_ROWS_SHORT,
-} from "../lib/clothConfig";
-import type { MainToGarmentWorkerMessage, GarmentWorkerToMainMessage, SleeveShapeMsg } from "../lib/garmentProtocol";
+import { torsoColumnRange } from "../lib/buildGarmentSim";
+import { COLS, PARTICLES_PER_PANEL, REBUILD_DEBOUNCE_MS, ROWS } from "../lib/clothConfig";
+import type { MainToGarmentWorkerMessage, GarmentWorkerToMainMessage, ArmShapeMsg } from "../lib/garmentProtocol";
 import { MODEL_URL } from "./Mannequin";
 
 interface Props {
@@ -33,88 +22,90 @@ const rightShoulderVec = new THREE.Vector3();
 const leftDirVec = new THREE.Vector3();
 const rightDirVec = new THREE.Vector3();
 
-// 큰 재설계: 몸판(GarmentCloth.tsx)과 소매(SleeveCloth.tsx)를 이 컴포넌트
-// 하나로 합쳤다 — 진동둘레 다중 스티칭(garmentStitch.ts)이 두 시뮬레이션을
-// 같은 워커(garmentWorker.ts) 안에서 실시간으로 서로 당기게 하려면, 메인
-// 스레드 쪽도 하나의 워커/한 벌의 메시지 흐름으로 다뤄야 한다. 이전엔
-// GarmentCloth와 SleeveCloth가 완전히 독립된 워커/컴포넌트였다(리스크
-// 격리 목적으로 의도적으로 분리) — 이제 스티칭이 두 시뮬레이션을 물리적
-// 으로 묶으므로 워커도 하나로 합치는 게 자연스럽다.
-function buildTubeGeometry(cols: number, rows: number): { geometry: THREE.BufferGeometry; positions: Float32Array } {
-  const geometry = new THREE.BufferGeometry();
-  const count = cols * rows;
-  const capCenterIndex = count; // 어깨 쪽 뚜껑 중심점(물리 파티클이 아닌 별도 정점)
-  const positions = new Float32Array((count + 1) * 3);
-  const uvs = new Float32Array((count + 1) * 2);
-  for (let y = 0; y < rows; y++) {
-    for (let x = 0; x < cols; x++) {
-      const i = y * cols + x;
-      uvs[i * 2] = x / cols;
-      uvs[i * 2 + 1] = 1 - y / (rows - 1);
-    }
-  }
-  uvs[capCenterIndex * 2] = 0.5;
-  uvs[capCenterIndex * 2 + 1] = 1;
-  const indices: number[] = [];
-  for (let y = 0; y < rows - 1; y++) {
-    for (let x = 0; x < cols; x++) {
-      const xNext = (x + 1) % cols;
-      const a = y * cols + x;
-      const b = y * cols + xNext;
-      const c = (y + 1) * cols + x;
-      const d = (y + 1) * cols + xNext;
-      indices.push(a, c, b, b, c, d);
-    }
-  }
-  // 어깨 쪽 뚜껑: 원통에 뚜껑이 없으면 위/옆/뒤 특정 각도에서 카메라가
-  // 그 구멍으로 원통 내부를 들여다봐 어깨에 시커먼 구멍이 뚫린 것처럼
-  // 보이는 문제가 실측(사용자가 세 각도 스크린샷으로 확인)으로 드러났다
-  // — 손목 쪽(밑단)은 실제로 손이 나오는 열린 구멍이라 그대로 둔다.
-  for (let x = 0; x < cols; x++) {
-    const xNext = (x + 1) % cols;
-    indices.push(capCenterIndex, x, xNext);
-  }
-  // position은 워커 응답이 올 때마다(사실상 매 프레임) 통째로 덮어써진다.
-  // THREE.BufferAttribute는 기본값이 StaticDrawUsage(GL_STATIC_DRAW)인데,
-  // 실측(Safari/WebKit 독립 실행 스크립트로 재현 — Playwright MCP는
-  // Chromium 고정이라 별도 WebKit 바이너리로 확인) 결과 크롬(ANGLE)에서는
-  // 매 프레임 갱신해도 문제없이 렌더링됐지만, WebKit(Metal 백엔드)에서는
-  // needsUpdate=true를 계속 정상적으로 호출하는데도(버텍스 배열 자체는
-  // JS 쪽에서 매 프레임 올바르게 갱신됨, geometry.getAttribute("position")
-  // 를 직접 읽어 확인) 실제 화면에 그려지는 내용이 마운트 초반의 낡은
-  // 값으로 완전히 멈춰버리는 현상이 재현됐다 — 사용자가 겪은 "소매가
-  // 어깨에서 뚝 떨어진 채 허공에 떠 있다"는 증상의 정체였다(물리 데이터는
-  // 처음부터 끝까지 정상이었는데 GPU에 그 갱신이 반영되지 않았을 뿐).
-  // StaticDrawUsage는 GPU 드라이버에게 "한 번 올리고 다시 안 바꾼다"는
-  // 힌트라, 매 프레임 갱신하는 버퍼에는 맞지 않는 힌트였다 — 크롬은
-  // 이 힌트를 무시하고도 재업로드를 제대로 처리했지만 WebKit은 그러지
-  // 않은 것으로 보인다. DynamicDrawUsage로 명시하면 두 엔진 모두에서
-  // 정상 동작한다(재현 스크립트로 확인).
-  const positionAttr = new THREE.BufferAttribute(positions, 3);
-  positionAttr.setUsage(THREE.DynamicDrawUsage);
-  geometry.setAttribute("position", positionAttr);
-  geometry.setAttribute("uv", new THREE.BufferAttribute(uvs, 2));
-  geometry.setIndex(indices);
-  return { geometry, positions };
+// 46번(재설계): 목선(0번 행)이 마네킹 어깨 위에서 여전히 부자연스럽게
+// 보인다는 지적을 받았다 — SHOULDER_PIN_LIFT를 키워봐도(2cm→5.5cm) 이
+// 상수는 "핀 코너 근방 8cm"에서만 실측된 값이라, 어깨 캡(삼각근) 돔의
+// 정점은 중심에 가까울수록 더 높이 솟기 때문에 균일한 리프트로는 부족한
+// 열이 남았다. 매 프레임 0번 행의 각 열마다 실제로 레이캐스팅해서 마네킹
+// 표면 높이를 직접 재고, 그 표면보다 낮으면 끌어올리는 보정치를 계산한다
+// — 상수 하나를 또 추측하는 대신, 실제 마네킹 형상을 그대로 따라가게 한다.
+const neckRaycaster = new THREE.Raycaster();
+const neckRayOrigin = new THREE.Vector3();
+const DOWN_VEC = new THREE.Vector3(0, -1, 0);
+const NECK_SURFACE_CLEARANCE = 0.012; // 표면 위로 얹히는 옷감 두께 여유
+// 46번 실측(버그): 처음엔 광선을 기준선 위 25cm에서 아래로 50cm까지
+// 넉넉하게 쐈는데, 목 구멍 중심부 열(u가 0에 가까운, 실제로는 목/턱이
+// 있는 위치)에서 광선이 머리(턱 밑)에 맞아버려 그 열이 머리 높이까지
+// 확 끌려 올라가는 "뿔"처럼 보이는 회귀가 실측(스크린샷)으로 확인됐다 —
+// 그 구간은 애초에 마네킹 표면을 따라갈 필요가 없는(목이 드러나야 하는)
+// 목 구멍 자체이므로 레이캐스팅 대상에서 아예 뺀다. 탐색 범위도 어깨 캡
+// 돔이 실제로 있을 법한 좁은 창(기준선 위 10cm~아래 5cm)으로 좁혀, 엉뚱한
+// 부위에 맞을 여지 자체를 줄인다.
+const NECK_RAYCAST_MIN_ABS_U = 0.3; // 이보다 중심에 가까운 열은 목 구멍이라 건너뜀
+// 46번 실측(버그): 위 문턱값에서 레이캐스팅 보정을 아예 껐다 켰다(if로
+// 완전히 건너뜀) 했더니, 정확히 그 경계 열에서 리프트 값이 뚝 끊겨(옆
+// 열은 보정 있음, 이 열은 0) 목선 곡선에 눈에 띄는 꺾임/톱니가 생겼다
+// — 경계 근방 몇 열에 걸쳐 부드럽게 0으로 줄어들도록(smoothstep) 블렌드해
+// 그 꺾임을 없앤다.
+const NECK_RAYCAST_BLEND_WIDTH = 0.08;
+function smoothstep01(t: number): number {
+  const c = THREE.MathUtils.clamp(t, 0, 1);
+  return c * c * (3 - 2 * c);
 }
-
-// 물리 워커가 돌려준 0번 행(어깨 이음매) 링의 평균 위치를 뚜껑 중심점
-// 자리(positions 배열의 마지막 정점)에 채워 넣는다 — 링이 매 프레임
-// 조금씩 움직이므로(팔이 움직이거나 스티칭이 당기면) 뚜껑도 그때그때
-// 다시 계산해야 링과 어긋나지 않는다.
-function fillCapCenter(positions: Float32Array, cols: number): void {
-  let sx = 0;
-  let sy = 0;
-  let sz = 0;
-  for (let x = 0; x < cols; x++) {
-    sx += positions[x * 3];
-    sy += positions[x * 3 + 1];
-    sz += positions[x * 3 + 2];
+// 46번(전면 재설계): 몸판 열이 이제 소매 끝까지 뻗어 있으므로, 여기서
+// 쓰는 "열 위치 u"는 더 이상 pinLeft~pinRight 사이 어깨 폭 전체를
+// 나타내지 않는다 — u=±0.5는 이제 소매 끝이지 어깨점이 아니다. 목선
+// 레이캐스팅(그리고 그 기준이 되는 pinLeft~pinRight 보간)은 몸통 폭 안쪽
+// 열(xMin~xMax, buildGarmentSim.ts의 torsoColumnRange)에서만 의미가
+// 있다 — 그 바깥(소매 쪽, 핀 자체가 없는 열)은 raycasting 대상에서 뺀다.
+function computeNecklineLift(
+  mannequinRoot: THREE.Object3D,
+  pinLeft: THREE.Vector3,
+  pinRight: THREE.Vector3,
+  cols: number,
+  xMin: number,
+  xMax: number,
+): Float32Array {
+  // 46번(전면 재설계 버그): 여기 t/u는 예전엔 "0=왼쪽 어깨~1=오른쪽 어깨"를
+  // 의미했다(COLS가 어깨 폭만 담당하던 시절). 지금은 COLS가 소매 끝까지
+  // 담당하므로, 열 index 기준 raw t를 그대로 쓰면 (1) NECK_RAYCAST_MIN_ABS_U
+  // 문턱값이 더 이상 "어깨 근처"를 가리키지 않고, (2) baseX/Y/Z가 pinLeft~
+  // pinRight를 몸통 범위 전체가 아니라 그 일부만 잘라 보간해버린다 —
+  // 실측(스크린샷)에서 쇄골 근처에 남아있던 작은 흰 틈의 원인이었다.
+  // 몸통 범위(xMin~xMax)만으로 다시 0~1을 잡아 어깨점 기준 좌표로
+  // 되돌린다.
+  const lift = new Float32Array(cols);
+  const torsoSpan = xMax - xMin;
+  for (let x = xMin; x <= xMax; x++) {
+    const t = torsoSpan > 0 ? (x - xMin) / torsoSpan : 0.5;
+    const u = t - 0.5;
+    const absU = Math.abs(u);
+    if (absU < NECK_RAYCAST_MIN_ABS_U - NECK_RAYCAST_BLEND_WIDTH) continue;
+    const blend = smoothstep01((absU - (NECK_RAYCAST_MIN_ABS_U - NECK_RAYCAST_BLEND_WIDTH)) / NECK_RAYCAST_BLEND_WIDTH);
+    const baseX = pinLeft.x + (pinRight.x - pinLeft.x) * t;
+    const baseY = pinLeft.y + (pinRight.y - pinLeft.y) * t;
+    const baseZ = pinLeft.z + (pinRight.z - pinLeft.z) * t;
+    neckRayOrigin.set(baseX, baseY + 0.18, baseZ);
+    neckRaycaster.set(neckRayOrigin, DOWN_VEC);
+    neckRaycaster.far = 0.3;
+    const hits = neckRaycaster.intersectObject(mannequinRoot, true);
+    if (hits.length > 0) {
+      const surfaceY = hits[0].point.y;
+      const neededY = surfaceY + NECK_SURFACE_CLEARANCE;
+      lift[x] = Math.max(0, neededY - baseY) * blend;
+    }
   }
-  const capIndex = positions.length / 3 - 1;
-  positions[capIndex * 3] = sx / cols;
-  positions[capIndex * 3 + 1] = sy / cols;
-  positions[capIndex * 3 + 2] = sz / cols;
+  // 46번 실측(버그): 열마다 독립적으로 레이캐스팅하면, 마네킹이 저해상도
+  // 폴리곤이라 이웃 열끼리도 맞은 면(삼각형)이 살짝씩 달라 리프트 값이
+  // 계단식으로 들쭉날쭉해진다 — 목선 곡선에 톱니처럼 보이는 원인이었다.
+  // 이웃과 평균 내는 가벼운 스무딩을 한 번 통과시켜 매끄럽게 잇는다.
+  const smoothed = new Float32Array(cols);
+  for (let x = 0; x < cols; x++) {
+    const prev = lift[Math.max(0, x - 1)];
+    const next = lift[Math.min(cols - 1, x + 1)];
+    smoothed[x] = (prev + lift[x] * 2 + next) / 4;
+  }
+  return smoothed;
 }
 
 function toMsg(v: THREE.Vector3): { x: number; y: number; z: number } {
@@ -130,12 +121,15 @@ export function Garment({ imageUrl }: Props) {
   const fabric = useFitStore((s) => s.fabric);
   const sleeveType = useFitStore((s) => s.sleeveType);
 
-  // --- 몸판 지오메트리 ---
+  // --- 몸판 지오메트리 (소매는 이제 별도 메시가 아니라 이 패널의 넓은
+  // 바깥쪽 열이다 — 46번 전면 재설계) ---
   const frontPositions = useMemo(() => new Float32Array(PARTICLES_PER_PANEL * 3), []);
   const backPositions = useMemo(() => new Float32Array(PARTICLES_PER_PANEL * 3), []);
-  // position에 DynamicDrawUsage를 명시하는 이유는 buildTubeGeometry(소매)
-  // 쪽 주석 참고 — 몸판도 워커가 매 프레임 돌려주는 값으로 덮어써지므로
-  // 똑같이 WebKit에서 갱신이 GPU에 반영 안 되는 문제를 겪을 수 있다.
+  // position에 DynamicDrawUsage를 명시하는 이유: 워커가 매 프레임 돌려주는
+  // 값으로 이 버퍼가 통째로 덮어써지는데, WebKit(Metal 백엔드)은
+  // StaticDrawUsage 힌트가 걸린 버퍼의 매 프레임 재업로드를 화면에 반영하지
+  // 않는 문제가 실측(WebKit 독립 재현 스크립트)으로 확인됐다 — 크롬(ANGLE)은
+  // 이 힌트를 무시하고 정상 처리하지만 WebKit은 그러지 않는다.
   const frontGeometry = useMemo(() => {
     const g = new THREE.PlaneGeometry(1, 1, COLS - 1, ROWS - 1);
     const positionAttr = new THREE.BufferAttribute(frontPositions, 3);
@@ -151,18 +145,19 @@ export function Garment({ imageUrl }: Props) {
     return g;
   }, [backPositions]);
 
-  const backTexture = useMemo(() => {
+  // 46번 실측(버그): 앞판(frontGeometry)에 원본 texture를 그대로 물렸더니
+  // 글자가 거울상으로 뒤집혀 보였다(사용자 스크린샷으로 확인, "TINY
+  // BEAR"가 반전). 원인은 layoutTorsoPanels가 앞판 정점을 배치할 때 쓰는
+  // 부호 규칙(u→X 변환)이 PlaneGeometry의 기본 UV 방향과 반대라서 —
+  // 즉 이 원단 좌우 반전 보정은 원래 "뒤판"이 아니라 "앞판"에 필요했던
+  // 것이었다. 두 메시에 물리는 텍스처를 맞바꿔, 반전 보정본은 앞판에,
+  // 원본은 뒤판에 쓴다.
+  const mirroredTexture = useMemo(() => {
     const clone = texture.clone();
     clone.repeat.x = -1;
     clone.offset.x = 1;
     clone.needsUpdate = true;
     return clone;
-  }, [texture]);
-
-  const sleeveColor = useMemo(() => {
-    const image = texture.image as HTMLImageElement | undefined;
-    if (!image) return new THREE.Color(0x808080);
-    return averageGarmentColor(image);
   }, [texture]);
 
   // 30번 이후 사용자가 "옷이 가슴 위쪽에서 뚝 끊긴다"고 지적해 실측(Playwright로
@@ -193,43 +188,11 @@ export function Garment({ imageUrl }: Props) {
   const widthM = garmentSize.width / 100;
   const heightM = garmentSize.length / 100;
 
-  // --- 소매 지오메트리 ---
-  const sleeveRows = sleeveType === "long" ? SLEEVE_ROWS_LONG : SLEEVE_ROWS_SHORT;
-  const { geometry: leftSleeveGeometry, positions: leftSleevePositions } = useMemo(
-    () => buildTubeGeometry(SLEEVE_COLS, sleeveRows),
-    [sleeveRows],
-  );
-  const { geometry: rightSleeveGeometry, positions: rightSleevePositions } = useMemo(
-    () => buildTubeGeometry(SLEEVE_COLS, sleeveRows),
-    [sleeveRows],
-  );
-
   const collisionMesh = useMemo(() => new MannequinCollisionMesh(), []);
   const workerRef = useRef<Worker | null>(null);
   const pendingRef = useRef(false);
   const pendingDtRef = useRef(0);
   const generationRef = useRef(0);
-
-  // 소매 지오메트리/포지션 배열은 sleeveRows(소매 종류)가 바뀔 때마다
-  // useMemo가 새 객체를 만든다(행 수가 달라 배열 길이 자체가 바뀌므로
-  // 어쩔 수 없다) — 아래 워커 생성 effect가 이 값들에 직접 의존하면,
-  // 반팔↔긴팔 전환마다 "몸판과 무관한" 이 변화 때문에 워커 전체가
-  // 종료·재생성되어 몸판 시뮬레이션까지 처음부터(평평한 미착용 상태)
-  // 다시 시작하는 버그가 실측(반팔→긴팔 전환 직후 화면에서 몸판 그래픽이
-  // 사라지고 평평한 사각형만 보임)으로 확인됐다 — ref로 최신 지오메트리를
-  // 가리키게 해서, 워커의 onmessage 클로저는 매번 ref.current를 통해
-  // "그 시점의 최신" 지오메트리를 쓰되, 워커 자체(및 몸판 시뮬레이션)는
-  // 소매 종류가 바뀌어도 계속 살아있게 한다.
-  const leftSleeveGeometryRef = useRef(leftSleeveGeometry);
-  const rightSleeveGeometryRef = useRef(rightSleeveGeometry);
-  const leftSleevePositionsRef = useRef(leftSleevePositions);
-  const rightSleevePositionsRef = useRef(rightSleevePositions);
-  useEffect(() => {
-    leftSleeveGeometryRef.current = leftSleeveGeometry;
-    rightSleeveGeometryRef.current = rightSleeveGeometry;
-    leftSleevePositionsRef.current = leftSleevePositions;
-    rightSleevePositionsRef.current = rightSleevePositions;
-  }, [leftSleeveGeometry, rightSleeveGeometry, leftSleevePositions, rightSleevePositions]);
 
   // 워커는 컴포넌트 생명주기 동안 하나만 띄우고 언마운트 시 종료한다.
   // frontGeometry/backGeometry/frontPositions/backPositions는 몸판
@@ -265,17 +228,11 @@ export function Garment({ imageUrl }: Props) {
       backGeometry.computeBoundingSphere();
 
       // 임시 디버그 훅(worker.onerror 근처와 짝) — 워커가 실제로 돌려준
-      // 몸판 0번 행(어깨선) 전체와 소매 0번 행 첫 정점을 그대로 노출한다.
-      // __fitDebug의 "의도한 핀 값"과 이 값이 다르면 워커 내부(물리
-      // 시뮬레이션)에서 문제가 생기는 것이고, 같은데도 화면이 이상하면
-      // 렌더링 쪽 문제로 좁혀진다. 어깨 "모서리"뿐 아니라 목선 중앙까지
-      // 포함해 0번 행 전체(x=0..COLS-1)의 y좌표를 다 뽑아, 어디서부터
-      // 처지기 시작하는지 곡선 전체를 본다.
+      // 몸판 0번 행(어깨선) 전체를 그대로 노출한다. __fitDebug의 "의도한
+      // 핀 값"과 이 값이 다르면 워커 내부(물리 시뮬레이션)에서 문제가
+      // 생기는 것이고, 같은데도 화면이 이상하면 렌더링 쪽 문제로 좁혀진다.
       const frontRow0Y: number[] = [];
       for (let x = 0; x < COLS; x++) frontRow0Y.push(msg.front[x * 3 + 1]);
-      // 34번: 밑단(마지막 행)이 좌우 대각선으로 찌그러지는 비대칭 확인용 —
-      // 마지막 행 전체의 x/y좌표를 뽑아 왼쪽 절반과 오른쪽 절반의 y(높이)가
-      // 대칭인지 직접 비교한다.
       const lastRow = ROWS - 1;
       const frontLastRowXY: Array<[number, number]> = [];
       for (let x = 0; x < COLS; x++) {
@@ -285,39 +242,8 @@ export function Garment({ imageUrl }: Props) {
         frontRow0Y,
         frontRow0First3: Array.from(msg.front.slice(0, 3)),
         backRow0First3: Array.from(msg.back.slice(0, 3)),
-        sleeveLeftRow0First3: Array.from(msg.sleeveLeft.slice(0, 3)),
-        sleeveRightRow0First3: Array.from(msg.sleeveRight.slice(0, 3)),
         frontLastRowXY,
       };
-
-      // sleeveRows가 막 바뀐 직후 한두 프레임은 워커가 아직 이전 치수로
-      // 보낸 메시지가 도착할 수 있다 — 배열 길이가 안 맞으면 .set()이
-      // RangeError를 던지므로, 길이가 일치할 때만 반영하고 다음 프레임을
-      // 기다린다(곧 reinitSleeve에 따른 새 치수 메시지가 도착해 자연히
-      // 맞아짐). lPos/rPos(지오메트리 쪽 배열)는 buildTubeGeometry가
-      // 어깨 쪽 뚜껑 중심점을 위해 격자 정점 수보다 정점 하나(3개 float)
-      // 더 갖고 있으므로, msg 쪽 원시 격자 길이와 "+3"만큼 차이 나는 게
-      // 정상이다 — 예전엔 완전히 같은 길이를 요구해 이 경우가 절대
-      // 참이 될 수 없었고(항상 스킵됨), 그 결과 소매가 물리 시뮬레이션
-      // 결과를 전혀 반영하지 못한 채(초기 0으로 채워진 배열 그대로)
-      // 렌더되는 회귀가 실측(반팔→긴팔 전환 후 소매가 어깨의 작은
-      // 삼각형 조각으로 쪼그라들어 보임)으로 발견됐다.
-      const lGeom = leftSleeveGeometryRef.current;
-      const rGeom = rightSleeveGeometryRef.current;
-      const lPos = leftSleevePositionsRef.current;
-      const rPos = rightSleevePositionsRef.current;
-      if (msg.sleeveLeft.length === lPos.length - 3 && msg.sleeveRight.length === rPos.length - 3) {
-        lPos.set(msg.sleeveLeft);
-        rPos.set(msg.sleeveRight);
-        fillCapCenter(lPos, SLEEVE_COLS);
-        fillCapCenter(rPos, SLEEVE_COLS);
-        (lGeom.getAttribute("position") as THREE.BufferAttribute).needsUpdate = true;
-        (rGeom.getAttribute("position") as THREE.BufferAttribute).needsUpdate = true;
-        lGeom.computeVertexNormals();
-        rGeom.computeVertexNormals();
-        lGeom.computeBoundingSphere();
-        rGeom.computeBoundingSphere();
-      }
     };
     workerRef.current = worker;
     return () => {
@@ -326,10 +252,11 @@ export function Garment({ imageUrl }: Props) {
     };
   }, [frontGeometry, backGeometry, frontPositions, backPositions]);
 
-  // 어깨/팔 방향에서 현재 소매 모양을 계산한다. 반팔/긴팔 길이·반지름
-  // 산정 로직을 한 곳에 모아 init(빌드)과 step(매 프레임) 양쪽에서 같은
-  // 공식을 쓰게 한다.
-  function computeSleeveShapes(): { left: SleeveShapeMsg; right: SleeveShapeMsg } | null {
+  // 어깨/팔 방향과 소매 길이에서 현재 팔 모양(ArmShapeMsg)을 계산한다 —
+  // init(빌드)과 step(매 프레임) 양쪽에서 같은 공식을 쓰게 한 곳에 모은다.
+  // 46번(전면 재설계): 반지름 필드는 더 이상 없다 — 굵기는 워커가 실제
+  // 팔에 대해 고정 반지름(ARM_COLLISION_RADIUS)으로 충돌시켜 결정한다.
+  function computeArmShapes(): { left: ArmShapeMsg; right: ArmShapeMsg } | null {
     const { left: leftBone, right: rightBone } = shoulderBones;
     if (!leftBone || !rightBone) return null;
 
@@ -337,10 +264,6 @@ export function Garment({ imageUrl }: Props) {
     rightBone.updateWorldMatrix(true, false);
     leftBone.getWorldPosition(shoulderVec);
     rightBone.getWorldPosition(rightShoulderVec);
-    // 36번: 어깨 핀도 이제 몸이 아니라 옷의 실제 어깨너비(실측)로 정한다
-    // — shoulderPin.ts의 computeShoulderPin 주석 참고.
-    const garmentShoulderHalfWidthM = garmentSize.shoulderWidth / 100 / 2;
-    const pins = computeShoulderPin(shoulderVec, rightShoulderVec, garmentShoulderHalfWidthM);
 
     // 33번: 반팔은 위팔(어깨~팔꿈치) 방향을 따라야 한다 — 어깨~손 직선
     // 방향(findArmDirection)은 팔꿈치가 굽은 포즈에서 위팔 구간과 상당히
@@ -355,35 +278,14 @@ export function Garment({ imageUrl }: Props) {
       rightDirVec.copy(findShortSleeveDirection(rightBone));
     }
 
-    // 36번(큰 재설계): 길이/반지름은 이제 몸 치수에서 계산하지 않고 옷
-    // 실측(garmentSize.sleeveLength/sleeveWidth) 그대로 쓴다 — 예전엔
-    // 긴팔 길이가 "몸 팔길이 × 0.92"로 항상 손목 근처까지 자동으로
-    // 늘어나서, 실제 옷 소매가 사용자 팔보다 짧은지/긴지 확인할 방법이
-    // 없었다. 이제는 옷이 짧으면 손목에 못 미치고, 길면 손을 덮는 게
-    // 그대로 드러난다 — 이게 "핏을 확인한다"는 것의 핵심이다.
+    // 36번(큰 재설계): 길이는 몸 치수에서 계산하지 않고 옷 실측
+    // (garmentSize.sleeveLength) 그대로 쓴다 — 옷이 짧으면 손목에 못
+    // 미치고, 길면 손을 덮는 게 그대로 드러난다.
     const length = garmentSize.sleeveLength / 100;
-    const radiusMax = garmentSize.sleeveWidth / 100 / 2;
-    const radiusHem = sleeveType === "long" ? radiusMax * SLEEVE_TAPER_LONG_FRACTION : radiusMax * (1 + SLEEVE_FLARE_SHORT);
 
     return {
-      left: {
-        shoulder: toMsg(pins.left),
-        trueShoulder: toMsg(shoulderVec),
-        dir: toMsg(leftDirVec),
-        length,
-        radiusSeam: SLEEVE_RADIUS_SEAM,
-        radiusMax,
-        radiusHem,
-      },
-      right: {
-        shoulder: toMsg(pins.right),
-        trueShoulder: toMsg(rightShoulderVec),
-        dir: toMsg(rightDirVec),
-        length,
-        radiusSeam: SLEEVE_RADIUS_SEAM,
-        radiusMax,
-        radiusHem,
-      },
+      left: { dir: toMsg(leftDirVec), trueShoulder: toMsg(shoulderVec), length },
+      right: { dir: toMsg(rightDirVec), trueShoulder: toMsg(rightShoulderVec), length },
     };
   }
 
@@ -420,16 +322,19 @@ export function Garment({ imageUrl }: Props) {
     return () => clearTimeout(timer);
   }, [collisionMesh, shoulderBones, bodySize.height, bodySize.chest, bodySize.armLength, bodySize.legLength, bodySize.shoulderWidth]);
 
-  // 몸판 치수(옷 크기 슬라이더, 몸 사이즈)가 바뀌면 워커에 새
-  // 시뮬레이션(몸판+소매 둘 다)을 처음부터 구성하도록 요청한다 — 마운트
-  // 시 최초 1회 빌드도 여기서 이뤄진다. 소매 종류(반팔/긴팔)는 이
-  // 의존성 배열에서 뺐다 — 아래 별도 effect가 "reinitSleeve"로 소매만
-  // 다시 짓는다(이유는 garmentProtocol.ts 참고).
+  // 몸판 치수(옷 크기 슬라이더, 몸 사이즈)가 바뀌면 워커에 새 시뮬레이션을
+  // 처음부터 구성하도록 요청한다 — 마운트 시 최초 1회 빌드도 여기서
+  // 이뤄진다. 46번(전면 재설계): 소매가 이제 같은 패널의 일부라 소매
+  // 길이/종류가 바뀌면 그 열들의 초기 배치·제약 rest length 자체가
+  // 달라져야 하므로, 더 이상 "몸판은 그대로 두고 소매만 다시 짓는" 가벼운
+  // 경로(reinitSleeve)가 성립하지 않는다 — 소매 관련 값도 이 전체 재구성
+  // 의존성에 합류시킨다(다른 치수 변경과 동일하게, 재구성 시 몸판도 함께
+  // 처음 자세로 돌아간다).
   useEffect(() => {
     const { left: leftShoulder, right: rightShoulder } = shoulderBones;
     const worker = workerRef.current;
-    const sleeveShapes = computeSleeveShapes();
-    if (!leftShoulder || !rightShoulder || !worker || !sleeveShapes) return;
+    const armShapes = computeArmShapes();
+    if (!leftShoulder || !rightShoulder || !worker || !armShapes) return;
 
     leftShoulder.updateWorldMatrix(true, false);
     rightShoulder.updateWorldMatrix(true, false);
@@ -438,6 +343,9 @@ export function Garment({ imageUrl }: Props) {
     const pins = computeShoulderPin(shoulderVec, rightShoulderVec, garmentSize.shoulderWidth / 100 / 2);
     const topY = Math.max(pins.left.y, pins.right.y);
     const centerZ = (pins.left.z + pins.right.z) / 2;
+    const mannequinRoot = mannequinRootRef.current;
+    const { xMin, xMax } = torsoColumnRange(COLS, pins.left, pins.right, armShapes.left, armShapes.right);
+    const necklineLift = mannequinRoot ? Array.from(computeNecklineLift(mannequinRoot, pins.left, pins.right, COLS, xMin, xMax)) : [];
 
     generationRef.current += 1;
     worker.postMessage({
@@ -448,33 +356,24 @@ export function Garment({ imageUrl }: Props) {
       centerZ,
       pinLeft: { x: pins.left.x, y: pins.left.y, z: pins.left.z },
       pinRight: { x: pins.right.x, y: pins.right.y, z: pins.right.z },
-      sleeveRows,
-      sleeveLeft: sleeveShapes.left,
-      sleeveRight: sleeveShapes.right,
+      necklineLift,
+      armLeft: armShapes.left,
+      armRight: armShapes.right,
     } satisfies MainToGarmentWorkerMessage);
     pendingDtRef.current = 0;
     pendingRef.current = false;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [nodes, widthM, heightM, bodySize.armLength, bodySize.shoulderWidth, bodySize.height, garmentSize.shoulderWidth]);
-
-  // 소매 종류(반팔/긴팔)만 바뀌면 소매만 다시 짓는다 — 몸판(torsoSim)은
-  // 건드리지 않아, 이미 늘어져 자리 잡은 몸판이 소매 전환 때마다 평평한
-  // 미착용 상태로 되돌아가는 버그(실측으로 확인, 자세한 경위는
-  // garmentProtocol.ts 참고)를 막는다. 마운트 시 위 effect가 이미 소매도
-  // 함께 지어 보내므로 이 effect가 마운트 때 한 번 더 보내는 건(같은
-  // 내용을 다시 지음) 낭비지만 무해하다.
-  useEffect(() => {
-    const worker = workerRef.current;
-    const sleeveShapes = computeSleeveShapes();
-    if (!worker || !sleeveShapes) return;
-    worker.postMessage({
-      type: "reinitSleeve",
-      sleeveRows,
-      sleeveLeft: sleeveShapes.left,
-      sleeveRight: sleeveShapes.right,
-    } satisfies MainToGarmentWorkerMessage);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sleeveRows, sleeveType, garmentSize.sleeveLength, garmentSize.sleeveWidth]);
+  }, [
+    nodes,
+    widthM,
+    heightM,
+    bodySize.armLength,
+    bodySize.shoulderWidth,
+    bodySize.height,
+    garmentSize.shoulderWidth,
+    sleeveType,
+    garmentSize.sleeveLength,
+  ]);
 
   useFrame((_, delta) => {
     const worker = workerRef.current;
@@ -482,8 +381,8 @@ export function Garment({ imageUrl }: Props) {
 
     const { left: leftShoulder, right: rightShoulder } = shoulderBones;
     if (!leftShoulder || !rightShoulder) return;
-    const sleeveShapes = computeSleeveShapes();
-    if (!sleeveShapes) return;
+    const armShapes = computeArmShapes();
+    if (!armShapes) return;
 
     leftShoulder.updateWorldMatrix(true, false);
     rightShoulder.updateWorldMatrix(true, false);
@@ -494,17 +393,19 @@ export function Garment({ imageUrl }: Props) {
     // 임시 디버그 훅 — Safari에서만 재현되는 어깨 처짐 문제를 사용자
     // 브라우저 콘솔에서 직접 확인하기 위해 추가(원인 확정되면 제거할 것).
     // 콘솔에 `window.__fitDebug`를 입력하면 매 프레임 갱신되는 실제 어깨
-    // 본 위치·계산된 핀·소매 모양을 볼 수 있다.
+    // 본 위치·계산된 핀·팔 방향을 볼 수 있다.
     (window as unknown as { __fitDebug?: unknown }).__fitDebug = {
       leftShoulderBoneRaw: { x: shoulderVec.x, y: shoulderVec.y, z: shoulderVec.z },
       rightShoulderBoneRaw: { x: rightShoulderVec.x, y: rightShoulderVec.y, z: rightShoulderVec.z },
       pinLeft: { x: pins.left.x, y: pins.left.y, z: pins.left.z },
       pinRight: { x: pins.right.x, y: pins.right.y, z: pins.right.z },
-      sleeveShapeLeftShoulder: sleeveShapes.left.shoulder,
-      sleeveShapeRightShoulder: sleeveShapes.right.shoulder,
       leftShoulderBoneName: leftShoulder.name,
       rightShoulderBoneName: rightShoulder.name,
       collisionMeshReady: collisionMesh.ready,
+      armDirLeft: armShapes.left.dir,
+      armDirRight: armShapes.right.dir,
+      armLength: armShapes.left.length,
+      armTrueShoulderLeft: armShapes.left.trueShoulder,
     };
 
     pendingDtRef.current += delta;
@@ -515,14 +416,19 @@ export function Garment({ imageUrl }: Props) {
     const dt = pendingDtRef.current;
     pendingDtRef.current = 0;
 
+    const mannequinRoot = mannequinRootRef.current;
+    const { xMin, xMax } = torsoColumnRange(COLS, pins.left, pins.right, armShapes.left, armShapes.right);
+    const necklineLift = mannequinRoot ? Array.from(computeNecklineLift(mannequinRoot, pins.left, pins.right, COLS, xMin, xMax)) : [];
+
     worker.postMessage({
       type: "step",
       dt,
       pinLeft: { x: pins.left.x, y: pins.left.y, z: pins.left.z },
       pinRight: { x: pins.right.x, y: pins.right.y, z: pins.right.z },
+      necklineLift,
       fabric,
-      sleeveLeft: sleeveShapes.left,
-      sleeveRight: sleeveShapes.right,
+      armLeft: armShapes.left,
+      armRight: armShapes.right,
       generation: generationRef.current,
     } satisfies MainToGarmentWorkerMessage);
   });
@@ -534,8 +440,6 @@ export function Garment({ imageUrl }: Props) {
     textureImageSize: texture.image
       ? [(texture.image as HTMLImageElement).width, (texture.image as HTMLImageElement).height]
       : null,
-    backTextureImageComplete: (backTexture.image as HTMLImageElement | undefined)?.complete,
-    sleeveColorHex: sleeveColor.getHexString(),
     frontPositionsSample: Array.from(frontPositions.slice(0, 9)),
     backPositionsSample: Array.from(backPositions.slice(0, 9)),
   };
@@ -543,16 +447,10 @@ export function Garment({ imageUrl }: Props) {
   return (
     <group>
       <mesh geometry={frontGeometry} frustumCulled={false}>
-        <meshStandardMaterial map={texture} side={THREE.DoubleSide} roughness={0.85} />
+        <meshStandardMaterial map={mirroredTexture} side={THREE.DoubleSide} roughness={0.85} />
       </mesh>
       <mesh geometry={backGeometry} frustumCulled={false}>
-        <meshStandardMaterial map={backTexture} side={THREE.DoubleSide} roughness={0.85} />
-      </mesh>
-      <mesh geometry={leftSleeveGeometry} frustumCulled={false}>
-        <meshStandardMaterial color={sleeveColor} side={THREE.DoubleSide} roughness={0.85} />
-      </mesh>
-      <mesh geometry={rightSleeveGeometry} frustumCulled={false}>
-        <meshStandardMaterial color={sleeveColor} side={THREE.DoubleSide} roughness={0.85} />
+        <meshStandardMaterial map={texture} side={THREE.DoubleSide} roughness={0.85} />
       </mesh>
     </group>
   );

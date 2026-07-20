@@ -10,23 +10,31 @@ function Slider({
   min,
   max,
   onChange,
+  unit = "cm",
+  step = 1,
 }: {
   label: string;
   value: number;
   min: number;
   max: number;
   onChange: (v: number) => void;
+  unit?: string;
+  step?: number;
 }) {
   return (
     <div className="mb-4">
       <div className="mb-1 flex items-center justify-between text-sm text-slate-300">
         <span>{label}</span>
-        <span className="font-mono text-slate-100">{value}cm</span>
+        <span className="font-mono text-slate-100">
+          {step < 1 ? value.toFixed(2) : value}
+          {unit}
+        </span>
       </div>
       <input
         type="range"
         min={min}
         max={max}
+        step={step}
         value={value}
         onChange={(e) => onChange(Number(e.target.value))}
         className="w-full accent-blue-500"
