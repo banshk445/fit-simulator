@@ -8,7 +8,7 @@ import type { Capsule } from "../lib/torsoCapsule";
 import { FABRIC_PRESETS } from "../lib/fabricPresets";
 import { applyArmSoftPull, applyNecklineHug, enforceArmFrontBackYAlignment, pinCorners, torsoColumnRange } from "../lib/buildGarmentSim";
 import { buildUnifiedGarmentSim } from "../lib/buildUnifiedGarmentSim";
-import { pullShoulderCapToSurface, enforceLeftRightSymmetry } from "../lib/garmentStitch";
+import { enforceLeftRightSymmetry } from "../lib/garmentStitch";
 import {
   ARMHOLE_ROW_FRACTION,
   ARM_COLLISION_RADIUS,
@@ -305,8 +305,6 @@ ctx.onmessage = (event) => {
       activeSim.preserveColumnOrder(dirX, dirY, dirZ, undefined, false, PANEL_FRONT, PANEL_BACK + 1);
       activeSim.preserveColumnOrder(dirX, dirY, dirZ, undefined, true, PANEL_FRONT, PANEL_BACK + 1);
 
-      const bodySurface = wholeBodyCollisionMesh.ready ? wholeBodyCollisionMesh : null;
-      pullShoulderCapToSurface(activeSim, PANEL_FRONT, PANEL_BACK, armholeStartRow, meshColumnRange.min, meshColumnRange.max, COLS, dirX, dirY, dirZ, bodySurface);
       if (lastLayout) {
         applyArmSoftPull(
           activeSim,
