@@ -9,6 +9,8 @@ import { mannequinRootRef } from "../lib/mannequinRef";
 import { buildTorsoProxyCapsules } from "../lib/torsoCapsule";
 import { findArmDirection, findShortSleeveDirection, findShoulderBones } from "../lib/boneUtils";
 import { computeShoulderPin } from "../lib/shoulderPin";
+import { averageGarmentColor } from "../lib/garmentColor";
+import { compositeGarmentTexture } from "../lib/garmentTextureComposite";
 import { torsoColumnRange } from "../lib/buildGarmentSim";
 import { COLS, PARTICLES_PER_PANEL, REBUILD_DEBOUNCE_MS, ROWS } from "../lib/clothConfig";
 import type { MainToGarmentWorkerMessage, GarmentWorkerToMainMessage, ArmShapeMsg } from "../lib/garmentProtocol";
@@ -180,7 +182,21 @@ function injectProxyBinding(
 }
 
 export function Garment({ imageUrl }: Props) {
-  const texture = useTexture(imageUrl);
+  const rawTexture = useTexture(imageUrl);
+  // 47번(원단색+프린트 합성): 사진 전체를 몸판 UV에 그대로 늘려 붙이는
+  // 대신, 원단 대표색으로 칠한 캔버스 위에 실제 프린트 영역만 실제
+  // 비율로 얹는다 — 자세한 이유는 garmentTextureComposite.ts 참고.
+  // averageGarmentColor/cropToGarmentRegion(garmentSegmentation.ts)은
+  // 그대로 재사용하고 수정하지 않는다.
+  const compositedTexture = useMemo(() => {
+    const image = rawTexture.image as HTMLImageElement | undefined;
+    if (!image) return rawTexture;
+    const color = averageGarmentColor(image);
+    const canvas = compositeGarmentTexture(image, color);
+    const tex = new THREE.CanvasTexture(canvas);
+    tex.colorSpace = rawTexture.colorSpace;
+    return tex;
+  }, [rawTexture]);
   const { nodes } = useGLTF(MODEL_URL) as unknown as { nodes: Record<string, THREE.Object3D> };
   const shoulderBones = useMemo(() => findShoulderBones(nodes), [nodes]);
   const garmentSize = useFitStore((s) => s.garmentSize);
@@ -237,14 +253,15 @@ export function Garment({ imageUrl }: Props) {
   // 부호 규칙(u→X 변환)이 PlaneGeometry의 기본 UV 방향과 반대라서 —
   // 즉 이 원단 좌우 반전 보정은 원래 "뒤판"이 아니라 "앞판"에 필요했던
   // 것이었다. 두 메시에 물리는 텍스처를 맞바꿔, 반전 보정본은 앞판에,
-  // 원본은 뒤판에 쓴다.
+  // 원본은 뒤판에 쓴다. 47번: 합성된 캔버스 텍스처(compositedTexture)에도
+  // 그대로 적용된다.
   const mirroredTexture = useMemo(() => {
-    const clone = texture.clone();
+    const clone = compositedTexture.clone();
     clone.repeat.x = -1;
     clone.offset.x = 1;
     clone.needsUpdate = true;
     return clone;
-  }, [texture]);
+  }, [compositedTexture]);
 
   // 30번 이후 사용자가 "옷이 가슴 위쪽에서 뚝 끊긴다"고 지적해 실측(Playwright로
   // 몸판 메시의 실제 정점 Y 범위를 직접 측정)해보니, 총장 슬라이더를 70cm로
@@ -545,9 +562,9 @@ export function Garment({ imageUrl }: Props) {
   // 임시 디버그 훅 — 어깨 근처에 나타나는 회색/무늬 없는 삼각형 조각이
   // 텍스처 로딩 실패인지 지오메트리 문제인지 확인하는 용도.
   (window as unknown as { __fitDebugTex?: unknown }).__fitDebugTex = {
-    textureImageComplete: (texture.image as HTMLImageElement | undefined)?.complete,
-    textureImageSize: texture.image
-      ? [(texture.image as HTMLImageElement).width, (texture.image as HTMLImageElement).height]
+    textureImageComplete: (rawTexture.image as HTMLImageElement | undefined)?.complete,
+    textureImageSize: rawTexture.image
+      ? [(rawTexture.image as HTMLImageElement).width, (rawTexture.image as HTMLImageElement).height]
       : null,
     frontPositionsSample: Array.from(frontPositions.slice(0, 9)),
     backPositionsSample: Array.from(backPositions.slice(0, 9)),
@@ -577,7 +594,7 @@ export function Garment({ imageUrl }: Props) {
       </mesh>
       <mesh geometry={backRenderGeometry} frustumCulled={false}>
         <meshStandardMaterial
-          map={texture}
+          map={compositedTexture}
           side={THREE.DoubleSide}
           roughness={0.85}
           polygonOffset
