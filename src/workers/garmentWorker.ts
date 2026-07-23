@@ -59,13 +59,26 @@ const backCollisionMesh = new ArrayBvhCollision();
 // backCollisionMesh와 달리 팔 영역을 일부러 빼지 않은 원본이라야 어깨
 // 곡면이 남아있다.
 const wholeBodyCollisionMesh = new ArrayBvhCollision();
-// 32번: 어깨 캡(목~겨드랑이, rows 1..armholeStartRow) 구간은 이 일반 메시
-// 충돌에서 제외한다 — bvhFromArrays.ts의 createResolver 주석 참고. 이
-// 구간은 pullShoulderCapToSurface가 "어깨 쪽은 넓게, 겨드랑이 쪽은
-// 표면에 밀착"으로 직접 관리하고, 46번 이후로는 소매 열(같은 행 범위)도
-// 캡슐 충돌이 직접 관리한다 — 일반 메시 충돌이 서브스텝마다 훨씬 자주
-// 돌면서 그 목표를 매번 표면 margin 거리로 되돌려버려 무효화시키는 것을
-// 막는다.
+// 32번: 어깨 캡(목~겨드랑이, rows 1..armholeStartRow) 구간은 캡슐 충돌에서
+// 제외한다 — bvhFromArrays.ts의 createResolver 주석 참고. 이 구간은
+// pullShoulderCapToSurface가 "어깨 쪽은 넓게, 겨드랑이 쪽은 표면에 밀착"
+// 으로 직접 관리하고, 46번 이후로는 소매 열(같은 행 범위)도 캡슐 충돌이
+// 직접 관리한다.
+//
+// 47번(조사 → 수정 — 메시 충돌 스킵을 캡슐 스킵에서 분리): 이 스킵 범위는
+// 원래 캡슐(균일 반경 15.9cm 원기둥)이 목~어깨에서 반경이 급변하며 옷이
+// 쪼그라드는 아티팩트를 막으려고 도입됐다(32번) — 그런데 BVH 메시 충돌
+// (frontMeshResolver/backMeshResolver)은 실제 마네킹 형상을 그대로 따라가는
+// 충돌이라 그 급변 문제 자체가 없는데도, 같은 상수(SHOULDER_CAP_SKIP_*)를
+// 공유해서 함께 꺼져 있었다. 그 결과 row1~5는 캡슐도 메시도 전혀 충돌하지
+// 않는 완전 무방비 구간이 됐고, 그 구간을 관리하는 pullShoulderCapToSurface/
+// applyNecklineHug의 목표점이 몸 쪽으로 충분히 밀어주지 못하는 자세에서는
+// 옷감이 실제로 몸속으로 파고드는 게 실측(BVH 레이캐스팅: row4 −2.0cm,
+// row5 −0.9cm 관통)으로 확인됐다. 메시 충돌은 스킵할 이유가 없으므로 별도
+// 상수로 분리해 스킵 범위를 0으로 둔다 — 캡슐 쪽 SHOULDER_CAP_SKIP_*는
+// 그대로 유지(그 아티팩트는 여전히 유효한 이유이므로).
+const MESH_SKIP_START = 0;
+const MESH_SKIP_END = 0;
 const armholeStartRow = Math.round(ROWS * ARMHOLE_ROW_FRACTION);
 const SHOULDER_CAP_SKIP_START = COLS * 1;
 const SHOULDER_CAP_SKIP_END = COLS * (armholeStartRow + 1);
@@ -78,15 +91,15 @@ const meshColumnRange = { cols: COLS, min: 0, max: COLS - 1 };
 const frontMeshResolver = frontCollisionMesh.createResolver(
   COLLISION_MARGIN,
   COLLISION_DETECTION_RADIUS,
-  SHOULDER_CAP_SKIP_START,
-  SHOULDER_CAP_SKIP_END,
+  MESH_SKIP_START,
+  MESH_SKIP_END,
   meshColumnRange,
 );
 const backMeshResolver = backCollisionMesh.createResolver(
   COLLISION_MARGIN,
   COLLISION_DETECTION_RADIUS,
-  SHOULDER_CAP_SKIP_START,
-  SHOULDER_CAP_SKIP_END,
+  MESH_SKIP_START,
+  MESH_SKIP_END,
   meshColumnRange,
 );
 
