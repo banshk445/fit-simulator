@@ -45,6 +45,7 @@ interface Constraint {
   a: number;
   b: number;
   restLength: number;
+  stiffness: number;
 }
 
 export interface PanelDims {
@@ -139,7 +140,7 @@ export class ClothSimulation {
       const by = this.positions[b * 3 + 1];
       const bz = this.positions[b * 3 + 2];
       const restLength = Math.hypot(bx - ax, by - ay, bz - az);
-      this.constraints.push({ a, b, restLength });
+      this.constraints.push({ a, b, restLength, stiffness: 1 });
     };
     for (let p = 0; p < this.panels; p++) {
       const { cols, rows } = this.panelDims[p];
@@ -162,7 +163,35 @@ export class ClothSimulation {
   // 격자 위상과 무관한 임의의 제약(패널 간 시접 등)을 추가한다. buildConstraints()
   // 호출 이후에 호출해야 한다(그렇지 않으면 buildConstraints가 초기화해버린다).
   addConstraint(a: number, b: number, restLength: number): void {
-    this.constraints.push({ a, b, restLength });
+    this.constraints.push({ a, b, restLength, stiffness: 1 });
+  }
+
+  // 46번 실측(면적 자체를 줄이는 접근): 정점 데이터 실측 결과, 소매 뽕이
+  // 소프트 풀/랩핑 목표 형태가 아니라 2D 평면 레이아웃이 만드는 천의
+  // "절대 표면적" 자체가 PBD 거리 제약(rest length) 때문에 못 줄어드는
+  // 문제일 수 있다는 가설이 나왔다 — 이 클래스는 패널/소매 같은 옷
+  // 의미론을 몰라야 하므로(범용 천 물리 엔진), garmentBuildSim.ts가
+  // 파티클 인덱스만으로 축소 배수를 계산해 넘기면 그대로 곱해 적용한다.
+  // buildConstraints() 직후(아직 물리가 한 스텝도 안 돈 시점)에 한 번만
+  // 불러야 한다.
+  scaleConstraintRestLengths(factorFor: (a: number, b: number) => number): void {
+    for (const c of this.constraints) {
+      const f = factorFor(c.a, c.b);
+      if (f !== 1) c.restLength *= f;
+    }
+  }
+
+  // 46번 실측(PBD 격자 잠김 완화): scaleConstraintRestLengths와 같은 패턴 —
+  // 개별 제약의 강성(stiffness, 기본 1)을 외부(garmentBuildSim.ts)가
+  // 파티클 인덱스만으로 계산해 넘기면 그대로 곱해 적용한다. 소매처럼
+  // 평면에서 원통형으로 랩핑되며 부드럽게 흘러야 하는 영역은 이걸로
+  // 낮춰, 대각선(전단) 제약이 매 반복 100% 강도로 저항해 "골판지"처럼
+  // 굳는 것을 막는다.
+  scaleConstraintStiffness(factorFor: (a: number, b: number) => number): void {
+    for (const c of this.constraints) {
+      const f = factorFor(c.a, c.b);
+      if (f !== 1) c.stiffness *= f;
+    }
   }
 
   // collisionEvery: 충돌 검사는 비용이 커서(특히 메시 BVH 기반) 매 반복마다
@@ -225,7 +254,12 @@ export class ClothSimulation {
         const dy = this.positions[bi + 1] - this.positions[ai + 1];
         const dz = this.positions[bi + 2] - this.positions[ai + 2];
         const dist = Math.hypot(dx, dy, dz) || 1e-6;
-        const diff = (dist - c.restLength) / dist;
+        // 46번 실측(A자 텐트 다음 문제 — PBD 격자 잠김): 평면 격자가
+        // 원통형으로 랩핑될 때 대각선(전단) 제약이 매 반복 100% 강도로
+        // 저항해, 좌표를 아무리 꺾어도 골판지처럼 각진 채로 굳었다.
+        // stiffness(기본 1)를 곱해, 소매 영역처럼 부드럽게 흘러야 하는
+        // 구간의 제약만 낮은 강도로 완화할 수 있게 한다.
+        const diff = ((dist - c.restLength) / dist) * c.stiffness;
 
         const moveA = pinnedA ? 0 : pinnedB ? 1 : 0.5;
         const moveB = pinnedB ? 0 : pinnedA ? 1 : 0.5;
@@ -366,11 +400,21 @@ export class ClothSimulation {
   // 스무딩) 이 고주파 잔물결만 지우고 테이퍼의 저주파(전체 모양)는 그대로
   // 둔다. 0번 행(어깨 핀)과 맨 끝 열은 원래도 고정/기준점이라 건드리지
   // 않는다.
-  smoothColumns(rowEndExclusive: number, blend = 0.5, fromPanel = 0, toPanelExclusive = this.panels): void {
+  // 46번 실측(소매 조각을 도로 평평하게 지우고 있었음): colMin/colMax를
+  // 안 주면 몸통 폭 안쪽뿐 아니라 소매 연장부 열(x)까지 그대로 훑는다 —
+  // 어깨~겨드랑이(rowEndExclusive) 구간은 정확히 힌지 드롭/Z-fade/강성
+  // 완화를 이번 세션 내내 집중적으로 조정해온 구간과 겹쳐서, 이 스무딩이
+  // 매 프레임 그 조정분을 도로 이웃 평균(원래 평평한 모양 쪽)으로 희석
+  // 시키고 있었다 — 소매/어깨 뽕 수정이 전부 무효했던 진짜 원인. 몸통
+  // 열 범위(colMin~colMax, garmentWorker.ts의 meshColumnRange)만 스무딩
+  // 하도록 제한한다.
+  smoothColumns(rowEndExclusive: number, blend = 0.5, fromPanel = 0, toPanelExclusive = this.panels, colMin = 1, colMax = Infinity): void {
     for (let p = fromPanel; p < toPanelExclusive; p++) {
       const { cols } = this.panelDims[p];
+      const xMin = Math.max(1, colMin);
+      const xMax = Math.min(cols - 2, colMax);
       for (let y = 1; y < rowEndExclusive; y++) {
-        for (let x = 1; x < cols - 1; x++) {
+        for (let x = xMin; x <= xMax; x++) {
           const i = this.index(p, x, y);
           if (this.pinned[i]) continue;
           const left = this.index(p, x - 1, y) * 3;
@@ -396,11 +440,16 @@ export class ClothSimulation {
   // 로 하는 라플라시안 스무딩을 세로 방향(같은 열의 위아래 이웃)으로도
   // 적용해, 고정된 0번 행과 그 아래 자유롭게 움직이는 행 사이의 급격한
   // 전환을 완화한다.
-  smoothRows(rowEndExclusive: number, blend = 0.5, fromPanel = 0, toPanelExclusive = this.panels): void {
+  // 46번 실측: smoothColumns와 같은 이유로 colMin/colMax를 받아 몸통 열
+  // 범위만 스무딩한다 — 안 그러면 소매 연장부 힌지 드롭이 매 프레임
+  // 위/아래 이웃 평균으로 도로 희석된다.
+  smoothRows(rowEndExclusive: number, blend = 0.5, fromPanel = 0, toPanelExclusive = this.panels, colMin = 0, colMax = Infinity): void {
     for (let p = fromPanel; p < toPanelExclusive; p++) {
       const { cols, rows } = this.panelDims[p];
+      const xMin = Math.max(0, colMin);
+      const xMax = Math.min(cols - 1, colMax);
       for (let y = 1; y < rowEndExclusive && y < rows - 1; y++) {
-        for (let x = 0; x < cols; x++) {
+        for (let x = xMin; x <= xMax; x++) {
           const i = this.index(p, x, y);
           if (this.pinned[i]) continue;
           const above = this.index(p, x, y - 1) * 3;

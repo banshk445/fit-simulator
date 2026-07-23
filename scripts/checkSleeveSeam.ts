@@ -12,7 +12,7 @@
 // 여기서 그대로 불러쓰는 쪽으로 업그레이드.
 import * as THREE from "three";
 import { ClothSimulation } from "../src/lib/clothPhysics";
-import { applyArmSoftPull, pinCorners, type ArmDir } from "../src/lib/buildGarmentSim";
+import { applyArmSoftPull, applyNecklineHug, enforceArmFrontBackYAlignment, pinCorners, type ArmDir } from "../src/lib/buildGarmentSim";
 import { buildUnifiedGarmentSim } from "../src/lib/buildUnifiedGarmentSim";
 import { applyCapsuleCollision } from "../src/lib/torsoCapsule";
 import { COLS, GRAVITY_BASE, PANEL_BACK, PANEL_FRONT, SUBSTEP_DT } from "../src/lib/clothConfig";
@@ -28,6 +28,7 @@ const trueShoulderRight: Vec3Like = { x: -0.17996512159041828, y: 1.375369902046
 const dirLeft: Vec3Like = { x: 0.5599594528223114, y: -0.8272282597138395, z: 0.046247351553900105 };
 const dirRight: Vec3Like = { x: -0.5600986940919868, y: -0.8270393076300492, z: 0.04791071395063927 };
 const SLEEVE_LENGTH_M = 0.22;
+const SLEEVE_WIDTH_M = 0.18; // UI 기본값(소매통 18cm)과 동일
 const armLeft: ArmDir = { dir: dirLeft, length: SLEEVE_LENGTH_M };
 const armRight: ArmDir = { dir: dirRight, length: SLEEVE_LENGTH_M };
 
@@ -47,7 +48,7 @@ function buildArmCapsules(trueShoulder: Vec3Like, dir: Vec3Like, length: number)
   ];
 }
 
-const simInstance: ClothSimulation = buildUnifiedGarmentSim(widthM, heightM, topY, centerZ, pinLeft, pinRight, armLeft, armRight);
+const simInstance: ClothSimulation = buildUnifiedGarmentSim(widthM, heightM, topY, centerZ, pinLeft, pinRight, armLeft, armRight, SLEEVE_WIDTH_M);
 
 const preset = FABRIC_PRESETS.cotton;
 const gravity = new THREE.Vector3(...GRAVITY_BASE).multiplyScalar(preset.gravityScale);
@@ -61,21 +62,31 @@ const FRAMES = Math.round(SECONDS / SUBSTEP_DT);
 for (let f = 0; f < FRAMES; f++) {
   pinCorners(simInstance, pinLeft, pinRight, PANEL_FRONT, PANEL_BACK, armLeft, armRight);
   simInstance.step(SUBSTEP_DT, gravity, resolver, preset.iterations, 3, preset.damping, 0.05);
-  applyArmSoftPull(simInstance, PANEL_FRONT, PANEL_BACK, widthM, heightM, topY, centerZ, pinLeft, pinRight, armLeft, armRight);
+  applyArmSoftPull(simInstance, PANEL_FRONT, PANEL_BACK, widthM, heightM, topY, centerZ, pinLeft, pinRight, armLeft, armRight, SLEEVE_WIDTH_M);
+  applyNecklineHug(simInstance, PANEL_FRONT, PANEL_BACK, widthM, centerZ, pinLeft, pinRight, armLeft, armRight);
+  enforceArmFrontBackYAlignment(simInstance, PANEL_FRONT, PANEL_BACK, pinLeft, pinRight, armLeft, armRight);
   simInstance.clampOverstretchedConstraints();
 }
 
 // 소매 열(핀 없는 바깥쪽) 전체에서 0번 행 앞/뒤판 Y차이의 최댓값을 잰다.
 const MAX_ALLOWED_Y_GAP_M = 0.025; // 2.5cm — 과거 버그(5cm)는 확실히 걸러내고, 현재 관측치(~1.5cm)는 통과.
+// 46번 실측(버그, 두 번): 처음엔 0번 행만 스캔해서 회귀를 놓쳤고, 그
+// 다음엔 ARM_ROWS(12)까지만 스캔해서 그 바로 다음 경계 행(13)의 누수를
+// 놓쳤다 — enforceArmFrontBackYAlignment가 ARM_ROWS+버퍼(4)까지 보정하는
+// 것과 맞춰, 그 버퍼까지 포함해서 스캔한다.
 let maxGap = 0;
 let maxGapX = -1;
-for (let x = 0; x < COLS; x++) {
-  const fi = simInstance.index(PANEL_FRONT, x, 0) * 3;
-  const bi = simInstance.index(PANEL_BACK, x, 0) * 3;
-  const gap = Math.abs(simInstance.positions[fi + 1] - simInstance.positions[bi + 1]);
-  if (gap > maxGap) {
-    maxGap = gap;
-    maxGapX = x;
+let maxGapY = -1;
+for (let y = 0; y <= 16; y++) {
+  for (let x = 0; x < COLS; x++) {
+    const fi = simInstance.index(PANEL_FRONT, x, y) * 3;
+    const bi = simInstance.index(PANEL_BACK, x, y) * 3;
+    const gap = Math.abs(simInstance.positions[fi + 1] - simInstance.positions[bi + 1]);
+    if (gap > maxGap) {
+      maxGap = gap;
+      maxGapX = x;
+      maxGapY = y;
+    }
   }
 }
 
@@ -87,7 +98,7 @@ for (let i = 0; i < simInstance.positions.length; i++) {
   }
 }
 
-console.log(`[checkSleeveSeam] ${FRAMES}프레임(${SECONDS}s) 시뮬레이션 후 0번 행 앞/뒤판 최대 Y차이: ${(maxGap * 100).toFixed(2)}cm (열 x=${maxGapX})`);
+console.log(`[checkSleeveSeam] ${FRAMES}프레임(${SECONDS}s) 시뮬레이션 후 0~16번 행 앞/뒤판 최대 Y차이: ${(maxGap * 100).toFixed(2)}cm (행 y=${maxGapY}, 열 x=${maxGapX})`);
 
 if (hasNaN) {
   console.error("[checkSleeveSeam] FAIL: 위치 배열에 NaN/Infinity 발생 — 시뮬레이션이 발산함.");

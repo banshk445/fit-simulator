@@ -21,6 +21,7 @@ export type MainToGarmentWorkerMessage =
       heightM: number;
       topY: number;
       centerZ: number;
+      sleeveWidthM: number;
       pinLeft: Vec3Like;
       pinRight: Vec3Like;
       // 46번: 0번 행(어깨선) 중 몸통에 고정되는 안쪽 구간의 각 열마다

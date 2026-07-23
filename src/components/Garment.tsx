@@ -4,6 +4,7 @@ import { useEffect, useMemo, useRef } from "react";
 import * as THREE from "three";
 import { useFitStore } from "../store/useFitStore";
 import { MannequinCollisionMesh } from "../lib/meshCollision";
+import { ArrayBvhCollision } from "../lib/bvhFromArrays";
 import { mannequinRootRef } from "../lib/mannequinRef";
 import { buildTorsoProxyCapsules } from "../lib/torsoCapsule";
 import { findArmDirection, findShortSleeveDirection, findShoulderBones } from "../lib/boneUtils";
@@ -29,7 +30,6 @@ const rightDirVec = new THREE.Vector3();
 // 열이 남았다. 매 프레임 0번 행의 각 열마다 실제로 레이캐스팅해서 마네킹
 // 표면 높이를 직접 재고, 그 표면보다 낮으면 끌어올리는 보정치를 계산한다
 // — 상수 하나를 또 추측하는 대신, 실제 마네킹 형상을 그대로 따라가게 한다.
-const neckRaycaster = new THREE.Raycaster();
 const neckRayOrigin = new THREE.Vector3();
 const DOWN_VEC = new THREE.Vector3(0, -1, 0);
 const NECK_SURFACE_CLEARANCE = 0.012; // 표면 위로 얹히는 옷감 두께 여유
@@ -59,7 +59,7 @@ function smoothstep01(t: number): number {
 // 열(xMin~xMax, buildGarmentSim.ts의 torsoColumnRange)에서만 의미가
 // 있다 — 그 바깥(소매 쪽, 핀 자체가 없는 열)은 raycasting 대상에서 뺀다.
 function computeNecklineLift(
-  mannequinRoot: THREE.Object3D,
+  bvh: ArrayBvhCollision,
   pinLeft: THREE.Vector3,
   pinRight: THREE.Vector3,
   cols: number,
@@ -86,11 +86,9 @@ function computeNecklineLift(
     const baseY = pinLeft.y + (pinRight.y - pinLeft.y) * t;
     const baseZ = pinLeft.z + (pinRight.z - pinLeft.z) * t;
     neckRayOrigin.set(baseX, baseY + 0.18, baseZ);
-    neckRaycaster.set(neckRayOrigin, DOWN_VEC);
-    neckRaycaster.far = 0.3;
-    const hits = neckRaycaster.intersectObject(mannequinRoot, true);
-    if (hits.length > 0) {
-      const surfaceY = hits[0].point.y;
+    const hitPoint = bvh.raycastFirst(neckRayOrigin, DOWN_VEC, 0.3);
+    if (hitPoint) {
+      const surfaceY = hitPoint.y;
       const neededY = surfaceY + NECK_SURFACE_CLEARANCE;
       lift[x] = Math.max(0, neededY - baseY) * blend;
     }
@@ -110,6 +108,75 @@ function computeNecklineLift(
 
 function toMsg(v: THREE.Vector3): { x: number; y: number; z: number } {
   return { x: v.x, y: v.y, z: v.z };
+}
+
+// 46번(프록시 바인딩 — 렌더링 해상도 분리): 물리는 검증된 저해상도
+// (COLS x ROWS)를 그대로 유지하고, 화면에 그리는 지오메트리만 이보다
+// 훨씬 촘촘하게 쪼갠다. 무게중심 좌표로 삼각형 내부를 선형 보간하는
+// 방식은 그 삼각형과 완전히 같은 평면 위에 머물러(수학적으로 곡률이
+// 전혀 안 생김) 시각적으로 아무 효과가 없다 — 대신 우리 메쉬는 임의
+// 삼각형이 아니라 규칙적인 격자라, "격자 셀 안 쌍선형(bilinear) 좌표"로
+// 바꾸면 같은 GPU 바인딩 개념을 유지하면서 실제로 휘어진 면이 생긴다
+// (쌍선형 패치는 네 꼭짓점이 한 평면 위에 있지 않은 한 진짜 곡면).
+// PlaneGeometry가 이미 만들어주는 기본 UV(0~1)가 격자 좌표와 그대로
+// 대응하므로 별도로 구워 넣을 attribute가 필요 없다 — LinearFilter를
+// 켠 DataTexture를 이 UV로 샘플링하면 GPU 하드웨어가 쌍선형 보간을
+// 대신 해준다(수동으로 네 모서리를 따로 읽어 섞을 필요가 없음).
+const RENDER_SUBDIV = 3; // 저해상도 셀 하나를 3x3으로 쪼갠다(삼각형 수 약 9배)
+
+function makeDataTexture(cols: number, rows: number): { texture: THREE.DataTexture; data: Float32Array } {
+  const data = new Float32Array(cols * rows * 4);
+  const texture = new THREE.DataTexture(data, cols, rows, THREE.RGBAFormat, THREE.FloatType);
+  texture.minFilter = THREE.LinearFilter;
+  texture.magFilter = THREE.LinearFilter;
+  texture.wrapS = THREE.ClampToEdgeWrapping;
+  texture.wrapT = THREE.ClampToEdgeWrapping;
+  texture.flipY = false;
+  texture.needsUpdate = true;
+  return { texture, data };
+}
+
+// 워커가 돌려주는 XYZXYZ... 배열(저해상도 물리 정점)을 DataTexture용
+// XYZAXYZA...(RGBA, 4칸씩) 배열로 옮겨 담는다 — 매 프레임 한 번, 입자
+// 수만큼(1232개)만 도는 가벼운 루프.
+function packXYZIntoRGBA(src: ArrayLike<number>, dst: Float32Array): void {
+  const n = src.length / 3;
+  for (let i = 0; i < n; i++) {
+    dst[i * 4] = src[i * 3];
+    dst[i * 4 + 1] = src[i * 3 + 1];
+    dst[i * 4 + 2] = src[i * 3 + 2];
+    dst[i * 4 + 3] = 1;
+  }
+}
+
+// MeshStandardMaterial의 표준 버텍스 셰이더에 우리 데이터 텍스처 샘플링을
+// 주입한다 — <begin_vertex>(위치)와 <beginnormal_vertex>(법선)를 각각
+// 텍스처 샘플로 바꿔치기한다. uv 어트리뷰트를 격자 연속 좌표로 바꾼 뒤
+// 텍셀 중심에 맞춰 오프셋(+0.5)해야 LinearFilter가 정확히 물리 격자와
+// 같은 쌍선형 가중치로 보간한다.
+function injectProxyBinding(
+  posTex: THREE.DataTexture,
+  normalTex: THREE.DataTexture,
+  cols: number,
+  rows: number,
+): (shader: THREE.WebGLProgramParametersWithUniforms) => void {
+  return (shader) => {
+    shader.uniforms.uPosTex = { value: posTex };
+    shader.uniforms.uNormalTex = { value: normalTex };
+    shader.vertexShader = `uniform sampler2D uPosTex;\nuniform sampler2D uNormalTex;\n${shader.vertexShader}`;
+    shader.vertexShader = shader.vertexShader.replace(
+      "#include <beginnormal_vertex>",
+      `vec2 gridUv = (uv * vec2(${(cols - 1).toFixed(1)}, ${(rows - 1).toFixed(1)}) + 0.5) / vec2(${cols.toFixed(1)}, ${rows.toFixed(1)});
+      vec3 objectNormal = normalize(texture2D(uNormalTex, gridUv).xyz);
+      #ifdef USE_TANGENT
+      vec3 objectTangent = vec3(tangent.xyz);
+      #endif`,
+    );
+    shader.vertexShader = shader.vertexShader.replace(
+      "#include <begin_vertex>",
+      `vec3 transformed = texture2D(uPosTex, gridUv).xyz;`,
+    );
+  };
 }
 
 export function Garment({ imageUrl }: Props) {
@@ -144,6 +211,25 @@ export function Garment({ imageUrl }: Props) {
     g.setAttribute("position", positionAttr);
     return g;
   }, [backPositions]);
+
+  // 46번(프록시 바인딩): 화면에 실제로 그리는 지오메트리는 이 저해상도
+  // (frontGeometry/backGeometry) 대신 훨씬 촘촘한 별도 지오메트리를 쓴다 —
+  // 이 둘은 더 이상 렌더링용이 아니라, 매 프레임 워커 결과를 받아 법선을
+  // 계산하는 "데이터 원본"(물리 프록시) 역할만 한다. position/uv는
+  // PlaneGeometry 기본값 그대로 두고(어차피 셰이더가 덮어씀) 실제로
+  // 쓰는 건 uv뿐이다.
+  const frontRenderGeometry = useMemo(
+    () => new THREE.PlaneGeometry(1, 1, (COLS - 1) * RENDER_SUBDIV, (ROWS - 1) * RENDER_SUBDIV),
+    [],
+  );
+  const backRenderGeometry = useMemo(
+    () => new THREE.PlaneGeometry(1, 1, (COLS - 1) * RENDER_SUBDIV, (ROWS - 1) * RENDER_SUBDIV),
+    [],
+  );
+  const frontPosTex = useMemo(() => makeDataTexture(COLS, ROWS), []);
+  const backPosTex = useMemo(() => makeDataTexture(COLS, ROWS), []);
+  const frontNormalTex = useMemo(() => makeDataTexture(COLS, ROWS), []);
+  const backNormalTex = useMemo(() => makeDataTexture(COLS, ROWS), []);
 
   // 46번 실측(버그): 앞판(frontGeometry)에 원본 texture를 그대로 물렸더니
   // 글자가 거울상으로 뒤집혀 보였다(사용자 스크린샷으로 확인, "TINY
@@ -189,6 +275,10 @@ export function Garment({ imageUrl }: Props) {
   const heightM = garmentSize.length / 100;
 
   const collisionMesh = useMemo(() => new MannequinCollisionMesh(), []);
+  // 46번(프레임 드랍 수정): 목선 레이캐스팅용 메인 스레드 BVH — 몸 실측이
+  // 바뀔 때만 구워지는 정적 스냅샷이라, 이 인스턴스에 물린 position 배열은
+  // 절대 워커로 transfer(detach)하면 안 된다(아래 굽기 effect 참고).
+  const neckSurfaceBvh = useMemo(() => new ArrayBvhCollision(), []);
   const workerRef = useRef<Worker | null>(null);
   const pendingRef = useRef(false);
   const pendingDtRef = useRef(0);
@@ -227,6 +317,19 @@ export function Garment({ imageUrl }: Props) {
       frontGeometry.computeBoundingSphere();
       backGeometry.computeBoundingSphere();
 
+      // 46번(프록시 바인딩): 저해상도 물리 결과(위치)와 그로부터 계산한
+      // 법선을 매 프레임 DataTexture로 GPU에 올린다 — 무거운 고해상도
+      // BufferGeometry를 매 프레임 다시 쓰는 대신, 가벼운 COLS x ROWS
+      // 텍스처만 갱신하고 실제 정점 계산은 버텍스 셰이더가 담당한다.
+      packXYZIntoRGBA(msg.front, frontPosTex.data);
+      packXYZIntoRGBA(msg.back, backPosTex.data);
+      packXYZIntoRGBA(frontGeometry.getAttribute("normal").array, frontNormalTex.data);
+      packXYZIntoRGBA(backGeometry.getAttribute("normal").array, backNormalTex.data);
+      frontPosTex.texture.needsUpdate = true;
+      backPosTex.texture.needsUpdate = true;
+      frontNormalTex.texture.needsUpdate = true;
+      backNormalTex.texture.needsUpdate = true;
+
       // 임시 디버그 훅(worker.onerror 근처와 짝) — 워커가 실제로 돌려준
       // 몸판 0번 행(어깨선) 전체를 그대로 노출한다. __fitDebug의 "의도한
       // 핀 값"과 이 값이 다르면 워커 내부(물리 시뮬레이션)에서 문제가
@@ -250,7 +353,7 @@ export function Garment({ imageUrl }: Props) {
       worker.terminate();
       workerRef.current = null;
     };
-  }, [frontGeometry, backGeometry, frontPositions, backPositions]);
+  }, [frontGeometry, backGeometry, frontPositions, backPositions, frontPosTex, backPosTex, frontNormalTex, backNormalTex]);
 
   // 어깨/팔 방향과 소매 길이에서 현재 팔 모양(ArmShapeMsg)을 계산한다 —
   // init(빌드)과 step(매 프레임) 양쪽에서 같은 공식을 쓰게 한 곳에 모은다.
@@ -297,10 +400,16 @@ export function Garment({ imageUrl }: Props) {
     if (!root || !leftShoulder || !rightShoulder) return;
     const timer = setTimeout(() => {
       const { position, frontIndex, backIndex, wholeBodyIndex } = collisionMesh.bake(root);
-      const transfer: Transferable[] = [position.buffer];
+      // 46번(프레임 드랍 수정): position/wholeBodyIndex는 메인 스레드
+      // neckSurfaceBvh가 그대로 붙잡고 계속 쓸 배열이라 transfer(detach)
+      // 하면 안 된다 — 구조적 복제(구운 스냅샷이라 데이터가 작지도 않고,
+      // 어차피 디바운스로 자주 안 일어나므로 복제 비용은 무시할 만하다)로
+      // 워커에는 별도 사본이 간다. frontIndex/backIndex는 워커 전용이라
+      // 그대로 transfer해도 안전하다.
+      neckSurfaceBvh.rebuild(position, wholeBodyIndex);
+      const transfer: Transferable[] = [];
       if (frontIndex) transfer.push(frontIndex.buffer);
       if (backIndex) transfer.push(backIndex.buffer);
-      if (wholeBodyIndex) transfer.push(wholeBodyIndex.buffer);
 
       leftShoulder.updateWorldMatrix(true, false);
       rightShoulder.updateWorldMatrix(true, false);
@@ -320,7 +429,7 @@ export function Garment({ imageUrl }: Props) {
       );
     }, REBUILD_DEBOUNCE_MS);
     return () => clearTimeout(timer);
-  }, [collisionMesh, shoulderBones, bodySize.height, bodySize.chest, bodySize.armLength, bodySize.legLength, bodySize.shoulderWidth]);
+  }, [collisionMesh, neckSurfaceBvh, shoulderBones, bodySize.height, bodySize.chest, bodySize.armLength, bodySize.legLength, bodySize.shoulderWidth]);
 
   // 몸판 치수(옷 크기 슬라이더, 몸 사이즈)가 바뀌면 워커에 새 시뮬레이션을
   // 처음부터 구성하도록 요청한다 — 마운트 시 최초 1회 빌드도 여기서
@@ -343,9 +452,8 @@ export function Garment({ imageUrl }: Props) {
     const pins = computeShoulderPin(shoulderVec, rightShoulderVec, garmentSize.shoulderWidth / 100 / 2);
     const topY = Math.max(pins.left.y, pins.right.y);
     const centerZ = (pins.left.z + pins.right.z) / 2;
-    const mannequinRoot = mannequinRootRef.current;
     const { xMin, xMax } = torsoColumnRange(COLS, pins.left, pins.right, armShapes.left, armShapes.right);
-    const necklineLift = mannequinRoot ? Array.from(computeNecklineLift(mannequinRoot, pins.left, pins.right, COLS, xMin, xMax)) : [];
+    const necklineLift = neckSurfaceBvh.ready ? Array.from(computeNecklineLift(neckSurfaceBvh, pins.left, pins.right, COLS, xMin, xMax)) : [];
 
     generationRef.current += 1;
     worker.postMessage({
@@ -354,6 +462,7 @@ export function Garment({ imageUrl }: Props) {
       heightM,
       topY,
       centerZ,
+      sleeveWidthM: garmentSize.sleeveWidth / 100,
       pinLeft: { x: pins.left.x, y: pins.left.y, z: pins.left.z },
       pinRight: { x: pins.right.x, y: pins.right.y, z: pins.right.z },
       necklineLift,
@@ -373,6 +482,7 @@ export function Garment({ imageUrl }: Props) {
     garmentSize.shoulderWidth,
     sleeveType,
     garmentSize.sleeveLength,
+    garmentSize.sleeveWidth,
   ]);
 
   useFrame((_, delta) => {
@@ -416,9 +526,8 @@ export function Garment({ imageUrl }: Props) {
     const dt = pendingDtRef.current;
     pendingDtRef.current = 0;
 
-    const mannequinRoot = mannequinRootRef.current;
     const { xMin, xMax } = torsoColumnRange(COLS, pins.left, pins.right, armShapes.left, armShapes.right);
-    const necklineLift = mannequinRoot ? Array.from(computeNecklineLift(mannequinRoot, pins.left, pins.right, COLS, xMin, xMax)) : [];
+    const necklineLift = neckSurfaceBvh.ready ? Array.from(computeNecklineLift(neckSurfaceBvh, pins.left, pins.right, COLS, xMin, xMax)) : [];
 
     worker.postMessage({
       type: "step",
@@ -444,13 +553,22 @@ export function Garment({ imageUrl }: Props) {
     backPositionsSample: Array.from(backPositions.slice(0, 9)),
   };
 
+  const frontOnBeforeCompile = useMemo(
+    () => injectProxyBinding(frontPosTex.texture, frontNormalTex.texture, COLS, ROWS),
+    [frontPosTex, frontNormalTex],
+  );
+  const backOnBeforeCompile = useMemo(
+    () => injectProxyBinding(backPosTex.texture, backNormalTex.texture, COLS, ROWS),
+    [backPosTex, backNormalTex],
+  );
+
   return (
     <group>
-      <mesh geometry={frontGeometry} frustumCulled={false}>
-        <meshStandardMaterial map={mirroredTexture} side={THREE.DoubleSide} roughness={0.85} />
+      <mesh geometry={frontRenderGeometry} frustumCulled={false}>
+        <meshStandardMaterial map={mirroredTexture} side={THREE.DoubleSide} roughness={0.85} onBeforeCompile={frontOnBeforeCompile} />
       </mesh>
-      <mesh geometry={backGeometry} frustumCulled={false}>
-        <meshStandardMaterial map={texture} side={THREE.DoubleSide} roughness={0.85} />
+      <mesh geometry={backRenderGeometry} frustumCulled={false}>
+        <meshStandardMaterial map={texture} side={THREE.DoubleSide} roughness={0.85} onBeforeCompile={backOnBeforeCompile} />
       </mesh>
     </group>
   );

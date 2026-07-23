@@ -218,13 +218,27 @@ export function Mannequin() {
   // T-pose(바인드 포즈)는 팔이 수평으로 뻗어 있어 부자연스럽다. 팔 뼈대가
   // 현재 향하고 있는 방향을 측정해서, 완전히 수직(월드 -Y)이 아니라 몸
   // 중심선에서 살짝 바깥쪽으로 벌어진 방향("릴랙스드 A-포즈")을 향하도록
-  // 1회만 회전시킨다. 팔을 곧게 내리면 손(특히 손가락)이 배/골반에 딱
-  // 붙게 되는데, 옷자락이 그 높이까지 늘어질 때 손가락처럼 얇고 복잡한
-  // 형체와 충돌 계산을 해야 해서 그 부분이 찢어진 것처럼 불안정해지는
-  // 문제가 실측으로 확인됐다 — 실제 옷 피팅 3D 도구에서도 흔히 A-포즈를
-  // 쓰는 이유와 같다. 어깨 뼈의 월드 X 좌표 부호로 좌/우를 판별해 바깥쪽
+  // 회전시킨다. 팔을 곧게 내리면 손(특히 손가락)이 배/골반에 딱 붙게
+  // 되는데, 옷자락이 그 높이까지 늘어질 때 손가락처럼 얇고 복잡한 형체와
+  // 충돌 계산을 해야 해서 그 부분이 찢어진 것처럼 불안정해지는 문제가
+  // 실측으로 확인됐다 — 실제 옷 피팅 3D 도구에서도 흔히 A-포즈를 쓰는
+  // 이유와 같다. 어깨 뼈의 월드 X 좌표 부호로 좌/우를 판별해 바깥쪽
   // 방향을 정하므로, 모델이 바뀌어도(뼈대 이름과 무관하게) 안전하다.
-  useEffect(() => {
+  //
+  // 46번(동적 포징 — 겨드랑이 드레이프 실측): 원래 1회성 useEffect였던
+  // 것을 매 프레임 각도가 서서히 오가는 애니메이션으로 바꾼다 — 소매
+  // 방향(computeArmShapes, Garment.tsx)이 이미 매 프레임 이 뼈대의 실제
+  // 월드 방향을 그대로 읽어 쓰므로, 옷 쪽 코드를 전혀 안 건드려도 팔이
+  // 움직이는 동안 자체충돌/힌지/언더암 당김/드레이프가 실시간으로 반응
+  // 하는지 그대로 관찰할 수 있다. 0.6(벌어짐, 기존 검증된 값)과 0.25
+  // (몸에 더 붙임) 사이를 8초 주기로 오간다 — 완전 수직(0)까지는 안 가서
+  // 위 주석의 손가락-충돌 문제를 다시 재현하지 않는다.
+  const armPoseElapsed = useRef(0);
+  useFrame((_, delta) => {
+    armPoseElapsed.current += delta;
+    const cyclePhase = (armPoseElapsed.current / 8) * Math.PI * 2; // 8초 주기
+    const outwardAmount = 0.425 + 0.175 * Math.sin(cyclePhase); // 0.25~0.6 사이 오간다
+
     const shoulderPos = new THREE.Vector3();
     for (const { bone } of boneGroups.arm) {
       const child = firstBoneChild(bone);
@@ -232,15 +246,10 @@ export function Mannequin() {
       const currentDir = worldDirection(bone, child);
       bone.getWorldPosition(shoulderPos);
       const sign = Math.sign(shoulderPos.x) || 1;
-      // 실측 결과 0.3(약 17˚)로는 부족했다 — 손이 여전히 옷자락이 닿는
-      // 높이를 스쳐 지나가며 충돌 메시에 토르소 표면과 겹치는 애매한 이중
-      // 표면을 만들었다(같은 높이·각도에서 반지름이 크게 다른 두 표면이
-      // 잡히는 것을 raycasting으로 확인). 0.6(약 31˚)까지 벌려 손을 토르소
-      // 반경 밖으로 확실히 뺀다.
-      const outwardDown = new THREE.Vector3(sign * 0.6, -1, 0).normalize();
+      const outwardDown = new THREE.Vector3(sign * outwardAmount, -1, 0).normalize();
       pointBoneTowardWorldDirection(bone, currentDir, outwardDown);
     }
-  }, [boneGroups]);
+  });
 
   // 소스 파일마다 단위가 다를 수 있다(m, cm, inch...) — 원본 바운딩 박스
   // 높이를 재서 기준 신장(DEFAULT_BODY_SIZE.height)에 맞도록 스케일을 자동

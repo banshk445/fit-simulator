@@ -6,7 +6,7 @@ import { SelfCollision } from "../lib/selfCollision";
 import { applyCapsuleCollision, applyFrontBackSidedness } from "../lib/torsoCapsule";
 import type { Capsule } from "../lib/torsoCapsule";
 import { FABRIC_PRESETS } from "../lib/fabricPresets";
-import { applyArmSoftPull, pinCorners, torsoColumnRange } from "../lib/buildGarmentSim";
+import { applyArmSoftPull, applyNecklineHug, enforceArmFrontBackYAlignment, pinCorners, torsoColumnRange } from "../lib/buildGarmentSim";
 import { buildUnifiedGarmentSim } from "../lib/buildUnifiedGarmentSim";
 import { pullShoulderCapToSurface, enforceLeftRightSymmetry } from "../lib/garmentStitch";
 import {
@@ -48,7 +48,7 @@ let accumulator = 0;
 // 않는다(치수가 바뀔 때만 "init"으로 다시 온다) — applyArmSoftPull이 매
 // 프레임 이 값들로 목표 지점을 다시 계산해야 하므로 마지막 "init" 값을
 // 기억해둔다.
-let lastLayout: { widthM: number; heightM: number; topY: number; centerZ: number } | null = null;
+let lastLayout: { widthM: number; heightM: number; topY: number; centerZ: number; sleeveWidthM: number } | null = null;
 
 // --- 몸판 충돌 ---
 const frontCollisionMesh = new ArrayBvhCollision();
@@ -69,17 +69,25 @@ const wholeBodyCollisionMesh = new ArrayBvhCollision();
 const armholeStartRow = Math.round(ROWS * ARMHOLE_ROW_FRACTION);
 const SHOULDER_CAP_SKIP_START = COLS * 1;
 const SHOULDER_CAP_SKIP_END = COLS * (armholeStartRow + 1);
+// 46번(프레임 드랍 진짜 원인 — BVH 트리 탐색 스킵): 몸통 열 범위(torsoColumnRange
+// 로 매 스텝 갱신)만 이 비싼 메시 충돌 대상으로 삼는다 — 소매로 뻗은 바깥쪽
+// 열은 어차피 팔 캡슐이 따로 관리하므로 트리 탐색 자체가 낭비였다. 초기값은
+// "전체 범위"(min=0, max=COLS-1)로 둬 collisionRange가 아직 갱신되기 전에도
+// 안전하게 동작한다.
+const meshColumnRange = { cols: COLS, min: 0, max: COLS - 1 };
 const frontMeshResolver = frontCollisionMesh.createResolver(
   COLLISION_MARGIN,
   COLLISION_DETECTION_RADIUS,
   SHOULDER_CAP_SKIP_START,
   SHOULDER_CAP_SKIP_END,
+  meshColumnRange,
 );
 const backMeshResolver = backCollisionMesh.createResolver(
   COLLISION_MARGIN,
   COLLISION_DETECTION_RADIUS,
   SHOULDER_CAP_SKIP_START,
   SHOULDER_CAP_SKIP_END,
+  meshColumnRange,
 );
 
 function createPanelSplitResolver(
@@ -177,7 +185,7 @@ ctx.onmessage = (event) => {
   const msg = event.data;
   switch (msg.type) {
     case "init": {
-      lastLayout = { widthM: msg.widthM, heightM: msg.heightM, topY: msg.topY, centerZ: msg.centerZ };
+      lastLayout = { widthM: msg.widthM, heightM: msg.heightM, topY: msg.topY, centerZ: msg.centerZ, sleeveWidthM: msg.sleeveWidthM };
       sim = buildUnifiedGarmentSim(
         msg.widthM,
         msg.heightM,
@@ -187,6 +195,7 @@ ctx.onmessage = (event) => {
         msg.pinRight,
         toArmDir(msg.armLeft),
         toArmDir(msg.armRight),
+        msg.sleeveWidthM,
         msg.necklineLift,
       );
       accumulator = 0;
@@ -212,6 +221,15 @@ ctx.onmessage = (event) => {
       const armRight = toArmDir(msg.armRight);
       pinCorners(activeSim, msg.pinLeft, msg.pinRight, PANEL_FRONT, PANEL_BACK, armLeft, armRight, msg.necklineLift);
       armCapsules = [...buildArmCapsules(msg.armLeft), ...buildArmCapsules(msg.armRight)];
+      // 46번: 이번 스텝에서 쓸 몸통 열 범위를 서브스텝 루프(비싼 메시 충돌이
+      // 실제로 도는 곳) 시작 전에 미리 갱신해둔다 — meshColumnRange는 살아있는
+      // 참조라 여기서 값만 바꿔주면 frontMeshResolver/backMeshResolver가
+      // 그대로 최신 값을 읽는다.
+      {
+        const range = torsoColumnRange(COLS, msg.pinLeft, msg.pinRight, armLeft, armRight);
+        meshColumnRange.min = range.xMin;
+        meshColumnRange.max = range.xMax;
+      }
 
       const preset = FABRIC_PRESETS[msg.fabric];
       // rebuildCollision은 REBUILD_DEBOUNCE_MS(200ms) 디바운스 + 메인
@@ -269,14 +287,13 @@ ctx.onmessage = (event) => {
       // 고주파 잔물결을 지우고, 그 다음에 어깨 표면 스냅을 "마지막
       // 발언권"으로 적용한다 — 순서를 반대로 하면 스무딩이 정밀 보정을
       // 다시 희석시킨다.
-      activeSim.smoothColumns(armholeStartRow + 1, 0.5, PANEL_FRONT, PANEL_BACK + 1);
-      activeSim.smoothRows(armholeStartRow + 1, 0.5, PANEL_FRONT, PANEL_BACK + 1);
+      activeSim.smoothColumns(armholeStartRow + 1, 0.5, PANEL_FRONT, PANEL_BACK + 1, meshColumnRange.min, meshColumnRange.max);
+      activeSim.smoothRows(armholeStartRow + 1, 0.5, PANEL_FRONT, PANEL_BACK + 1, meshColumnRange.min, meshColumnRange.max);
       activeSim.preserveColumnOrder(dirX, dirY, dirZ, undefined, false, PANEL_FRONT, PANEL_BACK + 1);
       activeSim.preserveColumnOrder(dirX, dirY, dirZ, undefined, true, PANEL_FRONT, PANEL_BACK + 1);
 
       const bodySurface = wholeBodyCollisionMesh.ready ? wholeBodyCollisionMesh : null;
-      const { xMin, xMax } = torsoColumnRange(COLS, msg.pinLeft, msg.pinRight, armLeft, armRight);
-      pullShoulderCapToSurface(activeSim, PANEL_FRONT, PANEL_BACK, armholeStartRow, xMin, xMax, COLS, dirX, dirY, dirZ, bodySurface);
+      pullShoulderCapToSurface(activeSim, PANEL_FRONT, PANEL_BACK, armholeStartRow, meshColumnRange.min, meshColumnRange.max, COLS, dirX, dirY, dirZ, bodySurface);
       if (lastLayout) {
         applyArmSoftPull(
           activeSim,
@@ -290,8 +307,21 @@ ctx.onmessage = (event) => {
           msg.pinRight,
           armLeft,
           armRight,
+          lastLayout.sleeveWidthM,
+        );
+        applyNecklineHug(
+          activeSim,
+          PANEL_FRONT,
+          PANEL_BACK,
+          lastLayout.widthM,
+          lastLayout.centerZ,
+          msg.pinLeft,
+          msg.pinRight,
+          armLeft,
+          armRight,
         );
       }
+      enforceArmFrontBackYAlignment(activeSim, PANEL_FRONT, PANEL_BACK, msg.pinLeft, msg.pinRight, armLeft, armRight);
       enforceLeftRightSymmetry(activeSim, PANEL_FRONT, PANEL_BACK, COLS, ROWS);
       activeSim.preserveColumnOrder(dirX, dirY, dirZ, undefined, false, PANEL_FRONT, PANEL_BACK + 1);
       activeSim.preserveColumnOrder(dirX, dirY, dirZ, undefined, true, PANEL_FRONT, PANEL_BACK + 1);
