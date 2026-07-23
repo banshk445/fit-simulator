@@ -318,7 +318,13 @@ function sleeveExtensionPoint(
   // 그대로 이어받는다 — outerness는 앵커에서 항상 1(경계 자체)이다.
   const anchorX = -sideSign * s * thw;
   const anchorY = topY - v * heightM;
-  const anchorZ = centerZ + panelSign * shoulderCapZBulge(y, s * 0.5, armholeStartRow);
+  // 47번 실측(어깨 돔이 소맷부리까지 새어나감): anchor는 열(sleeveT) 독립이라
+  // capZ(어깨 돔 앞뒤 두께)가 감쇠 없이 소매 끝까지 그대로 적용됐다 —
+  // col0 row1의 배치 직후 앞뒤 간격이 이상적 원 간격(0.40cm)의 24배(9.61cm)
+  // 였던 원인이 바로 이 항이었다(실측: capZ가 그 간격의 사실상 전부).
+  // sleeveT(0=겨드랑이~1=소맷부리)로 선형 감쇠시켜, 돔 두께가 몸통 경계에서만
+  // 온전히 남고 소매를 따라 나갈수록 사라지게 한다.
+  const anchorZ = centerZ + panelSign * shoulderCapZBulge(y, s * 0.5, armholeStartRow) * (1 - sleeveT);
 
   // 팔 축(fwd)을 따라 sleeveT만큼 나아간 변위 — sleeveT=0이면 reach=0이라
   // 앵커 그 자체다. armRowFactor(행 진행도, 0=어깨선~1=ARM_ROWS 경계에서 0)를
