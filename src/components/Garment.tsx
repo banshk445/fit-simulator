@@ -9,7 +9,6 @@ import { mannequinRootRef } from "../lib/mannequinRef";
 import { buildTorsoProxyCapsules } from "../lib/torsoCapsule";
 import { findArmDirection, findShortSleeveDirection, findShoulderBones } from "../lib/boneUtils";
 import { computeShoulderPin } from "../lib/shoulderPin";
-import { averageGarmentColor } from "../lib/garmentColor";
 import { compositeGarmentTexture } from "../lib/garmentTextureComposite";
 import { torsoColumnRange } from "../lib/buildGarmentSim";
 import { COLS, PARTICLES_PER_PANEL, REBUILD_DEBOUNCE_MS, ROWS } from "../lib/clothConfig";
@@ -184,18 +183,15 @@ function injectProxyBinding(
 export function Garment({ imageUrl }: Props) {
   const rawTexture = useTexture(imageUrl);
   // 47번(원단색+프린트 합성): 사진 전체를 몸판 UV에 그대로 늘려 붙이는
-  // 대신, 원단 대표색으로 칠한 캔버스 위에 실제 프린트 영역만 실제
-  // 비율로 얹는다 — 자세한 이유는 garmentTextureComposite.ts 참고.
-  // averageGarmentColor/cropToGarmentRegion(garmentSegmentation.ts)은
+  // 대신, 원단 대표색(테두리 기반 샘플링 — garmentTextureComposite.ts의
+  // borderRepresentativeColor)으로 칠한 캔버스 위에 실제 프린트 영역만
+  // 실제 비율로 얹는다. cropToGarmentRegion(garmentSegmentation.ts)은
   // 그대로 재사용하고 수정하지 않는다.
   // 47번(디코드 보장): useTexture가 넘겨주는 image는 'load' 이벤트 기준
   // (complete=true)이라 useMemo 안에서 바로 캔버스에 그리면, 브라우저가
-  // 아직 픽셀 디코드를 끝내지 않은 상태를 읽을 수 있다 — 실측(같은 이미지,
-  // 연속 두 번 호출)으로 대표색이 매번 달라지는 걸로 확인됐다(레이스
-  // 컨디션). image.decode()가 리졸브된 뒤에만 샘플링해야 매번 같은 값이
-  // 나온다(5회 연속 확인 완료) — useMemo는 비동기를 못 기다리므로
-  // useEffect+state로 바꾼다. averageGarmentColor/cropToGarmentRegion은
-  // 여전히 그대로 재사용하고 수정하지 않는다.
+  // 아직 픽셀 디코드를 끝내지 않은 상태를 읽을 수 있다 — image.decode()가
+  // 리졸브된 뒤에만 샘플링해야 매번 같은 값이 나온다. useMemo는 비동기를
+  // 못 기다리므로 useEffect+state로 바꾼다.
   const [compositedTexture, setCompositedTexture] = useState<THREE.Texture>(rawTexture);
   useEffect(() => {
     const image = rawTexture.image as HTMLImageElement | undefined;
@@ -209,8 +205,7 @@ export function Garment({ imageUrl }: Props) {
       .catch(() => {}) // 디코드 실패해도 이미 로드는 됐으니 계속 진행
       .then(() => {
         if (cancelled) return;
-        const color = averageGarmentColor(image);
-        const canvas = compositeGarmentTexture(image, color);
+        const canvas = compositeGarmentTexture(image);
         const tex = new THREE.CanvasTexture(canvas);
         tex.colorSpace = rawTexture.colorSpace;
         setCompositedTexture(tex);
