@@ -27,21 +27,23 @@ export const SHOULDER_PIN_OUTSET = 0.065;
 // 몸 중심 쪽으로 당겨지고(타이트/오프숄더가 아니라 좁은 핏), 넓으면
 // 어깨 밖으로 늘어난다(드롭숄더).
 //
-// 36번 배포 직후 발견한 회귀(중요): 처음엔 이 바닥값을 고정 10cm로
-// 잡았는데, 기본 어깨너비(45cm) 자체가 그 절반(22.5cm)이라 이 마네킹의
-// 실제 어깨 표면을 벗어나는 데 필요한 거리(위 OUTSET 이력에서 실측·확정된
-// 약 29.5cm = 관절 거리 18cm + OUTSET 11.5cm)보다 짧았다 — 기본값에서부터
-// 핀이 마네킹 어깨 표면 안쪽에 박혀, 어깨가 충돌 처리로 밀려나며
-// 부풀어보이고 목선이 가슴 쪽으로 무너지는(이전에 29~32번에서 이미
-// 여러 차례 겪었던 것과 똑같은 증상) 회귀가 실측(사용자 스크린샷)으로
-// 확인됐다. 바닥값은 고정 상수가 아니라 "이 몸에서 렌더링이 깨지지 않는
-// 최소 거리"(관절 거리 + OUTSET, 즉 옛 기본 공식 그 자체)여야 한다 —
-// 실제 옷 어깨너비가 이보다 넓으면 그 값을 그대로 따르고(정상적인 핏
-// 차이가 보임), 이보다 좁으면(마네킹 골격보다 좁은 옷은 실제로도
-// 어차피 옷이 아니라 골격 위에 얹힌 것처럼 보일 수밖에 없다) 렌더링이
-// 깨지지 않는 선에서 멈춘다.
-function surfaceClearanceHalfWidth(center: THREE.Vector3, joint: THREE.Vector3): number {
-  return center.distanceTo(joint) + SHOULDER_PIN_OUTSET;
+// 36번 배포 직후 발견한 회귀: 바닥값(Math.max의 하한)을 "관절 거리 +
+// OUTSET"으로 잡았었다 — 이러면 OUTSET이 커질 때마다(Z-fighting을
+// 피하려 11.5cm까지 늘렸던 이력 참고) 바닥값 자체가 사용자 입력을
+// 삼켜버린다. 기본 옷 어깨너비(45cm)의 반폭은 22.5cm인데, 바닥값이
+// 24.5cm(관절 거리 18cm + OUTSET 6.5cm)만 돼도 이미 그보다 커서
+// Math.max가 항상 바닥값을 골랐다 — 어떤 어깨너비를 넣어도 화면이
+// 똑같았던 원인이 이거였다(핀이 마네킹 표면에 박히지 않게 하려던
+// 여유가, 뜻하지 않게 "사용자 입력 무시 클램프"로 변질된 것).
+//
+// 47번: 바닥값은 "핀이 마네킹 메시 안에 박히지 않는 최소치"만 담당해야
+// 한다 — 렌더링 겉보기 여유(OUTSET)는 옷 어깨너비가 명시적으로 주어지지
+// 않은 예전 호출부(디버그 등)에만 쓰고, 실측 어깨너비가 있으면 그 값과
+// "메시 관통 방지용 최소 여유"(PIN_MIN_CLEARANCE, 1cm)만 비교한다.
+const PIN_MIN_CLEARANCE = 0.01;
+
+function minHalfWidth(center: THREE.Vector3, joint: THREE.Vector3): number {
+  return center.distanceTo(joint) + PIN_MIN_CLEARANCE;
 }
 
 // 어깨 뼈대(관절)에서 수평으로만 밀어내던 것과 별개로, 실제로는 수직으로도
@@ -88,10 +90,10 @@ export function computeShoulderPin(
   const rightDir = right.clone().sub(center);
   if (leftDir.lengthSq() > 1e-9) leftDir.normalize();
   if (rightDir.lengthSq() > 1e-9) rightDir.normalize();
-  const leftClearance = surfaceClearanceHalfWidth(center, left);
-  const rightClearance = surfaceClearanceHalfWidth(center, right);
-  const leftHalfWidth = garmentHalfWidthM === undefined ? leftClearance : Math.max(garmentHalfWidthM, leftClearance);
-  const rightHalfWidth = garmentHalfWidthM === undefined ? rightClearance : Math.max(garmentHalfWidthM, rightClearance);
+  const leftFloor = minHalfWidth(center, left);
+  const rightFloor = minHalfWidth(center, right);
+  const leftHalfWidth = garmentHalfWidthM === undefined ? leftFloor + SHOULDER_PIN_OUTSET : Math.max(garmentHalfWidthM, leftFloor);
+  const rightHalfWidth = garmentHalfWidthM === undefined ? rightFloor + SHOULDER_PIN_OUTSET : Math.max(garmentHalfWidthM, rightFloor);
   const pinLeft = center.clone().addScaledVector(leftDir, leftHalfWidth);
   const pinRight = center.clone().addScaledVector(rightDir, rightHalfWidth);
   pinLeft.y += SHOULDER_PIN_LIFT;
