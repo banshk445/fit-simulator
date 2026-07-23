@@ -62,6 +62,8 @@ export function Controls() {
   const setFabric = useFitStore((s) => s.setFabric);
   const sleeveType = useFitStore((s) => s.sleeveType);
   const setSleeveType = useFitStore((s) => s.setSleeveType);
+  const showArmCapsules = useFitStore((s) => s.showArmCapsules);
+  const setShowArmCapsules = useFitStore((s) => s.setShowArmCapsules);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [isProcessingImage, setIsProcessingImage] = useState(false);
 
@@ -231,6 +233,20 @@ export function Controls() {
           ))}
         </div>
       </section>
+
+      {import.meta.env.DEV && (
+        <section className="rounded-xl bg-slate-800/60 p-4">
+          <label className="flex cursor-pointer items-center gap-2 text-sm text-slate-300">
+            <input
+              type="checkbox"
+              checked={showArmCapsules}
+              onChange={(e) => setShowArmCapsules(e.target.checked)}
+              className="accent-red-500"
+            />
+            <span>[DEV] 팔 충돌 캡슐 와이어프레임 표시</span>
+          </label>
+        </section>
+      )}
     </div>
   );
 }

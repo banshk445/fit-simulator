@@ -32,6 +32,11 @@ interface FitState {
   garmentImage: string | null;
   fabric: FabricType;
   sleeveType: SleeveType;
+  // 47번(디버그 전용): garmentWorker가 실제로 충돌 계산에 쓰는 팔 캡슐을
+  // 와이어프레임으로 겹쳐 그려 눈으로 검증하기 위한 토글 — dev 빌드에서만
+  // 노출된다(Controls.tsx/FitCanvas.tsx에서 import.meta.env.DEV로 감쌈).
+  showArmCapsules: boolean;
+  setShowArmCapsules: (show: boolean) => void;
   setFabric: (fabric: FabricType) => void;
   setBodyHeight: (height: number) => void;
   setBodyChest: (chest: number) => void;
@@ -89,6 +94,8 @@ export const useFitStore = create<FitState>((set) => ({
   garmentImage: null,
   fabric: "cotton",
   sleeveType: "short",
+  showArmCapsules: false,
+  setShowArmCapsules: (show) => set({ showArmCapsules: show }),
   setFabric: (fabric) => set({ fabric }),
   setBodyHeight: (height) => set((state) => ({ bodySize: { ...state.bodySize, height } })),
   setBodyChest: (chest) => set((state) => ({ bodySize: { ...state.bodySize, chest } })),
