@@ -565,10 +565,26 @@ export function Garment({ imageUrl }: Props) {
   return (
     <group>
       <mesh geometry={frontRenderGeometry} frustumCulled={false}>
-        <meshStandardMaterial map={mirroredTexture} side={THREE.DoubleSide} roughness={0.85} onBeforeCompile={frontOnBeforeCompile} />
+        <meshStandardMaterial
+          map={mirroredTexture}
+          side={THREE.DoubleSide}
+          roughness={0.85}
+          polygonOffset
+          polygonOffsetFactor={-4}
+          polygonOffsetUnits={-4}
+          onBeforeCompile={frontOnBeforeCompile}
+        />
       </mesh>
       <mesh geometry={backRenderGeometry} frustumCulled={false}>
-        <meshStandardMaterial map={texture} side={THREE.DoubleSide} roughness={0.85} onBeforeCompile={backOnBeforeCompile} />
+        <meshStandardMaterial
+          map={texture}
+          side={THREE.DoubleSide}
+          roughness={0.85}
+          polygonOffset
+          polygonOffsetFactor={-4}
+          polygonOffsetUnits={-4}
+          onBeforeCompile={backOnBeforeCompile}
+        />
       </mesh>
     </group>
   );
