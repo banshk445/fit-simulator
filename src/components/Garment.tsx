@@ -1,6 +1,6 @@
 import { useGLTF, useTexture } from "@react-three/drei";
 import { useFrame } from "@react-three/fiber";
-import { useEffect, useMemo, useRef } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import * as THREE from "three";
 import { useFitStore } from "../store/useFitStore";
 import { MannequinCollisionMesh } from "../lib/meshCollision";
@@ -188,14 +188,36 @@ export function Garment({ imageUrl }: Props) {
   // 비율로 얹는다 — 자세한 이유는 garmentTextureComposite.ts 참고.
   // averageGarmentColor/cropToGarmentRegion(garmentSegmentation.ts)은
   // 그대로 재사용하고 수정하지 않는다.
-  const compositedTexture = useMemo(() => {
+  // 47번(디코드 보장): useTexture가 넘겨주는 image는 'load' 이벤트 기준
+  // (complete=true)이라 useMemo 안에서 바로 캔버스에 그리면, 브라우저가
+  // 아직 픽셀 디코드를 끝내지 않은 상태를 읽을 수 있다 — 실측(같은 이미지,
+  // 연속 두 번 호출)으로 대표색이 매번 달라지는 걸로 확인됐다(레이스
+  // 컨디션). image.decode()가 리졸브된 뒤에만 샘플링해야 매번 같은 값이
+  // 나온다(5회 연속 확인 완료) — useMemo는 비동기를 못 기다리므로
+  // useEffect+state로 바꾼다. averageGarmentColor/cropToGarmentRegion은
+  // 여전히 그대로 재사용하고 수정하지 않는다.
+  const [compositedTexture, setCompositedTexture] = useState<THREE.Texture>(rawTexture);
+  useEffect(() => {
     const image = rawTexture.image as HTMLImageElement | undefined;
-    if (!image) return rawTexture;
-    const color = averageGarmentColor(image);
-    const canvas = compositeGarmentTexture(image, color);
-    const tex = new THREE.CanvasTexture(canvas);
-    tex.colorSpace = rawTexture.colorSpace;
-    return tex;
+    if (!image) {
+      setCompositedTexture(rawTexture);
+      return;
+    }
+    let cancelled = false;
+    image
+      .decode()
+      .catch(() => {}) // 디코드 실패해도 이미 로드는 됐으니 계속 진행
+      .then(() => {
+        if (cancelled) return;
+        const color = averageGarmentColor(image);
+        const canvas = compositeGarmentTexture(image, color);
+        const tex = new THREE.CanvasTexture(canvas);
+        tex.colorSpace = rawTexture.colorSpace;
+        setCompositedTexture(tex);
+      });
+    return () => {
+      cancelled = true;
+    };
   }, [rawTexture]);
   const { nodes } = useGLTF(MODEL_URL) as unknown as { nodes: Record<string, THREE.Object3D> };
   const shoulderBones = useMemo(() => findShoulderBones(nodes), [nodes]);
