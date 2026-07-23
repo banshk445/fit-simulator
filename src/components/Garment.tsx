@@ -180,6 +180,17 @@ function injectProxyBinding(
   };
 }
 
+// 47번(디버그 전용 — 와이어프레임 토글, 실측으로 확정한 원인): 처음엔
+// MeshBasicMaterial로 와이어프레임 전용 머티리얼을 새로 만들었는데
+// "program not valid" 컴파일 실패가 났다 — injectProxyBinding이 gridUv
+// 변수를 "#include <beginnormal_vertex>" 자리에서 선언하는데,
+// MeshBasicMaterial은 조명 계산이 없어(무광원 머티리얼) 이 셰이더 청크
+// 자체가 애초에 없다. 그래서 그 선언이 통째로 빠진 채 바로 다음
+// "#include <begin_vertex>" 자리에서 정의 안 된 gridUv를 참조해 컴파일이
+// 깨졌다(map 유무와 무관 — 처음엔 uv 어트리뷰트 문제로 오판했었다).
+// injectProxyBinding이 원래 대상으로 삼는 MeshStandardMaterial을 그대로
+// 쓰면(그 청크가 항상 존재) 이 문제가 없다 — 아래에서 그대로 재사용.
+
 export function Garment({ imageUrl }: Props) {
   const rawTexture = useTexture(imageUrl);
   // 47번(원단색+프린트 합성): 사진 전체를 몸판 UV에 그대로 늘려 붙이는
@@ -220,6 +231,7 @@ export function Garment({ imageUrl }: Props) {
   const bodySize = useFitStore((s) => s.bodySize);
   const fabric = useFitStore((s) => s.fabric);
   const sleeveType = useFitStore((s) => s.sleeveType);
+  const showFrontWireframe = useFitStore((s) => s.showFrontWireframe);
 
   // --- 몸판 지오메트리 (소매는 이제 별도 메시가 아니라 이 패널의 넓은
   // 바깥쪽 열이다 — 46번 전면 재설계) ---
@@ -599,15 +611,33 @@ export function Garment({ imageUrl }: Props) {
   return (
     <group>
       <mesh geometry={frontRenderGeometry} frustumCulled={false}>
-        <meshStandardMaterial
-          map={mirroredTexture}
-          side={THREE.DoubleSide}
-          roughness={0.85}
-          polygonOffset
-          polygonOffsetFactor={-4}
-          polygonOffsetUnits={-4}
-          onBeforeCompile={frontOnBeforeCompile}
-        />
+        {showFrontWireframe ? (
+          // 47번(디버그 전용): 텍스처 대신 와이어프레임만 — onBeforeCompile은
+          // 그대로 넘겨야 실제 물리 시뮬레이션 위치(uPosTex)가 반영된다.
+          // MeshStandardMaterial을 그대로 쓰는 이유는 위 injectProxyBinding
+          // 주석 참고(MeshBasicMaterial은 gridUv를 선언하는 셰이더 청크 자체가 없음).
+          // color만으로는 조명 각도에 따라 어둡게 보여(실측 확인) emissive를
+          // 추가해 조명과 무관하게 항상 밝게 보이게 한다.
+          <meshStandardMaterial
+            color="#00ff00"
+            emissive="#00ff00"
+            emissiveIntensity={1}
+            wireframe
+            depthTest={false}
+            side={THREE.DoubleSide}
+            onBeforeCompile={frontOnBeforeCompile}
+          />
+        ) : (
+          <meshStandardMaterial
+            map={mirroredTexture}
+            side={THREE.DoubleSide}
+            roughness={0.85}
+            polygonOffset
+            polygonOffsetFactor={-4}
+            polygonOffsetUnits={-4}
+            onBeforeCompile={frontOnBeforeCompile}
+          />
+        )}
       </mesh>
       <mesh geometry={backRenderGeometry} frustumCulled={false}>
         <meshStandardMaterial

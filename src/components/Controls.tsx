@@ -64,6 +64,8 @@ export function Controls() {
   const setSleeveType = useFitStore((s) => s.setSleeveType);
   const showArmCapsules = useFitStore((s) => s.showArmCapsules);
   const setShowArmCapsules = useFitStore((s) => s.setShowArmCapsules);
+  const showFrontWireframe = useFitStore((s) => s.showFrontWireframe);
+  const setShowFrontWireframe = useFitStore((s) => s.setShowFrontWireframe);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [isProcessingImage, setIsProcessingImage] = useState(false);
 
@@ -244,6 +246,15 @@ export function Controls() {
               className="accent-red-500"
             />
             <span>[DEV] 팔 충돌 캡슐 와이어프레임 표시</span>
+          </label>
+          <label className="mt-2 flex cursor-pointer items-center gap-2 text-sm text-slate-300">
+            <input
+              type="checkbox"
+              checked={showFrontWireframe}
+              onChange={(e) => setShowFrontWireframe(e.target.checked)}
+              className="accent-red-500"
+            />
+            <span>[DEV] 앞판 옷감 와이어프레임 표시</span>
           </label>
         </section>
       )}

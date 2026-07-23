@@ -37,6 +37,12 @@ interface FitState {
   // 노출된다(Controls.tsx/FitCanvas.tsx에서 import.meta.env.DEV로 감쌈).
   showArmCapsules: boolean;
   setShowArmCapsules: (show: boolean) => void;
+  // 47번(디버그 전용): 앞판 렌더 지오메트리를 텍스처 대신 와이어프레임으로
+  // 그려, 목선 아래 회색 구간에 실제로 옷감 정점이 있는지(찢어짐/구멍인지
+  // 원단 자체가 있는지)를 눈으로 구분하기 위한 토글 — showArmCapsules와
+  // 같은 dev 전용 노출 방식.
+  showFrontWireframe: boolean;
+  setShowFrontWireframe: (show: boolean) => void;
   setFabric: (fabric: FabricType) => void;
   setBodyHeight: (height: number) => void;
   setBodyChest: (chest: number) => void;
@@ -96,6 +102,8 @@ export const useFitStore = create<FitState>((set) => ({
   sleeveType: "short",
   showArmCapsules: false,
   setShowArmCapsules: (show) => set({ showArmCapsules: show }),
+  showFrontWireframe: false,
+  setShowFrontWireframe: (show) => set({ showFrontWireframe: show }),
   setFabric: (fabric) => set({ fabric }),
   setBodyHeight: (height) => set((state) => ({ bodySize: { ...state.bodySize, height } })),
   setBodyChest: (chest) => set((state) => ({ bodySize: { ...state.bodySize, chest } })),
