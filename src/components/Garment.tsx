@@ -2,6 +2,7 @@ import { useGLTF, useTexture } from "@react-three/drei";
 import { useFrame } from "@react-three/fiber";
 import { useEffect, useMemo, useRef, useState } from "react";
 import * as THREE from "three";
+import { mergeGeometries } from "three/examples/jsm/utils/BufferGeometryUtils.js";
 import { useFitStore } from "../store/useFitStore";
 import { MannequinCollisionMesh } from "../lib/meshCollision";
 import { ArrayBvhCollision } from "../lib/bvhFromArrays";
@@ -180,6 +181,46 @@ function injectProxyBinding(
   };
 }
 
+// 47번(디버그 전용 — 영역별 와이어프레임): frontRenderGeometry/backRenderGeometry와
+// 똑같이 실제 정점 위치는 셰이더가 uv로 uPosTex를 샘플링해 통째로 덮어쓰므로
+// (위 주석 참고), 이 PlaneGeometry 자체의 X/Y좌표는 의미가 없고 uv만 의미가
+// 있다. 열 범위[colStart,colEnd](inclusive)만 담당하는 부분 지오메트리를
+// 만들려면, 그 범위만큼만 세그먼트를 잘라 만든 뒤 기본 UV(0~1)를 그 열
+// 범위에 해당하는 u구간([colStart/(cols-1), colEnd/(cols-1)])으로 다시
+// 매핑하면 된다 — injectProxyBinding의 gridUv 계산이 그대로 그 구간만
+// 샘플링하게 된다.
+function buildRegionPlaneGeometry(colStart: number, colEnd: number, cols: number, rows: number, subdiv: number): THREE.PlaneGeometry {
+  const colCount = Math.max(1, colEnd - colStart);
+  const geometry = new THREE.PlaneGeometry(1, 1, colCount * subdiv, (rows - 1) * subdiv);
+  const uv = geometry.getAttribute("uv");
+  const uStart = colStart / (cols - 1);
+  const uEnd = colEnd / (cols - 1);
+  for (let i = 0; i < uv.count; i++) {
+    const localU = uv.getX(i);
+    uv.setX(i, uStart + localU * (uEnd - uStart));
+  }
+  uv.needsUpdate = true;
+  return geometry;
+}
+
+// 47번(디버그 전용 — 소매 양쪽 구간 버그 수정): 소매는 몸통(xMin~xMax) 밖의
+// 양쪽 두 구간(왼쪽: x<xMin, 오른쪽: x>xMax)이다 — buildRegionPlaneGeometry
+// 하나로는 한쪽만 표현되므로, 양쪽을 각각 만들어 하나의 지오메트리로
+// 합친다. xMin/xMax 열 자체는 몸통 쪽에도 포함되는 경계라 양쪽에 걸쳐
+// 살짝 겹치지만(공유 정점), 시각화 목적상 무해하다.
+function buildSleeveRegionGeometry(xMin: number, xMax: number, cols: number, rows: number, subdiv: number): THREE.BufferGeometry {
+  const left = buildRegionPlaneGeometry(0, xMin, cols, rows, subdiv);
+  const right = buildRegionPlaneGeometry(xMax, cols - 1, cols, rows, subdiv);
+  const merged = mergeGeometries([left, right]);
+  if (merged) {
+    left.dispose();
+    right.dispose();
+    return merged;
+  }
+  right.dispose(); // 병합 실패(드문 경우) — 왼쪽 소매만이라도 반환.
+  return left;
+}
+
 // 47번(디버그 전용 — 와이어프레임 토글, 실측으로 확정한 원인): 처음엔
 // MeshBasicMaterial로 와이어프레임 전용 머티리얼을 새로 만들었는데
 // "program not valid" 컴파일 실패가 났다 — injectProxyBinding이 gridUv
@@ -232,6 +273,17 @@ export function Garment({ imageUrl }: Props) {
   const fabric = useFitStore((s) => s.fabric);
   const sleeveType = useFitStore((s) => s.sleeveType);
   const showFrontWireframe = useFitStore((s) => s.showFrontWireframe);
+  const showBackTorsoWireframe = useFitStore((s) => s.showBackTorsoWireframe);
+  const showFrontSleeveWireframe = useFitStore((s) => s.showFrontSleeveWireframe);
+  const showBackSleeveWireframe = useFitStore((s) => s.showBackSleeveWireframe);
+  const showAllRegionsWireframe = useFitStore((s) => s.showAllRegionsWireframe);
+  // 47번(디버그 전용): 영역별 와이어프레임 지오메트리를 나눌 몸통(xMin~xMax)
+  // 경계 — torsoColumnRange가 이미 계산하는 값을 아래 useEffect에서 그대로
+  // 채워 넣는다(포즈가 바뀔 때마다 다시 자르진 않는다 — 치수가 바뀔 때만
+  // 갱신되는 기존 useEffect 의존성을 그대로 재사용). 소매는 이 범위 밖
+  // 양쪽(x<torsoSleeveMin, x>torsoSleeveMax) 두 구간이다.
+  const [torsoSleeveMin, setTorsoSleeveMin] = useState(0);
+  const [torsoSleeveMax, setTorsoSleeveMax] = useState(COLS - 1);
 
   // --- 몸판 지오메트리 (소매는 이제 별도 메시가 아니라 이 패널의 넓은
   // 바깥쪽 열이다 — 46번 전면 재설계) ---
@@ -270,6 +322,27 @@ export function Garment({ imageUrl }: Props) {
   const backRenderGeometry = useMemo(
     () => new THREE.PlaneGeometry(1, 1, (COLS - 1) * RENDER_SUBDIV, (ROWS - 1) * RENDER_SUBDIV),
     [],
+  );
+  // 47번(디버그 전용): 영역별 와이어프레임 토글용 부분 지오메트리. 몸통은
+  // [torsoSleeveMin, torsoSleeveMax], 소매는 그 밖의 양쪽(x<min, x>max)
+  // 두 구간이다(buildSleeveRegionGeometry). frontTorsoRenderGeometry는
+  // "전 영역 표시" 진단 모드에서만 쓴다 — 기존 showFrontWireframe 토글은
+  // 그대로 전체 앞판(frontRenderGeometry)을 쓴다.
+  const frontTorsoRenderGeometry = useMemo(
+    () => buildRegionPlaneGeometry(torsoSleeveMin, torsoSleeveMax, COLS, ROWS, RENDER_SUBDIV),
+    [torsoSleeveMin, torsoSleeveMax],
+  );
+  const backTorsoRenderGeometry = useMemo(
+    () => buildRegionPlaneGeometry(torsoSleeveMin, torsoSleeveMax, COLS, ROWS, RENDER_SUBDIV),
+    [torsoSleeveMin, torsoSleeveMax],
+  );
+  const frontSleeveRenderGeometry = useMemo(
+    () => buildSleeveRegionGeometry(torsoSleeveMin, torsoSleeveMax, COLS, ROWS, RENDER_SUBDIV),
+    [torsoSleeveMin, torsoSleeveMax],
+  );
+  const backSleeveRenderGeometry = useMemo(
+    () => buildSleeveRegionGeometry(torsoSleeveMin, torsoSleeveMax, COLS, ROWS, RENDER_SUBDIV),
+    [torsoSleeveMin, torsoSleeveMax],
   );
   const frontPosTex = useMemo(() => makeDataTexture(COLS, ROWS), []);
   const backPosTex = useMemo(() => makeDataTexture(COLS, ROWS), []);
@@ -500,6 +573,9 @@ export function Garment({ imageUrl }: Props) {
     const centerZ = (pins.left.z + pins.right.z) / 2;
     const { xMin, xMax } = torsoColumnRange(COLS, pins.left, pins.right, armShapes.left, armShapes.right);
     const necklineLift = neckSurfaceBvh.ready ? Array.from(computeNecklineLift(neckSurfaceBvh, pins.left, pins.right, COLS, xMin, xMax)) : [];
+    // 47번(디버그 전용 와이어프레임) 영역 분할 경계.
+    setTorsoSleeveMin(xMin);
+    setTorsoSleeveMax(xMax);
 
     generationRef.current += 1;
     worker.postMessage({
@@ -610,46 +686,160 @@ export function Garment({ imageUrl }: Props) {
 
   return (
     <group>
-      <mesh geometry={frontRenderGeometry} frustumCulled={false}>
-        {showFrontWireframe ? (
-          // 47번(디버그 전용): 텍스처 대신 와이어프레임만 — onBeforeCompile은
-          // 그대로 넘겨야 실제 물리 시뮬레이션 위치(uPosTex)가 반영된다.
-          // MeshStandardMaterial을 그대로 쓰는 이유는 위 injectProxyBinding
-          // 주석 참고(MeshBasicMaterial은 gridUv를 선언하는 셰이더 청크 자체가 없음).
-          // color만으로는 조명 각도에 따라 어둡게 보여(실측 확인) emissive를
-          // 추가해 조명과 무관하게 항상 밝게 보이게 한다.
+      {/* 47번(디버그 전용 — "전 영역 표시" 진단 모드): 텍스처 완전 교체를
+          위해, 그 모드가 켜져 있으면 원본 앞/뒤판 메시 자체를 렌더하지
+          않는다(오버레이가 아니라 교체 — 아래 4구역 메시만 보이게 됨). */}
+      {!showAllRegionsWireframe && (
+        <mesh geometry={frontRenderGeometry} frustumCulled={false}>
+          {showFrontWireframe ? (
+            // 47번(디버그 전용): 텍스처 대신 와이어프레임만 — onBeforeCompile은
+            // 그대로 넘겨야 실제 물리 시뮬레이션 위치(uPosTex)가 반영된다.
+            // MeshStandardMaterial을 그대로 쓰는 이유는 위 injectProxyBinding
+            // 주석 참고(MeshBasicMaterial은 gridUv를 선언하는 셰이더 청크 자체가 없음).
+            // color만으로는 조명 각도에 따라 어둡게 보여(실측 확인) emissive를
+            // 추가해 조명과 무관하게 항상 밝게 보이게 한다.
+            <meshStandardMaterial
+              color="#00ff00"
+              emissive="#00ff00"
+              emissiveIntensity={1}
+              wireframe
+              depthTest={false}
+              side={THREE.DoubleSide}
+              onBeforeCompile={frontOnBeforeCompile}
+            />
+          ) : (
+            <meshStandardMaterial
+              map={mirroredTexture}
+              side={THREE.DoubleSide}
+              roughness={0.85}
+              polygonOffset
+              polygonOffsetFactor={-4}
+              polygonOffsetUnits={-4}
+              onBeforeCompile={frontOnBeforeCompile}
+            />
+          )}
+        </mesh>
+      )}
+      {!showAllRegionsWireframe && (
+        <mesh geometry={backRenderGeometry} frustumCulled={false}>
           <meshStandardMaterial
-            color="#00ff00"
-            emissive="#00ff00"
+            map={compositedTexture}
+            side={THREE.DoubleSide}
+            roughness={0.85}
+            polygonOffset
+            polygonOffsetFactor={-4}
+            polygonOffsetUnits={-4}
+            onBeforeCompile={backOnBeforeCompile}
+          />
+        </mesh>
+      )}
+      {/* 47번(디버그 전용): 영역별 와이어프레임 — showFrontWireframe(초록,
+          전체 앞판)과 같은 방식(단색 머티리얼 교체)이지만, 기존 메시를
+          바꿔치기하는 대신 별도 오버레이 메시로 얹는다(꺼져있을 때 아예
+          렌더하지 않기 위함) — 각각 독립적으로 켜고 끌 수 있다. */}
+      {showBackTorsoWireframe && (
+        <mesh geometry={backTorsoRenderGeometry} frustumCulled={false}>
+          <meshStandardMaterial
+            color="#0000ff"
+            emissive="#0000ff"
+            emissiveIntensity={1}
+            wireframe
+            depthTest={false}
+            side={THREE.DoubleSide}
+            onBeforeCompile={backOnBeforeCompile}
+          />
+        </mesh>
+      )}
+      {showFrontSleeveWireframe && (
+        <mesh geometry={frontSleeveRenderGeometry} frustumCulled={false}>
+          <meshStandardMaterial
+            color="#ff0000"
+            emissive="#ff0000"
             emissiveIntensity={1}
             wireframe
             depthTest={false}
             side={THREE.DoubleSide}
             onBeforeCompile={frontOnBeforeCompile}
           />
-        ) : (
+        </mesh>
+      )}
+      {showBackSleeveWireframe && (
+        <mesh geometry={backSleeveRenderGeometry} frustumCulled={false}>
           <meshStandardMaterial
-            map={mirroredTexture}
+            color="#ff8800"
+            emissive="#ff8800"
+            emissiveIntensity={1}
+            wireframe
+            depthTest={false}
             side={THREE.DoubleSide}
-            roughness={0.85}
-            polygonOffset
-            polygonOffsetFactor={-4}
-            polygonOffsetUnits={-4}
-            onBeforeCompile={frontOnBeforeCompile}
+            onBeforeCompile={backOnBeforeCompile}
           />
-        )}
-      </mesh>
-      <mesh geometry={backRenderGeometry} frustumCulled={false}>
-        <meshStandardMaterial
-          map={compositedTexture}
-          side={THREE.DoubleSide}
-          roughness={0.85}
-          polygonOffset
-          polygonOffsetFactor={-4}
-          polygonOffsetUnits={-4}
-          onBeforeCompile={backOnBeforeCompile}
-        />
-      </mesh>
+        </mesh>
+      )}
+      {/* 47번(디버그 전용 — "전 영역 표시" 진단 모드): 4구역(앞판 몸통/뒤판
+          몸통/앞판 소매/뒤판 소매)을 원본 텍스처 없이 항상 동시에 그린다 —
+          개별 토글 상태와 무관하게 이 모드 하나로 독립 제어된다. 이 모드에서
+          검은 픽셀이 남으면 어느 구역에도 안 속하는 정점이 있다는 뜻이다.
+
+          한계 1(깊이 판단 불가): 4개 메시 전부 depthTest={false}라 실제
+          앞/뒤 층위(카메라와의 거리)가 아니라 그리기 순서(JSX 나열 순서)로
+          어느 색이 위에 보일지 정해진다 — "이 지점에서 뭐가 진짜 앞에 있나"
+          같은 깊이 판단에는 이 모드를 쓸 수 없다(가려짐/겹침 확인용이 아님).
+
+          한계 2(소매 색이 밑단까지 번짐): 영역 분할이 순수 열(column)
+          기준이라(buildRegionPlaneGeometry의 uv 재매핑, x<xMin 또는
+          x>xMax) 물리적으로 소매가 끝나는 지점(armFactor가 0이 되어
+          실제로는 몸통 가장자리로 되돌아가는 행)과 무관하게, 그 열
+          전체가 ROWS 끝(밑단)까지 전부 소매색으로 칠해진다 — 실제 소매
+          모양(어깨~손목만)과 색칠된 범위(그 열의 세로 전체)가 다르다. */}
+      {showAllRegionsWireframe && (
+        <>
+          <mesh geometry={frontTorsoRenderGeometry} frustumCulled={false}>
+            <meshStandardMaterial
+              color="#00ff00"
+              emissive="#00ff00"
+              emissiveIntensity={1}
+              wireframe
+              depthTest={false}
+              side={THREE.DoubleSide}
+              onBeforeCompile={frontOnBeforeCompile}
+            />
+          </mesh>
+          <mesh geometry={backTorsoRenderGeometry} frustumCulled={false}>
+            <meshStandardMaterial
+              color="#0000ff"
+              emissive="#0000ff"
+              emissiveIntensity={1}
+              wireframe
+              depthTest={false}
+              side={THREE.DoubleSide}
+              onBeforeCompile={backOnBeforeCompile}
+            />
+          </mesh>
+          <mesh geometry={frontSleeveRenderGeometry} frustumCulled={false}>
+            <meshStandardMaterial
+              color="#ff0000"
+              emissive="#ff0000"
+              emissiveIntensity={1}
+              wireframe
+              depthTest={false}
+              side={THREE.DoubleSide}
+              onBeforeCompile={frontOnBeforeCompile}
+            />
+          </mesh>
+          <mesh geometry={backSleeveRenderGeometry} frustumCulled={false}>
+            <meshStandardMaterial
+              color="#ff8800"
+              emissive="#ff8800"
+              emissiveIntensity={1}
+              wireframe
+              depthTest={false}
+              side={THREE.DoubleSide}
+              onBeforeCompile={backOnBeforeCompile}
+            />
+          </mesh>
+        </>
+      )}
     </group>
   );
 }

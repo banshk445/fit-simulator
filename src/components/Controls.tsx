@@ -66,6 +66,14 @@ export function Controls() {
   const setShowArmCapsules = useFitStore((s) => s.setShowArmCapsules);
   const showFrontWireframe = useFitStore((s) => s.showFrontWireframe);
   const setShowFrontWireframe = useFitStore((s) => s.setShowFrontWireframe);
+  const showBackTorsoWireframe = useFitStore((s) => s.showBackTorsoWireframe);
+  const setShowBackTorsoWireframe = useFitStore((s) => s.setShowBackTorsoWireframe);
+  const showFrontSleeveWireframe = useFitStore((s) => s.showFrontSleeveWireframe);
+  const setShowFrontSleeveWireframe = useFitStore((s) => s.setShowFrontSleeveWireframe);
+  const showBackSleeveWireframe = useFitStore((s) => s.showBackSleeveWireframe);
+  const setShowBackSleeveWireframe = useFitStore((s) => s.setShowBackSleeveWireframe);
+  const showAllRegionsWireframe = useFitStore((s) => s.showAllRegionsWireframe);
+  const setShowAllRegionsWireframe = useFitStore((s) => s.setShowAllRegionsWireframe);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [isProcessingImage, setIsProcessingImage] = useState(false);
 
@@ -255,6 +263,42 @@ export function Controls() {
               className="accent-red-500"
             />
             <span>[DEV] 앞판 옷감 와이어프레임 표시</span>
+          </label>
+          <label className="mt-2 flex cursor-pointer items-center gap-2 text-sm text-slate-300">
+            <input
+              type="checkbox"
+              checked={showBackTorsoWireframe}
+              onChange={(e) => setShowBackTorsoWireframe(e.target.checked)}
+              className="accent-red-500"
+            />
+            <span>[DEV] 뒤판 몸통 와이어프레임 표시(파랑)</span>
+          </label>
+          <label className="mt-2 flex cursor-pointer items-center gap-2 text-sm text-slate-300">
+            <input
+              type="checkbox"
+              checked={showFrontSleeveWireframe}
+              onChange={(e) => setShowFrontSleeveWireframe(e.target.checked)}
+              className="accent-red-500"
+            />
+            <span>[DEV] 앞판 소매 와이어프레임 표시(빨강)</span>
+          </label>
+          <label className="mt-2 flex cursor-pointer items-center gap-2 text-sm text-slate-300">
+            <input
+              type="checkbox"
+              checked={showBackSleeveWireframe}
+              onChange={(e) => setShowBackSleeveWireframe(e.target.checked)}
+              className="accent-red-500"
+            />
+            <span>[DEV] 뒤판 소매 와이어프레임 표시(주황)</span>
+          </label>
+          <label className="mt-2 flex cursor-pointer items-center gap-2 text-sm text-slate-300">
+            <input
+              type="checkbox"
+              checked={showAllRegionsWireframe}
+              onChange={(e) => setShowAllRegionsWireframe(e.target.checked)}
+              className="accent-red-500"
+            />
+            <span>[DEV] 전 영역 표시(진단용, 텍스처 완전 교체)</span>
           </label>
         </section>
       )}

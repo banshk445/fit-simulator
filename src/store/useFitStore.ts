@@ -43,6 +43,23 @@ interface FitState {
   // 같은 dev 전용 노출 방식.
   showFrontWireframe: boolean;
   setShowFrontWireframe: (show: boolean) => void;
+  // 47번(디버그 전용): showFrontWireframe과 같은 방식(단색 와이어프레임
+  // 머티리얼 교체)으로, 몸통/소매를 따로 색칠해 영역별로 독립적으로
+  // 켜고 끌 수 있게 한 토글 3개 — 뒤판 몸통(파랑), 앞판 소매(빨강),
+  // 뒤판 소매(주황). 앞판 몸통은 기존 showFrontWireframe(초록)이 이미
+  // 전체 앞판을 덮으므로 별도 항목을 만들지 않는다.
+  showBackTorsoWireframe: boolean;
+  setShowBackTorsoWireframe: (show: boolean) => void;
+  showFrontSleeveWireframe: boolean;
+  setShowFrontSleeveWireframe: (show: boolean) => void;
+  showBackSleeveWireframe: boolean;
+  setShowBackSleeveWireframe: (show: boolean) => void;
+  // 47번(디버그 전용 — 진단용 "전 영역 표시"): 위 4개 토글을 개별로 켜는 대신,
+  // 몸통/소매 x 앞/뒤 4구역을 동시에 각자 색으로 그리고 원본 텍스처는
+  // 완전히 꺼서(오버레이가 아니라 교체) 어느 구역에도 안 속하는 정점이
+  // 있으면 검은 픽셀로 바로 드러나게 하는 진단 모드.
+  showAllRegionsWireframe: boolean;
+  setShowAllRegionsWireframe: (show: boolean) => void;
   setFabric: (fabric: FabricType) => void;
   setBodyHeight: (height: number) => void;
   setBodyChest: (chest: number) => void;
@@ -104,6 +121,14 @@ export const useFitStore = create<FitState>((set) => ({
   setShowArmCapsules: (show) => set({ showArmCapsules: show }),
   showFrontWireframe: false,
   setShowFrontWireframe: (show) => set({ showFrontWireframe: show }),
+  showBackTorsoWireframe: false,
+  setShowBackTorsoWireframe: (show) => set({ showBackTorsoWireframe: show }),
+  showFrontSleeveWireframe: false,
+  setShowFrontSleeveWireframe: (show) => set({ showFrontSleeveWireframe: show }),
+  showBackSleeveWireframe: false,
+  setShowBackSleeveWireframe: (show) => set({ showBackSleeveWireframe: show }),
+  showAllRegionsWireframe: false,
+  setShowAllRegionsWireframe: (show) => set({ showAllRegionsWireframe: show }),
   setFabric: (fabric) => set({ fabric }),
   setBodyHeight: (height) => set((state) => ({ bodySize: { ...state.bodySize, height } })),
   setBodyChest: (chest) => set((state) => ({ bodySize: { ...state.bodySize, chest } })),
