@@ -74,6 +74,8 @@ export function Controls() {
   const setShowBackSleeveWireframe = useFitStore((s) => s.setShowBackSleeveWireframe);
   const showAllRegionsWireframe = useFitStore((s) => s.showAllRegionsWireframe);
   const setShowAllRegionsWireframe = useFitStore((s) => s.setShowAllRegionsWireframe);
+  const showFitMap = useFitStore((s) => s.showFitMap);
+  const setShowFitMap = useFitStore((s) => s.setShowFitMap);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [isProcessingImage, setIsProcessingImage] = useState(false);
 
@@ -242,6 +244,38 @@ export function Controls() {
             </button>
           ))}
         </div>
+      </section>
+
+      <section className="rounded-xl bg-slate-800/60 p-4">
+        <label className="flex cursor-pointer items-center gap-2 text-sm text-slate-300">
+          <input
+            type="checkbox"
+            checked={showFitMap}
+            onChange={(e) => setShowFitMap(e.target.checked)}
+            className="accent-blue-500"
+          />
+          <span>핏 맵</span>
+        </label>
+        {showFitMap && (
+          <div className="mt-3 flex flex-wrap gap-x-4 gap-y-1.5 text-xs text-slate-300">
+            <span className="flex items-center gap-1.5">
+              <span className="h-3 w-3 rounded-full" style={{ backgroundColor: "#8c00d9" }} />
+              관통(디버그)
+            </span>
+            <span className="flex items-center gap-1.5">
+              <span className="h-3 w-3 rounded-full" style={{ backgroundColor: "#d92626" }} />
+              타이트
+            </span>
+            <span className="flex items-center gap-1.5">
+              <span className="h-3 w-3 rounded-full" style={{ backgroundColor: "#f2d91a" }} />
+              적정
+            </span>
+            <span className="flex items-center gap-1.5">
+              <span className="h-3 w-3 rounded-full" style={{ backgroundColor: "#2673f2" }} />
+              헐렁
+            </span>
+          </div>
+        )}
       </section>
 
       {import.meta.env.DEV && (

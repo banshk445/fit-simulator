@@ -60,6 +60,10 @@ interface FitState {
   // 있으면 검은 픽셀로 바로 드러나게 하는 진단 모드.
   showAllRegionsWireframe: boolean;
   setShowAllRegionsWireframe: (show: boolean) => void;
+  // 47번(일반 기능, DEV 아님): 옷감 정점마다 몸 표면까지의 여유(cm)를
+  // 색으로 보여주는 핏 맵 — 켜지면 텍스처 대신 이 색으로 렌더한다.
+  showFitMap: boolean;
+  setShowFitMap: (show: boolean) => void;
   setFabric: (fabric: FabricType) => void;
   setBodyHeight: (height: number) => void;
   setBodyChest: (chest: number) => void;
@@ -129,6 +133,8 @@ export const useFitStore = create<FitState>((set) => ({
   setShowBackSleeveWireframe: (show) => set({ showBackSleeveWireframe: show }),
   showAllRegionsWireframe: false,
   setShowAllRegionsWireframe: (show) => set({ showAllRegionsWireframe: show }),
+  showFitMap: false,
+  setShowFitMap: (show) => set({ showFitMap: show }),
   setFabric: (fabric) => set({ fabric }),
   setBodyHeight: (height) => set((state) => ({ bodySize: { ...state.bodySize, height } })),
   setBodyChest: (chest) => set((state) => ({ bodySize: { ...state.bodySize, chest } })),

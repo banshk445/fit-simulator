@@ -151,6 +151,15 @@ function packXYZIntoRGBA(src: ArrayLike<number>, dst: Float32Array): void {
   }
 }
 
+// 핏 맵: 워커가 돌려주는 정점별 여유(cm) 스칼라 배열을 DataTexture의 R
+// 채널에 담는다(G/B/A는 안 씀) — packXYZIntoRGBA와 같은 자리, 같은 빈도.
+function packScalarIntoR(src: ArrayLike<number>, dst: Float32Array): void {
+  const n = src.length;
+  for (let i = 0; i < n; i++) {
+    dst[i * 4] = src[i];
+  }
+}
+
 // MeshStandardMaterial의 표준 버텍스 셰이더에 우리 데이터 텍스처 샘플링을
 // 주입한다 — <begin_vertex>(위치)와 <beginnormal_vertex>(법선)를 각각
 // 텍스처 샘플로 바꿔치기한다. uv 어트리뷰트를 격자 연속 좌표로 바꾼 뒤
@@ -177,6 +186,62 @@ function injectProxyBinding(
     shader.vertexShader = shader.vertexShader.replace(
       "#include <begin_vertex>",
       `vec3 transformed = texture2D(uPosTex, gridUv).xyz;`,
+    );
+  };
+}
+
+// 47번(핏 맵 — 일반 기능, DEV 아님): 옷감 정점마다 몸 표면까지의 여유(cm)를
+// 색으로 보여준다. injectProxyBinding과 같은 정점 위치/법선 바인딩을 하되,
+// 색은 프래그먼트 셰이더에서 결정해야 해서 gridUv를 varying으로 프래그먼트
+// 까지 넘긴다 — three.js 내장 vUv는 map 등 USE_UV 관련 매크로가 켜져 있을
+// 때만 보장되므로 거기 의존하지 않고 직접 varying을 선언한다. vertexColors
+// (attribute)는 전혀 쓰지 않는다(과거 color attribute 누락으로 전부 검게
+// 렌더된 사고가 있어 그 경로 자체를 피한다). injectProxyBinding(다른
+// 토글들이 공유하는 함수)은 건드리지 않고 완전히 별도 함수로 둔다.
+//
+// 색 경계(0cm/1cm/3cm)와 색상 자체는 실측이 아니라 눈대중 초기값이다 —
+// 사용자 피드백으로 나중에 조정될 수 있다.
+function injectFitMapBinding(
+  posTex: THREE.DataTexture,
+  normalTex: THREE.DataTexture,
+  fitTex: THREE.DataTexture,
+  cols: number,
+  rows: number,
+): (shader: THREE.WebGLProgramParametersWithUniforms) => void {
+  return (shader) => {
+    shader.uniforms.uPosTex = { value: posTex };
+    shader.uniforms.uNormalTex = { value: normalTex };
+    shader.uniforms.uFitTex = { value: fitTex };
+    shader.vertexShader = `uniform sampler2D uPosTex;\nuniform sampler2D uNormalTex;\nvarying vec2 vGridUv;\n${shader.vertexShader}`;
+    shader.vertexShader = shader.vertexShader.replace(
+      "#include <beginnormal_vertex>",
+      `vec2 gridUv = (uv * vec2(${(cols - 1).toFixed(1)}, ${(rows - 1).toFixed(1)}) + 0.5) / vec2(${cols.toFixed(1)}, ${rows.toFixed(1)});
+      vGridUv = gridUv;
+      vec3 objectNormal = normalize(texture2D(uNormalTex, gridUv).xyz);
+      #ifdef USE_TANGENT
+      vec3 objectTangent = vec3(tangent.xyz);
+      #endif`,
+    );
+    shader.vertexShader = shader.vertexShader.replace(
+      "#include <begin_vertex>",
+      `vec3 transformed = texture2D(uPosTex, gridUv).xyz;`,
+    );
+    shader.fragmentShader = `uniform sampler2D uFitTex;\nvarying vec2 vGridUv;\n${shader.fragmentShader}`;
+    shader.fragmentShader = shader.fragmentShader.replace(
+      "#include <color_fragment>",
+      `#include <color_fragment>
+      {
+        // 실측 아님, 눈대중 초기값 — 경계(0/1/3cm)와 색은 피드백으로 조정될 수 있음.
+        float clearanceCm = texture2D(uFitTex, vGridUv).r;
+        vec3 purple = vec3(0.55, 0.0, 0.85); // 관통(디버그)
+        vec3 red    = vec3(0.85, 0.15, 0.15); // 타이트
+        vec3 yellow = vec3(0.95, 0.85, 0.1); // 적정
+        vec3 blue   = vec3(0.15, 0.45, 0.95); // 헐렁
+        vec3 fitColor = mix(purple, red, smoothstep(-0.6, 0.0, clearanceCm));
+        fitColor = mix(fitColor, yellow, smoothstep(0.6, 1.4, clearanceCm));
+        fitColor = mix(fitColor, blue, smoothstep(2.4, 3.6, clearanceCm));
+        diffuseColor.rgb = fitColor;
+      }`,
     );
   };
 }
@@ -277,6 +342,7 @@ export function Garment({ imageUrl }: Props) {
   const showFrontSleeveWireframe = useFitStore((s) => s.showFrontSleeveWireframe);
   const showBackSleeveWireframe = useFitStore((s) => s.showBackSleeveWireframe);
   const showAllRegionsWireframe = useFitStore((s) => s.showAllRegionsWireframe);
+  const showFitMap = useFitStore((s) => s.showFitMap);
   // 47번(디버그 전용): 영역별 와이어프레임 지오메트리를 나눌 몸통(xMin~xMax)
   // 경계 — torsoColumnRange가 이미 계산하는 값을 아래 useEffect에서 그대로
   // 채워 넣는다(포즈가 바뀔 때마다 다시 자르진 않는다 — 치수가 바뀔 때만
@@ -348,6 +414,9 @@ export function Garment({ imageUrl }: Props) {
   const backPosTex = useMemo(() => makeDataTexture(COLS, ROWS), []);
   const frontNormalTex = useMemo(() => makeDataTexture(COLS, ROWS), []);
   const backNormalTex = useMemo(() => makeDataTexture(COLS, ROWS), []);
+  // 47번(핏 맵): posTex/normalTex와 같은 방식 — R 채널에 여유(cm) 스칼라만 담는다.
+  const frontFitTex = useMemo(() => makeDataTexture(COLS, ROWS), []);
+  const backFitTex = useMemo(() => makeDataTexture(COLS, ROWS), []);
 
   // 46번 실측(버그): 앞판(frontGeometry)에 원본 texture를 그대로 물렸더니
   // 글자가 거울상으로 뒤집혀 보였다(사용자 스크린샷으로 확인, "TINY
@@ -449,6 +518,13 @@ export function Garment({ imageUrl }: Props) {
       frontNormalTex.texture.needsUpdate = true;
       backNormalTex.texture.needsUpdate = true;
 
+      // 47번(핏 맵, 물리 무관): 워커가 같은 메시지에 실어 보낸 정점별
+      // 여유(cm)를 위와 같은 방식으로 텍스처에 올린다.
+      packScalarIntoR(msg.frontFit, frontFitTex.data);
+      packScalarIntoR(msg.backFit, backFitTex.data);
+      frontFitTex.texture.needsUpdate = true;
+      backFitTex.texture.needsUpdate = true;
+
       // 임시 디버그 훅(worker.onerror 근처와 짝) — 워커가 실제로 돌려준
       // 몸판 0번 행(어깨선) 전체를 그대로 노출한다. __fitDebug의 "의도한
       // 핀 값"과 이 값이 다르면 워커 내부(물리 시뮬레이션)에서 문제가
@@ -472,7 +548,18 @@ export function Garment({ imageUrl }: Props) {
       worker.terminate();
       workerRef.current = null;
     };
-  }, [frontGeometry, backGeometry, frontPositions, backPositions, frontPosTex, backPosTex, frontNormalTex, backNormalTex]);
+  }, [
+    frontGeometry,
+    backGeometry,
+    frontPositions,
+    backPositions,
+    frontPosTex,
+    backPosTex,
+    frontNormalTex,
+    backNormalTex,
+    frontFitTex,
+    backFitTex,
+  ]);
 
   // 어깨/팔 방향과 소매 길이에서 현재 팔 모양(ArmShapeMsg)을 계산한다 —
   // init(빌드)과 step(매 프레임) 양쪽에서 같은 공식을 쓰게 한 곳에 모은다.
@@ -683,6 +770,14 @@ export function Garment({ imageUrl }: Props) {
     () => injectProxyBinding(backPosTex.texture, backNormalTex.texture, COLS, ROWS),
     [backPosTex, backNormalTex],
   );
+  const frontFitMapOnBeforeCompile = useMemo(
+    () => injectFitMapBinding(frontPosTex.texture, frontNormalTex.texture, frontFitTex.texture, COLS, ROWS),
+    [frontPosTex, frontNormalTex, frontFitTex],
+  );
+  const backFitMapOnBeforeCompile = useMemo(
+    () => injectFitMapBinding(backPosTex.texture, backNormalTex.texture, backFitTex.texture, COLS, ROWS),
+    [backPosTex, backNormalTex, backFitTex],
+  );
 
   return (
     <group>
@@ -691,7 +786,26 @@ export function Garment({ imageUrl }: Props) {
           않는다(오버레이가 아니라 교체 — 아래 4구역 메시만 보이게 됨). */}
       {!showAllRegionsWireframe && (
         <mesh geometry={frontRenderGeometry} frustumCulled={false}>
-          {showFrontWireframe ? (
+          {showFitMap ? (
+            // 47번(핏 맵 — 일반 기능): 텍스처 대신 여유(cm) 기반 색상.
+            // customProgramCacheKey 필수 — three.js의 WebGLPrograms 캐시는
+            // 렌더러 전역이고 onBeforeCompile 안에서 바꾼 셰이더 문자열은
+            // 기본 캐시 키 계산에 안 들어간다. 안 주면 텍스처 머티리얼이
+            // 이미 컴파일해둔 프로그램과 키가 같아 보여, 이 머티리얼은
+            // onBeforeCompile이 아예 호출되지도 않고 그 프로그램을 그대로
+            // 재사용해버린다(실측: 콘솔 로그로 onBeforeCompile 호출 자체가
+            // 0회임을 확인).
+            <meshStandardMaterial
+              key="fit-map-front"
+              side={THREE.DoubleSide}
+              roughness={0.85}
+              polygonOffset
+              polygonOffsetFactor={-4}
+              polygonOffsetUnits={-4}
+              onBeforeCompile={frontFitMapOnBeforeCompile}
+              customProgramCacheKey={() => "fitMap"}
+            />
+          ) : showFrontWireframe ? (
             // 47번(디버그 전용): 텍스처 대신 와이어프레임만 — onBeforeCompile은
             // 그대로 넘겨야 실제 물리 시뮬레이션 위치(uPosTex)가 반영된다.
             // MeshStandardMaterial을 그대로 쓰는 이유는 위 injectProxyBinding
@@ -699,6 +813,7 @@ export function Garment({ imageUrl }: Props) {
             // color만으로는 조명 각도에 따라 어둡게 보여(실측 확인) emissive를
             // 추가해 조명과 무관하게 항상 밝게 보이게 한다.
             <meshStandardMaterial
+              key="front-wireframe"
               color="#00ff00"
               emissive="#00ff00"
               emissiveIntensity={1}
@@ -709,6 +824,7 @@ export function Garment({ imageUrl }: Props) {
             />
           ) : (
             <meshStandardMaterial
+              key="front-textured"
               map={mirroredTexture}
               side={THREE.DoubleSide}
               roughness={0.85}
@@ -722,15 +838,31 @@ export function Garment({ imageUrl }: Props) {
       )}
       {!showAllRegionsWireframe && (
         <mesh geometry={backRenderGeometry} frustumCulled={false}>
-          <meshStandardMaterial
-            map={compositedTexture}
-            side={THREE.DoubleSide}
-            roughness={0.85}
-            polygonOffset
-            polygonOffsetFactor={-4}
-            polygonOffsetUnits={-4}
-            onBeforeCompile={backOnBeforeCompile}
-          />
+          {showFitMap ? (
+            // 47번(핏 맵 — 일반 기능): customProgramCacheKey 필요한 이유는
+            // 위 앞판 블록 주석 참고.
+            <meshStandardMaterial
+              key="fit-map-back"
+              side={THREE.DoubleSide}
+              roughness={0.85}
+              polygonOffset
+              polygonOffsetFactor={-4}
+              polygonOffsetUnits={-4}
+              onBeforeCompile={backFitMapOnBeforeCompile}
+              customProgramCacheKey={() => "fitMap"}
+            />
+          ) : (
+            <meshStandardMaterial
+              key="back-textured"
+              map={compositedTexture}
+              side={THREE.DoubleSide}
+              roughness={0.85}
+              polygonOffset
+              polygonOffsetFactor={-4}
+              polygonOffsetUnits={-4}
+              onBeforeCompile={backOnBeforeCompile}
+            />
+          )}
         </mesh>
       )}
       {/* 47번(디버그 전용): 영역별 와이어프레임 — showFrontWireframe(초록,
