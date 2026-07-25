@@ -12,7 +12,7 @@ import { findArmDirection, findShortSleeveDirection, findShoulderBones } from ".
 import { computeShoulderPin } from "../lib/shoulderPin";
 import { compositeGarmentTexture } from "../lib/garmentTextureComposite";
 import { torsoColumnRange } from "../lib/buildGarmentSim";
-import { COLS, PARTICLES_PER_PANEL, REBUILD_DEBOUNCE_MS, ROWS } from "../lib/clothConfig";
+import { ARMHOLE_ROW_FRACTION, COLS, PARTICLES_PER_PANEL, REBUILD_DEBOUNCE_MS, ROWS } from "../lib/clothConfig";
 import type { MainToGarmentWorkerMessage, GarmentWorkerToMainMessage, ArmShapeMsg } from "../lib/garmentProtocol";
 import { MODEL_URL } from "./Mannequin";
 
@@ -471,6 +471,51 @@ export function Garment({ imageUrl }: Props) {
   const pendingRef = useRef(false);
   const pendingDtRef = useRef(0);
   const generationRef = useRef(0);
+  // 범위 B(소매 재설계) 조사용 — torsoColumnRange는 자세(팔 각도)에 따라
+  // 매 프레임 바뀔 수 있어(useFrame 안에서 재계산), window.__fitDebug 함수가
+  // React state가 아니라 이 ref로 최신 xMin/xMax를 동기적으로 읽는다.
+  const torsoColumnRangeRef = useRef({ xMin: 0, xMax: COLS - 1 });
+
+  // 범위 B(소매 재설계) 조사 — 몸판 암홀 가장자리(왼쪽: 열 x=xMin,
+  // row0~armholeStartRow, 앞판+뒤판 총 12정점)를 실측한다. row0(어깨,
+  // 앞뒤 공유)부터 시작해 앞판을 타고 내려간 뒤 뒤판을 타고 올라오는
+  // "위→앞→아래→뒤" 순서로 정점을 이어 인접 거리를 찍는다 — 큰 점프가
+  // 있으면 그 지점에서 고리가 안 닫힌다는 뜻이다(현재 구조에서는 안
+  // 닫힐 걸로 예상 — addSleeveUnderarmSeamConstraints가 겨드랑이를
+  // armholeStartRow가 아니라 ARM_ROWS에서 잇고 있어서 서로 다른 행을
+  // 기준으로 한다). 마운트 시 한 번만 등록해 __fitDebug 객체가 매 프레임
+  // 교체돼도(위 useFrame 참고) 이 함수는 안 사라진다 — 콘솔에서
+  // `window.__fitDebug.armholeCheck()` 직접 호출.
+  useEffect(() => {
+    const win = window as unknown as { __fitDebug?: Record<string, unknown> };
+    if (!win.__fitDebug) win.__fitDebug = {};
+    win.__fitDebug.armholeCheck = () => {
+      const { xMin } = torsoColumnRangeRef.current;
+      const armholeStartRow = Math.round(ROWS * ARMHOLE_ROW_FRACTION);
+      const col = xMin;
+      type Pt = { panel: "front" | "back"; row: number; col: number; x: number; y: number; z: number };
+      const pts: Pt[] = [];
+      for (let y = 0; y <= armholeStartRow; y++) {
+        const i = (y * COLS + col) * 3;
+        pts.push({ panel: "front", row: y, col, x: frontPositions[i], y: frontPositions[i + 1], z: frontPositions[i + 2] });
+      }
+      for (let y = 0; y <= armholeStartRow; y++) {
+        const i = (y * COLS + col) * 3;
+        pts.push({ panel: "back", row: y, col, x: backPositions[i], y: backPositions[i + 1], z: backPositions[i + 2] });
+      }
+      const frontHalf = pts.slice(0, armholeStartRow + 1); // front row0(어깨)→armholeStartRow(겨드랑이 쪽)
+      const backHalf = pts.slice(armholeStartRow + 1).slice().reverse(); // back armholeStartRow→row0(어깨)
+      const loop = [...frontHalf, ...backHalf];
+      const distances = loop.map((a, idx) => {
+        const b = loop[(idx + 1) % loop.length];
+        const cm = Math.hypot(a.x - b.x, a.y - b.y, a.z - b.z) * 100;
+        return { from: `${a.panel}${a.row}`, to: `${b.panel}${b.row}`, cm: Number(cm.toFixed(3)) };
+      });
+      const result = { armholeStartRow, col, points: pts, loopOrder: loop.map((p) => `${p.panel}${p.row}`), distances };
+      console.log("[ARMHOLE-CHECK]", JSON.stringify(result));
+      return result;
+    };
+  }, [frontPositions, backPositions]);
 
   // 워커는 컴포넌트 생명주기 동안 하나만 띄우고 언마운트 시 종료한다.
   // frontGeometry/backGeometry/frontPositions/backPositions는 몸판
@@ -713,7 +758,11 @@ export function Garment({ imageUrl }: Props) {
     // 브라우저 콘솔에서 직접 확인하기 위해 추가(원인 확정되면 제거할 것).
     // 콘솔에 `window.__fitDebug`를 입력하면 매 프레임 갱신되는 실제 어깨
     // 본 위치·계산된 핀·팔 방향을 볼 수 있다.
-    (window as unknown as { __fitDebug?: unknown }).__fitDebug = {
+    // 범위 B: 이 객체를 통째로 교체하면 armholeCheck 같은 함수 프로퍼티가
+    // 매 프레임 날아가므로, 아래에서는 새 객체로 덮어쓰지 않고 기존
+    // 객체(마운트 시 만들어둔 것, armholeCheck 포함)에 매 프레임 값만
+    // 병합한다.
+    Object.assign((window as unknown as { __fitDebug: Record<string, unknown> }).__fitDebug, {
       leftShoulderBoneRaw: { x: shoulderVec.x, y: shoulderVec.y, z: shoulderVec.z },
       rightShoulderBoneRaw: { x: rightShoulderVec.x, y: rightShoulderVec.y, z: rightShoulderVec.z },
       pinLeft: { x: pins.left.x, y: pins.left.y, z: pins.left.z },
@@ -725,7 +774,7 @@ export function Garment({ imageUrl }: Props) {
       armDirRight: armShapes.right.dir,
       armLength: armShapes.left.length,
       armTrueShoulderLeft: armShapes.left.trueShoulder,
-    };
+    });
 
     pendingDtRef.current += delta;
     // 워커가 아직 이전 step을 처리 중이면 이번 프레임은 건너뛴다(렌더는
@@ -736,6 +785,7 @@ export function Garment({ imageUrl }: Props) {
     pendingDtRef.current = 0;
 
     const { xMin, xMax } = torsoColumnRange(COLS, pins.left, pins.right, armShapes.left, armShapes.right);
+    torsoColumnRangeRef.current = { xMin, xMax };
     const necklineLift = neckSurfaceBvh.ready ? Array.from(computeNecklineLift(neckSurfaceBvh, pins.left, pins.right, COLS, xMin, xMax)) : [];
 
     worker.postMessage({
