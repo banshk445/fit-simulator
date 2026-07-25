@@ -13,6 +13,7 @@ import { computeShoulderPin } from "../lib/shoulderPin";
 import { compositeGarmentTexture } from "../lib/garmentTextureComposite";
 import { torsoColumnRange } from "../lib/buildGarmentSim";
 import {
+  ARM_COLLISION_RADIUS,
   ARMHOLE_ROW_FRACTION,
   COLS,
   PARTICLES_PER_PANEL,
@@ -603,6 +604,69 @@ export function Garment({ imageUrl }: Props) {
       });
       const result = { armholeStartRow, col, points: pts, loopOrder: loop.map((p) => `${p.panel}${p.row}`), distances };
       console.log("[ARMHOLE-CHECK]", JSON.stringify(result));
+      return result;
+    };
+  }, [frontPositions, backPositions]);
+
+  // 소매 범위 B 별개 이슈(뒤판 겨드랑이 캡슐 침투) 조사용 — 지정한 행(기본
+  // row4)의 front/back 정점이 왼팔 캡슐(armCapsuleCollision과 완전히 같은
+  // 점-선분 거리 + margin 6mm)까지 얼마나 여유가 있는지 잰다. row5는 이미
+  // 실측했고(back -1.7mm 침투), row4가 같은 문제를 갖는지 확인하려는 용도.
+  // 마운트 시 한 번만 등록(armholeCheck과 같은 이유) — 콘솔에서
+  // `window.__fitDebug.armCapsuleRowCheck(4)` 직접 호출(인자 생략 시 row4).
+  useEffect(() => {
+    const win = window as unknown as { __fitDebug?: Record<string, unknown> };
+    if (!win.__fitDebug) win.__fitDebug = {};
+    win.__fitDebug.armCapsuleRowCheck = (row = 4) => {
+      const trueShoulder = win.__fitDebug!.armTrueShoulderLeft as { x: number; y: number; z: number } | undefined;
+      const dir = win.__fitDebug!.armDirLeft as { x: number; y: number; z: number } | undefined;
+      const length = win.__fitDebug!.armLength as number | undefined;
+      if (!trueShoulder || !dir || length === undefined) {
+        console.log("[ARM-CAPSULE-ROW-CHECK] 아직 준비 안 됨(마운트 직후) — 잠시 후 다시 호출");
+        return null;
+      }
+      const midLength = length * 0.55;
+      const endLength = length * 1.25;
+      const mid = { x: trueShoulder.x + dir.x * midLength, y: trueShoulder.y + dir.y * midLength, z: trueShoulder.z + dir.z * midLength };
+      const end = { x: trueShoulder.x + dir.x * endLength, y: trueShoulder.y + dir.y * endLength, z: trueShoulder.z + dir.z * endLength };
+      // garmentWorker.ts buildArmCapsules / torsoCapsule.ts applyCapsuleCollision과 동일한 공식(margin=6mm).
+      const capsules = [
+        { top: trueShoulder, bottom: mid },
+        { top: mid, bottom: end },
+      ];
+      const clearanceMm = (px: number, py: number, pz: number) => {
+        let best = Infinity;
+        for (const c of capsules) {
+          const abx = c.bottom.x - c.top.x;
+          const aby = c.bottom.y - c.top.y;
+          const abz = c.bottom.z - c.top.z;
+          const abLenSq = abx * abx + aby * aby + abz * abz;
+          const apx = px - c.top.x;
+          const apy = py - c.top.y;
+          const apz = pz - c.top.z;
+          const t = abLenSq > 1e-9 ? THREE.MathUtils.clamp((apx * abx + apy * aby + apz * abz) / abLenSq, 0, 1) : 0;
+          const cx = c.top.x + abx * t;
+          const cy = c.top.y + aby * t;
+          const cz = c.top.z + abz * t;
+          const dist = Math.hypot(px - cx, py - cy, pz - cz);
+          const clearance = dist - (ARM_COLLISION_RADIUS + 0.006);
+          if (clearance < best) best = clearance;
+        }
+        return Number((best * 1000).toFixed(2));
+      };
+      const { xMin } = torsoColumnRangeRef.current;
+      const col = xMin;
+      const fi = (row * COLS + col) * 3;
+      const bi = (row * COLS + col) * 3;
+      const front = { x: frontPositions[fi], y: frontPositions[fi + 1], z: frontPositions[fi + 2] };
+      const back = { x: backPositions[bi], y: backPositions[bi + 1], z: backPositions[bi + 2] };
+      const result = {
+        row,
+        col,
+        front: { ...front, clearanceMm: clearanceMm(front.x, front.y, front.z) },
+        back: { ...back, clearanceMm: clearanceMm(back.x, back.y, back.z) },
+      };
+      console.log("[ARM-CAPSULE-ROW-CHECK]", JSON.stringify(result));
       return result;
     };
   }, [frontPositions, backPositions]);
