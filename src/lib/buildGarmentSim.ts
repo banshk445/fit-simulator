@@ -974,6 +974,74 @@ export function addSleeveUnderarmSeamConstraints(
   }
 }
 
+// 범위 B 구현 4번(봉제선 연결): 몸판 암홀 가장자리 12정점을 새 독립 소매
+// 패널의 row=0(암홀과 맞닿는 열)에 인덱스 1:1로 직접 연결한다 —
+// armholeRingVertices와 완전히 같은 순회 순서(front row0..armholeStartRow,
+// back row armholeStartRow..0 역순)를 그대로 써서 k가 armholeVertex[k]와
+// 짝이 맞도록 한다. layoutSleevePanel이 이 좌표에 겹치게 배치해뒀으므로
+// (문서 결정 #3) k=1..(끝-1)은 이즈인 없이 SEAM_REST_LENGTH를 바로 쓴다.
+//
+// 다만 어깨 코너(k=0=front row0, k=마지막=back row0)만은 예외다 — 실측
+// 결과 pinCorners()가 이 함수보다 나중에 row0을 다시 계산해 덮어써서
+// (레이아웃 시점엔 armholeRingVertices가 캡처한 원래 위치와 겹쳤지만,
+// pinCorners 이후 어깨점이 최종 위치로 옮겨감) 두 코너에서만 28mm/12mm
+// 급 실거리가 남는다(중간 10쌍은 0.00mm 정확히 겹침, 확인됨). 옆선
+// 시접(addTorsoSideSeamConstraints)과 같은 이즈인 상수(SEAM_EASE_START)를
+// 재사용해 이 두 코너만 느슨하게 시작시킨다 — k=1..10처럼 즉시 6mm로
+// 스냅하면 addSleeveUnderarmSeamConstraints 주석에 기록된 것과 같은
+// 찢어짐 패턴이 재현될 위험이 있다(실측으로 확인된 문제, 문서 결정 #3의
+// "직접 스냅 먼저 시도" 전제가 이 두 점에서만 깨짐).
+//
+// 겨드랑이(k=armholeStartRow, k=armholeStartRow+1)에도 한 번 같은 이즈인을
+// 시도했다가 되돌렸다 — 코너와 원인이 다르기 때문. 코너는 pinCorners가
+// 배치 이후 위치를 강제로 재계산해 덮어써서 생긴 고정된 기하학적
+// 불일치라, 목표를 늦추면 그 불일치를 억지로 안 좁혀서 완만해진다.
+// 겨드랑이는 그런 강제 재배치가 없다 — 6mm 직접 스냅 상태에서도 1.9~2cm
+// 밖에 못 좁혀졌다는 건 이 제약이 이미 최대로 당기고 있는데 다른 힘
+// (중력·곡률·경쟁 구조 제약)에 밀리고 있다는 뜻이라, 목표를 30mm로
+// 풀면 당기는 힘 자체가 약해져 실측 갭이 오히려 커진다 — 실측으로 확인
+// (1.88~2.02cm → 2.52~2.67cm, 이즈인 목표 3cm에 가까워짐, 즉 거의
+// 안 당기는 상태). 코너용 기법을 원인이 다른 곳에 그대로 옮기면 안
+// 된다는 사례라 남겨둔다.
+export function addSleeveArmholeSeam(
+  sim: ClothSimulation,
+  frontPanel: number,
+  backPanel: number,
+  sleevePanel: number,
+  col: number,
+  armholeStartRow: number,
+): void {
+  const SEAM_EASE_START = 0.03;
+  const lastK = armholeStartRow * 2 + 1;
+  const restLengthFor = (k: number): number => (k === 0 || k === lastK ? SEAM_EASE_START : SEAM_REST_LENGTH);
+  let k = 0;
+  for (let y = 0; y <= armholeStartRow; y++) {
+    sim.addConstraint(sim.index(frontPanel, col, y), sim.index(sleevePanel, k, 0), restLengthFor(k));
+    k++;
+  }
+  for (let y = armholeStartRow; y >= 0; y--) {
+    sim.addConstraint(sim.index(backPanel, col, y), sim.index(sleevePanel, k, 0), restLengthFor(k));
+    k++;
+  }
+}
+
+// 범위 B 구현 4번: buildConstraints()는 x<cols-1까지만 이어(clothPhysics.ts)
+// col0↔col(cols-1) wrap 엣지가 빠진다 — 소매 링을 원통으로 닫는 마지막 변을
+// 팔 축 위치(row)마다 채운다. restLength는 고정 시접값이 아니라 배치
+// 시점의 실제 거리(addNecklineSeamConstraints와 같은 패턴) — 이 변은 시접이
+// 아니라 12각형 링 자체의 변이라 균일하지 않다(문서 실측: 역순 인접 12변
+// 0.20~5.54cm).
+export function addSleeveWrapConstraint(sim: ClothSimulation, panel: number, cols: number, rows: number): void {
+  for (let r = 0; r < rows; r++) {
+    const a = sim.index(panel, 0, r);
+    const b = sim.index(panel, cols - 1, r);
+    const dx = sim.positions[b * 3] - sim.positions[a * 3];
+    const dy = sim.positions[b * 3 + 1] - sim.positions[a * 3 + 1];
+    const dz = sim.positions[b * 3 + 2] - sim.positions[a * 3 + 2];
+    sim.addConstraint(a, b, Math.hypot(dx, dy, dz));
+  }
+}
+
 // 46번(물리 복구 후 실측): 목선~겨드랑이 사이(암홀 시접이 시작되기 전,
 // y=0 어깨선 자체) 구간은 앞판과 뒤판을 잇는 제약이 하나도 없었다 — 둘은
 // 어깨 양 끝(핀 코너, u=±0.5)에서만 만나고, 그 안쪽은 목선 높이

@@ -4,7 +4,9 @@ import type { Vec3Like } from "./clothProtocol";
 import type { ArmDir } from "./buildGarmentSim";
 import {
   addNecklineSeamConstraints,
+  addSleeveArmholeSeam,
   addSleeveUnderarmSeamConstraints,
+  addSleeveWrapConstraint,
   addTorsoSideSeamConstraints,
   applyShoulderRollStiffness,
   armholeRingVertices,
@@ -70,6 +72,14 @@ export function buildUnifiedGarmentSim(
   addNecklineSeamConstraints(sim, PANEL_FRONT, PANEL_BACK);
   addTorsoSideSeamConstraints(sim, PANEL_FRONT, PANEL_BACK, armholeStartRow, pinLeft, pinRight, armLeft, armRight);
   addSleeveUnderarmSeamConstraints(sim, PANEL_FRONT, PANEL_BACK, widthM, pinLeft, pinRight, armLeft, armRight);
+
+  // 범위 B 구현 4번(봉제선 연결): 몸판 암홀 ↔ 새 독립 소매 패널, 소매 링
+  // wrap. armholeStartRow/xMin/xMax는 위에서 소매 배치할 때 이미 계산해둔
+  // 값을 그대로 재사용한다(같은 규약 — 새 경계를 발명하지 않음).
+  addSleeveArmholeSeam(sim, PANEL_FRONT, PANEL_BACK, PANEL_SLEEVE_LEFT, xMin, armholeStartRow);
+  addSleeveArmholeSeam(sim, PANEL_FRONT, PANEL_BACK, PANEL_SLEEVE_RIGHT, xMax, armholeStartRow);
+  addSleeveWrapConstraint(sim, PANEL_SLEEVE_LEFT, SLEEVE_RING_COLS, SLEEVE_RING_ROWS);
+  addSleeveWrapConstraint(sim, PANEL_SLEEVE_RIGHT, SLEEVE_RING_COLS, SLEEVE_RING_ROWS);
 
   pinCorners(sim, pinLeft, pinRight, PANEL_FRONT, PANEL_BACK, armLeft, armRight, necklineLift);
 

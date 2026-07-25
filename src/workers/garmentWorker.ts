@@ -225,6 +225,33 @@ const unifiedResolver: CollisionResolver = (positions, pinned, n) => {
   applyFrontBackSidedness(positions, pinned, PARTICLES_PER_PANEL, centerZ);
   applyCapsuleCollision(positions.subarray(0, frontCount * 3), pinned.subarray(0, frontCount), frontCount, armCapsules, 0.006);
   applyCapsuleCollision(positions.subarray(frontCount * 3, backEnd), pinned.subarray(frontCount, frontCount + backCount), backCount, armCapsules, 0.006);
+  // 범위 B(조사 결과 반영): 소매는 팔 캡슐(armCapsules)만 별도 호출로 추가한다
+  // — torsoCapsules(몸통 표면)는 안 건다(소매는 몸통이 아니라 팔과 닿아야
+  // 함). backEnd/뒤판 호출은 그대로 두고 소매 좌/우 두 구간만 새로 추가 —
+  // backEnd를 늘려서 뒤판 호출 범위 자체를 넓히면 소매 파티클이 뒤판
+  // 로컬 인덱스(SHOULDER_CAP_SKIP 등 뒤판 전용 파라미터)로 잘못 취급된다
+  // (조사에서 확인). 실측: 소매 col5(겨드랑이 쪽) row0~11이 팔 캡슐 두
+  // 세그먼트 축을 따라가며 반경(4.56+0.6mm) 안에 여러 행이 들어와
+  // "소매가 팔을 감싼다"는 의도와 일치, row11(소맷부리)은 반경 밖이라
+  // 불필요한 반응 없음(반팔 기준 실측 — 팔 길이/자세가 크게 달라지면
+  // 재확인 필요할 수 있음).
+  const sleeveCount = SLEEVE_RING_COLS * SLEEVE_RING_ROWS;
+  const sleeveLeftEnd = backEnd + sleeveCount * 3;
+  const sleeveRightEnd = sleeveLeftEnd + sleeveCount * 3;
+  applyCapsuleCollision(
+    positions.subarray(backEnd, sleeveLeftEnd),
+    pinned.subarray(frontCount + backCount, frontCount + backCount + sleeveCount),
+    sleeveCount,
+    armCapsules,
+    0.006,
+  );
+  applyCapsuleCollision(
+    positions.subarray(sleeveLeftEnd, sleeveRightEnd),
+    pinned.subarray(frontCount + backCount + sleeveCount, frontCount + backCount + sleeveCount * 2),
+    sleeveCount,
+    armCapsules,
+    0.006,
+  );
 };
 
 // 자체충돌은 몸판(앞+뒤)+소매(좌+우) 전체에 적용한다. 범위 B(소매 재설계
@@ -445,9 +472,14 @@ ctx.onmessage = (event) => {
       // 핏 맵(물리 무관, 순수 조회) — 방금 확정된 이번 프레임 위치를 그대로 재사용한다.
       const frontFit = computeFitCm(front, ppp);
       const backFit = computeFitCm(back, ppp);
+      const sleeveCount = activeSim.panelParticleCount(PANEL_SLEEVE_LEFT);
+      const sleeveLeftStart = activeSim.panelParticleStart(PANEL_SLEEVE_LEFT) * 3;
+      const sleeveRightStart = activeSim.panelParticleStart(PANEL_SLEEVE_RIGHT) * 3;
+      const sleeveLeft = activeSim.positions.slice(sleeveLeftStart, sleeveLeftStart + sleeveCount * 3);
+      const sleeveRight = activeSim.positions.slice(sleeveRightStart, sleeveRightStart + sleeveCount * 3);
       ctx.postMessage(
-        { type: "positions", front, back, frontFit, backFit, generation: msg.generation },
-        [front.buffer, back.buffer, frontFit.buffer, backFit.buffer],
+        { type: "positions", front, back, frontFit, backFit, sleeveLeft, sleeveRight, generation: msg.generation },
+        [front.buffer, back.buffer, frontFit.buffer, backFit.buffer, sleeveLeft.buffer, sleeveRight.buffer],
       );
       break;
     }

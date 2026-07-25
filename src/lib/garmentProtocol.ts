@@ -72,6 +72,12 @@ export type GarmentWorkerToMainMessage =
       // 케이스, ArrayBvhCollision.signedClearance 참고.
       frontFit: Float32Array;
       backFit: Float32Array;
+      // 범위 B 구현 4번(봉제선 검증): 어깨 코너 이즈인(SEAM_EASE_START)이
+      // 실제 물리 정착 후 SEAM_REST_LENGTH 근처로 수렴하는지 프레임마다
+      // 확인하려면 소매 패널의 살아있는 위치가 필요하다 — sleeveSeamCheck
+      // (Garment.tsx)가 이 필드로 armhole↔소매 거리를 잰다.
+      sleeveLeft: Float32Array;
+      sleeveRight: Float32Array;
       generation: number;
     }
   | {
