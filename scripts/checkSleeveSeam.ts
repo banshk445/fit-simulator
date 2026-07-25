@@ -11,7 +11,6 @@
 // 등은 뺐다) — 필요해지면 워커의 스텝 로직을 재사용 가능한 함수로 뽑아
 // 여기서 그대로 불러쓰는 쪽으로 업그레이드.
 import * as THREE from "three";
-import { ClothSimulation } from "../src/lib/clothPhysics";
 import { applyArmSoftPull, applyNecklineHug, enforceArmFrontBackYAlignment, pinCorners, type ArmDir } from "../src/lib/buildGarmentSim";
 import { buildUnifiedGarmentSim } from "../src/lib/buildUnifiedGarmentSim";
 import { applyCapsuleCollision } from "../src/lib/torsoCapsule";
@@ -48,7 +47,7 @@ function buildArmCapsules(trueShoulder: Vec3Like, dir: Vec3Like, length: number)
   ];
 }
 
-const simInstance: ClothSimulation = buildUnifiedGarmentSim(widthM, heightM, topY, centerZ, pinLeft, pinRight, armLeft, armRight, SLEEVE_WIDTH_M);
+const { sim: simInstance } = buildUnifiedGarmentSim(widthM, heightM, topY, centerZ, pinLeft, pinRight, armLeft, armRight, SLEEVE_WIDTH_M);
 
 const preset = FABRIC_PRESETS.cotton;
 const gravity = new THREE.Vector3(...GRAVITY_BASE).multiplyScalar(preset.gravityScale);

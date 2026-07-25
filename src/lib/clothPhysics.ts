@@ -100,6 +100,12 @@ export class ClothSimulation {
     return this.panelOffsets[panel] + y * this.panelDims[panel].cols + x;
   }
 
+  // 시접 등으로 실제 연결된 파티클 쌍을 읽기전용으로 노출 — 자체충돌
+  // (selfCollision.ts)이 "이미 제약으로 묶인 쌍"을 정확히 알아야 할 때 씀.
+  get constraintPairs(): ReadonlyArray<{ readonly a: number; readonly b: number }> {
+    return this.constraints;
+  }
+
   // panel이 시작하는 파티클 인덱스(포함) — 예: panelParticleStart(2)는
   // 0/1번 패널(몸판 앞+뒤)이 차지하는 파티클 수와 같아서, "몸판 범위만"
   // 슬라이싱(자체충돌 등)하는 데 쓴다.

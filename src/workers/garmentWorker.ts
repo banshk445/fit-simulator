@@ -278,7 +278,7 @@ ctx.onmessage = (event) => {
   switch (msg.type) {
     case "init": {
       lastLayout = { widthM: msg.widthM, heightM: msg.heightM, topY: msg.topY, centerZ: msg.centerZ, sleeveWidthM: msg.sleeveWidthM };
-      sim = buildUnifiedGarmentSim(
+      const built = buildUnifiedGarmentSim(
         msg.widthM,
         msg.heightM,
         msg.topY,
@@ -290,6 +290,7 @@ ctx.onmessage = (event) => {
         msg.sleeveWidthM,
         msg.necklineLift,
       );
+      sim = built.sim;
       accumulator = 0;
 
       {
@@ -299,7 +300,7 @@ ctx.onmessage = (event) => {
           panelStarts.push(sim.panelParticleStart(p));
           panelCols.push(sim.panelDims[p].cols);
         }
-        selfCollisionResolver = new SelfCollision(panelStarts, panelCols, armholeStartRow).createResolver(SELF_COLLISION_MIN_DIST);
+        selfCollisionResolver = new SelfCollision(panelStarts, panelCols, armholeStartRow, built.seamSkipPairs).createResolver(SELF_COLLISION_MIN_DIST);
       }
 
       // 범위 B 구현 1번(격자 생성) 검증용 — buildConstraints()/step() 이전

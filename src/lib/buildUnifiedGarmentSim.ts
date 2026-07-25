@@ -42,7 +42,7 @@ export function buildUnifiedGarmentSim(
   armRight: ArmDir,
   sleeveWidthM: number,
   necklineLift?: readonly number[],
-): ClothSimulation {
+): { sim: ClothSimulation; seamSkipPairs: ReadonlyArray<{ a: number; b: number }> } {
   const panelDims: PanelDims[] = [
     { cols: COLS, rows: ROWS }, // PANEL_FRONT
     { cols: COLS, rows: ROWS }, // PANEL_BACK
@@ -76,12 +76,22 @@ export function buildUnifiedGarmentSim(
   // 범위 B 구현 4번(봉제선 연결): 몸판 암홀 ↔ 새 독립 소매 패널, 소매 링
   // wrap. armholeStartRow/xMin/xMax는 위에서 소매 배치할 때 이미 계산해둔
   // 값을 그대로 재사용한다(같은 규약 — 새 경계를 발명하지 않음).
+  //
+  // 톱니 결함 조사(docs/sleeve-redesign-B.md): 이 두 함수가 잇는 쌍(암홀
+  // 12×2팔 + wrap 12×2팔 = 48쌍)은 자체충돌(selfCollision.ts)의 두 예외
+  // 규칙(같은 패널 UV 근접/몸판↔몸판 어깨 시접) 어디에도 안 걸린다 —
+  // 특히 소매 wrap(k=11↔k=0)은 같은 패널이지만 UV거리가 커서(11>2) 안
+  // 걸리고, 암홀 쪽도 서로 다른 패널(몸판↔소매)이라 안 걸린다. 이 구간
+  // 앞뒤로 constraints 배열을 슬라이스해 정확히 이 48쌍만 골라
+  // SelfCollision에 세 번째 예외로 넘긴다.
+  const seamSkipStart = sim.constraintPairs.length;
   addSleeveArmholeSeam(sim, PANEL_FRONT, PANEL_BACK, PANEL_SLEEVE_LEFT, xMin, armholeStartRow);
   addSleeveArmholeSeam(sim, PANEL_FRONT, PANEL_BACK, PANEL_SLEEVE_RIGHT, xMax, armholeStartRow);
   addSleeveWrapConstraint(sim, PANEL_SLEEVE_LEFT, SLEEVE_RING_COLS, SLEEVE_RING_ROWS);
   addSleeveWrapConstraint(sim, PANEL_SLEEVE_RIGHT, SLEEVE_RING_COLS, SLEEVE_RING_ROWS);
+  const seamSkipPairs = sim.constraintPairs.slice(seamSkipStart).map(({ a, b }) => ({ a, b }));
 
   pinCorners(sim, pinLeft, pinRight, PANEL_FRONT, PANEL_BACK, armLeft, armRight, necklineLift);
 
-  return sim;
+  return { sim, seamSkipPairs };
 }
