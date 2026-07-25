@@ -53,12 +53,36 @@ let lastLayout: { widthM: number; heightM: number; topY: number; centerZ: number
 // --- 몸판 충돌 ---
 const frontCollisionMesh = new ArrayBvhCollision();
 const backCollisionMesh = new ArrayBvhCollision();
-// 팔 제외 없는 몸 전체 충돌 메시 — 어깨 캡을 실제 마네킹 표면에 직접
-// 스냅시키는 용도(garmentStitch.ts의 pullShoulderCapToSurface, 자세한
-// 경위는 meshCollision.ts의 wholeBodyIndex 주석 참고). frontCollisionMesh/
-// backCollisionMesh와 달리 팔 영역을 일부러 빼지 않은 원본이라야 어깨
-// 곡면이 남아있다.
+// 팔 제외 없는 몸 전체 충돌 메시 — frontCollisionMesh/backCollisionMesh와
+// 달리 팔 영역을 일부러 빼지 않은 원본이라야 어깨 곡면이 남아있다(자세한
+// 경위는 meshCollision.ts의 wholeBodyIndex 주석 참고). 원래 용도였던
+// pullShoulderCapToSurface는 47번에서 삭제됐고, 지금은 아래 핏 맵
+// 계측(computeFitCm)이 유일한 소비자다 — 물리 리졸버에는 관여하지 않는
+// 순수 조회용으로만 쓰인다.
 const wholeBodyCollisionMesh = new ArrayBvhCollision();
+// 핏 맵 전용 상수 — 물리 충돌(COLLISION_DETECTION_RADIUS 등)과는 독립된
+// 별개 값이다. 실측이 아니라 "어지간히 헐렁한 옷도 놓치지 말자"는
+// 눈대중으로 넉넉히 잡은 탐지 반경(60cm) — 이보다 먼 정점은 표면을 못
+// 찾아 null이 되고, 화면에서는 "헐렁"(파랑)으로 표시한다.
+const FIT_MAP_DETECTION_RADIUS = 0.6;
+const FIT_MAP_UNKNOWN_CM = 999;
+
+// 핏 맵 전용 — 물리에 전혀 관여하지 않는 순수 조회 루프. panel 하나의
+// 정점 좌표(XYZXYZ...)를 받아 각 정점의 몸 표면까지 부호 있는 거리(cm)를
+// 채운 배열을 돌려준다.
+function computeFitCm(positions: Float32Array, count: number): Float32Array {
+  const out = new Float32Array(count);
+  if (!wholeBodyCollisionMesh.ready) {
+    out.fill(FIT_MAP_UNKNOWN_CM);
+    return out;
+  }
+  for (let i = 0; i < count; i++) {
+    const ix = i * 3;
+    const clearance = wholeBodyCollisionMesh.signedClearance(positions[ix], positions[ix + 1], positions[ix + 2], FIT_MAP_DETECTION_RADIUS);
+    out[i] = clearance === null ? FIT_MAP_UNKNOWN_CM : clearance * 100;
+  }
+  return out;
+}
 // 32번: 어깨 캡(목~겨드랑이, rows 1..armholeStartRow) 구간은 캡슐 충돌에서
 // 제외한다 — bvhFromArrays.ts의 createResolver 주석 참고. 이 구간은
 // pullShoulderCapToSurface가 "어깨 쪽은 넓게, 겨드랑이 쪽은 표면에 밀착"
@@ -342,7 +366,13 @@ ctx.onmessage = (event) => {
       const backStart = activeSim.panelParticleStart(PANEL_BACK) * 3;
       const front = activeSim.positions.slice(frontStart, frontStart + ppp * 3);
       const back = activeSim.positions.slice(backStart, backStart + ppp * 3);
-      ctx.postMessage({ type: "positions", front, back, generation: msg.generation }, [front.buffer, back.buffer]);
+      // 핏 맵(물리 무관, 순수 조회) — 방금 확정된 이번 프레임 위치를 그대로 재사용한다.
+      const frontFit = computeFitCm(front, ppp);
+      const backFit = computeFitCm(back, ppp);
+      ctx.postMessage(
+        { type: "positions", front, back, frontFit, backFit, generation: msg.generation },
+        [front.buffer, back.buffer, frontFit.buffer, backFit.buffer],
+      );
       break;
     }
   }

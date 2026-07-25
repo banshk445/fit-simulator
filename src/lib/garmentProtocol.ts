@@ -65,5 +65,11 @@ export type GarmentWorkerToMainMessage = {
   type: "positions";
   front: Float32Array;
   back: Float32Array;
+  // 핏 맵(물리와 무관): 정점별 몸 표면까지의 부호 있는 거리(cm, 몸
+  // 안쪽이면 음수) — wholeBodyCollisionMesh에 대한 순수 조회 결과일
+  // 뿐, 물리 해석에는 전혀 쓰이지 않는다. garmentWorker.ts의 "step"
+  // 케이스, ArrayBvhCollision.signedClearance 참고.
+  frontFit: Float32Array;
+  backFit: Float32Array;
   generation: number;
 };
