@@ -196,8 +196,14 @@ function buildArmCapsules(shape: ArmShapeMsg): Capsule[] {
 // 이 어깨 캡 행 범위이므로 여기서 빠지면 안 된다.
 const unifiedResolver: CollisionResolver = (positions, pinned, n) => {
   meshResolver(positions, pinned, n);
+  // 범위 B: frontCount/backCount는 둘 다 패널 크기(상수) 그 자체다 — n에서
+  // 역산하면(옛 backCount = n - frontCount) n에 얹힌 소매(panel 2·3)까지
+  // 뒤판 몫으로 잘못 흡수된다. 뒤판 subarray 끝도 n이 아니라 backEnd(=
+  // 앞+뒤 패널 딱 그만큼)로 고정해 소매가 몸판 전용 캡슐 충돌(어깨 캡
+  // 스킵 등)에 걸리지 않게 한다.
   const frontCount = PARTICLES_PER_PANEL;
-  const backCount = n - frontCount;
+  const backCount = PARTICLES_PER_PANEL;
+  const backEnd = (frontCount + backCount) * 3;
   applyCapsuleCollision(
     positions.subarray(0, frontCount * 3),
     pinned.subarray(0, frontCount),
@@ -208,8 +214,8 @@ const unifiedResolver: CollisionResolver = (positions, pinned, n) => {
     SHOULDER_CAP_SKIP_END,
   );
   applyCapsuleCollision(
-    positions.subarray(frontCount * 3, n * 3),
-    pinned.subarray(frontCount, n),
+    positions.subarray(frontCount * 3, backEnd),
+    pinned.subarray(frontCount, frontCount + backCount),
     backCount,
     torsoCapsules,
     COLLISION_MARGIN,
@@ -218,7 +224,7 @@ const unifiedResolver: CollisionResolver = (positions, pinned, n) => {
   );
   applyFrontBackSidedness(positions, pinned, PARTICLES_PER_PANEL, centerZ);
   applyCapsuleCollision(positions.subarray(0, frontCount * 3), pinned.subarray(0, frontCount), frontCount, armCapsules, 0.006);
-  applyCapsuleCollision(positions.subarray(frontCount * 3, n * 3), pinned.subarray(frontCount, n), backCount, armCapsules, 0.006);
+  applyCapsuleCollision(positions.subarray(frontCount * 3, backEnd), pinned.subarray(frontCount, frontCount + backCount), backCount, armCapsules, 0.006);
 };
 
 // 자체충돌은 몸판(앞+뒤)+소매(좌+우) 전체에 적용한다. 범위 B(소매 재설계
