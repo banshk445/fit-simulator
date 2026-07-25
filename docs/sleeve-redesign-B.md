@@ -104,3 +104,18 @@ UV 좌표 재계산 + 별도 지오메트리 UV 어트리뷰트를 추가하는 
   어깨(back0→front0) 0.14cm로 사실상 닫힘
 - 미해결: addSleeveUnderarmSeamConstraints가 겨드랑이를 row9에서 잇는데
   암홀 경계는 row5 — B에서 row5로 통일 필요
+
+## 결정: 별도 패널 (A)
+- 소매를 panel 2·3으로 추가
+- 근거: 2패널 전제 24곳 중 기계적 20, 얽힘 4(모두 국지적)
+- 얽힘 처리: unifiedResolver backCount 분리 / createPanelSplitResolver
+  시그니처를 배열로 / SelfCollision.panelAndUV를 패널별 오프셋 배열로
+  (유일한 로직 수정) / 나머지 20곳은 호출 추가·접근자 재사용
+
+## 구현 순서
+1. 소매 격자 생성(둘레12×길이12, panel 2·3)
+2. SelfCollision 다중 크기 대응 (먼저)
+3. 나머지 얽힘 3곳
+4. 봉제선 연결(인덱스 1:1)
+5. 몸판 기존 소매 열 제거
+6. 검증(핏 맵 관통 감소)
