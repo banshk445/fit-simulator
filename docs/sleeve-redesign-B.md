@@ -106,8 +106,30 @@ UV 좌표 재계산 + 별도 지오메트리 UV 어트리뷰트를 추가하는 
 - 근거(실측): 역순 인접 12변 0.20~5.54cm 고름, 급점프 없음. 정순
   (idx6-11=back row0-5)은 idx5↔6=14.49cm, idx11↔0=15.08cm 대각선 급점프.
   어깨 wrap(idx11↔0) 0.20cm로 사실상 닫힘, 겨드랑이(idx5↔6) 5.54cm 최대
-- 미해결: addSleeveUnderarmSeamConstraints가 겨드랑이를 row9에서 잇는데
-  암홀 경계는 row5 — B에서 row5로 통일 필요
+- 정정(조사 완료): addSleeveUnderarmSeamConstraints(row9)와
+  addSleeveArmholeSeam(row5)는 겹치는 파티클이 없는 별개 시스템 — row9는
+  구 플랩(현재 렌더링되는 옷)의 겨드랑이 봉합, row5는 새 독립 소매 패널의
+  암홀 경계. 통일 불필요, 둘 다 각자 시스템에서 유효.
+- addSleeveUnderarmSeamConstraints는 지금 통째로 남긴다. 삭제 대상이
+  아니라 5번(몸판 기존 소매 열 제거 + 렌더링을 새 패널로 전환)에서 구
+  플랩과 함께 통째로 제거될 코드.
+- 렌더링 확인: frontRenderGeometry/backRenderGeometry(Garment.tsx, COLS
+  전체 폭)가 여전히 화면에 실제로 그려지는 메쉬 — 구 플랩 기준. 새 소매
+  패널(PANEL_SLEEVE_LEFT/RIGHT)은 gridDebug에서만 쓰이고 화면엔 아직
+  안 나타남. 4번(봉제선 연결) 완료 후에도 화면 변화 없음이 정상 — 5번에서
+  렌더링을 전환해야 눈에 보인다.
+
+## 봉제선 갭 패턴 (frame 정착 후, 실제 파이프라인)
+
+sleeveSeamCheck() 실측(chest-width-50.png, 업로드 후 +3.0s, 좌/우 대칭):
+
+- 평평한 구간(row2~4): 0.58~0.89cm, 목표(SEAM_REST_LENGTH=0.6cm)에 근접
+- 어깨 코너 인접(row1): 1.21~1.43cm
+- 겨드랑이(row5/6, armholeStartRow): 1.88~2.02cm, 최대
+- 좌우 대칭적으로 동일 패턴 — 구조적 원인(몸판 곡률 급변 지점과 일치,
+  어깨 코너/겨드랑이 모두 몸판 표면 곡률이 가장 급하게 꺾이는 자리)
+- 판단 보류: 렌더링이 아직 구 플랩 기준이라 이게 시각적으로 문제인지
+  지금은 확인 불가. 5번(렌더링 전환) 이후 재평가.
 
 ## 결정: 별도 패널 (A)
 - 소매를 panel 2·3으로 추가
