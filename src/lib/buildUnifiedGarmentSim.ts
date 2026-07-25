@@ -62,8 +62,8 @@ export function buildUnifiedGarmentSim(
   const { xMin, xMax } = torsoColumnRange(COLS, pinLeft, pinRight, armLeft, armRight);
   const leftArmholeVertex = armholeRingVertices(sim, PANEL_FRONT, PANEL_BACK, xMin, armholeStartRow);
   const rightArmholeVertex = armholeRingVertices(sim, PANEL_FRONT, PANEL_BACK, xMax, armholeStartRow);
-  layoutSleevePanel(sim, PANEL_SLEEVE_LEFT, SLEEVE_RING_COLS, SLEEVE_RING_ROWS, leftArmholeVertex, armLeft);
-  layoutSleevePanel(sim, PANEL_SLEEVE_RIGHT, SLEEVE_RING_COLS, SLEEVE_RING_ROWS, rightArmholeVertex, armRight);
+  layoutSleevePanel(sim, PANEL_SLEEVE_LEFT, SLEEVE_RING_COLS, SLEEVE_RING_ROWS, leftArmholeVertex, armLeft, sleeveWidthM);
+  layoutSleevePanel(sim, PANEL_SLEEVE_RIGHT, SLEEVE_RING_COLS, SLEEVE_RING_ROWS, rightArmholeVertex, armRight, sleeveWidthM);
 
   sim.buildConstraints();
   relaxSleeveStiffness(sim, widthM, pinLeft, pinRight, armLeft, armRight);

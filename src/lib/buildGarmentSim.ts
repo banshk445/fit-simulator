@@ -906,11 +906,17 @@ export function armholeRingVertices(
   return pts;
 }
 
-// 범위 B: 소매를 암홀 단면 모양 그대로 팔 축(arm.dir) 방향으로 압출한
-// 링으로 배치한다 — row0(r=0)은 armholeVertex와 정확히 같은 좌표(시접
-// 늘어남 0), row(rows-1)이 소매 끝(팔 축으로 arm.length만큼 이동). 반지름/
-// 각도 삼각함수 불필요 — 원통 형태는 이후 buildConstraints()+물리가
-// 만든다(범위 B는 배치만 담당).
+// 범위 B(단면 원형화 재설계): 예전엔 암홀 단면(슬릿, 세로로 긴 비원형)을
+// 그대로 팔 축 방향으로 압출했다 — row0은 완벽했지만(시접 늘어남 0) 그
+// 슬릿 모양이 소매 끝까지 그대로 이어져 "원통"이 아니라 "납작한 리본"이
+// 됐다(화면 실측: 날개/플랩처럼 보임). 실측(이 세션): 슬릿 12점의 중심
+// 기준 반지름이 2.92~7.61cm로 원 지름(computeArmTubeRadius)보다 편차가
+// 커서 원형 근사가 애초에 안 되고, 슬릿 정점의 실제 각도도 균등 30°
+// 배치와 최대 177.5° 어긋나 있었다(k=9) — 그래서 "같은 이상각에서
+// 반지름만 보간"은 안 되고, row0는 슬릿 XYZ를 그대로 쓰고 그 이후 행만
+// XYZ 직선 보간으로 이상적 원을 향해 블렌드한다. blendT=0에서 대수적으로
+// 정확히 armholeVertex와 같아지므로(리덤던트 분기 없이 lerp 공식 자체가
+// 보장) row0 시접 갭은 손대지 않는다.
 export function layoutSleevePanel(
   sim: ClothSimulation,
   panel: number,
@@ -918,16 +924,32 @@ export function layoutSleevePanel(
   ringRows: number,
   armholeVertex: readonly Vec3Like[],
   arm: ArmDir,
+  sleeveWidthM: number,
 ): void {
+  const basis = armOrthogonalBasis(arm.dir);
+  const targetRadius = computeArmTubeRadius(sleeveWidthM);
+  const center = {
+    x: armholeVertex.reduce((s, p) => s + p.x, 0) / armholeVertex.length,
+    y: armholeVertex.reduce((s, p) => s + p.y, 0) / armholeVertex.length,
+    z: armholeVertex.reduce((s, p) => s + p.z, 0) / armholeVertex.length,
+  };
   for (let r = 0; r < ringRows; r++) {
     const t = ringRows > 1 ? r / (ringRows - 1) : 0;
+    const blendT = tubeRadiusScale(t); // 0~30% 스무스스텝 램프, 이후 1 고정 — 반지름 램프와 같은 곡선을 슬릿→이상원 블렌드 가중치로 재사용.
+    const reach = arm.length * t;
     for (let k = 0; k < ringCols; k++) {
-      const base = armholeVertex[k];
+      const slit = armholeVertex[k];
+      const angle = Math.PI / 2 - k * ((2 * Math.PI) / ringCols); // k=0(어깨)을 위쪽(90°)에, wrap 순서대로 시계 방향.
+      const cosA = Math.cos(angle);
+      const sinA = Math.sin(angle);
+      const idealX = center.x + arm.dir.x * reach + (basis.right.x * cosA + basis.up.x * sinA) * targetRadius;
+      const idealY = center.y + arm.dir.y * reach + (basis.right.y * cosA + basis.up.y * sinA) * targetRadius;
+      const idealZ = center.z + arm.dir.z * reach + (basis.right.z * cosA + basis.up.z * sinA) * targetRadius;
       sim.setParticle(
         sim.index(panel, k, r),
-        base.x + arm.dir.x * arm.length * t,
-        base.y + arm.dir.y * arm.length * t,
-        base.z + arm.dir.z * arm.length * t,
+        slit.x + (idealX - slit.x) * blendT,
+        slit.y + (idealY - slit.y) * blendT,
+        slit.z + (idealZ - slit.z) * blendT,
       );
     }
   }
@@ -1011,7 +1033,7 @@ export function addSleeveArmholeSeam(
   col: number,
   armholeStartRow: number,
 ): void {
-  const SEAM_EASE_START = 0.03;
+  const SEAM_EASE_START = 0.006; // ponytail: 실험값(원래 0.03, 8mm 경유) — 완전 균일화 재검증 중, docs/sleeve-redesign-B.md 참고
   const lastK = armholeStartRow * 2 + 1;
   const restLengthFor = (k: number): number => (k === 0 || k === lastK ? SEAM_EASE_START : SEAM_REST_LENGTH);
   let k = 0;

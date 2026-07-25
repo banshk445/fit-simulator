@@ -170,6 +170,27 @@ function packScalarIntoR(src: ArrayLike<number>, dst: Float32Array): void {
   }
 }
 
+// 소매 프록시 지오메트리(sleeveGeometryLeft/Right)는 감김 없는 평면이라
+// computeVertexNormals()가 col=0/col=last(원통 이음매)를 경계로 취급해
+// 서로 다른 법선을 낸다 — row마다 두 값을 더해 normalize한 뒤 양쪽에
+// 똑같이 대입해 이음매를 지운다. computeVertexNormals() 직후, 텍스처
+// 업로드 전에 호출해야 한다.
+function averageSleeveSeamNormals(geometry: THREE.BufferGeometry, cols: number, rows: number): void {
+  const normal = geometry.getAttribute("normal") as THREE.BufferAttribute;
+  const first = new THREE.Vector3();
+  const last = new THREE.Vector3();
+  for (let row = 0; row < rows; row++) {
+    const iFirst = row * cols;
+    const iLast = row * cols + (cols - 1);
+    first.fromBufferAttribute(normal, iFirst);
+    last.fromBufferAttribute(normal, iLast);
+    first.add(last).normalize();
+    normal.setXYZ(iFirst, first.x, first.y, first.z);
+    normal.setXYZ(iLast, first.x, first.y, first.z);
+  }
+  normal.needsUpdate = true;
+}
+
 // MeshStandardMaterial의 표준 버텍스 셰이더에 우리 데이터 텍스처 샘플링을
 // 주입한다 — <begin_vertex>(위치)와 <beginnormal_vertex>(법선)를 각각
 // 텍스처 샘플로 바꿔치기한다. uv 어트리뷰트를 격자 연속 좌표로 바꾼 뒤
@@ -734,6 +755,12 @@ export function Garment({ imageUrl }: Props) {
         // 2) row0 12점이 armholeVertex와 좌표 일치(시접 0cm 기대)
         row0SeamDistanceCm: { left: row0Diff(dbg.sleeveLeft, leftArmhole), right: row0Diff(dbg.sleeveRight, rightArmhole) },
         // 3) row(rows-1)가 armDir*armLength만큼 뻗었는지(armhole점 기준 거리 ≈ armLength*100cm)
+        // 단면 원형화 재설계(layoutSleevePanel, buildGarmentSim.ts) 이후로는 이
+        // "≈armLength" 기대가 더 이상 안 맞는다 — row(rows-1)이 순수 팔축
+        // 방향으로만 안 뻗고 이상원 쪽으로 완전히 블렌드돼(슬릿 정점의 실제
+        // 각도가 이상각과 최대 177° 어긋남, 실측 확인) 축+반경이 섞인 거리가
+        // 됨. k마다 15~29cm로 들쭉날쭉해도 회귀 아님 — expectedReachCm과 직접
+        // 비교하는 자동 체크를 추가하지 말 것.
         rowLastReachCm: { left: rowLastReach(dbg.sleeveLeft, leftArmhole), right: rowLastReach(dbg.sleeveRight, rightArmhole) },
         expectedReachCm: armLength !== undefined ? Number((armLength * 100).toFixed(2)) : null,
         armDirLeft,
@@ -801,6 +828,29 @@ export function Garment({ imageUrl }: Props) {
     };
   }, [frontPositions, backPositions, sleevePositionsLeft, sleevePositionsRight]);
 
+  // 어깨-소매 접합부 톱니(sleeve-redesign-B.md 다음 세션 지점) — 이음매
+  // (col=0 vs col=SLEEVE_RING_COLS-1) 법선이 averageSleeveSeamNormals 보정
+  // 후 실제로 일치하는지 지정 row에서 확인. 콘솔에서
+  // `window.__fitDebug.sleeveSeamNormalCheck(0)` / `(6)` / `(11)` 호출.
+  useEffect(() => {
+    const win = window as unknown as { __fitDebug?: Record<string, unknown> };
+    if (!win.__fitDebug) win.__fitDebug = {};
+    win.__fitDebug.sleeveSeamNormalCheck = (row = 0) => {
+      const read = (geometry: THREE.BufferGeometry, side: "left" | "right") => {
+        const normal = geometry.getAttribute("normal") as THREE.BufferAttribute;
+        const iFirst = row * SLEEVE_RING_COLS;
+        const iLast = row * SLEEVE_RING_COLS + (SLEEVE_RING_COLS - 1);
+        const first = { x: normal.getX(iFirst), y: normal.getY(iFirst), z: normal.getZ(iFirst) };
+        const last = { x: normal.getX(iLast), y: normal.getY(iLast), z: normal.getZ(iLast) };
+        const diff = Math.hypot(first.x - last.x, first.y - last.y, first.z - last.z);
+        return { side, row, first, last, diffMagnitude: Number(diff.toFixed(6)) };
+      };
+      const result = [read(sleeveGeometryLeft, "left"), read(sleeveGeometryRight, "right")];
+      console.log("[SLEEVE-SEAM-NORMAL-CHECK]", JSON.stringify(result));
+      return result;
+    };
+  }, [sleeveGeometryLeft, sleeveGeometryRight]);
+
   // 워커는 컴포넌트 생명주기 동안 하나만 띄우고 언마운트 시 종료한다.
   // frontGeometry/backGeometry/frontPositions/backPositions는 몸판
   // 파티클 수(PARTICLES_PER_PANEL)에만 의존해 컴포넌트 생명주기 내내
@@ -841,6 +891,8 @@ export function Garment({ imageUrl }: Props) {
       backGeometry.computeVertexNormals();
       sleeveGeometryLeft.computeVertexNormals();
       sleeveGeometryRight.computeVertexNormals();
+      averageSleeveSeamNormals(sleeveGeometryLeft, SLEEVE_RING_COLS, SLEEVE_RING_ROWS);
+      averageSleeveSeamNormals(sleeveGeometryRight, SLEEVE_RING_COLS, SLEEVE_RING_ROWS);
       frontGeometry.computeBoundingSphere();
       backGeometry.computeBoundingSphere();
 
