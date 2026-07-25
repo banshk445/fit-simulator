@@ -238,3 +238,24 @@ topRadius/bottomRadius 확장 자체는 안전하게 구현됨(회귀 없음 확
 ("핏을 정확히 읽는 수준")는 이미 충족된 것으로 판단, 보류.
 재개 시 pullShoulderCapToSurface 조사와 같은 방식(서브스텝별 힘
 추적)으로 반발 원인부터 특정할 것.
+
+## 어깨-소매 접합부 톱니 삼각형 (재조사 완료, 원인 재규명)
+1차 진단(SelfCollision 힘겨루기)은 오진으로 확인됨 — 어깨 wrap
+지점(k0↔k11) 거리가 10.68mm로 SELF_COLLISION_MIN_DIST(5.5mm)보다
+멀어 애초에 자체충돌 판정이 발동하지 않음(수정 전/후 delta=0.0000mm,
+실측 확인). 이 예외 규칙 확장 자체는 안전하고 유효하지만(다른 근접
+쌍에 대한 사각지대를 막음), 이 톱니의 원인은 아니었음 — 되돌리지
+않고 유지(무해).
+
+실제 유력 원인: 렌더링 법선 이음매 불연속 (Garment.tsx:311-315,
+437-438에 이미 문서화된 미해결 항목). buildSleeveTubeGeometry가
+PlaneGeometry 기반이라 wrap 열(col=cols-1↔col=0)의 법선을
+computeVertexNormals()가 독립적으로 계산 — 이음매를 가로지르는
+인접면을 감안 못함. 소매 단면 자체의 극단적 불균일(어깨 0.15~0.20cm
+vs 겨드랑이 5.54cm)이 이 법선 차이를 시각적으로 도드라지게 만듦.
+
+부차 요인: pinCorners 타이밍 갭(row0SeamDistanceCm k0=3.69mm,
+k11=1.66mm) — 실존하나 크기가 작아 단독 원인은 아님.
+
+다음 세션 시작점: 이음매 양쪽 법선을 평균내는 보정을
+buildSleeveTubeGeometry 또는 렌더 지오메트리 생성 단계에 추가.
