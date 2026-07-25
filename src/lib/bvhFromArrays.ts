@@ -110,6 +110,26 @@ export class ArrayBvhCollision {
     );
   }
 
+  // 핏 맵 전용(물리에 관여 안 함): 점 p가 표면에서 얼마나 떨어져 있는지
+  // 부호 있는 거리로 돌려준다(몸 안쪽이면 음수) — createResolver와 똑같은
+  // closestPointToPoint 질의를 재사용하지만, 위치를 밀어내지 않고 값만
+  // 읽어서 돌려주는 순수 조회다. 부호는 (점-표면점) 벡터를 면 법선에
+  // 내적해 판단한다(법선은 항상 몸 바깥쪽을 향함 — createResolver가 이미
+  // 그 가정으로 밀어내는 방향을 정하고 있다).
+  signedClearance(px: number, py: number, pz: number, detectionRadius: number): number | null {
+    const bvh = this.bvh;
+    if (!bvh) return null;
+    scratchPoint.set(px, py, pz);
+    const hit = bvh.closestPointToPoint(scratchPoint, this.hitInfo, 0, detectionRadius);
+    if (!hit) return null;
+    this.faceNormal(hit.faceIndex, scratchNormal);
+    const dx = px - hit.point.x;
+    const dy = py - hit.point.y;
+    const dz = pz - hit.point.z;
+    const sign = dx * scratchNormal.x + dy * scratchNormal.y + dz * scratchNormal.z >= 0 ? 1 : -1;
+    return hit.distance * sign;
+  }
+
   // margin만큼 표면 밖으로 밀어내는 CollisionResolver를 만든다. 삼각형의
   // 실제 면 법선을 써서, 파티클이 표면 안쪽으로 뚫고 들어간 경우에도(가장
   // 가까운 점에서 파티클 쪽 방향이 아니라) 항상 바깥 방향으로 밀려나게 한다.
