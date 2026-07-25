@@ -21,6 +21,8 @@ import {
   MAX_SUBSTEPS,
   PANEL_BACK,
   PANEL_FRONT,
+  PANEL_SLEEVE_LEFT,
+  PANEL_SLEEVE_RIGHT,
   PARTICLES_PER_PANEL,
   ROWS,
   SELF_COLLISION_MIN_DIST,
@@ -236,6 +238,44 @@ ctx.onmessage = (event) => {
         msg.necklineLift,
       );
       accumulator = 0;
+
+      // 범위 B 구현 1번(격자 생성) 검증용 — buildConstraints()/step() 이전
+      // 순수 초기 배치를 그대로 echo. "init"마다 한 번만.
+      {
+        const frontCount = sim.panelParticleCount(PANEL_FRONT);
+        const backCount = sim.panelParticleCount(PANEL_BACK);
+        const sleeveCount = sim.panelParticleCount(PANEL_SLEEVE_LEFT);
+        const frontStart = sim.panelParticleStart(PANEL_FRONT) * 3;
+        const backStart = sim.panelParticleStart(PANEL_BACK) * 3;
+        const sleeveLeftStart = sim.panelParticleStart(PANEL_SLEEVE_LEFT) * 3;
+        const sleeveRightStart = sim.panelParticleStart(PANEL_SLEEVE_RIGHT) * 3;
+        const front = sim.positions.slice(frontStart, frontStart + frontCount * 3);
+        const back = sim.positions.slice(backStart, backStart + backCount * 3);
+        const sleeveLeft = sim.positions.slice(sleeveLeftStart, sleeveLeftStart + sleeveCount * 3);
+        const sleeveRight = sim.positions.slice(sleeveRightStart, sleeveRightStart + sleeveCount * 3);
+        ctx.postMessage(
+          {
+            type: "gridDebug",
+            front,
+            back,
+            sleeveLeft,
+            sleeveRight,
+            panelParticleStart: [
+              sim.panelParticleStart(PANEL_FRONT),
+              sim.panelParticleStart(PANEL_BACK),
+              sim.panelParticleStart(PANEL_SLEEVE_LEFT),
+              sim.panelParticleStart(PANEL_SLEEVE_RIGHT),
+            ],
+            panelParticleCount: [
+              frontCount,
+              backCount,
+              sim.panelParticleCount(PANEL_SLEEVE_LEFT),
+              sim.panelParticleCount(PANEL_SLEEVE_RIGHT),
+            ],
+          },
+          [front.buffer, back.buffer, sleeveLeft.buffer, sleeveRight.buffer],
+        );
+      }
       break;
     }
     case "rebuildCollision": {

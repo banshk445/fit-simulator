@@ -882,6 +882,57 @@ export function addTorsoSideSeamConstraints(
   }
 }
 
+// 범위 B(소매 재설계 — 별도 패널): 몸판 암홀 가장자리 12정점을 소매 링
+// wrap 순서로 뽑는다. idx0-5=front row0..armholeStartRow, idx6-11=back
+// row armholeStartRow..0(역순) — 겨드랑이(idx5-6)와 어깨(idx11-0, wrap)가
+// 실제 인접점끼리 이어지도록 역순이 필요하다(docs/sleeve-redesign-B.md
+// 실측: 역순 12변 0.20~5.54cm 고름, 정순은 14~15cm 대각선 급점프).
+export function armholeRingVertices(
+  sim: ClothSimulation,
+  frontPanel: number,
+  backPanel: number,
+  col: number,
+  armholeStartRow: number,
+): Vec3Like[] {
+  const pts: Vec3Like[] = [];
+  for (let y = 0; y <= armholeStartRow; y++) {
+    const i = sim.index(frontPanel, col, y) * 3;
+    pts.push({ x: sim.positions[i], y: sim.positions[i + 1], z: sim.positions[i + 2] });
+  }
+  for (let y = armholeStartRow; y >= 0; y--) {
+    const i = sim.index(backPanel, col, y) * 3;
+    pts.push({ x: sim.positions[i], y: sim.positions[i + 1], z: sim.positions[i + 2] });
+  }
+  return pts;
+}
+
+// 범위 B: 소매를 암홀 단면 모양 그대로 팔 축(arm.dir) 방향으로 압출한
+// 링으로 배치한다 — row0(r=0)은 armholeVertex와 정확히 같은 좌표(시접
+// 늘어남 0), row(rows-1)이 소매 끝(팔 축으로 arm.length만큼 이동). 반지름/
+// 각도 삼각함수 불필요 — 원통 형태는 이후 buildConstraints()+물리가
+// 만든다(범위 B는 배치만 담당).
+export function layoutSleevePanel(
+  sim: ClothSimulation,
+  panel: number,
+  ringCols: number,
+  ringRows: number,
+  armholeVertex: readonly Vec3Like[],
+  arm: ArmDir,
+): void {
+  for (let r = 0; r < ringRows; r++) {
+    const t = ringRows > 1 ? r / (ringRows - 1) : 0;
+    for (let k = 0; k < ringCols; k++) {
+      const base = armholeVertex[k];
+      sim.setParticle(
+        sim.index(panel, k, r),
+        base.x + arm.dir.x * arm.length * t,
+        base.y + arm.dir.y * arm.length * t,
+        base.z + arm.dir.z * arm.length * t,
+      );
+    }
+  }
+}
+
 // 46번 실측(옵션 B — 소매 밑단 재봉선 부재가 진짜 원인): addTorsoSideSeamConstraints는
 // x=0/COLS-1(그리드 맨 끝, 사실상 반대쪽 소매 끝단)과 armholeStartRow
 // 이후 행만 잇는다 — 소매 몸체(중간 열, frac>1)는 앞판/뒤판을 실제로

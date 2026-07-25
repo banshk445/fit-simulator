@@ -12,7 +12,15 @@ import { findArmDirection, findShortSleeveDirection, findShoulderBones } from ".
 import { computeShoulderPin } from "../lib/shoulderPin";
 import { compositeGarmentTexture } from "../lib/garmentTextureComposite";
 import { torsoColumnRange } from "../lib/buildGarmentSim";
-import { ARMHOLE_ROW_FRACTION, COLS, PARTICLES_PER_PANEL, REBUILD_DEBOUNCE_MS, ROWS } from "../lib/clothConfig";
+import {
+  ARMHOLE_ROW_FRACTION,
+  COLS,
+  PARTICLES_PER_PANEL,
+  REBUILD_DEBOUNCE_MS,
+  ROWS,
+  SLEEVE_RING_COLS,
+  SLEEVE_RING_ROWS,
+} from "../lib/clothConfig";
 import type { MainToGarmentWorkerMessage, GarmentWorkerToMainMessage, ArmShapeMsg } from "../lib/garmentProtocol";
 import { MODEL_URL } from "./Mannequin";
 
@@ -475,6 +483,9 @@ export function Garment({ imageUrl }: Props) {
   // 매 프레임 바뀔 수 있어(useFrame 안에서 재계산), window.__fitDebug 함수가
   // React state가 아니라 이 ref로 최신 xMin/xMax를 동기적으로 읽는다.
   const torsoColumnRangeRef = useRef({ xMin: 0, xMax: COLS - 1 });
+  // 범위 B 구현 1번(격자 생성) 검증용 — 워커가 "init"마다 한 번 보내는
+  // gridDebug(물리 이전 순수 초기 배치)를 그대로 들고 있는다.
+  const sleeveGridDebugRef = useRef<Extract<GarmentWorkerToMainMessage, { type: "gridDebug" }> | null>(null);
 
   // 범위 B(소매 재설계) 조사 — 몸판 암홀 가장자리(왼쪽: 열 x=xMin,
   // row0~armholeStartRow, 앞판+뒤판 총 12정점)를 실측한다. row0(어깨,
@@ -517,6 +528,86 @@ export function Garment({ imageUrl }: Props) {
     };
   }, [frontPositions, backPositions]);
 
+  // 범위 B 구현 1번(격자 생성) 검증 — 4개 항목. gridDebug는 sim 생성 직후
+  // (물리 이전) 순수 초기 배치라 시접 거리/신장 길이가 흔들리지 않는다.
+  // 마운트 시 한 번만 등록(armholeCheck과 같은 이유) — 콘솔에서
+  // `window.__fitDebug.sleeveGridCheck()` 직접 호출.
+  useEffect(() => {
+    const win = window as unknown as { __fitDebug?: Record<string, unknown> };
+    if (!win.__fitDebug) win.__fitDebug = {};
+    win.__fitDebug.sleeveGridCheck = () => {
+      const dbg = sleeveGridDebugRef.current;
+      if (!dbg) {
+        console.log("[SLEEVE-GRID-CHECK] gridDebug 아직 없음(초기화 대기)");
+        return null;
+      }
+      const ringN = SLEEVE_RING_COLS * SLEEVE_RING_ROWS;
+      const countNonZero = (arr: Float32Array): number => {
+        let n = 0;
+        for (let i = 0; i < ringN; i++) {
+          const ix = i * 3;
+          if (arr[ix] !== 0 || arr[ix + 1] !== 0 || arr[ix + 2] !== 0) n++;
+        }
+        return n;
+      };
+
+      const armholeStartRow = Math.round(ROWS * ARMHOLE_ROW_FRACTION);
+      const { xMin, xMax } = torsoColumnRangeRef.current;
+      const torsoPt = (panel: Float32Array, col: number, row: number) => {
+        const i = (row * COLS + col) * 3;
+        return { x: panel[i], y: panel[i + 1], z: panel[i + 2] };
+      };
+      // idx0-5=front row0..armholeStartRow, idx6-11=back armholeStartRow..0(역순)
+      const ringVerts = (col: number) => {
+        const pts: { x: number; y: number; z: number }[] = [];
+        for (let y = 0; y <= armholeStartRow; y++) pts.push(torsoPt(dbg.front, col, y));
+        for (let y = armholeStartRow; y >= 0; y--) pts.push(torsoPt(dbg.back, col, y));
+        return pts;
+      };
+      const leftArmhole = ringVerts(xMin);
+      const rightArmhole = ringVerts(xMax);
+
+      const sleevePt = (sleeve: Float32Array, k: number, r: number) => {
+        const i = (r * SLEEVE_RING_COLS + k) * 3;
+        return { x: sleeve[i], y: sleeve[i + 1], z: sleeve[i + 2] };
+      };
+      const cm = (a: { x: number; y: number; z: number }, b: { x: number; y: number; z: number }) =>
+        Number((Math.hypot(a.x - b.x, a.y - b.y, a.z - b.z) * 100).toFixed(4));
+
+      const row0Diff = (sleeve: Float32Array, armhole: { x: number; y: number; z: number }[]) =>
+        Array.from({ length: SLEEVE_RING_COLS }, (_, k) => cm(sleevePt(sleeve, k, 0), armhole[k]));
+
+      const lastRow = SLEEVE_RING_ROWS - 1;
+      const rowLastReach = (sleeve: Float32Array, armhole: { x: number; y: number; z: number }[]) =>
+        Array.from({ length: SLEEVE_RING_COLS }, (_, k) => cm(sleevePt(sleeve, k, lastRow), armhole[k]));
+
+      const armDirLeft = win.__fitDebug!.armDirLeft as { x: number; y: number; z: number } | undefined;
+      const armDirRight = win.__fitDebug!.armDirRight as { x: number; y: number; z: number } | undefined;
+      const armLength = win.__fitDebug!.armLength as number | undefined;
+
+      const result = {
+        // 1) panel 2·3 정점 채움 여부(0,0,0이 아닌 개수 / 144)
+        filled: { sleeveLeft: countNonZero(dbg.sleeveLeft), sleeveRight: countNonZero(dbg.sleeveRight), expectedEach: ringN },
+        // 2) row0 12점이 armholeVertex와 좌표 일치(시접 0cm 기대)
+        row0SeamDistanceCm: { left: row0Diff(dbg.sleeveLeft, leftArmhole), right: row0Diff(dbg.sleeveRight, rightArmhole) },
+        // 3) row(rows-1)가 armDir*armLength만큼 뻗었는지(armhole점 기준 거리 ≈ armLength*100cm)
+        rowLastReachCm: { left: rowLastReach(dbg.sleeveLeft, leftArmhole), right: rowLastReach(dbg.sleeveRight, rightArmhole) },
+        expectedReachCm: armLength !== undefined ? Number((armLength * 100).toFixed(2)) : null,
+        armDirLeft,
+        armDirRight,
+        // 4) panelParticleStart(0)/(1)이 여전히 몸판을 가리키는지
+        panelParticleStart: { front: dbg.panelParticleStart[0], back: dbg.panelParticleStart[1], sleeveLeft: dbg.panelParticleStart[2], sleeveRight: dbg.panelParticleStart[3] },
+        panelParticleCount: { front: dbg.panelParticleCount[0], back: dbg.panelParticleCount[1], sleeveLeft: dbg.panelParticleCount[2], sleeveRight: dbg.panelParticleCount[3] },
+        expectedFrontStart: 0,
+        expectedBackStart: PARTICLES_PER_PANEL,
+        frontRow0First3: [dbg.front[0], dbg.front[1], dbg.front[2]],
+        backRow0First3: [dbg.back[0], dbg.back[1], dbg.back[2]],
+      };
+      console.log("[SLEEVE-GRID-CHECK]", JSON.stringify(result));
+      return result;
+    };
+  }, []);
+
   // 워커는 컴포넌트 생명주기 동안 하나만 띄우고 언마운트 시 종료한다.
   // frontGeometry/backGeometry/frontPositions/backPositions는 몸판
   // 파티클 수(PARTICLES_PER_PANEL)에만 의존해 컴포넌트 생명주기 내내
@@ -537,6 +628,10 @@ export function Garment({ imageUrl }: Props) {
     };
     worker.onmessage = (event: MessageEvent<GarmentWorkerToMainMessage>) => {
       const msg = event.data;
+      if (msg.type === "gridDebug") {
+        sleeveGridDebugRef.current = msg;
+        return;
+      }
       if (msg.type !== "positions") return;
       pendingRef.current = false;
       if (msg.generation !== generationRef.current) return; // 낡은 세대의 응답은 버린다.
