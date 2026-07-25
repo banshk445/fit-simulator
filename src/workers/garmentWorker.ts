@@ -206,10 +206,15 @@ const unifiedResolver: CollisionResolver = (positions, pinned, n) => {
   applyCapsuleCollision(positions.subarray(frontCount * 3, n * 3), pinned.subarray(frontCount, n), backCount, armCapsules, 0.006);
 };
 
-// 자체충돌은 몸판(앞+뒤) 전체에 적용한다 — 이제 이게 곧 전체 시뮬레이션
-// 범위다(더 이상 소매를 뺀 부분범위가 아님).
-const selfCollision = new SelfCollision(PARTICLES_PER_PANEL, COLS, armholeStartRow);
-const selfCollisionResolver = selfCollision.createResolver(SELF_COLLISION_MIN_DIST);
+// 자체충돌은 몸판(앞+뒤)+소매(좌+우) 전체에 적용한다. 범위 B(소매 재설계
+// — 별도 패널): 패널 크기가 더 이상 균일(1232/1232/144/144)하지 않아,
+// PARTICLES_PER_PANEL/COLS 고정값으로는 소매 패널 경계를 못 찾는다(소매
+// 두 패널이 하나로 뭉개지고 좌표도 틀어짐 — selfCollision.ts panelAndUV
+// 주석 참고). sim이 실제로 만들어진 뒤(각 "init")에 sim.panelParticleStart/
+// panelDims에서 그대로 뽑아 재구성한다 — panelDims는 전부 상수(COLS/ROWS/
+// SLEEVE_RING_*)라 매 rebuild마다 값 자체는 같지만, sim 인스턴스 없이는
+// 이 값을 들고 있는 곳이 없어 sim 생성 이후로 옮겨야 한다.
+let selfCollisionResolver: CollisionResolver | null = null;
 
 const gravityBase = new THREE.Vector3(...GRAVITY_BASE);
 const scratchGravity = new THREE.Vector3();
@@ -238,6 +243,16 @@ ctx.onmessage = (event) => {
         msg.necklineLift,
       );
       accumulator = 0;
+
+      {
+        const panelStarts: number[] = [];
+        const panelCols: number[] = [];
+        for (let p = 0; p < sim.panels; p++) {
+          panelStarts.push(sim.panelParticleStart(p));
+          panelCols.push(sim.panelDims[p].cols);
+        }
+        selfCollisionResolver = new SelfCollision(panelStarts, panelCols, armholeStartRow).createResolver(SELF_COLLISION_MIN_DIST);
+      }
 
       // 범위 B 구현 1번(격자 생성) 검증용 — buildConstraints()/step() 이전
       // 순수 초기 배치를 그대로 echo. "init"마다 한 번만.
@@ -350,7 +365,7 @@ ctx.onmessage = (event) => {
           MAX_DISPLACEMENT_PER_SUBSTEP,
           torsoOrderExtra,
         );
-        selfCollisionResolver(activeSim.positions, activeSim.pinned, activeSim.positions.length / 3);
+        selfCollisionResolver!(activeSim.positions, activeSim.pinned, activeSim.positions.length / 3);
         // step() 안에서도 매 반복 돌긴 하지만, 자체충돌(step() 밖에서
         // 실행)이 그 직후 다시 순서를 흐트러뜨릴 수 있어 여기서도 한 번
         // 더 정리한다 — 병합 이전부터 있던 이중 안전장치.

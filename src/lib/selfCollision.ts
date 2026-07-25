@@ -25,8 +25,8 @@ interface Bucket {
 }
 
 export class SelfCollision {
-  private readonly particlesPerPanel: number;
-  private readonly cols: number;
+  private readonly panelStarts: number[];
+  private readonly panelCols: number[];
   private readonly cellSize: number;
   private readonly seamRowExclusive: number;
   private buckets = new Map<number, Bucket>();
@@ -47,9 +47,15 @@ export class SelfCollision {
   // 안쪽에 있어 이 구간 자체가 가려져 있었다). 이 구간(seamRowExclusive
   // 미만 행)의 앞판↔뒤판 쌍은 "겹침"이 아니라 "이음매"이므로 자체충돌
   // 대상에서 제외한다.
-  constructor(particlesPerPanel: number, cols: number, seamRowExclusive = 0, cellSize = SELF_COLLISION_MIN_DIST) {
-    this.particlesPerPanel = particlesPerPanel;
-    this.cols = cols;
+  // 범위 B(소매 재설계 — 별도 패널): 몸판(1232) 2개 + 소매(144) 2개로
+  // 패널 크기가 더 이상 균일하지 않다 — 고정 나눗셈(옛 particlesPerPanel/
+  // cols)으로는 패널 경계를 못 찾는다. 패널별 시작 인덱스/cols를 그대로
+  // 배열로 받아 panelAndUV에서 선형 스캔한다(ClothSimulation.
+  // panelParticleStart/panelDims를 호출부에서 그대로 넘기면 됨 — 계산
+  // 중복 없음).
+  constructor(panelStarts: number[], panelCols: number[], seamRowExclusive = 0, cellSize = SELF_COLLISION_MIN_DIST) {
+    this.panelStarts = panelStarts;
+    this.panelCols = panelCols;
     this.seamRowExclusive = seamRowExclusive;
     this.cellSize = cellSize;
   }
@@ -60,10 +66,17 @@ export class SelfCollision {
     return (cx + 512) * 1_048_576 + (cy + 512) * 1024 + (cz + 512);
   }
 
+  // 패널이 몇 개 안 되므로(현재 4개) 이진 탐색은 과설계 — 뒤에서부터
+  // 선형 스캔으로 충분하다.
   private panelAndUV(i: number): { panel: number; x: number; y: number } {
-    const local = i % this.particlesPerPanel;
-    const panel = (i - local) / this.particlesPerPanel;
-    return { panel, x: local % this.cols, y: Math.floor(local / this.cols) };
+    for (let p = this.panelStarts.length - 1; p >= 0; p--) {
+      if (i >= this.panelStarts[p]) {
+        const local = i - this.panelStarts[p];
+        const cols = this.panelCols[p];
+        return { panel: p, x: local % cols, y: Math.floor(local / cols) };
+      }
+    }
+    throw new Error(`panelAndUV: index ${i} is before the first panel's start`);
   }
 
   createResolver(minDist = SELF_COLLISION_MIN_DIST): CollisionResolver {
