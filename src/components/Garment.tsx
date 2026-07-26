@@ -12,7 +12,17 @@ import { findArmDirection, findShortSleeveDirection, findShoulderBones } from ".
 import { computeShoulderPin } from "../lib/shoulderPin";
 import { compositeGarmentTexture } from "../lib/garmentTextureComposite";
 import { torsoColumnRange } from "../lib/buildGarmentSim";
-import { ARMHOLE_ROW_FRACTION, COLS, PARTICLES_PER_PANEL, REBUILD_DEBOUNCE_MS, ROWS } from "../lib/clothConfig";
+import {
+  ARM_COLLISION_RADIUS,
+  ARMHOLE_ROW_FRACTION,
+  COLS,
+  PARTICLES_PER_PANEL,
+  REBUILD_DEBOUNCE_MS,
+  ROWS,
+  SEAM_REST_LENGTH,
+  SLEEVE_RING_COLS,
+  SLEEVE_RING_ROWS,
+} from "../lib/clothConfig";
 import type { MainToGarmentWorkerMessage, GarmentWorkerToMainMessage, ArmShapeMsg } from "../lib/garmentProtocol";
 import { MODEL_URL } from "./Mannequin";
 
@@ -160,6 +170,27 @@ function packScalarIntoR(src: ArrayLike<number>, dst: Float32Array): void {
   }
 }
 
+// 소매 프록시 지오메트리(sleeveGeometryLeft/Right)는 감김 없는 평면이라
+// computeVertexNormals()가 col=0/col=last(원통 이음매)를 경계로 취급해
+// 서로 다른 법선을 낸다 — row마다 두 값을 더해 normalize한 뒤 양쪽에
+// 똑같이 대입해 이음매를 지운다. computeVertexNormals() 직후, 텍스처
+// 업로드 전에 호출해야 한다.
+function averageSleeveSeamNormals(geometry: THREE.BufferGeometry, cols: number, rows: number): void {
+  const normal = geometry.getAttribute("normal") as THREE.BufferAttribute;
+  const first = new THREE.Vector3();
+  const last = new THREE.Vector3();
+  for (let row = 0; row < rows; row++) {
+    const iFirst = row * cols;
+    const iLast = row * cols + (cols - 1);
+    first.fromBufferAttribute(normal, iFirst);
+    last.fromBufferAttribute(normal, iLast);
+    first.add(last).normalize();
+    normal.setXYZ(iFirst, first.x, first.y, first.z);
+    normal.setXYZ(iLast, first.x, first.y, first.z);
+  }
+  normal.needsUpdate = true;
+}
+
 // MeshStandardMaterial의 표준 버텍스 셰이더에 우리 데이터 텍스처 샘플링을
 // 주입한다 — <begin_vertex>(위치)와 <beginnormal_vertex>(법선)를 각각
 // 텍스처 샘플로 바꿔치기한다. uv 어트리뷰트를 격자 연속 좌표로 바꾼 뒤
@@ -286,6 +317,35 @@ function buildSleeveRegionGeometry(xMin: number, xMax: number, cols: number, row
   return left;
 }
 
+// 범위 B 구현 5번(소매 렌더링): 소매는 원통이라 마지막 열(col=cols-1)과
+// 첫 열(col=0)이 이어져야 한다 — 평범한 PlaneGeometry(cols-1 세그먼트)는
+// 열이 안 닫힌 평면이라 이 이음매가 없다. widthSegments를 cols(세그먼트
+// 하나 더)로 만들면 PlaneGeometry가 이미 (cols+1)번째 "여분 열"과 그
+// 인덱스 버퍼(삼각형)를 자동으로 만들어준다 — 그 여분 열의 uv.x를 1이
+// 아니라 0으로 다시 매핑하면(injectProxyBinding의 gridUv 공식이 uv.x=0을
+// col=0 텍셀 중심으로 매핑) 그 마지막 삼각형 스트립이 "실제 col=cols-1
+// 열 → col=0 텍셀을 다시 샘플링하는 여분 열"을 잇게 되어 원통이 닫힌다.
+// 실제 col 0..cols-1은 그대로 c/(cols-1) 간격(frontRenderGeometry가 이미
+// 쓰는, 리매핑 없이 자연스러운 PlaneGeometry 간격과 동일 공식)이라 별도
+// 보정이 필요 없다 — 여분 열 하나만 예외 처리.
+//
+// ponytail: 이음매(col=cols-1↔col=0) 양쪽의 법선은 각자 독립적으로
+// computeVertexNormals()된 값이라(이음매를 가로지르는 인접면을 감안 못함)
+// 이 한 줄에서만 음영이 살짝 튈 수 있다 — 12각형 해상도에서 눈에 띄는
+// 수준인지 실측 전이라 지금은 손대지 않는다. 문제로 보이면 이음매 법선만
+// 평균내는 보정을 추가.
+function buildSleeveTubeGeometry(cols: number, rows: number): THREE.BufferGeometry {
+  const geometry = new THREE.PlaneGeometry(1, 1, cols, rows - 1);
+  const uv = geometry.getAttribute("uv");
+  const colsPerRow = cols + 1;
+  for (let i = 0; i < uv.count; i++) {
+    const col = i % colsPerRow;
+    uv.setX(i, col === cols ? 0 : col / (cols - 1));
+  }
+  uv.needsUpdate = true;
+  return geometry;
+}
+
 // 47번(디버그 전용 — 와이어프레임 토글, 실측으로 확정한 원인): 처음엔
 // MeshBasicMaterial로 와이어프레임 전용 머티리얼을 새로 만들었는데
 // "program not valid" 컴파일 실패가 났다 — injectProxyBinding이 gridUv
@@ -310,6 +370,16 @@ export function Garment({ imageUrl }: Props) {
   // 리졸브된 뒤에만 샘플링해야 매번 같은 값이 나온다. useMemo는 비동기를
   // 못 기다리므로 useEffect+state로 바꾼다.
   const [compositedTexture, setCompositedTexture] = useState<THREE.Texture>(rawTexture);
+  // 범위 B 구현 5번(문서 결정 #4): 소매는 텍스처 없이 원단 대표색만 쓴다.
+  // compositeGarmentTexture가 이미 만드는 캔버스는 코너 픽셀이 항상 대표색
+  // 그대로다(프린트 박스는 중앙 고정 배치 — garmentTextureComposite.ts의
+  // destX/destY 참고) — 그 캔버스를 재사용해 픽셀 1개만 더 읽는다.
+  // garmentTextureComposite.ts는 손 안 댐(borderRepresentativeColor 재노출
+  // 불필요). CSS 문자열(rgb(...))로 유지 — new THREE.Color(r,g,b)(숫자
+  // 3개 생성자)는 sRGB 바이트를 linear로 오인해 감마를 이중으로 먹이는
+  // 함정이 이 파일 43-42행 위쪽 주석에 이미 실측 기록돼 있다(같은 파일의
+  // 다른 이유였지만 THREE.Color 자체의 함정이라 여기도 똑같이 적용된다).
+  const [sleeveColor, setSleeveColor] = useState("#888888");
   useEffect(() => {
     const image = rawTexture.image as HTMLImageElement | undefined;
     if (!image) {
@@ -326,6 +396,11 @@ export function Garment({ imageUrl }: Props) {
         const tex = new THREE.CanvasTexture(canvas);
         tex.colorSpace = rawTexture.colorSpace;
         setCompositedTexture(tex);
+        const ctx2d = canvas.getContext("2d");
+        if (ctx2d) {
+          const [r, g, b] = ctx2d.getImageData(0, 0, 1, 1).data;
+          setSleeveColor(`rgb(${r}, ${g}, ${b})`);
+        }
       });
     return () => {
       cancelled = true;
@@ -355,6 +430,10 @@ export function Garment({ imageUrl }: Props) {
   // 바깥쪽 열이다 — 46번 전면 재설계) ---
   const frontPositions = useMemo(() => new Float32Array(PARTICLES_PER_PANEL * 3), []);
   const backPositions = useMemo(() => new Float32Array(PARTICLES_PER_PANEL * 3), []);
+  // sleeveSeamCheck 검증용 + 아래 sleeveGeometryLeft/Right(법선 계산용
+  // 프록시)의 position attribute로 이제 렌더링에도 쓰인다(범위 B 구현 5번).
+  const sleevePositionsLeft = useMemo(() => new Float32Array(SLEEVE_RING_COLS * SLEEVE_RING_ROWS * 3), []);
+  const sleevePositionsRight = useMemo(() => new Float32Array(SLEEVE_RING_COLS * SLEEVE_RING_ROWS * 3), []);
   // position에 DynamicDrawUsage를 명시하는 이유: 워커가 매 프레임 돌려주는
   // 값으로 이 버퍼가 통째로 덮어써지는데, WebKit(Metal 백엔드)은
   // StaticDrawUsage 힌트가 걸린 버퍼의 매 프레임 재업로드를 화면에 반영하지
@@ -374,6 +453,24 @@ export function Garment({ imageUrl }: Props) {
     g.setAttribute("position", positionAttr);
     return g;
   }, [backPositions]);
+  // 소매용 법선-계산 프록시(frontGeometry/backGeometry와 같은 역할, 같은
+  // 이유로 DynamicDrawUsage). 이음매(wrap) 인덱스가 없는 평범한 PlaneGeometry라
+  // computeVertexNormals()가 이음매를 가로지르는 면은 감안 못한다 —
+  // buildSleeveTubeGeometry 주석의 ponytail 메모와 같은 자리.
+  const sleeveGeometryLeft = useMemo(() => {
+    const g = new THREE.PlaneGeometry(1, 1, SLEEVE_RING_COLS - 1, SLEEVE_RING_ROWS - 1);
+    const positionAttr = new THREE.BufferAttribute(sleevePositionsLeft, 3);
+    positionAttr.setUsage(THREE.DynamicDrawUsage);
+    g.setAttribute("position", positionAttr);
+    return g;
+  }, [sleevePositionsLeft]);
+  const sleeveGeometryRight = useMemo(() => {
+    const g = new THREE.PlaneGeometry(1, 1, SLEEVE_RING_COLS - 1, SLEEVE_RING_ROWS - 1);
+    const positionAttr = new THREE.BufferAttribute(sleevePositionsRight, 3);
+    positionAttr.setUsage(THREE.DynamicDrawUsage);
+    g.setAttribute("position", positionAttr);
+    return g;
+  }, [sleevePositionsRight]);
 
   // 46번(프록시 바인딩): 화면에 실제로 그리는 지오메트리는 이 저해상도
   // (frontGeometry/backGeometry) 대신 훨씬 촘촘한 별도 지오메트리를 쓴다 —
@@ -381,11 +478,13 @@ export function Garment({ imageUrl }: Props) {
   // 계산하는 "데이터 원본"(물리 프록시) 역할만 한다. position/uv는
   // PlaneGeometry 기본값 그대로 두고(어차피 셰이더가 덮어씀) 실제로
   // 쓰는 건 uv뿐이다.
+  // 범위 B 구현 5번: 뒤판엔 앞판(showFrontWireframe)과 달리 "전체 폭 유지"
+  // 디버그 토글이 없어 backRenderGeometry가 아래 메인 메시 전환 이후
+  // 완전히 미사용이 됐다 — noUnusedLocals라 제거. 구 플랩 자체(물리 격자,
+  // addSleeveUnderarmSeamConstraints, frontSleeveRenderGeometry 등 실제
+  // "구 플랩" 시스템)는 안 건드렸다 — 이건 그 시스템이 아니라 이 렌더
+  // 전환으로 생긴 부산물 변수 하나였을 뿐이다.
   const frontRenderGeometry = useMemo(
-    () => new THREE.PlaneGeometry(1, 1, (COLS - 1) * RENDER_SUBDIV, (ROWS - 1) * RENDER_SUBDIV),
-    [],
-  );
-  const backRenderGeometry = useMemo(
     () => new THREE.PlaneGeometry(1, 1, (COLS - 1) * RENDER_SUBDIV, (ROWS - 1) * RENDER_SUBDIV),
     [],
   );
@@ -410,6 +509,12 @@ export function Garment({ imageUrl }: Props) {
     () => buildSleeveRegionGeometry(torsoSleeveMin, torsoSleeveMax, COLS, ROWS, RENDER_SUBDIV),
     [torsoSleeveMin, torsoSleeveMax],
   );
+  // 범위 B 구현 5번: 새 독립 소매 패널의 실제 렌더 지오메트리(원통, wrap
+  // 닫힘) — 위 frontSleeveRenderGeometry(구 플랩 디버그용, 몸통 밖 두
+  // 구간)와는 다른 물건이다. 해상도는 문서 결정 #2(12각형이면 각짐 없음)
+  // 그대로 — RENDER_SUBDIV 세분화 없이 원본 SLEEVE_RING_COLS×ROWS 그대로 쓴다.
+  const sleeveTubeGeometryLeft = useMemo(() => buildSleeveTubeGeometry(SLEEVE_RING_COLS, SLEEVE_RING_ROWS), []);
+  const sleeveTubeGeometryRight = useMemo(() => buildSleeveTubeGeometry(SLEEVE_RING_COLS, SLEEVE_RING_ROWS), []);
   const frontPosTex = useMemo(() => makeDataTexture(COLS, ROWS), []);
   const backPosTex = useMemo(() => makeDataTexture(COLS, ROWS), []);
   const frontNormalTex = useMemo(() => makeDataTexture(COLS, ROWS), []);
@@ -417,6 +522,10 @@ export function Garment({ imageUrl }: Props) {
   // 47번(핏 맵): posTex/normalTex와 같은 방식 — R 채널에 여유(cm) 스칼라만 담는다.
   const frontFitTex = useMemo(() => makeDataTexture(COLS, ROWS), []);
   const backFitTex = useMemo(() => makeDataTexture(COLS, ROWS), []);
+  const sleevePosTexLeft = useMemo(() => makeDataTexture(SLEEVE_RING_COLS, SLEEVE_RING_ROWS), []);
+  const sleevePosTexRight = useMemo(() => makeDataTexture(SLEEVE_RING_COLS, SLEEVE_RING_ROWS), []);
+  const sleeveNormalTexLeft = useMemo(() => makeDataTexture(SLEEVE_RING_COLS, SLEEVE_RING_ROWS), []);
+  const sleeveNormalTexRight = useMemo(() => makeDataTexture(SLEEVE_RING_COLS, SLEEVE_RING_ROWS), []);
 
   // 46번 실측(버그): 앞판(frontGeometry)에 원본 texture를 그대로 물렸더니
   // 글자가 거울상으로 뒤집혀 보였다(사용자 스크린샷으로 확인, "TINY
@@ -475,6 +584,9 @@ export function Garment({ imageUrl }: Props) {
   // 매 프레임 바뀔 수 있어(useFrame 안에서 재계산), window.__fitDebug 함수가
   // React state가 아니라 이 ref로 최신 xMin/xMax를 동기적으로 읽는다.
   const torsoColumnRangeRef = useRef({ xMin: 0, xMax: COLS - 1 });
+  // 범위 B 구현 1번(격자 생성) 검증용 — 워커가 "init"마다 한 번 보내는
+  // gridDebug(물리 이전 순수 초기 배치)를 그대로 들고 있는다.
+  const sleeveGridDebugRef = useRef<Extract<GarmentWorkerToMainMessage, { type: "gridDebug" }> | null>(null);
 
   // 범위 B(소매 재설계) 조사 — 몸판 암홀 가장자리(왼쪽: 열 x=xMin,
   // row0~armholeStartRow, 앞판+뒤판 총 12정점)를 실측한다. row0(어깨,
@@ -517,6 +629,228 @@ export function Garment({ imageUrl }: Props) {
     };
   }, [frontPositions, backPositions]);
 
+  // 소매 범위 B 별개 이슈(뒤판 겨드랑이 캡슐 침투) 조사용 — 지정한 행(기본
+  // row4)의 front/back 정점이 왼팔 캡슐(armCapsuleCollision과 완전히 같은
+  // 점-선분 거리 + margin 6mm)까지 얼마나 여유가 있는지 잰다. row5는 이미
+  // 실측했고(back -1.7mm 침투), row4가 같은 문제를 갖는지 확인하려는 용도.
+  // 마운트 시 한 번만 등록(armholeCheck과 같은 이유) — 콘솔에서
+  // `window.__fitDebug.armCapsuleRowCheck(4)` 직접 호출(인자 생략 시 row4).
+  useEffect(() => {
+    const win = window as unknown as { __fitDebug?: Record<string, unknown> };
+    if (!win.__fitDebug) win.__fitDebug = {};
+    win.__fitDebug.armCapsuleRowCheck = (row = 4) => {
+      const trueShoulder = win.__fitDebug!.armTrueShoulderLeft as { x: number; y: number; z: number } | undefined;
+      const dir = win.__fitDebug!.armDirLeft as { x: number; y: number; z: number } | undefined;
+      const length = win.__fitDebug!.armLength as number | undefined;
+      if (!trueShoulder || !dir || length === undefined) {
+        console.log("[ARM-CAPSULE-ROW-CHECK] 아직 준비 안 됨(마운트 직후) — 잠시 후 다시 호출");
+        return null;
+      }
+      const midLength = length * 0.55;
+      const endLength = length * 1.25;
+      const mid = { x: trueShoulder.x + dir.x * midLength, y: trueShoulder.y + dir.y * midLength, z: trueShoulder.z + dir.z * midLength };
+      const end = { x: trueShoulder.x + dir.x * endLength, y: trueShoulder.y + dir.y * endLength, z: trueShoulder.z + dir.z * endLength };
+      // garmentWorker.ts buildArmCapsules / torsoCapsule.ts applyCapsuleCollision과 동일한 공식(margin=6mm).
+      const capsules = [
+        { top: trueShoulder, bottom: mid },
+        { top: mid, bottom: end },
+      ];
+      const clearanceMm = (px: number, py: number, pz: number) => {
+        let best = Infinity;
+        for (const c of capsules) {
+          const abx = c.bottom.x - c.top.x;
+          const aby = c.bottom.y - c.top.y;
+          const abz = c.bottom.z - c.top.z;
+          const abLenSq = abx * abx + aby * aby + abz * abz;
+          const apx = px - c.top.x;
+          const apy = py - c.top.y;
+          const apz = pz - c.top.z;
+          const t = abLenSq > 1e-9 ? THREE.MathUtils.clamp((apx * abx + apy * aby + apz * abz) / abLenSq, 0, 1) : 0;
+          const cx = c.top.x + abx * t;
+          const cy = c.top.y + aby * t;
+          const cz = c.top.z + abz * t;
+          const dist = Math.hypot(px - cx, py - cy, pz - cz);
+          const clearance = dist - (ARM_COLLISION_RADIUS + 0.006);
+          if (clearance < best) best = clearance;
+        }
+        return Number((best * 1000).toFixed(2));
+      };
+      const { xMin } = torsoColumnRangeRef.current;
+      const col = xMin;
+      const fi = (row * COLS + col) * 3;
+      const bi = (row * COLS + col) * 3;
+      const front = { x: frontPositions[fi], y: frontPositions[fi + 1], z: frontPositions[fi + 2] };
+      const back = { x: backPositions[bi], y: backPositions[bi + 1], z: backPositions[bi + 2] };
+      const result = {
+        row,
+        col,
+        front: { ...front, clearanceMm: clearanceMm(front.x, front.y, front.z) },
+        back: { ...back, clearanceMm: clearanceMm(back.x, back.y, back.z) },
+      };
+      console.log("[ARM-CAPSULE-ROW-CHECK]", JSON.stringify(result));
+      return result;
+    };
+  }, [frontPositions, backPositions]);
+
+  // 범위 B 구현 1번(격자 생성) 검증 — 4개 항목. gridDebug는 sim 생성 직후
+  // (물리 이전) 순수 초기 배치라 시접 거리/신장 길이가 흔들리지 않는다.
+  // 마운트 시 한 번만 등록(armholeCheck과 같은 이유) — 콘솔에서
+  // `window.__fitDebug.sleeveGridCheck()` 직접 호출.
+  useEffect(() => {
+    const win = window as unknown as { __fitDebug?: Record<string, unknown> };
+    if (!win.__fitDebug) win.__fitDebug = {};
+    win.__fitDebug.sleeveGridCheck = () => {
+      const dbg = sleeveGridDebugRef.current;
+      if (!dbg) {
+        console.log("[SLEEVE-GRID-CHECK] gridDebug 아직 없음(초기화 대기)");
+        return null;
+      }
+      const ringN = SLEEVE_RING_COLS * SLEEVE_RING_ROWS;
+      const countNonZero = (arr: Float32Array): number => {
+        let n = 0;
+        for (let i = 0; i < ringN; i++) {
+          const ix = i * 3;
+          if (arr[ix] !== 0 || arr[ix + 1] !== 0 || arr[ix + 2] !== 0) n++;
+        }
+        return n;
+      };
+
+      const armholeStartRow = Math.round(ROWS * ARMHOLE_ROW_FRACTION);
+      const { xMin, xMax } = torsoColumnRangeRef.current;
+      const torsoPt = (panel: Float32Array, col: number, row: number) => {
+        const i = (row * COLS + col) * 3;
+        return { x: panel[i], y: panel[i + 1], z: panel[i + 2] };
+      };
+      // idx0-5=front row0..armholeStartRow, idx6-11=back armholeStartRow..0(역순)
+      const ringVerts = (col: number) => {
+        const pts: { x: number; y: number; z: number }[] = [];
+        for (let y = 0; y <= armholeStartRow; y++) pts.push(torsoPt(dbg.front, col, y));
+        for (let y = armholeStartRow; y >= 0; y--) pts.push(torsoPt(dbg.back, col, y));
+        return pts;
+      };
+      const leftArmhole = ringVerts(xMin);
+      const rightArmhole = ringVerts(xMax);
+
+      const sleevePt = (sleeve: Float32Array, k: number, r: number) => {
+        const i = (r * SLEEVE_RING_COLS + k) * 3;
+        return { x: sleeve[i], y: sleeve[i + 1], z: sleeve[i + 2] };
+      };
+      const cm = (a: { x: number; y: number; z: number }, b: { x: number; y: number; z: number }) =>
+        Number((Math.hypot(a.x - b.x, a.y - b.y, a.z - b.z) * 100).toFixed(4));
+
+      const row0Diff = (sleeve: Float32Array, armhole: { x: number; y: number; z: number }[]) =>
+        Array.from({ length: SLEEVE_RING_COLS }, (_, k) => cm(sleevePt(sleeve, k, 0), armhole[k]));
+
+      const lastRow = SLEEVE_RING_ROWS - 1;
+      const rowLastReach = (sleeve: Float32Array, armhole: { x: number; y: number; z: number }[]) =>
+        Array.from({ length: SLEEVE_RING_COLS }, (_, k) => cm(sleevePt(sleeve, k, lastRow), armhole[k]));
+
+      const armDirLeft = win.__fitDebug!.armDirLeft as { x: number; y: number; z: number } | undefined;
+      const armDirRight = win.__fitDebug!.armDirRight as { x: number; y: number; z: number } | undefined;
+      const armLength = win.__fitDebug!.armLength as number | undefined;
+
+      const result = {
+        // 1) panel 2·3 정점 채움 여부(0,0,0이 아닌 개수 / 144)
+        filled: { sleeveLeft: countNonZero(dbg.sleeveLeft), sleeveRight: countNonZero(dbg.sleeveRight), expectedEach: ringN },
+        // 2) row0 12점이 armholeVertex와 좌표 일치(시접 0cm 기대)
+        row0SeamDistanceCm: { left: row0Diff(dbg.sleeveLeft, leftArmhole), right: row0Diff(dbg.sleeveRight, rightArmhole) },
+        // 3) row(rows-1)가 armDir*armLength만큼 뻗었는지(armhole점 기준 거리 ≈ armLength*100cm)
+        // 단면 원형화 재설계(layoutSleevePanel, buildGarmentSim.ts) 이후로는 이
+        // "≈armLength" 기대가 더 이상 안 맞는다 — row(rows-1)이 순수 팔축
+        // 방향으로만 안 뻗고 이상원 쪽으로 완전히 블렌드돼(슬릿 정점의 실제
+        // 각도가 이상각과 최대 177° 어긋남, 실측 확인) 축+반경이 섞인 거리가
+        // 됨. k마다 15~29cm로 들쭉날쭉해도 회귀 아님 — expectedReachCm과 직접
+        // 비교하는 자동 체크를 추가하지 말 것.
+        rowLastReachCm: { left: rowLastReach(dbg.sleeveLeft, leftArmhole), right: rowLastReach(dbg.sleeveRight, rightArmhole) },
+        expectedReachCm: armLength !== undefined ? Number((armLength * 100).toFixed(2)) : null,
+        armDirLeft,
+        armDirRight,
+        // 4) panelParticleStart(0)/(1)이 여전히 몸판을 가리키는지
+        panelParticleStart: { front: dbg.panelParticleStart[0], back: dbg.panelParticleStart[1], sleeveLeft: dbg.panelParticleStart[2], sleeveRight: dbg.panelParticleStart[3] },
+        panelParticleCount: { front: dbg.panelParticleCount[0], back: dbg.panelParticleCount[1], sleeveLeft: dbg.panelParticleCount[2], sleeveRight: dbg.panelParticleCount[3] },
+        expectedFrontStart: 0,
+        expectedBackStart: PARTICLES_PER_PANEL,
+        frontRow0First3: [dbg.front[0], dbg.front[1], dbg.front[2]],
+        backRow0First3: [dbg.back[0], dbg.back[1], dbg.back[2]],
+      };
+      console.log("[SLEEVE-GRID-CHECK]", JSON.stringify(result));
+      return result;
+    };
+  }, []);
+
+  // 범위 B 구현 4번(봉제선 연결) 검증 — sleeveGridCheck과 달리 "step" 응답이
+  // 갱신할 때마다 바뀌는 살아있는 위치(frontPositions/backPositions/
+  // sleevePositionsLeft/Right)를 읽는다 — 물리가 몇 프레임 돌아간 뒤
+  // addSleeveArmholeSeam의 어깨 코너 이즈인(k=0/k=마지막, SEAM_EASE_START)이
+  // 실제로 SEAM_REST_LENGTH 근처로 수렴하는지, 나머지(k=1..10)는 여전히
+  // 0에 가까운지(회귀 감시)를 프레임마다 콘솔에서 직접 확인하려는 용도.
+  // 마운트 시 한 번만 등록 — 콘솔에서 `window.__fitDebug.sleeveSeamCheck()`
+  // 직접 호출.
+  useEffect(() => {
+    const win = window as unknown as { __fitDebug?: Record<string, unknown> };
+    if (!win.__fitDebug) win.__fitDebug = {};
+    win.__fitDebug.sleeveSeamCheck = () => {
+      const armholeStartRow = Math.round(ROWS * ARMHOLE_ROW_FRACTION);
+      const { xMin, xMax } = torsoColumnRangeRef.current;
+      const torsoPt = (arr: Float32Array, col: number, row: number) => {
+        const i = (row * COLS + col) * 3;
+        return { x: arr[i], y: arr[i + 1], z: arr[i + 2] };
+      };
+      const sleevePt = (arr: Float32Array, k: number, r: number) => {
+        const i = (r * SLEEVE_RING_COLS + k) * 3;
+        return { x: arr[i], y: arr[i + 1], z: arr[i + 2] };
+      };
+      const cm = (a: { x: number; y: number; z: number }, b: { x: number; y: number; z: number }) =>
+        Number((Math.hypot(a.x - b.x, a.y - b.y, a.z - b.z) * 100).toFixed(4));
+      // armholeRingVertices(buildGarmentSim.ts)와 같은 순서: idx0..armholeStartRow=front
+      // row0..armholeStartRow, idx(armholeStartRow+1)..마지막=back armholeStartRow..0(역순).
+      const ringVerts = (col: number) => {
+        const pts: { x: number; y: number; z: number }[] = [];
+        for (let y = 0; y <= armholeStartRow; y++) pts.push(torsoPt(frontPositions, col, y));
+        for (let y = armholeStartRow; y >= 0; y--) pts.push(torsoPt(backPositions, col, y));
+        return pts;
+      };
+      const seamDistancesCm = (col: number, sleeve: Float32Array) => {
+        const armhole = ringVerts(col);
+        return armhole.map((pt, k) => cm(pt, sleevePt(sleeve, k, 0)));
+      };
+      const left = seamDistancesCm(xMin, sleevePositionsLeft);
+      const right = seamDistancesCm(xMax, sleevePositionsRight);
+      const result = {
+        left,
+        right,
+        // k=0/마지막은 이즈인(SEAM_EASE_START=3cm 목표), k=1..(마지막-1)은 SEAM_REST_LENGTH 목표.
+        easedCornerTargetCm: 3,
+        directTargetCm: Number((SEAM_REST_LENGTH * 100).toFixed(2)),
+      };
+      console.log("[SLEEVE-SEAM-CHECK]", JSON.stringify(result));
+      return result;
+    };
+  }, [frontPositions, backPositions, sleevePositionsLeft, sleevePositionsRight]);
+
+  // 어깨-소매 접합부 톱니(sleeve-redesign-B.md 다음 세션 지점) — 이음매
+  // (col=0 vs col=SLEEVE_RING_COLS-1) 법선이 averageSleeveSeamNormals 보정
+  // 후 실제로 일치하는지 지정 row에서 확인. 콘솔에서
+  // `window.__fitDebug.sleeveSeamNormalCheck(0)` / `(6)` / `(11)` 호출.
+  useEffect(() => {
+    const win = window as unknown as { __fitDebug?: Record<string, unknown> };
+    if (!win.__fitDebug) win.__fitDebug = {};
+    win.__fitDebug.sleeveSeamNormalCheck = (row = 0) => {
+      const read = (geometry: THREE.BufferGeometry, side: "left" | "right") => {
+        const normal = geometry.getAttribute("normal") as THREE.BufferAttribute;
+        const iFirst = row * SLEEVE_RING_COLS;
+        const iLast = row * SLEEVE_RING_COLS + (SLEEVE_RING_COLS - 1);
+        const first = { x: normal.getX(iFirst), y: normal.getY(iFirst), z: normal.getZ(iFirst) };
+        const last = { x: normal.getX(iLast), y: normal.getY(iLast), z: normal.getZ(iLast) };
+        const diff = Math.hypot(first.x - last.x, first.y - last.y, first.z - last.z);
+        return { side, row, first, last, diffMagnitude: Number(diff.toFixed(6)) };
+      };
+      const result = [read(sleeveGeometryLeft, "left"), read(sleeveGeometryRight, "right")];
+      console.log("[SLEEVE-SEAM-NORMAL-CHECK]", JSON.stringify(result));
+      return result;
+    };
+  }, [sleeveGeometryLeft, sleeveGeometryRight]);
+
   // 워커는 컴포넌트 생명주기 동안 하나만 띄우고 언마운트 시 종료한다.
   // frontGeometry/backGeometry/frontPositions/backPositions는 몸판
   // 파티클 수(PARTICLES_PER_PANEL)에만 의존해 컴포넌트 생명주기 내내
@@ -537,16 +871,28 @@ export function Garment({ imageUrl }: Props) {
     };
     worker.onmessage = (event: MessageEvent<GarmentWorkerToMainMessage>) => {
       const msg = event.data;
+      if (msg.type === "gridDebug") {
+        sleeveGridDebugRef.current = msg;
+        return;
+      }
       if (msg.type !== "positions") return;
       pendingRef.current = false;
       if (msg.generation !== generationRef.current) return; // 낡은 세대의 응답은 버린다.
 
       frontPositions.set(msg.front);
       backPositions.set(msg.back);
+      sleevePositionsLeft.set(msg.sleeveLeft);
+      sleevePositionsRight.set(msg.sleeveRight);
       (frontGeometry.getAttribute("position") as THREE.BufferAttribute).needsUpdate = true;
       (backGeometry.getAttribute("position") as THREE.BufferAttribute).needsUpdate = true;
+      (sleeveGeometryLeft.getAttribute("position") as THREE.BufferAttribute).needsUpdate = true;
+      (sleeveGeometryRight.getAttribute("position") as THREE.BufferAttribute).needsUpdate = true;
       frontGeometry.computeVertexNormals();
       backGeometry.computeVertexNormals();
+      sleeveGeometryLeft.computeVertexNormals();
+      sleeveGeometryRight.computeVertexNormals();
+      averageSleeveSeamNormals(sleeveGeometryLeft, SLEEVE_RING_COLS, SLEEVE_RING_ROWS);
+      averageSleeveSeamNormals(sleeveGeometryRight, SLEEVE_RING_COLS, SLEEVE_RING_ROWS);
       frontGeometry.computeBoundingSphere();
       backGeometry.computeBoundingSphere();
 
@@ -562,6 +908,14 @@ export function Garment({ imageUrl }: Props) {
       backPosTex.texture.needsUpdate = true;
       frontNormalTex.texture.needsUpdate = true;
       backNormalTex.texture.needsUpdate = true;
+      packXYZIntoRGBA(msg.sleeveLeft, sleevePosTexLeft.data);
+      packXYZIntoRGBA(msg.sleeveRight, sleevePosTexRight.data);
+      packXYZIntoRGBA(sleeveGeometryLeft.getAttribute("normal").array, sleeveNormalTexLeft.data);
+      packXYZIntoRGBA(sleeveGeometryRight.getAttribute("normal").array, sleeveNormalTexRight.data);
+      sleevePosTexLeft.texture.needsUpdate = true;
+      sleevePosTexRight.texture.needsUpdate = true;
+      sleeveNormalTexLeft.texture.needsUpdate = true;
+      sleeveNormalTexRight.texture.needsUpdate = true;
 
       // 47번(핏 맵, 물리 무관): 워커가 같은 메시지에 실어 보낸 정점별
       // 여유(cm)를 위와 같은 방식으로 텍스처에 올린다.
@@ -596,14 +950,22 @@ export function Garment({ imageUrl }: Props) {
   }, [
     frontGeometry,
     backGeometry,
+    sleeveGeometryLeft,
+    sleeveGeometryRight,
     frontPositions,
     backPositions,
+    sleevePositionsLeft,
+    sleevePositionsRight,
     frontPosTex,
     backPosTex,
     frontNormalTex,
     backNormalTex,
     frontFitTex,
     backFitTex,
+    sleevePosTexLeft,
+    sleevePosTexRight,
+    sleeveNormalTexLeft,
+    sleeveNormalTexRight,
   ]);
 
   // 어깨/팔 방향과 소매 길이에서 현재 팔 모양(ArmShapeMsg)을 계산한다 —
@@ -828,6 +1190,16 @@ export function Garment({ imageUrl }: Props) {
     () => injectFitMapBinding(backPosTex.texture, backNormalTex.texture, backFitTex.texture, COLS, ROWS),
     [backPosTex, backNormalTex, backFitTex],
   );
+  // 범위 B 구현 5번: injectProxyBinding은 cols/rows로 이미 일반화돼 있어
+  // 소매(SLEEVE_RING_COLS/ROWS)에도 그대로 재사용된다 — 새 셰이더 코드 없음.
+  const sleeveLeftOnBeforeCompile = useMemo(
+    () => injectProxyBinding(sleevePosTexLeft.texture, sleeveNormalTexLeft.texture, SLEEVE_RING_COLS, SLEEVE_RING_ROWS),
+    [sleevePosTexLeft, sleeveNormalTexLeft],
+  );
+  const sleeveRightOnBeforeCompile = useMemo(
+    () => injectProxyBinding(sleevePosTexRight.texture, sleeveNormalTexRight.texture, SLEEVE_RING_COLS, SLEEVE_RING_ROWS),
+    [sleevePosTexRight, sleeveNormalTexRight],
+  );
 
   return (
     <group>
@@ -835,7 +1207,11 @@ export function Garment({ imageUrl }: Props) {
           위해, 그 모드가 켜져 있으면 원본 앞/뒤판 메시 자체를 렌더하지
           않는다(오버레이가 아니라 교체 — 아래 4구역 메시만 보이게 됨). */}
       {!showAllRegionsWireframe && (
-        <mesh geometry={frontRenderGeometry} frustumCulled={false}>
+        // 범위 B 구현 5번(렌더링 전환): 기본 경로는 몸통 폭만(frontTorsoRenderGeometry)
+        // 그린다 — 구 플랩(frontRenderGeometry, 전체 폭)은 아직 지우지 않고
+        // showFrontWireframe 토글 전용으로 남겨둔다(408행 기존 의도 유지 —
+        // "전체 앞판과 비교"가 이 토글의 목적이라 여기서만 예외적으로 전체 폭).
+        <mesh geometry={showFrontWireframe ? frontRenderGeometry : frontTorsoRenderGeometry} frustumCulled={false}>
           {showFitMap ? (
             // 47번(핏 맵 — 일반 기능): 텍스처 대신 여유(cm) 기반 색상.
             // customProgramCacheKey 필수 — three.js의 WebGLPrograms 캐시는
@@ -887,7 +1263,10 @@ export function Garment({ imageUrl }: Props) {
         </mesh>
       )}
       {!showAllRegionsWireframe && (
-        <mesh geometry={backRenderGeometry} frustumCulled={false}>
+        // 범위 B 구현 5번(렌더링 전환): 뒤판엔 앞판 같은 "전체 폭" 디버그
+        // 토글이 없으므로(showBackTorsoWireframe은 이미 몸통 전용) 조건 없이
+        // 바로 교체 — 구 플랩(backRenderGeometry) 정의 자체는 아직 안 지운다.
+        <mesh geometry={backTorsoRenderGeometry} frustumCulled={false}>
           {showFitMap ? (
             // 47번(핏 맵 — 일반 기능): customProgramCacheKey 필요한 이유는
             // 위 앞판 블록 주석 참고.
@@ -913,6 +1292,20 @@ export function Garment({ imageUrl }: Props) {
               onBeforeCompile={backOnBeforeCompile}
             />
           )}
+        </mesh>
+      )}
+      {/* 범위 B 구현 5번(문서 결정 #4): 소매는 텍스처 map 없이 대표색
+          (sleeveColor)만 — UV 매핑 자체가 필요 없다. onBeforeCompile은
+          위치/법선 바인딩(injectProxyBinding)만, injectFitMapBinding류는
+          핏 맵이 몸판 전용 기능이라 소매엔 적용 안 함. */}
+      {!showAllRegionsWireframe && (
+        <mesh geometry={sleeveTubeGeometryLeft} frustumCulled={false}>
+          <meshStandardMaterial key="sleeve-left" color={sleeveColor} side={THREE.DoubleSide} roughness={0.85} onBeforeCompile={sleeveLeftOnBeforeCompile} />
+        </mesh>
+      )}
+      {!showAllRegionsWireframe && (
+        <mesh geometry={sleeveTubeGeometryRight} frustumCulled={false}>
+          <meshStandardMaterial key="sleeve-right" color={sleeveColor} side={THREE.DoubleSide} roughness={0.85} onBeforeCompile={sleeveRightOnBeforeCompile} />
         </mesh>
       )}
       {/* 47번(디버그 전용): 영역별 와이어프레임 — showFrontWireframe(초록,

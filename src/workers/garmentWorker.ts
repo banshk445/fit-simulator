@@ -21,9 +21,13 @@ import {
   MAX_SUBSTEPS,
   PANEL_BACK,
   PANEL_FRONT,
+  PANEL_SLEEVE_LEFT,
+  PANEL_SLEEVE_RIGHT,
   PARTICLES_PER_PANEL,
   ROWS,
   SELF_COLLISION_MIN_DIST,
+  SLEEVE_RING_COLS,
+  SLEEVE_RING_ROWS,
   SUBSTEP_DT,
 } from "../lib/clothConfig";
 import type { MainToGarmentWorkerMessage, GarmentWorkerToMainMessage, ArmShapeMsg } from "../lib/garmentProtocol";
@@ -127,19 +131,32 @@ const backMeshResolver = backCollisionMesh.createResolver(
   meshColumnRange,
 );
 
-function createPanelSplitResolver(
-  frontResolver: CollisionResolver,
-  backResolver: CollisionResolver,
-  particlesPerPanel: number,
-): CollisionResolver {
-  return (positions, pinned, n) => {
-    frontResolver(positions.subarray(0, particlesPerPanel * 3), pinned.subarray(0, particlesPerPanel), particlesPerPanel);
-    const backCount = n - particlesPerPanel;
-    backResolver(positions.subarray(particlesPerPanel * 3, n * 3), pinned.subarray(particlesPerPanel, n), backCount);
+// 범위 B(소매 재설계 — 별도 패널): 예전엔 항상 앞/뒤 2패널·n=2*particlesPerPanel
+// 라는 전제가 성립해 backCount=n-particlesPerPanel로 뒤판 몫을 역산해도
+// 맞았다 — 지금은 n에 소매(panel 2·3, 144×2)가 더 얹혀 있어 그 역산이
+// 소매 파티클까지 뒤판 리졸버에 흘려보낸다(뒤판 몸통 메시 충돌이 소매
+// 정점에 엉뚱한 로컬 인덱스로 적용됨). 패널별 리졸버(없으면 null=스킵)와
+// 패널별 개수를 배열로 받아, 각 패널을 정확히 그 폭만큼만 잘라 넘긴다 —
+// 소매(현재 리졸버 없음)는 자동으로 건너뛴다.
+function createPanelSplitResolver(resolvers: readonly (CollisionResolver | null)[], panelCounts: readonly number[]): CollisionResolver {
+  return (positions, pinned) => {
+    let offset = 0;
+    for (let p = 0; p < panelCounts.length; p++) {
+      const count = panelCounts[p];
+      const resolver = resolvers[p];
+      if (resolver) {
+        resolver(positions.subarray(offset * 3, (offset + count) * 3), pinned.subarray(offset, offset + count), count);
+      }
+      offset += count;
+    }
   };
 }
 
-const meshResolver = createPanelSplitResolver(frontMeshResolver, backMeshResolver, PARTICLES_PER_PANEL);
+// panelDims는 전부 상수(COLS/ROWS/SLEEVE_RING_*)라 sim 인스턴스 없이도
+// 패널별 개수를 미리 알 수 있다 — buildUnifiedGarmentSim.ts의 panelDims
+// 배열과 반드시 같은 순서([front, back, sleeveLeft, sleeveRight])여야 한다.
+const PANEL_COUNTS = [PARTICLES_PER_PANEL, PARTICLES_PER_PANEL, SLEEVE_RING_COLS * SLEEVE_RING_ROWS, SLEEVE_RING_COLS * SLEEVE_RING_ROWS];
+const meshResolver = createPanelSplitResolver([frontMeshResolver, backMeshResolver, null, null], PANEL_COUNTS);
 
 let torsoCapsules: Capsule[] = [];
 let armCapsules: Capsule[] = [];
@@ -179,8 +196,14 @@ function buildArmCapsules(shape: ArmShapeMsg): Capsule[] {
 // 이 어깨 캡 행 범위이므로 여기서 빠지면 안 된다.
 const unifiedResolver: CollisionResolver = (positions, pinned, n) => {
   meshResolver(positions, pinned, n);
+  // 범위 B: frontCount/backCount는 둘 다 패널 크기(상수) 그 자체다 — n에서
+  // 역산하면(옛 backCount = n - frontCount) n에 얹힌 소매(panel 2·3)까지
+  // 뒤판 몫으로 잘못 흡수된다. 뒤판 subarray 끝도 n이 아니라 backEnd(=
+  // 앞+뒤 패널 딱 그만큼)로 고정해 소매가 몸판 전용 캡슐 충돌(어깨 캡
+  // 스킵 등)에 걸리지 않게 한다.
   const frontCount = PARTICLES_PER_PANEL;
-  const backCount = n - frontCount;
+  const backCount = PARTICLES_PER_PANEL;
+  const backEnd = (frontCount + backCount) * 3;
   applyCapsuleCollision(
     positions.subarray(0, frontCount * 3),
     pinned.subarray(0, frontCount),
@@ -191,8 +214,8 @@ const unifiedResolver: CollisionResolver = (positions, pinned, n) => {
     SHOULDER_CAP_SKIP_END,
   );
   applyCapsuleCollision(
-    positions.subarray(frontCount * 3, n * 3),
-    pinned.subarray(frontCount, n),
+    positions.subarray(frontCount * 3, backEnd),
+    pinned.subarray(frontCount, frontCount + backCount),
     backCount,
     torsoCapsules,
     COLLISION_MARGIN,
@@ -201,13 +224,45 @@ const unifiedResolver: CollisionResolver = (positions, pinned, n) => {
   );
   applyFrontBackSidedness(positions, pinned, PARTICLES_PER_PANEL, centerZ);
   applyCapsuleCollision(positions.subarray(0, frontCount * 3), pinned.subarray(0, frontCount), frontCount, armCapsules, 0.006);
-  applyCapsuleCollision(positions.subarray(frontCount * 3, n * 3), pinned.subarray(frontCount, n), backCount, armCapsules, 0.006);
+  applyCapsuleCollision(positions.subarray(frontCount * 3, backEnd), pinned.subarray(frontCount, frontCount + backCount), backCount, armCapsules, 0.006);
+  // 범위 B(조사 결과 반영): 소매는 팔 캡슐(armCapsules)만 별도 호출로 추가한다
+  // — torsoCapsules(몸통 표면)는 안 건다(소매는 몸통이 아니라 팔과 닿아야
+  // 함). backEnd/뒤판 호출은 그대로 두고 소매 좌/우 두 구간만 새로 추가 —
+  // backEnd를 늘려서 뒤판 호출 범위 자체를 넓히면 소매 파티클이 뒤판
+  // 로컬 인덱스(SHOULDER_CAP_SKIP 등 뒤판 전용 파라미터)로 잘못 취급된다
+  // (조사에서 확인). 실측: 소매 col5(겨드랑이 쪽) row0~11이 팔 캡슐 두
+  // 세그먼트 축을 따라가며 반경(4.56+0.6mm) 안에 여러 행이 들어와
+  // "소매가 팔을 감싼다"는 의도와 일치, row11(소맷부리)은 반경 밖이라
+  // 불필요한 반응 없음(반팔 기준 실측 — 팔 길이/자세가 크게 달라지면
+  // 재확인 필요할 수 있음).
+  const sleeveCount = SLEEVE_RING_COLS * SLEEVE_RING_ROWS;
+  const sleeveLeftEnd = backEnd + sleeveCount * 3;
+  const sleeveRightEnd = sleeveLeftEnd + sleeveCount * 3;
+  applyCapsuleCollision(
+    positions.subarray(backEnd, sleeveLeftEnd),
+    pinned.subarray(frontCount + backCount, frontCount + backCount + sleeveCount),
+    sleeveCount,
+    armCapsules,
+    0.006,
+  );
+  applyCapsuleCollision(
+    positions.subarray(sleeveLeftEnd, sleeveRightEnd),
+    pinned.subarray(frontCount + backCount + sleeveCount, frontCount + backCount + sleeveCount * 2),
+    sleeveCount,
+    armCapsules,
+    0.006,
+  );
 };
 
-// 자체충돌은 몸판(앞+뒤) 전체에 적용한다 — 이제 이게 곧 전체 시뮬레이션
-// 범위다(더 이상 소매를 뺀 부분범위가 아님).
-const selfCollision = new SelfCollision(PARTICLES_PER_PANEL, COLS, armholeStartRow);
-const selfCollisionResolver = selfCollision.createResolver(SELF_COLLISION_MIN_DIST);
+// 자체충돌은 몸판(앞+뒤)+소매(좌+우) 전체에 적용한다. 범위 B(소매 재설계
+// — 별도 패널): 패널 크기가 더 이상 균일(1232/1232/144/144)하지 않아,
+// PARTICLES_PER_PANEL/COLS 고정값으로는 소매 패널 경계를 못 찾는다(소매
+// 두 패널이 하나로 뭉개지고 좌표도 틀어짐 — selfCollision.ts panelAndUV
+// 주석 참고). sim이 실제로 만들어진 뒤(각 "init")에 sim.panelParticleStart/
+// panelDims에서 그대로 뽑아 재구성한다 — panelDims는 전부 상수(COLS/ROWS/
+// SLEEVE_RING_*)라 매 rebuild마다 값 자체는 같지만, sim 인스턴스 없이는
+// 이 값을 들고 있는 곳이 없어 sim 생성 이후로 옮겨야 한다.
+let selfCollisionResolver: CollisionResolver | null = null;
 
 const gravityBase = new THREE.Vector3(...GRAVITY_BASE);
 const scratchGravity = new THREE.Vector3();
@@ -223,7 +278,7 @@ ctx.onmessage = (event) => {
   switch (msg.type) {
     case "init": {
       lastLayout = { widthM: msg.widthM, heightM: msg.heightM, topY: msg.topY, centerZ: msg.centerZ, sleeveWidthM: msg.sleeveWidthM };
-      sim = buildUnifiedGarmentSim(
+      const built = buildUnifiedGarmentSim(
         msg.widthM,
         msg.heightM,
         msg.topY,
@@ -235,7 +290,56 @@ ctx.onmessage = (event) => {
         msg.sleeveWidthM,
         msg.necklineLift,
       );
+      sim = built.sim;
       accumulator = 0;
+
+      {
+        const panelStarts: number[] = [];
+        const panelCols: number[] = [];
+        for (let p = 0; p < sim.panels; p++) {
+          panelStarts.push(sim.panelParticleStart(p));
+          panelCols.push(sim.panelDims[p].cols);
+        }
+        selfCollisionResolver = new SelfCollision(panelStarts, panelCols, armholeStartRow, built.seamSkipPairs).createResolver(SELF_COLLISION_MIN_DIST);
+      }
+
+      // 범위 B 구현 1번(격자 생성) 검증용 — buildConstraints()/step() 이전
+      // 순수 초기 배치를 그대로 echo. "init"마다 한 번만.
+      {
+        const frontCount = sim.panelParticleCount(PANEL_FRONT);
+        const backCount = sim.panelParticleCount(PANEL_BACK);
+        const sleeveCount = sim.panelParticleCount(PANEL_SLEEVE_LEFT);
+        const frontStart = sim.panelParticleStart(PANEL_FRONT) * 3;
+        const backStart = sim.panelParticleStart(PANEL_BACK) * 3;
+        const sleeveLeftStart = sim.panelParticleStart(PANEL_SLEEVE_LEFT) * 3;
+        const sleeveRightStart = sim.panelParticleStart(PANEL_SLEEVE_RIGHT) * 3;
+        const front = sim.positions.slice(frontStart, frontStart + frontCount * 3);
+        const back = sim.positions.slice(backStart, backStart + backCount * 3);
+        const sleeveLeft = sim.positions.slice(sleeveLeftStart, sleeveLeftStart + sleeveCount * 3);
+        const sleeveRight = sim.positions.slice(sleeveRightStart, sleeveRightStart + sleeveCount * 3);
+        ctx.postMessage(
+          {
+            type: "gridDebug",
+            front,
+            back,
+            sleeveLeft,
+            sleeveRight,
+            panelParticleStart: [
+              sim.panelParticleStart(PANEL_FRONT),
+              sim.panelParticleStart(PANEL_BACK),
+              sim.panelParticleStart(PANEL_SLEEVE_LEFT),
+              sim.panelParticleStart(PANEL_SLEEVE_RIGHT),
+            ],
+            panelParticleCount: [
+              frontCount,
+              backCount,
+              sim.panelParticleCount(PANEL_SLEEVE_LEFT),
+              sim.panelParticleCount(PANEL_SLEEVE_RIGHT),
+            ],
+          },
+          [front.buffer, back.buffer, sleeveLeft.buffer, sleeveRight.buffer],
+        );
+      }
       break;
     }
     case "rebuildCollision": {
@@ -310,7 +414,7 @@ ctx.onmessage = (event) => {
           MAX_DISPLACEMENT_PER_SUBSTEP,
           torsoOrderExtra,
         );
-        selfCollisionResolver(activeSim.positions, activeSim.pinned, activeSim.positions.length / 3);
+        selfCollisionResolver!(activeSim.positions, activeSim.pinned, activeSim.positions.length / 3);
         // step() 안에서도 매 반복 돌긴 하지만, 자체충돌(step() 밖에서
         // 실행)이 그 직후 다시 순서를 흐트러뜨릴 수 있어 여기서도 한 번
         // 더 정리한다 — 병합 이전부터 있던 이중 안전장치.
@@ -369,9 +473,14 @@ ctx.onmessage = (event) => {
       // 핏 맵(물리 무관, 순수 조회) — 방금 확정된 이번 프레임 위치를 그대로 재사용한다.
       const frontFit = computeFitCm(front, ppp);
       const backFit = computeFitCm(back, ppp);
+      const sleeveCount = activeSim.panelParticleCount(PANEL_SLEEVE_LEFT);
+      const sleeveLeftStart = activeSim.panelParticleStart(PANEL_SLEEVE_LEFT) * 3;
+      const sleeveRightStart = activeSim.panelParticleStart(PANEL_SLEEVE_RIGHT) * 3;
+      const sleeveLeft = activeSim.positions.slice(sleeveLeftStart, sleeveLeftStart + sleeveCount * 3);
+      const sleeveRight = activeSim.positions.slice(sleeveRightStart, sleeveRightStart + sleeveCount * 3);
       ctx.postMessage(
-        { type: "positions", front, back, frontFit, backFit, generation: msg.generation },
-        [front.buffer, back.buffer, frontFit.buffer, backFit.buffer],
+        { type: "positions", front, back, frontFit, backFit, sleeveLeft, sleeveRight, generation: msg.generation },
+        [front.buffer, back.buffer, frontFit.buffer, backFit.buffer, sleeveLeft.buffer, sleeveRight.buffer],
       );
       break;
     }

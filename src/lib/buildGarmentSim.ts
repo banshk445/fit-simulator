@@ -882,6 +882,79 @@ export function addTorsoSideSeamConstraints(
   }
 }
 
+// 범위 B(소매 재설계 — 별도 패널): 몸판 암홀 가장자리 12정점을 소매 링
+// wrap 순서로 뽑는다. idx0-5=front row0..armholeStartRow, idx6-11=back
+// row armholeStartRow..0(역순) — 겨드랑이(idx5-6)와 어깨(idx11-0, wrap)가
+// 실제 인접점끼리 이어지도록 역순이 필요하다(docs/sleeve-redesign-B.md
+// 실측: 역순 12변 0.20~5.54cm 고름, 정순은 14~15cm 대각선 급점프).
+export function armholeRingVertices(
+  sim: ClothSimulation,
+  frontPanel: number,
+  backPanel: number,
+  col: number,
+  armholeStartRow: number,
+): Vec3Like[] {
+  const pts: Vec3Like[] = [];
+  for (let y = 0; y <= armholeStartRow; y++) {
+    const i = sim.index(frontPanel, col, y) * 3;
+    pts.push({ x: sim.positions[i], y: sim.positions[i + 1], z: sim.positions[i + 2] });
+  }
+  for (let y = armholeStartRow; y >= 0; y--) {
+    const i = sim.index(backPanel, col, y) * 3;
+    pts.push({ x: sim.positions[i], y: sim.positions[i + 1], z: sim.positions[i + 2] });
+  }
+  return pts;
+}
+
+// 범위 B(단면 원형화 재설계): 예전엔 암홀 단면(슬릿, 세로로 긴 비원형)을
+// 그대로 팔 축 방향으로 압출했다 — row0은 완벽했지만(시접 늘어남 0) 그
+// 슬릿 모양이 소매 끝까지 그대로 이어져 "원통"이 아니라 "납작한 리본"이
+// 됐다(화면 실측: 날개/플랩처럼 보임). 실측(이 세션): 슬릿 12점의 중심
+// 기준 반지름이 2.92~7.61cm로 원 지름(computeArmTubeRadius)보다 편차가
+// 커서 원형 근사가 애초에 안 되고, 슬릿 정점의 실제 각도도 균등 30°
+// 배치와 최대 177.5° 어긋나 있었다(k=9) — 그래서 "같은 이상각에서
+// 반지름만 보간"은 안 되고, row0는 슬릿 XYZ를 그대로 쓰고 그 이후 행만
+// XYZ 직선 보간으로 이상적 원을 향해 블렌드한다. blendT=0에서 대수적으로
+// 정확히 armholeVertex와 같아지므로(리덤던트 분기 없이 lerp 공식 자체가
+// 보장) row0 시접 갭은 손대지 않는다.
+export function layoutSleevePanel(
+  sim: ClothSimulation,
+  panel: number,
+  ringCols: number,
+  ringRows: number,
+  armholeVertex: readonly Vec3Like[],
+  arm: ArmDir,
+  sleeveWidthM: number,
+): void {
+  const basis = armOrthogonalBasis(arm.dir);
+  const targetRadius = computeArmTubeRadius(sleeveWidthM);
+  const center = {
+    x: armholeVertex.reduce((s, p) => s + p.x, 0) / armholeVertex.length,
+    y: armholeVertex.reduce((s, p) => s + p.y, 0) / armholeVertex.length,
+    z: armholeVertex.reduce((s, p) => s + p.z, 0) / armholeVertex.length,
+  };
+  for (let r = 0; r < ringRows; r++) {
+    const t = ringRows > 1 ? r / (ringRows - 1) : 0;
+    const blendT = tubeRadiusScale(t); // 0~30%는 0→SHOULDER_SCALE(0.45), 30%~100%는 0.45→1로 계속 서서히 진행 — 완전 블렌드(1.0)는 소매 끝에서 도달. 반지름 램프와 같은 곡선을 슬릿→이상원 블렌드 가중치로 재사용.
+    const reach = arm.length * t;
+    for (let k = 0; k < ringCols; k++) {
+      const slit = armholeVertex[k];
+      const angle = Math.PI / 2 - k * ((2 * Math.PI) / ringCols); // k=0(어깨)을 위쪽(90°)에, wrap 순서대로 시계 방향.
+      const cosA = Math.cos(angle);
+      const sinA = Math.sin(angle);
+      const idealX = center.x + arm.dir.x * reach + (basis.right.x * cosA + basis.up.x * sinA) * targetRadius;
+      const idealY = center.y + arm.dir.y * reach + (basis.right.y * cosA + basis.up.y * sinA) * targetRadius;
+      const idealZ = center.z + arm.dir.z * reach + (basis.right.z * cosA + basis.up.z * sinA) * targetRadius;
+      sim.setParticle(
+        sim.index(panel, k, r),
+        slit.x + (idealX - slit.x) * blendT,
+        slit.y + (idealY - slit.y) * blendT,
+        slit.z + (idealZ - slit.z) * blendT,
+      );
+    }
+  }
+}
+
 // 46번 실측(옵션 B — 소매 밑단 재봉선 부재가 진짜 원인): addTorsoSideSeamConstraints는
 // x=0/COLS-1(그리드 맨 끝, 사실상 반대쪽 소매 끝단)과 armholeStartRow
 // 이후 행만 잇는다 — 소매 몸체(중간 열, frac>1)는 앞판/뒤판을 실제로
@@ -920,6 +993,74 @@ export function addSleeveUnderarmSeamConstraints(
     // 어깨쪽 트임도 커튼처럼 벌어지는 데 한몫했다. 같은 이즈인 배수를
     // 재사용해 위쪽도 마저 닫는다.
     sim.addConstraint(sim.index(frontPanel, x, 0), sim.index(backPanel, x, 0), restLength);
+  }
+}
+
+// 범위 B 구현 4번(봉제선 연결): 몸판 암홀 가장자리 12정점을 새 독립 소매
+// 패널의 row=0(암홀과 맞닿는 열)에 인덱스 1:1로 직접 연결한다 —
+// armholeRingVertices와 완전히 같은 순회 순서(front row0..armholeStartRow,
+// back row armholeStartRow..0 역순)를 그대로 써서 k가 armholeVertex[k]와
+// 짝이 맞도록 한다. layoutSleevePanel이 이 좌표에 겹치게 배치해뒀으므로
+// (문서 결정 #3) k=1..(끝-1)은 이즈인 없이 SEAM_REST_LENGTH를 바로 쓴다.
+//
+// 다만 어깨 코너(k=0=front row0, k=마지막=back row0)만은 예외다 — 실측
+// 결과 pinCorners()가 이 함수보다 나중에 row0을 다시 계산해 덮어써서
+// (레이아웃 시점엔 armholeRingVertices가 캡처한 원래 위치와 겹쳤지만,
+// pinCorners 이후 어깨점이 최종 위치로 옮겨감) 두 코너에서만 28mm/12mm
+// 급 실거리가 남는다(중간 10쌍은 0.00mm 정확히 겹침, 확인됨). 옆선
+// 시접(addTorsoSideSeamConstraints)과 같은 이즈인 상수(SEAM_EASE_START)를
+// 재사용해 이 두 코너만 느슨하게 시작시킨다 — k=1..10처럼 즉시 6mm로
+// 스냅하면 addSleeveUnderarmSeamConstraints 주석에 기록된 것과 같은
+// 찢어짐 패턴이 재현될 위험이 있다(실측으로 확인된 문제, 문서 결정 #3의
+// "직접 스냅 먼저 시도" 전제가 이 두 점에서만 깨짐).
+//
+// 겨드랑이(k=armholeStartRow, k=armholeStartRow+1)에도 한 번 같은 이즈인을
+// 시도했다가 되돌렸다 — 코너와 원인이 다르기 때문. 코너는 pinCorners가
+// 배치 이후 위치를 강제로 재계산해 덮어써서 생긴 고정된 기하학적
+// 불일치라, 목표를 늦추면 그 불일치를 억지로 안 좁혀서 완만해진다.
+// 겨드랑이는 그런 강제 재배치가 없다 — 6mm 직접 스냅 상태에서도 1.9~2cm
+// 밖에 못 좁혀졌다는 건 이 제약이 이미 최대로 당기고 있는데 다른 힘
+// (중력·곡률·경쟁 구조 제약)에 밀리고 있다는 뜻이라, 목표를 30mm로
+// 풀면 당기는 힘 자체가 약해져 실측 갭이 오히려 커진다 — 실측으로 확인
+// (1.88~2.02cm → 2.52~2.67cm, 이즈인 목표 3cm에 가까워짐, 즉 거의
+// 안 당기는 상태). 코너용 기법을 원인이 다른 곳에 그대로 옮기면 안
+// 된다는 사례라 남겨둔다.
+export function addSleeveArmholeSeam(
+  sim: ClothSimulation,
+  frontPanel: number,
+  backPanel: number,
+  sleevePanel: number,
+  col: number,
+  armholeStartRow: number,
+): void {
+  const SEAM_EASE_START = 0.006; // ponytail: 실험값(원래 0.03, 8mm 경유) — 완전 균일화 재검증 중, docs/sleeve-redesign-B.md 참고
+  const lastK = armholeStartRow * 2 + 1;
+  const restLengthFor = (k: number): number => (k === 0 || k === lastK ? SEAM_EASE_START : SEAM_REST_LENGTH);
+  let k = 0;
+  for (let y = 0; y <= armholeStartRow; y++) {
+    sim.addConstraint(sim.index(frontPanel, col, y), sim.index(sleevePanel, k, 0), restLengthFor(k));
+    k++;
+  }
+  for (let y = armholeStartRow; y >= 0; y--) {
+    sim.addConstraint(sim.index(backPanel, col, y), sim.index(sleevePanel, k, 0), restLengthFor(k));
+    k++;
+  }
+}
+
+// 범위 B 구현 4번: buildConstraints()는 x<cols-1까지만 이어(clothPhysics.ts)
+// col0↔col(cols-1) wrap 엣지가 빠진다 — 소매 링을 원통으로 닫는 마지막 변을
+// 팔 축 위치(row)마다 채운다. restLength는 고정 시접값이 아니라 배치
+// 시점의 실제 거리(addNecklineSeamConstraints와 같은 패턴) — 이 변은 시접이
+// 아니라 12각형 링 자체의 변이라 균일하지 않다(문서 실측: 역순 인접 12변
+// 0.20~5.54cm).
+export function addSleeveWrapConstraint(sim: ClothSimulation, panel: number, cols: number, rows: number): void {
+  for (let r = 0; r < rows; r++) {
+    const a = sim.index(panel, 0, r);
+    const b = sim.index(panel, cols - 1, r);
+    const dx = sim.positions[b * 3] - sim.positions[a * 3];
+    const dy = sim.positions[b * 3 + 1] - sim.positions[a * 3 + 1];
+    const dz = sim.positions[b * 3 + 2] - sim.positions[a * 3 + 2];
+    sim.addConstraint(a, b, Math.hypot(dx, dy, dz));
   }
 }
 

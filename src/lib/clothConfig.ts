@@ -49,6 +49,14 @@ export const PARTICLES_PER_PANEL = COLS * ROWS;
 export const PANEL_FRONT = 0;
 export const PANEL_BACK = 1;
 
+// 범위 B(소매 재설계 — 별도 패널): 소매를 몸판과 독립된 패널로 되돌린다.
+// docs/sleeve-redesign-B.md 결정 참고 — 둘레(cols) 12정점 × 길이(rows)
+// 12행, 좌우 소매 동일 해상도.
+export const PANEL_SLEEVE_LEFT = 2;
+export const PANEL_SLEEVE_RIGHT = 3;
+export const SLEEVE_RING_COLS = 12;
+export const SLEEVE_RING_ROWS = 12;
+
 // 46번: 0번 행(어깨선) 중 이 비율(중심 기준 절반 폭 대비) 안쪽만 몸/목선에
 // 고정(pin)한다 — 그 바깥(소매 쪽으로 뻗은 부분)은 사용자 요청대로 핀을
 // 완전히 풀어 중력만 받게 한다. 기존 어깨 핀 폭(SHOULDER_PIN_OUTSET 등

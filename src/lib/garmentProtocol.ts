@@ -61,15 +61,36 @@ export type MainToGarmentWorkerMessage =
 // 시뮬레이션을 요청하는데, 그 직전에 큐에 있던 구세대 "step" 응답이
 // 늦게 돌아와 신세대 결과를 덮어쓰는 문제를 막는다(clothProtocol.ts의
 // 기존 설명과 동일한 이유).
-export type GarmentWorkerToMainMessage = {
-  type: "positions";
-  front: Float32Array;
-  back: Float32Array;
-  // 핏 맵(물리와 무관): 정점별 몸 표면까지의 부호 있는 거리(cm, 몸
-  // 안쪽이면 음수) — wholeBodyCollisionMesh에 대한 순수 조회 결과일
-  // 뿐, 물리 해석에는 전혀 쓰이지 않는다. garmentWorker.ts의 "step"
-  // 케이스, ArrayBvhCollision.signedClearance 참고.
-  frontFit: Float32Array;
-  backFit: Float32Array;
-  generation: number;
-};
+export type GarmentWorkerToMainMessage =
+  | {
+      type: "positions";
+      front: Float32Array;
+      back: Float32Array;
+      // 핏 맵(물리와 무관): 정점별 몸 표면까지의 부호 있는 거리(cm, 몸
+      // 안쪽이면 음수) — wholeBodyCollisionMesh에 대한 순수 조회 결과일
+      // 뿐, 물리 해석에는 전혀 쓰이지 않는다. garmentWorker.ts의 "step"
+      // 케이스, ArrayBvhCollision.signedClearance 참고.
+      frontFit: Float32Array;
+      backFit: Float32Array;
+      // 범위 B 구현 4번(봉제선 검증): 어깨 코너 이즈인(SEAM_EASE_START)이
+      // 실제 물리 정착 후 SEAM_REST_LENGTH 근처로 수렴하는지 프레임마다
+      // 확인하려면 소매 패널의 살아있는 위치가 필요하다 — sleeveSeamCheck
+      // (Garment.tsx)가 이 필드로 armhole↔소매 거리를 잰다.
+      sleeveLeft: Float32Array;
+      sleeveRight: Float32Array;
+      generation: number;
+    }
+  | {
+      // 범위 B(소매 재설계) 구현 1번(격자 생성) 검증 전용 — sim 생성 직후,
+      // buildConstraints()/step() 이전의 순수 초기 배치를 그대로 echo한다
+      // (물리 한 스텝만 지나도 중력/자체충돌로 mm 단위 흔들림이 섞여
+      // "시접 거리 0" 같은 순수 배치 검증이 흐려지므로). "init" 처리마다
+      // 딱 한 번만 보낸다 — 매 프레임 도는 "step"과 무관.
+      type: "gridDebug";
+      front: Float32Array;
+      back: Float32Array;
+      sleeveLeft: Float32Array;
+      sleeveRight: Float32Array;
+      panelParticleStart: number[]; // [front, back, sleeveLeft, sleeveRight]
+      panelParticleCount: number[];
+    };

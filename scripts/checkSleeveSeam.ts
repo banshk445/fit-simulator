@@ -10,8 +10,14 @@
 // 실제 스텝 루프와 완전히 동일하진 않다(어깨 표면 스냅·자체충돌·스무딩
 // 등은 뺐다) — 필요해지면 워커의 스텝 로직을 재사용 가능한 함수로 뽑아
 // 여기서 그대로 불러쓰는 쪽으로 업그레이드.
+//
+// 참고(이 스크립트가 직접 체크하진 않지만 헷갈리지 말 것): layoutSleevePanel
+// 단면 원형화 재설계 이후, 브라우저 디버그 __fitDebug.sleeveGridCheck()의
+// rowLastReachCm이 k마다 15~29cm로 들쭉날쭉해진다(예전엔 armLength=22cm
+// 균일). 회귀 아니라 row(rows-1)이 이상원으로 완전 블렌드되면서 축+반경이
+// 섞인 거리로 바뀐 자연스러운 결과 — 이 파일의 Y차이 체크(row0~16만 스캔)와는
+// 무관한 별개 지표다.
 import * as THREE from "three";
-import { ClothSimulation } from "../src/lib/clothPhysics";
 import { applyArmSoftPull, applyNecklineHug, enforceArmFrontBackYAlignment, pinCorners, type ArmDir } from "../src/lib/buildGarmentSim";
 import { buildUnifiedGarmentSim } from "../src/lib/buildUnifiedGarmentSim";
 import { applyCapsuleCollision } from "../src/lib/torsoCapsule";
@@ -48,7 +54,7 @@ function buildArmCapsules(trueShoulder: Vec3Like, dir: Vec3Like, length: number)
   ];
 }
 
-const simInstance: ClothSimulation = buildUnifiedGarmentSim(widthM, heightM, topY, centerZ, pinLeft, pinRight, armLeft, armRight, SLEEVE_WIDTH_M);
+const { sim: simInstance } = buildUnifiedGarmentSim(widthM, heightM, topY, centerZ, pinLeft, pinRight, armLeft, armRight, SLEEVE_WIDTH_M);
 
 const preset = FABRIC_PRESETS.cotton;
 const gravity = new THREE.Vector3(...GRAVITY_BASE).multiplyScalar(preset.gravityScale);

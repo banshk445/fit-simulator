@@ -25,10 +25,11 @@ interface Bucket {
 }
 
 export class SelfCollision {
-  private readonly particlesPerPanel: number;
-  private readonly cols: number;
+  private readonly panelStarts: number[];
+  private readonly panelCols: number[];
   private readonly cellSize: number;
   private readonly seamRowExclusive: number;
+  private readonly seamSkipPairKeys: Set<number>;
   private buckets = new Map<number, Bucket>();
 
   // seamRowExclusive: 어깨선(0번 행)은 앞판/뒤판이 같은 지점에 고정되고
@@ -47,11 +48,34 @@ export class SelfCollision {
   // 안쪽에 있어 이 구간 자체가 가려져 있었다). 이 구간(seamRowExclusive
   // 미만 행)의 앞판↔뒤판 쌍은 "겹침"이 아니라 "이음매"이므로 자체충돌
   // 대상에서 제외한다.
-  constructor(particlesPerPanel: number, cols: number, seamRowExclusive = 0, cellSize = SELF_COLLISION_MIN_DIST) {
-    this.particlesPerPanel = particlesPerPanel;
-    this.cols = cols;
+  // 범위 B(소매 재설계 — 별도 패널): 몸판(1232) 2개 + 소매(144) 2개로
+  // 패널 크기가 더 이상 균일하지 않다 — 고정 나눗셈(옛 particlesPerPanel/
+  // cols)으로는 패널 경계를 못 찾는다. 패널별 시작 인덱스/cols를 그대로
+  // 배열로 받아 panelAndUV에서 선형 스캔한다(ClothSimulation.
+  // panelParticleStart/panelDims를 호출부에서 그대로 넘기면 됨 — 계산
+  // 중복 없음).
+  // 톱니 결함 조사(docs/sleeve-redesign-B.md): seamRowExclusive는 몸판↔몸판
+  // 어깨 시접만 근사로 커버한다 — 소매 wrap(같은 패널, UV거리 커서
+  // SKIP_UV_RADIUS 밖)과 암홀 봉제선(몸판↔소매, 서로 다른 패널)은 기존
+  // 두 예외 규칙 어디에도 안 걸려 자체충돌과 힘겨루기를 했다. 근사(UV
+  // 거리) 대신 실제로 addConstraint()가 이은 쌍을 그대로 받아 정확히
+  // 그 쌍만 제외한다 — buildUnifiedGarmentSim.ts가 넘기는 seamSkipPairs.
+  constructor(
+    panelStarts: number[],
+    panelCols: number[],
+    seamRowExclusive = 0,
+    seamSkipPairs: ReadonlyArray<{ a: number; b: number }> = [],
+    cellSize = SELF_COLLISION_MIN_DIST,
+  ) {
+    this.panelStarts = panelStarts;
+    this.panelCols = panelCols;
     this.seamRowExclusive = seamRowExclusive;
     this.cellSize = cellSize;
+    this.seamSkipPairKeys = new Set(seamSkipPairs.map(({ a, b }) => this.pairKey(a, b)));
+  }
+
+  private pairKey(a: number, b: number): number {
+    return Math.min(a, b) * 1_000_000 + Math.max(a, b);
   }
 
   private cellKey(cx: number, cy: number, cz: number): number {
@@ -60,10 +84,17 @@ export class SelfCollision {
     return (cx + 512) * 1_048_576 + (cy + 512) * 1024 + (cz + 512);
   }
 
+  // 패널이 몇 개 안 되므로(현재 4개) 이진 탐색은 과설계 — 뒤에서부터
+  // 선형 스캔으로 충분하다.
   private panelAndUV(i: number): { panel: number; x: number; y: number } {
-    const local = i % this.particlesPerPanel;
-    const panel = (i - local) / this.particlesPerPanel;
-    return { panel, x: local % this.cols, y: Math.floor(local / this.cols) };
+    for (let p = this.panelStarts.length - 1; p >= 0; p--) {
+      if (i >= this.panelStarts[p]) {
+        const local = i - this.panelStarts[p];
+        const cols = this.panelCols[p];
+        return { panel: p, x: local % cols, y: Math.floor(local / cols) };
+      }
+    }
+    throw new Error(`panelAndUV: index ${i} is before the first panel's start`);
   }
 
   createResolver(minDist = SELF_COLLISION_MIN_DIST): CollisionResolver {
@@ -114,6 +145,9 @@ export class SelfCollision {
                 }
                 if (uvA.panel !== uvB.panel && uvA.y < this.seamRowExclusive && uvB.y < this.seamRowExclusive) {
                   continue; // 어깨 시접 여유 구간 — 겹침이 아니라 이음매다.
+                }
+                if (this.seamSkipPairKeys.has(this.pairKey(i, j))) {
+                  continue; // 소매 암홀/wrap 봉제선으로 실제 연결된 쌍 — 겹침이 아니라 이음매다.
                 }
 
                 const jx = j * 3;

@@ -226,18 +226,27 @@ export function Mannequin() {
   // 방향을 정하므로, 모델이 바뀌어도(뼈대 이름과 무관하게) 안전하다.
   //
   // 46번(동적 포징 — 겨드랑이 드레이프 실측): 원래 1회성 useEffect였던
-  // 것을 매 프레임 각도가 서서히 오가는 애니메이션으로 바꾼다 — 소매
-  // 방향(computeArmShapes, Garment.tsx)이 이미 매 프레임 이 뼈대의 실제
-  // 월드 방향을 그대로 읽어 쓰므로, 옷 쪽 코드를 전혀 안 건드려도 팔이
-  // 움직이는 동안 자체충돌/힌지/언더암 당김/드레이프가 실시간으로 반응
-  // 하는지 그대로 관찰할 수 있다. 0.6(벌어짐, 기존 검증된 값)과 0.25
-  // (몸에 더 붙임) 사이를 8초 주기로 오간다 — 완전 수직(0)까지는 안 가서
-  // 위 주석의 손가락-충돌 문제를 다시 재현하지 않는다.
+  // 것을 매 프레임 각도가 서서히 오가는 애니메이션으로 바꿔, 소매
+  // 방향(computeArmShapes, Garment.tsx)이 매 프레임 읽는 이 뼈대의 실제
+  // 월드 방향이 계속 움직이게 해서 자체충돌/힌지/언더암 당김/드레이프가
+  // 실시간으로 반응하는지 관찰했었다.
+  //
+  // 소매 범위 B 조사(겨드랑이 캡슐 침투 진동 원인 추적)에서 이 8초 주기
+  // 흔들림이 그 진동의 실제 원인으로 확인됐다 — 정적 기하 보정으로는
+  // 못 따라잡는 진폭(팔 캡슐 clearance가 초당 수 mm씩 계속 움직임)이라,
+  // 기본값은 다시 46번 이전의 1회성 릴랙스드 A포즈(0.6, 벌어짐 — 아래
+  // ENABLE_ARM_SWAY_DEBUG 참고)로 고정한다. 동적 포징 관찰이 다시
+  // 필요해지면(예: 다른 겨드랑이 드레이프 조사) 플래그만 켜면 된다.
+  const ENABLE_ARM_SWAY_DEBUG = false;
+  const ARM_SWAY_FIXED_OUTWARD = 0.6;
   const armPoseElapsed = useRef(0);
   useFrame((_, delta) => {
-    armPoseElapsed.current += delta;
-    const cyclePhase = (armPoseElapsed.current / 8) * Math.PI * 2; // 8초 주기
-    const outwardAmount = 0.425 + 0.175 * Math.sin(cyclePhase); // 0.25~0.6 사이 오간다
+    let outwardAmount = ARM_SWAY_FIXED_OUTWARD;
+    if (ENABLE_ARM_SWAY_DEBUG) {
+      armPoseElapsed.current += delta;
+      const cyclePhase = (armPoseElapsed.current / 8) * Math.PI * 2; // 8초 주기
+      outwardAmount = 0.425 + 0.175 * Math.sin(cyclePhase); // 0.25~0.6 사이 오간다
+    }
 
     const shoulderPos = new THREE.Vector3();
     for (const { bone } of boneGroups.arm) {
