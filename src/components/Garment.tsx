@@ -12,6 +12,7 @@ import { findArmDirection, findShortSleeveDirection, findShoulderBones } from ".
 import { computeShoulderPin } from "../lib/shoulderPin";
 import { compositeGarmentTexture } from "../lib/garmentTextureComposite";
 import { torsoColumnRange } from "../lib/buildGarmentSim";
+import { ringJaggedness } from "../lib/seamDiagnostics";
 import {
   ARM_COLLISION_RADIUS,
   ARMHOLE_ROW_FRACTION,
@@ -850,6 +851,49 @@ export function Garment({ imageUrl }: Props) {
       return result;
     };
   }, [sleeveGeometryLeft, sleeveGeometryRight]);
+
+  // 톱니 정도를 링 전체로 일반화한 지표 — sleeveSeamNormalCheck는 wrap
+  // 지점(첫/끝)만 비교하지만, 이번 조사(sleeveSeamCheck 실측)에서 코너
+  // 인접 열(k1/k10)이 코너 자체보다 더 벌어지는 게 확인돼 wrap 지점만
+  // 보는 걸로는 부족하다 — 링을 따라 인접(랩 포함) 정점쌍의 법선 각도차를
+  // 전부 재서 분산/최댓값을 낸다. 값이 클수록 그 링을 따라 법선이 급격히
+  // 꺾인다는(=톱니가 심하다는) 뜻. 콘솔에서
+  // `window.__fitDebug.seamNormalJaggedness()` 호출.
+  useEffect(() => {
+    const win = window as unknown as { __fitDebug?: Record<string, unknown> };
+    if (!win.__fitDebug) win.__fitDebug = {};
+    win.__fitDebug.seamNormalJaggedness = () => {
+      const readNormal = (geometry: THREE.BufferGeometry, i: number) => {
+        const normal = geometry.getAttribute("normal") as THREE.BufferAttribute;
+        return { x: normal.getX(i), y: normal.getY(i), z: normal.getZ(i) };
+      };
+
+      // armholeRingVertices/sleeveSeamCheck와 같은 순서: front row0..armholeStartRow,
+      // back armholeStartRow..0(역순) — 어깨 wrap(k0↔k11)도 링으로 취급(문서 선례).
+      const armholeStartRow = Math.round(ROWS * ARMHOLE_ROW_FRACTION);
+      const { xMin, xMax } = torsoColumnRangeRef.current;
+      const armholeRingNormals = (col: number) => {
+        const pts: { x: number; y: number; z: number }[] = [];
+        for (let y = 0; y <= armholeStartRow; y++) pts.push(readNormal(frontGeometry, y * COLS + col));
+        for (let y = armholeStartRow; y >= 0; y--) pts.push(readNormal(backGeometry, y * COLS + col));
+        return pts;
+      };
+      const sleeveRingNormals = (geometry: THREE.BufferGeometry, row = 0) => {
+        const pts: { x: number; y: number; z: number }[] = [];
+        for (let k = 0; k < SLEEVE_RING_COLS; k++) pts.push(readNormal(geometry, row * SLEEVE_RING_COLS + k));
+        return pts;
+      };
+
+      const result = {
+        armholeLeft: ringJaggedness(armholeRingNormals(xMin)),
+        armholeRight: ringJaggedness(armholeRingNormals(xMax)),
+        sleeveLeft: ringJaggedness(sleeveRingNormals(sleeveGeometryLeft)),
+        sleeveRight: ringJaggedness(sleeveRingNormals(sleeveGeometryRight)),
+      };
+      console.log("[SEAM-NORMAL-JAGGEDNESS]", JSON.stringify(result));
+      return result;
+    };
+  }, [frontGeometry, backGeometry, sleeveGeometryLeft, sleeveGeometryRight]);
 
   // 워커는 컴포넌트 생명주기 동안 하나만 띄우고 언마운트 시 종료한다.
   // frontGeometry/backGeometry/frontPositions/backPositions는 몸판
