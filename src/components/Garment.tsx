@@ -12,7 +12,7 @@ import { findArmDirection, findShortSleeveDirection, findShoulderBones } from ".
 import { computeShoulderPin } from "../lib/shoulderPin";
 import { compositeGarmentTexture } from "../lib/garmentTextureComposite";
 import { torsoColumnRange } from "../lib/buildGarmentSim";
-import { ringJaggedness } from "../lib/seamDiagnostics";
+import { angleDegBetweenNormals, ringJaggedness } from "../lib/seamDiagnostics";
 import {
   ARM_COLLISION_RADIUS,
   ARMHOLE_ROW_FRACTION,
@@ -894,6 +894,70 @@ export function Garment({ imageUrl }: Props) {
       return result;
     };
   }, [frontGeometry, backGeometry, sleeveGeometryLeft, sleeveGeometryRight]);
+
+  // pattern-redesign.md 다음 가설(탄젠트 매칭) 1번 — 위 세 시도(각도 재배분류)가
+  // 전부 실패한 뒤 나온 가설: row0(=암홀, 위치는 정확히 일치)에서 소매가
+  // "뻗어나가는 방향"이 몸판 표면이 그 자리에서 이어졌을 방향과 얼마나
+  // 어긋나는지 실측한다 — 세 시도 전부 "position은 lerp, 각도/반지름 목표는
+  // 새로 계산"이라 이 방향(도함수) 자체는 한 번도 직접 맞춘 적이 없었다.
+  // 몸판 쪽 탄젠트: 같은 행(row)에서 암홀 열(xMin/xMax)과 그 바로 바깥
+  // 열(xMin-1/xMax+1, 같은 패널의 소매 확장 열 — 구 플랩, 아직 살아있음)을
+  // 잇는 방향 — "이 표면이 이음매를 넘어 계속됐다면 향했을 방향"의 근사.
+  // 소매 쪽 탄젠트: 그냥 row0→row1 방향(소매가 실제로 처음 뻗는 방향).
+  // 콘솔에서 `window.__fitDebug.sleeveRow0TangentCheck()` 호출 — 코드 변경
+  // 없음, 순수 측정.
+  useEffect(() => {
+    const win = window as unknown as { __fitDebug?: Record<string, unknown> };
+    if (!win.__fitDebug) win.__fitDebug = {};
+    win.__fitDebug.sleeveRow0TangentCheck = () => {
+      const armholeStartRow = Math.round(ROWS * ARMHOLE_ROW_FRACTION);
+      const { xMin, xMax } = torsoColumnRangeRef.current;
+      const torsoPt = (arr: Float32Array, col: number, row: number) => {
+        const i = (row * COLS + col) * 3;
+        return { x: arr[i], y: arr[i + 1], z: arr[i + 2] };
+      };
+      const sleevePt = (arr: Float32Array, k: number, r: number) => {
+        const i = (r * SLEEVE_RING_COLS + k) * 3;
+        return { x: arr[i], y: arr[i + 1], z: arr[i + 2] };
+      };
+      const normalize = (v: { x: number; y: number; z: number }) => {
+        const len = Math.hypot(v.x, v.y, v.z) || 1e-9;
+        return { x: v.x / len, y: v.y / len, z: v.z / len };
+      };
+      const sub = (a: { x: number; y: number; z: number }, b: { x: number; y: number; z: number }) => ({
+        x: a.x - b.x,
+        y: a.y - b.y,
+        z: a.z - b.z,
+      });
+
+      // armholeRingVertices/sleeveSeamCheck와 같은 순서: front row0..armholeStartRow,
+      // back armholeStartRow..0(역순) — (panel, row) 쌍을 k 순서대로 뽑는다.
+      const ringRowPanels: Array<{ front: boolean; row: number }> = [];
+      for (let y = 0; y <= armholeStartRow; y++) ringRowPanels.push({ front: true, row: y });
+      for (let y = armholeStartRow; y >= 0; y--) ringRowPanels.push({ front: false, row: y });
+
+      const sideCheck = (col: number, neighborCol: number, sleeveArr: Float32Array) => {
+        const diffsDeg = ringRowPanels.map(({ front, row }, k) => {
+          const panelArr = front ? frontPositions : backPositions;
+          const torsoTangent = normalize(sub(torsoPt(panelArr, col, row), torsoPt(panelArr, neighborCol, row)));
+          const sleeveTangent = normalize(sub(sleevePt(sleeveArr, k, 1), sleevePt(sleeveArr, k, 0)));
+          return Number(angleDegBetweenNormals(torsoTangent, sleeveTangent).toFixed(2));
+        });
+        const maxDeg = Number(Math.max(...diffsDeg).toFixed(2));
+        const meanDeg = Number((diffsDeg.reduce((s, d) => s + d, 0) / diffsDeg.length).toFixed(2));
+        return { diffsDeg, maxDeg, meanDeg };
+      };
+
+      const result = {
+        // 몸통 쪽 이웃 열이 그리드 밖으로 안 나가는지만 확인(구 플랩 열이 항상
+        // 존재해 실무에서는 항상 참이지만, 극단적으로 좁은 소매/품 조합 대비 방어).
+        left: xMin > 0 ? sideCheck(xMin, xMin - 1, sleevePositionsLeft) : null,
+        right: xMax < COLS - 1 ? sideCheck(xMax, xMax + 1, sleevePositionsRight) : null,
+      };
+      console.log("[SLEEVE-ROW0-TANGENT-CHECK]", JSON.stringify(result));
+      return result;
+    };
+  }, [frontPositions, backPositions, sleevePositionsLeft, sleevePositionsRight]);
 
   // 워커는 컴포넌트 생명주기 동안 하나만 띄우고 언마운트 시 종료한다.
   // frontGeometry/backGeometry/frontPositions/backPositions는 몸판
