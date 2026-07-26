@@ -935,7 +935,7 @@ export function layoutSleevePanel(
   };
   for (let r = 0; r < ringRows; r++) {
     const t = ringRows > 1 ? r / (ringRows - 1) : 0;
-    const blendT = tubeRadiusScale(t); // 0~30% 스무스스텝 램프, 이후 1 고정 — 반지름 램프와 같은 곡선을 슬릿→이상원 블렌드 가중치로 재사용.
+    const blendT = tubeRadiusScale(t); // 0~30%는 0→SHOULDER_SCALE(0.45), 30%~100%는 0.45→1로 계속 서서히 진행 — 완전 블렌드(1.0)는 소매 끝에서 도달. 반지름 램프와 같은 곡선을 슬릿→이상원 블렌드 가중치로 재사용.
     const reach = arm.length * t;
     for (let k = 0; k < ringCols; k++) {
       const slit = armholeVertex[k];
