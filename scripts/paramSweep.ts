@@ -114,6 +114,10 @@ interface ComboResult {
   maxPenetrationMm: number;
   maxSeamGapCm: number;
   maxJaggednessDeg: number;
+  // 톱니가 몸판(암홀 링, 소매 무관)에서 오는지 소매 링에서 오는지 구분 —
+  // pattern-redesign.md 4번(소매 전용 구현) 검증용 세부 지표.
+  armholeJaggednessDeg: number;
+  sleeveJaggednessDeg: number;
 }
 
 function runCombo(widthM: number, sleeveWidthM: number): ComboResult {
@@ -139,7 +143,16 @@ function runCombo(widthM: number, sleeveWidthM: number): ComboResult {
 
   for (let i = 0; i < sim.positions.length; i++) {
     if (!Number.isFinite(sim.positions[i])) {
-      return { widthM, sleeveWidthM, diverged: true, maxPenetrationMm: NaN, maxSeamGapCm: NaN, maxJaggednessDeg: NaN };
+      return {
+        widthM,
+        sleeveWidthM,
+        diverged: true,
+        maxPenetrationMm: NaN,
+        maxSeamGapCm: NaN,
+        maxJaggednessDeg: NaN,
+        armholeJaggednessDeg: NaN,
+        sleeveJaggednessDeg: NaN,
+      };
     }
   }
 
@@ -184,12 +197,12 @@ function runCombo(widthM: number, sleeveWidthM: number): ComboResult {
     for (let k = 0; k < SLEEVE_RING_COLS; k++) pts.push(readNormal(attr, k));
     return pts;
   };
-  const maxJaggednessDeg = Math.max(
-    ringJaggedness(armholeRingNormalsAt(xMin)).maxDeg,
-    ringJaggedness(armholeRingNormalsAt(xMax)).maxDeg,
+  const armholeJaggednessDeg = Math.max(ringJaggedness(armholeRingNormalsAt(xMin)).maxDeg, ringJaggedness(armholeRingNormalsAt(xMax)).maxDeg);
+  const sleeveJaggednessDeg = Math.max(
     ringJaggedness(sleeveRingNormalsAt(sleeveLeftNormals)).maxDeg,
     ringJaggedness(sleeveRingNormalsAt(sleeveRightNormals)).maxDeg,
   );
+  const maxJaggednessDeg = Math.max(armholeJaggednessDeg, sleeveJaggednessDeg);
 
   return {
     widthM,
@@ -198,6 +211,8 @@ function runCombo(widthM: number, sleeveWidthM: number): ComboResult {
     maxPenetrationMm: Number(maxPenetrationMm.toFixed(2)),
     maxSeamGapCm: Number(maxSeamGapCm.toFixed(2)),
     maxJaggednessDeg: Number(maxJaggednessDeg.toFixed(1)),
+    armholeJaggednessDeg: Number(armholeJaggednessDeg.toFixed(1)),
+    sleeveJaggednessDeg: Number(sleeveJaggednessDeg.toFixed(1)),
   };
 }
 
