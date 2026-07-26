@@ -906,17 +906,44 @@ export function armholeRingVertices(
   return pts;
 }
 
-// 범위 B(단면 원형화 재설계): 예전엔 암홀 단면(슬릿, 세로로 긴 비원형)을
-// 그대로 팔 축 방향으로 압출했다 — row0은 완벽했지만(시접 늘어남 0) 그
-// 슬릿 모양이 소매 끝까지 그대로 이어져 "원통"이 아니라 "납작한 리본"이
-// 됐다(화면 실측: 날개/플랩처럼 보임). 실측(이 세션): 슬릿 12점의 중심
-// 기준 반지름이 2.92~7.61cm로 원 지름(computeArmTubeRadius)보다 편차가
-// 커서 원형 근사가 애초에 안 되고, 슬릿 정점의 실제 각도도 균등 30°
-// 배치와 최대 177.5° 어긋나 있었다(k=9) — 그래서 "같은 이상각에서
-// 반지름만 보간"은 안 되고, row0는 슬릿 XYZ를 그대로 쓰고 그 이후 행만
-// XYZ 직선 보간으로 이상적 원을 향해 블렌드한다. blendT=0에서 대수적으로
-// 정확히 armholeVertex와 같아지므로(리덤던트 분기 없이 lerp 공식 자체가
-// 보장) row0 시접 갭은 손대지 않는다.
+// 소매산(캡) 이즈량(cm) — 표준 패턴 제도 조사(pattern-redesign.md 1번):
+// 우븐 1.5~2.5cm, 니트 0.5~1.5cm, "핏된 소매" 3~4.5cm 중 우븐 평균값.
+const SLEEVE_CAP_EASE_CM = 3;
+
+// armholeVertex(닫힌 링, wrap 포함)의 전체 둘레(cm) — 소매산 높이
+// 삼각법 공식(hyp=(둘레+이즈)/2)의 입력.
+function ringTotalArcLengthCm(vertices: readonly Vec3Like[]): number {
+  let total = 0;
+  for (let i = 1; i < vertices.length; i++) {
+    const a = vertices[i - 1];
+    const b = vertices[i];
+    total += Math.hypot(b.x - a.x, b.y - a.y, b.z - a.z) * 100;
+  }
+  const first = vertices[0];
+  const last = vertices[vertices.length - 1];
+  total += Math.hypot(first.x - last.x, first.y - last.y, first.z - last.z) * 100;
+  return total;
+}
+
+// pattern-redesign.md 7번(방향 전환): row0을 슬릿(armholeVertex) 압출로
+// 맞추는 접근을 네 번 시도(각도+반지름 재배분/각도만/방향유지+반지름만/
+// 탄젠트 실측)했으나 전부 같은 함수 안 파라미터 미세조정이었고 다
+// 기각됐다(seamNormalJaggedness 실측, 이 파일 히스토리 참고). 여기서부터는
+// 그 접근을 전부 버리고 CLO3D류 방식으로 바꾼다 — 2D 패턴(둘레 각도 ×
+// 팔 축 길이)을 팔 옆에 대충 배치하고, row0을 armholeVertex와 더 이상
+// 대수적으로 일치시키지 않는다. 대신 addSleeveArmholeSeam(그대로
+// 재사용, restLength=SEAM_REST_LENGTH)이 물리 시뮬레이션 동안 봉제선처럼
+// 끌어당겨 실제 암홀에 붙게 만든다 — 사람이 각도/반지름/방향을 정밀
+// 계산해서 미리 맞춰놓는 대신 PBD 솔버(구조/전단/벤드 제약)가 드레이프를
+// 실제로 수행하게 둔다.
+//
+// 반지름은 모든 행·열에서 상수(targetRadius) — 완전한 원통이라 옆선이
+// 저절로 직선이 된다. 각도는 균등 분배(호장비율/atan2 재배정은 이미
+// 기각됨). 유일하게 새로 쓰는 부분은 row0의 "팔 축 방향 오프셋"(reach)을
+// 어깨점(k=0)에서 표준 캡 높이 공식만큼 볼록하게, 언더암(어깨 반대편)
+// 에서 0으로 떨어지는 반코사인으로 주는 것 — 실제 소매산 곡선의 거친
+// 근사. 소맷부리(마지막 행)는 이 오프셋이 완전히 사라져 k와 무관하게
+// 평평하다.
 export function layoutSleevePanel(
   sim: ClothSimulation,
   panel: number,
@@ -933,24 +960,31 @@ export function layoutSleevePanel(
     y: armholeVertex.reduce((s, p) => s + p.y, 0) / armholeVertex.length,
     z: armholeVertex.reduce((s, p) => s + p.z, 0) / armholeVertex.length,
   };
-  for (let r = 0; r < ringRows; r++) {
-    const t = ringRows > 1 ? r / (ringRows - 1) : 0;
-    const blendT = tubeRadiusScale(t); // 0~30%는 0→SHOULDER_SCALE(0.45), 30%~100%는 0.45→1로 계속 서서히 진행 — 완전 블렌드(1.0)는 소매 끝에서 도달. 반지름 램프와 같은 곡선을 슬릿→이상원 블렌드 가중치로 재사용.
-    const reach = arm.length * t;
-    for (let k = 0; k < ringCols; k++) {
-      const slit = armholeVertex[k];
-      const angle = Math.PI / 2 - k * ((2 * Math.PI) / ringCols); // k=0(어깨)을 위쪽(90°)에, wrap 순서대로 시계 방향.
-      const cosA = Math.cos(angle);
-      const sinA = Math.sin(angle);
-      const idealX = center.x + arm.dir.x * reach + (basis.right.x * cosA + basis.up.x * sinA) * targetRadius;
-      const idealY = center.y + arm.dir.y * reach + (basis.right.y * cosA + basis.up.y * sinA) * targetRadius;
-      const idealZ = center.z + arm.dir.z * reach + (basis.right.z * cosA + basis.up.z * sinA) * targetRadius;
-      sim.setParticle(
-        sim.index(panel, k, r),
-        slit.x + (idealX - slit.x) * blendT,
-        slit.y + (idealY - slit.y) * blendT,
-        slit.z + (idealZ - slit.z) * blendT,
-      );
+
+  const armholeArcCm = ringTotalArcLengthCm(armholeVertex);
+  const capCircumferenceCm = armholeArcCm + SLEEVE_CAP_EASE_CM;
+  const bicepHalfCm = (sleeveWidthM * 100) / 2;
+  const hypCm = capCircumferenceCm / 2;
+  // ponytail: hyp<=base인 드문 조합(이즈가 극단적으로 작고 소매통은 큼)은
+  // 삼각형이 안 만들어짐 — bicep 절반의 30%를 안전값으로 쓴다.
+  const capHeightM = (hypCm > bicepHalfCm ? Math.sqrt(hypCm * hypCm - bicepHalfCm * bicepHalfCm) : bicepHalfCm * 0.3) / 100;
+
+  for (let k = 0; k < ringCols; k++) {
+    const angle = Math.PI / 2 - k * ((2 * Math.PI) / ringCols); // k=0(어깨)을 위쪽(90°)에, wrap 순서대로 시계 방향.
+    const cosA = Math.cos(angle);
+    const sinA = Math.sin(angle);
+    // 어깨점(top, angle=90°)에서 각도로 얼마나 떨어졌는지 [0,π] — 언더암
+    // (반대편, π 떨어짐)에서 최대.
+    const rawOffset = angle - Math.PI / 2;
+    const angFromTop = Math.abs(Math.atan2(Math.sin(rawOffset), Math.cos(rawOffset)));
+    const capBulge = Math.max(0, Math.cos(angFromTop)) * capHeightM; // 어깨쪽만 볼록, 옆~언더암은 0
+    for (let r = 0; r < ringRows; r++) {
+      const v = ringRows > 1 ? r / (ringRows - 1) : 0;
+      const reach = arm.length * v - capBulge * (1 - v);
+      const x = center.x + arm.dir.x * reach + (basis.right.x * cosA + basis.up.x * sinA) * targetRadius;
+      const y = center.y + arm.dir.y * reach + (basis.right.y * cosA + basis.up.y * sinA) * targetRadius;
+      const z = center.z + arm.dir.z * reach + (basis.right.z * cosA + basis.up.z * sinA) * targetRadius;
+      sim.setParticle(sim.index(panel, k, r), x, y, z);
     }
   }
 }
