@@ -44,8 +44,8 @@ export function ringJaggedness(normals: readonly Vec3Like[]): RingJaggedness {
 }
 
 export interface ArmholeRingJaggedness extends RingJaggedness {
-  // 패널 경계 두 지점을 따로 보고한다. shoulder는 maxDeg/varianceDeg2에서
-  // 제외된 값이고, armpit은 포함돼 있지만 경계라서 참고용으로 같이 낸다.
+  // maxDeg/varianceDeg2에서 제외한 앞판↔뒤판 경계 두 지점 — 버리지 않고
+  // 그대로 노출해 정보 손실이 없게 한다.
   panelBoundaryDeg: { shoulder: number; armpit: number };
 }
 
@@ -55,17 +55,24 @@ export interface ArmholeRingJaggedness extends RingJaggedness {
 //   diffsDeg[n-1]     = back row0 ↔ front row0   = 어깨 접합부
 //   diffsDeg[n/2 - 1] = front row(asr) ↔ back row(asr) = 겨드랑이 접합부
 //
-// 어깨 접합부는 앞판/뒤판이 별개 BufferGeometry라 computeVertexNormals()가
-// 서로 독립적으로 법선을 계산한다 — 앞판은 가슴 쪽(+Z), 뒤판은 등 쪽(-Z)을
-// 향해 구조적으로 크게 어긋나는 게 정상이다(실측 90~111°). 이 값이 max()를
-// 독점해서, 나머지 10개 인접쌍이 아무리 개선돼도 지표가 전혀 안 움직였다
-// (docs/pattern-redesign.md 8/10번: 다섯 가지 소매 전용 변형 내내 armhole
-// 성분이 고정이었던 것, 16/17번: 링을 24점으로 늘려도 무변화였던 것이 전부
-// 이걸로 설명된다). 그래서 maxDeg/varianceDeg2에서 어깨만 빼고, 뺀 값은
-// panelBoundaryDeg.shoulder로 그대로 노출해 놓친 게 없게 한다.
+// 이 두 지점은 앞판/뒤판이 별개 BufferGeometry라 computeVertexNormals()가
+// 서로 독립적으로 법선을 계산한다 — 어깨에서 앞판은 가슴 쪽(+Z), 뒤판은 등
+// 쪽(-Z)을 향해 구조적으로 크게 어긋나는 게 정상이다(실측 90~111°). 즉 두
+// 값은 "천이 얼마나 톱니졌나"가 아니라 "앞뒤판이 몇 도로 만나나"라는 기하학적
+// 아티팩트라, 천 품질 지표에 섞이면 안 된다.
 //
-// 겨드랑이는 실측 32~40°로 내부값과 같은 자릿수라 이상치가 아니다 — 빼지
-// 않고 통계에 그대로 포함하되 위치가 경계라는 것만 별도로 보고한다.
+// 어깨를 안 뺐을 때: max()를 독점해서 나머지 인접쌍이 아무리 개선돼도 지표가
+// 전혀 안 움직였다(docs/pattern-redesign.md 8/10번 — 소매 전용 변형 다섯 번
+// 내내 armhole 고정, 16/17번 — 링을 24점으로 늘려도 무변화가 전부 이걸로
+// 설명된다).
+//
+// 어깨만 뺐을 때(18번 실측): 이번엔 겨드랑이가 max를 잡았다 — 품50·품65에서
+// "어깨제외 max"가 겨드랑이값과 정확히 일치(47.7/64.1/87.1/87.9/89.7). 게다가
+// 겨드랑이 자체가 품55 9.6° ~ 품65 89.7°로 9배 변동해, 천이 아니라 품(둘레)에
+// 따라 앞뒤판이 만나는 각도가 달라지는 것을 그대로 재고 있었다.
+//
+// 그래서 둘 다 통계에서 뺀다. 뺀 값은 panelBoundaryDeg로 그대로 노출하고
+// diffsDeg도 링 전체를 유지하므로 정보 손실은 없다.
 export function armholeRingJaggedness(normals: readonly Vec3Like[]): ArmholeRingJaggedness {
   const n = normals.length;
   const diffsDeg = ringDiffsDeg(normals);
@@ -73,7 +80,7 @@ export function armholeRingJaggedness(normals: readonly Vec3Like[]): ArmholeRing
   // armpitIdx가 반칸 어긋난다. 호출부가 하나뿐이라 방어 대신 전제만 적어둔다.
   const shoulderIdx = n - 1;
   const armpitIdx = n / 2 - 1;
-  const considered = diffsDeg.filter((_, k) => k !== shoulderIdx);
+  const considered = diffsDeg.filter((_, k) => k !== shoulderIdx && k !== armpitIdx);
   return {
     ...summarize(diffsDeg, considered),
     panelBoundaryDeg: {

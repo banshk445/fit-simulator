@@ -893,10 +893,10 @@ export function Garment({ imageUrl }: Props) {
       const sleeveRightRows = sleeveRowsJaggedness(sleeveGeometryRight);
 
       const result = {
-        // 암홀만 armholeRingJaggedness — maxDeg에서 어깨 접합부(앞판↔뒤판
-        // 별개 geometry라 구조적으로 ~90~111°)를 빼고, 뺀 값은
-        // panelBoundaryDeg.shoulder로 따로 본다(seamDiagnostics.ts 주석 참고).
-        // 소매 링은 같은 패널이라 기존 ringJaggedness 그대로.
+        // 암홀만 armholeRingJaggedness — maxDeg에서 앞판↔뒤판 경계 2곳
+        // (어깨/겨드랑이)을 빼고, 뺀 값은 panelBoundaryDeg로 따로 본다
+        // (seamDiagnostics.ts 주석 참고). 소매 링은 같은 패널 하나로 닫힌
+        // 원통이라 기존 ringJaggedness 그대로.
         armholeLeft: armholeRingJaggedness(armholeRingNormals(xMin)),
         armholeRight: armholeRingJaggedness(armholeRingNormals(xMax)),
         sleeveLeftRows,

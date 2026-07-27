@@ -117,9 +117,10 @@ interface ComboResult {
   // 톱니가 몸판(암홀 링, 소매 무관)에서 오는지 소매 링에서 오는지 구분 —
   // pattern-redesign.md 4번(소매 전용 구현) 검증용 세부 지표.
   //
-  // armholeJaggednessDeg는 어깨 접합부(앞판↔뒤판 별개 geometry, 구조적으로
-  // ~90~111°)를 제외한 값이다 — 제외한 값 자체는 armholeShoulderDeg로 따로
-  // 낸다(seamDiagnostics.ts의 armholeRingJaggedness 주석 참고).
+  // armholeJaggednessDeg는 앞판↔뒤판 경계 2곳(어깨/겨드랑이)을 모두 제외한
+  // 내부값이다 — 두 경계는 천 톱니가 아니라 "앞뒤판이 몇 도로 만나나"라는
+  // 기하학적 아티팩트라서 뺐다. 뺀 값들은 armholeShoulderDeg/armholeArmpitDeg로
+  // 그대로 낸다(seamDiagnostics.ts의 armholeRingJaggedness 주석 참고).
   armholeJaggednessDeg: number;
   armholeShoulderDeg: number;
   armholeArmpitDeg: number;
@@ -211,9 +212,8 @@ function runCombo(widthM: number, sleeveWidthM: number): ComboResult {
     for (let k = 0; k < SLEEVE_RING_COLS; k++) pts.push(readNormal(attr, row * SLEEVE_RING_COLS + k));
     return pts;
   };
-  // 암홀만 armholeRingJaggedness — maxDeg에서 어깨 접합부를 뺀 값이라
-  // "실제 개선에 반응하는" 지표다. 뺀 값(shoulder)과 참고용 경계값(armpit)은
-  // 좌우 중 큰 쪽을 그대로 같이 낸다.
+  // 암홀만 armholeRingJaggedness — maxDeg가 경계 2곳을 뺀 내부값이라
+  // "실제 개선에 반응하는" 지표다. 뺀 두 경계값은 좌우 중 큰 쪽을 같이 낸다.
   const armholeLeft = armholeRingJaggedness(armholeRingNormalsAt(xMin));
   const armholeRight = armholeRingJaggedness(armholeRingNormalsAt(xMax));
   const armholeJaggednessDeg = Math.max(armholeLeft.maxDeg, armholeRight.maxDeg);
@@ -254,10 +254,11 @@ for (const widthM of WIDTHS_M) {
 
 console.log(`[paramSweep] ${FRAMES}프레임(${SECONDS}s) × ${results.length}조합`);
 console.table(results);
-// armhole은 어깨 접합부 제외값(=지표) / 제외한 어깨값 / 참고용 겨드랑이값을
-// 나란히 찍는다 — console.table이 잘려도 이 셋은 항상 보이게, 그리고 어깨값이
-// 계속 90~111°대인지(=제외 인덱스가 맞게 잡혔는지) 매번 자체 확인되도록.
-console.log("[paramSweep] armhole (지표=어깨제외 / 어깨접합부 / 겨드랑이참고):");
+// armhole은 내부값(=지표) / 뺀 어깨값 / 뺀 겨드랑이값을 나란히 찍는다 —
+// console.table이 잘려도 이 셋은 항상 보이게, 그리고 두 경계값이 계속
+// 내부값과 뚜렷이 다른 자릿수인지(=제외 인덱스가 맞게 잡혔는지) 매번
+// 자체 확인되도록.
+console.log("[paramSweep] armhole (지표=경계2개제외 / 어깨접합부 / 겨드랑이접합부):");
 for (const r of results) {
   console.log(`  품${r.widthM * 100}cm/소매통${r.sleeveWidthM * 100}cm: ${r.armholeJaggednessDeg}° / ${r.armholeShoulderDeg}° / ${r.armholeArmpitDeg}°`);
 }
