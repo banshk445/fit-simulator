@@ -527,3 +527,100 @@ B도 크게 개선하지만 C가 처짐을 거의 완전히 해결(B의 약 1/3 
    간접적으로 흔드는 건지 추가 진단 (14번 문단의 몸판 저해상도 문제와
    같은 근원일 가능성)
 3. 3콤보만 본 것이라 12콤합 전체 스윕으로 편차 크기 재확인 필요
+
+## 16. 암홀 링 12점→24점 스플라인 리샘플링 — 구현, maxSeamGapCm 회귀 확인, 완화 시도 기각
+
+**배경**: 14번에서 out-of-scope로 미뤄둔 몸판 암홀 저해상도(12각형) 문제
+재착수. `armholeRingVertices()`가 raw 12점을 그대로 반환하던 것을
+Catmull-Rom 닫힌 스플라인으로 `SLEEVE_RING_COLS`(24)개로 리샘플링 —
+COLS/ROWS(몸판 물리 해상도)는 안 건드리고 링 다각형 "추출 방식"만 변경.
+원래 raw 12점은 출력 짝수 인덱스에 그대로 보존(스플라인이 원 제어점을
+정확히 통과), 홀수 인덱스가 새 보간점.
+
+**구현**:
+- `clothConfig.ts`: `SLEEVE_RING_COLS` 12→24.
+- `buildGarmentSim.ts`: raw 추출을 `rawArmholeRingVertices`로 분리 export
+  (실제 몸판 정점이 필요한 곳— 시접 물리, 회귀 측정 — 은 이 함수를 써야
+  함, 스무딩된 `armholeRingVertices()`를 쓰면 실제 정점과 최대 반 세그먼트
+  어긋남). `armholeRingVertices()` = raw + `resampleClosedCatmullRom`.
+- `addSleeveArmholeSeam`: raw 시접점 12개가 소매 컬럼 24개의 절반이라
+  1:2 중복 매핑(raw index i → 소매 컬럼 2i, 2i+1) 채택(AskUserQuestion으로
+  확답). 코너 이즈인(SEAM_EASE_START) 판정을 raw index 기준으로 바꿔
+  4개 컬럼(원래 코너 2개 × stride 2)에 전부 적용되도록 수정 — 안 하면
+  중복 컬럼 중 절반이 이즈인 없이 바로 스냅됨.
+- `paramSweep.ts`의 `seamGapCm`, `Garment.tsx`의 `sleeveGridCheck`/
+  `sleeveSeamCheck`도 같은 raw+stride 매핑으로 갱신(스무딩된 24점과
+  비교하면 홀수 컬럼에서 가짜 갭이 생김).
+- `npx tsc -b` 클린.
+
+**회귀 확인(`npm run sweep:pattern`, 12조합, 같은 세션에서 구코드 재실측
+— 문서 옛 수치 대신 직접 재확인)**: 베이스라인 `maxSeamGapCm` 전 조합
+정확히 0.72cm(고정) → 새 코드 **1.32~1.56cm**(약 2배). `maxPenetrationMm`/
+`armholeJaggednessDeg`/발산 여부는 베이스라인과 동등, 회귀 아님. 원인
+추정: 중복 컬럼 2개가 같은 raw 점 하나를 SEAM_REST_LENGTH(6mm)로 동시에
+당기는데, 둘 사이 원래 100% 강성 구조 제약이 시접과 경쟁해 PBD 반복
+안에서 예전만큼 안 좁혀짐(13번 문단 "제약 경쟁 시 수렴 저하" 패턴 재현).
+
+**완화 시도(`/safe-experiment`) — 기각**: 중복 쌍(2i↔2i+1, row0만)
+구조 제약만 `scaleConstraintStiffness`로 완화(`SLEEVE_STIFFNESS_AT_TIP`
+패턴 재사용), 나머지 링 구조는 그대로 둠. 목표: `maxSeamGapCm`이
+베이스라인(0.72cm 부근)으로 복귀.
+```
+factor=0.4: maxSeamGapCm 1.29~1.45cm (거의 무변화)
+factor=0.3: maxSeamGapCm 1.25~1.45cm (거의 무변화)
+```
+0.4/0.3 모두 무처리(1.32~1.56cm) 대비 유의미한 개선 없음 — 이 특정
+엣지(중복 쌍 구조 제약)는 병목이 아니었던 것으로 결론. `/safe-experiment`
+기준(목표 미달 시 원복) 적용 — `dampenSleeveDuplicateSeamPairs` 함수와
+호출부 제거, 코드는 1:2 매핑 상태(리샘플링+addSleeveArmholeSeam 수정)로
+복귀. 커밋 없음.
+
+**결론**: 12→24 리샘플링 자체(코드, tsc 클린)는 유지 상태로 남아있지만
+`maxSeamGapCm`이 목표 범위(0.59~0.72cm)에 못 미침 — 병목이 중복 쌍
+엣지가 아니라면 다른 원인(전체 PBD 반복 횟수 부족, 코너 이즈인 자체의
+간격, 또는 애초에 1:2 중복 매핑 구조 자체의 한계) 가능성. 다음 결정
+지점: (a) 짝수 컬럼만 직접 시접(문서에서 먼저 기각했던 옵션)으로 다시
+시도, (b) PBD 반복 횟수/서브스텝 자체를 늘려보는 실험, (c) 목표를
+1.5cm대로 낮춰 수용, 사용자 판단 필요.
+
+**옵션(a) 재시도(`/safe-experiment`) — 성공**: 짝수 컬럼(k=2·rawK)만
+raw 점에 직접 시접, 홀수 컬럼(k=2·rawK+1)은 시접 제약 자체를 없앰(링
+구조 제약으로만 자리잡음 — row1~11이 원래 시접 없이 구조 제약만으로
+자리잡는 패턴을 row0 홀수 컬럼까지 확장한 것과 동일). `addSleeveArmholeSeam`/
+`paramSweep.ts`의 `seamGapCm`/`Garment.tsx`의 `sleeveGridCheck`·
+`sleeveSeamCheck` 전부 "짝수 컬럼 12개만 raw 점과 비교"로 통일(홀수는
+애초에 시접 대상이 없어 "갭" 개념이 안 맞음 — 측정에서 제외).
+
+실측(`npm run sweep:pattern`, 12조합):
+```
+maxSeamGapCm: 베이스라인 0.72cm → 0.72~0.78cm (사실상 동일)
+sleeveJaggednessDeg(row0~11 최댓값, 12번 문단 방식): 베이스라인 상한 177.7°
+  → 새 코드 상한 179.2° (거의 동일, 새 악화 없음 — 단 이 값 자체는
+  원래도 미해결이던 문제라 "개선"은 아니고 "안 나빠짐")
+armholeJaggednessDeg/maxPenetrationMm: 콤보별 ±5~10 안팎 변동, 베이스라인
+  범위 안. 발산 12조합 전부 없음.
+```
+`maxSeamGapCm`은 목표(0.59~0.72cm 부근)를 달성. `sleeveJaggednessDeg`는
+24컬럼(홀수 포함) 전체 법선 기반 지표라 홀수 컬럼이 눈에 띄게 뜯겨나가진
+않았다는 간접 근거는 되지만, 홀수 컬럼 자체의 몸판까지 거리는 정의상
+측정 안 함(시접 대상이 없어서) — 완전한 확인은 브라우저 육안(CLAUDE.md
+방침)으로 남겨둠. `npx tsc -b` 클린. 커밋 없음(사용자 확인 대기).
+
+## 17. 옵션2 이후 — 브라우저 실측 실패, SelfCollision 조사, 전체 원복
+
+브라우저 sleeveSeamCheck() 재실측 결과 옵션2도 실패 확인: node 스윕(0.72~0.78cm)
+과 달리 실제 앱에서는 row0 정착 갭이 최대 2.9~3.0cm로 그대로였다. 원인은
+SelfCollision — seamSkipPairs가 addSleeveArmholeSeam이 실제로 만든 제약(짝수
+컬럼)만 캡처해, 홀수(무제약) 컬럼이 SELF_COLLISION_MIN_DIST(5.5mm)에 걸려
+몸판에서 밀려나는 것으로 추정. paramSweep.ts엔 SelfCollision 자체가 없어 이
+힘겨루기가 재현 안 되고 통과했던 것 — node 스윕이 이 실패를 못 잡는 구조적
+이유.
+
+홀수 컬럼도 자체충돌 예외에 포함시키는 수정을 추가로 시도했으나 재실측값
+사실상 무변화(2.9965cm) — SelfCollision이 진범이 아니었음이 확인됨.
+
+**결론**: 4가지 독립 시도(1:2 중복매핑, 엣지강성완화, 옵션2, SelfCollision예외)
+전부 목표(0.6~0.8cm) 도달 실패. 튜닝 문제가 아니라 24점 확장 설계 자체의
+구조적 한계로 판단, 전체 원복(git checkout, 5파일)함. 톱니 삼각형은 여전히
+미해결 — 근본 해법은 몸판(front/back) 코드 확장뿐, 다음 세션에서 각오하고
+재착수하거나 현재 상태를 수용할지 결정 필요.
