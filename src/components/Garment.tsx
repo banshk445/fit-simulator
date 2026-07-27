@@ -876,22 +876,19 @@ export function Garment({ imageUrl }: Props) {
     };
   }, [sleeveGeometryLeft, sleeveGeometryRight]);
 
-  // 어깨 갭이 "물리 문제"인지 "메시 연결 부재"인지 가르는 진단.
+  // 이음매 커버리지 진단 — 어느 구간이 시임 브리지로 덮여 있고, 어느 구간이
+  // 아직 폴리곤 없이 뚫려 있는지 가른다.
   //
-  // sleeveSeamCheck는 몸판 점↔소매 점 거리만 재지만, 화면에 구멍으로 보이는지를
-  // 결정하는 건 그 사이를 덮는 삼각형이 있느냐다. 렌더 경로를 따라가 보면
-  // 이음매를 덮는 삼각형은 구조적으로 0개다:
-  //   - 몸판: frontTorsoRenderGeometry/backTorsoRenderGeometry가
-  //     buildRegionPlaneGeometry(xMin..xMax)로 만들어져 frontPosTex/backPosTex를
-  //     샘플링(injectProxyBinding). 바깥 경계가 정확히 열 xMin/xMax에서 끝난다.
-  //   - 소매: sleeveTubeGeometryLeft/Right가 sleevePosTexLeft/Right를 샘플링.
-  //   두 메시는 서로 다른 텍스처를 읽는 별개 BufferGeometry라, 두 면을 동시에
-  //   참조하는 정점 자체가 존재할 수 없다 → 이음매를 잇는 폴리곤 0개.
-  //   앞판↔뒤판도 같다(별개 <mesh>). 즉 이 옷은 어디에서도 폴리곤으로 안 붙어
-  //   있고 오직 물리 제약(addSleeveArmholeSeam 등)으로만 붙어 있다.
+  // 배경(문서 21번): 앞판/뒤판/소매는 각자 별개 BufferGeometry + 별개 위치
+  // 텍스처라, 원래 이음매를 잇는 폴리곤이 하나도 없었다 — 물리 제약으로만
+  // 붙어 있어서 물리가 6mm까지 좁혀도 화면엔 그대로 구멍이었다. seamBridge가
+  // 그중 어깨선과 암홀 링을 덮었고, 이 훅은 (a) 브리지가 실제로 몇 개
+  // 삼각형으로 무엇을 덮고 있는지와 (b) 아직 안 덮인 이음매의 개구폭을
+  // 나눠서 보고한다.
   //
-  // 그래서 남는 질문은 "어느 이음매가 제일 넓게 벌어져 있나"뿐이고 이 훅이
-  // 그걸 잰다. 여기서 나온 cm가 곧 화면에서 마네킹이 비쳐 보이는 폭이다.
+  // **bridgedSpanCm은 "구멍 폭"이 아니라 "브리지가 덮고 있는 폭"이다** —
+  // 값이 커도 결함이 아니다(그만큼 넓은 띠가 덮고 있다는 뜻). 진짜 구멍은
+  // unbridgedSpanCm 쪽이다.
   // 콘솔에서 `window.__fitDebug.shoulderGapGeometry()` 호출.
   useEffect(() => {
     const win = window as unknown as { __fitDebug?: Record<string, unknown> };
@@ -899,47 +896,97 @@ export function Garment({ imageUrl }: Props) {
     win.__fitDebug.shoulderGapGeometry = () => {
       const armholeStartRow = Math.round(ROWS * ARMHOLE_ROW_FRACTION);
       const { xMin, xMax } = torsoColumnRangeRef.current;
+      const arrays = {
+        front: frontPositions,
+        back: backPositions,
+        sleeveLeft: sleevePositionsLeft,
+        sleeveRight: sleevePositionsRight,
+      };
       const torsoPt = (arr: Float32Array, col: number, row: number) => {
         const i = (row * COLS + col) * 3;
         return { x: arr[i], y: arr[i + 1], z: arr[i + 2] };
       };
-      const sleevePt = (arr: Float32Array, k: number, r: number) => {
-        const i = (r * SLEEVE_RING_COLS + k) * 3;
+      const refPt = (ref: { source: keyof typeof arrays; index: number }) => {
+        const arr = arrays[ref.source];
+        const i = ref.index * 3;
         return { x: arr[i], y: arr[i + 1], z: arr[i + 2] };
       };
       const cm = (a: { x: number; y: number; z: number }, b: { x: number; y: number; z: number }) =>
         Number((Math.hypot(a.x - b.x, a.y - b.y, a.z - b.z) * 100).toFixed(3));
+      const maxOf = (a: number[]) => (a.length === 0 ? 0 : Number(Math.max(...a).toFixed(3)));
 
-      // (1) 몸판 암홀 경계 ↔ 소매 row0 — 링 순서(front row0..asr, back asr..0).
-      const armholeToSleeve = (col: number, sleeve: Float32Array) => {
+      // (a) 브리지가 실제로 무엇을 덮고 있나 — 지오메트리에서 직접 센다
+      // (예전엔 여기가 "구조적으로 0"이라고 하드코딩돼 있었다).
+      const bridge = seamBridgeRef.current;
+      const bridgeIndex = bridge.geometry.getIndex();
+      const perStrip = bridge.layouts.map(({ strip }) => {
+        const p = strip.pairs.length;
+        return { name: strip.name, pairs: p, closed: strip.closed, triangles: 2 * (strip.closed ? p : p - 1) };
+      });
+      // 스트립별 폭 = 각 쌍의 두 정점 사이 거리(=그 자리에서 띠가 덮는 폭).
+      const bridgedSpanCm = Object.fromEntries(
+        bridge.layouts.map(({ strip }) => {
+          const spans = strip.pairs.map((pr) => cm(refPt(pr.a), refPt(pr.b)));
+          return [strip.name, { perPair: spans, max: maxOf(spans) }];
+        }),
+      );
+
+      // (b) 아직 폴리곤이 없는 이음매 = 진짜 구멍.
+      // 옆선: addTorsoSideSeamConstraints가 열 xMin/xMax의 row
+      // armholeStartRow..ROWS-1에서 앞/뒤판을 물리로만 잡는다 — 브리지 없음.
+      // 겨드랑이부터 밑단까지 세로로 이어지는 슬릿이고 좌우·앞뒤 대칭이다.
+      const sideSeam = (col: number) => {
         const out: number[] = [];
-        let k = 0;
-        for (let y = 0; y <= armholeStartRow; y++) out.push(cm(torsoPt(frontPositions, col, y), sleevePt(sleeve, k++, 0)));
-        for (let y = armholeStartRow; y >= 0; y--) out.push(cm(torsoPt(backPositions, col, y), sleevePt(sleeve, k++, 0)));
+        for (let y = armholeStartRow; y < ROWS; y++) out.push(cm(torsoPt(frontPositions, col, y), torsoPt(backPositions, col, y)));
         return out;
       };
-      const leftArmhole = armholeToSleeve(xMin, sleevePositionsLeft);
-      const rightArmhole = armholeToSleeve(xMax, sleevePositionsRight);
+      const sideLeft = sideSeam(xMin);
+      const sideRight = sideSeam(xMax);
 
-      // (2) 앞판 ↔ 뒤판 어깨선(row0) 슬릿 — 실제로 렌더되는 몸통 열만.
-      // pinCorners가 이 구간 row0을 앞/뒤 각각 독립적으로 핀하고,
-      // clothPhysics.ts:257(pinnedA && pinnedB면 제약 스킵)이 넥라인 시접을
-      // 통째로 스킵하므로 물리가 이 간격을 아예 안 좁힌다(문서 15번 Q1/Q2).
-      const frontBackRow0: number[] = [];
-      for (let x = xMin; x <= xMax; x++) frontBackRow0.push(cm(torsoPt(frontPositions, x, 0), torsoPt(backPositions, x, 0)));
+      // (c) 스트립 접합부 정점 일치 — 어깨 스트립 양 끝 쌍과 암홀 링의
+      // 첫/마지막 쌍이 같은 몸판 정점을 참조해야 두 띠가 변 하나를 공유하며
+      // 이어진다. 참조(source+index) 동일성과 실제 좌표 거리를 둘 다 본다.
+      const stripByName = new Map(bridge.layouts.map(({ strip }) => [strip.name, strip]));
+      const shoulder = stripByName.get("shoulder");
+      const junction = ["armholeLeft", "armholeRight"].map((ringName) => {
+        const ring = stripByName.get(ringName);
+        if (!ring || !shoulder) return { ring: ringName, ok: false, note: "스트립 없음" };
+        // 왼팔 링은 어깨 스트립의 첫 쌍(xMin), 오른팔 링은 마지막 쌍(xMax)과 만난다.
+        const sh = ringName === "armholeLeft" ? shoulder.pairs[0] : shoulder.pairs[shoulder.pairs.length - 1];
+        const ringFirst = ring.pairs[0]; // k=0 = front row0
+        const ringLast = ring.pairs[ring.pairs.length - 1]; // k=마지막 = back row0
+        const sameRef = (p: { source: string; index: number }, q: { source: string; index: number }) => p.source === q.source && p.index === q.index;
+        return {
+          ring: ringName,
+          frontRefMatches: sameRef(ringFirst.a, sh.a),
+          backRefMatches: sameRef(ringLast.a, sh.b),
+          frontCoordDistCm: cm(refPt(ringFirst.a), refPt(sh.a)),
+          backCoordDistCm: cm(refPt(ringLast.a), refPt(sh.b)),
+        };
+      });
 
-      const maxOf = (a: number[]) => Number(Math.max(...a).toFixed(3));
       const result = {
-        // 이음매를 덮는 삼각형 수 — 위 주석대로 구조적으로 0(런타임 측정이
-        // 아니라 렌더 그래프상 불가능하다는 사실 자체를 명시한다).
-        bridgingTriangles: 0,
-        bridgingReason:
-          "몸판(frontPosTex/backPosTex)과 소매(sleevePosTexLeft/Right)가 별개 BufferGeometry+별개 텍스처라 두 면을 잇는 정점이 존재할 수 없음. 앞판↔뒤판도 별개 mesh.",
-        armholeToSleeveCm: { left: leftArmhole, right: rightArmhole, maxLeft: maxOf(leftArmhole), maxRight: maxOf(rightArmhole) },
-        frontBackRow0Cm: { perColumn: frontBackRow0, max: maxOf(frontBackRow0), colRange: [xMin, xMax] },
-        maxOpenSpanCm: maxOf([...leftArmhole, ...rightArmhole, ...frontBackRow0]),
+        bridge: {
+          triangles: bridgeIndex ? bridgeIndex.count / 3 : 0,
+          strips: perStrip,
+        },
+        // 구멍 아님 — 브리지가 덮고 있는 폭.
+        bridgedSpanCm,
+        // 진짜 구멍 — 아직 폴리곤이 없는 구간.
+        unbridgedSpanCm: {
+          sideSeam: {
+            left: sideLeft,
+            right: sideRight,
+            maxLeft: maxOf(sideLeft),
+            maxRight: maxOf(sideRight),
+            rowRange: [armholeStartRow, ROWS - 1],
+            cols: [xMin, xMax],
+          },
+        },
+        maxUnbridgedSpanCm: maxOf([...sideLeft, ...sideRight]),
+        stripJunction: junction,
       };
-      console.log("[SHOULDER-GAP-GEOMETRY]", JSON.stringify(result));
+      console.log("[SEAM-COVERAGE]", JSON.stringify(result));
       return result;
     };
   }, [frontPositions, backPositions, sleevePositionsLeft, sleevePositionsRight]);

@@ -857,3 +857,44 @@ wrap도 명시적으로 확인. 하드코딩을 없애고 `clothConfig`의 실�
 
 `npx tsc -b` 클린, `check:seambridge` PASS, `check:sleeve` PASS(2.16cm, 회귀
 없음). 물리 코드 무변경. 화면 확인은 사용자.
+
+### 21-3. 진단 갱신 + 남은 세로 슬릿의 원인 = 옆선(미봉합)
+
+**진단이 stale이었음**: `shoulderGapGeometry()`가 브리지 메시가 실제로
+존재하는데도 `bridgingTriangles: 0`을 하드코딩으로 반환하고,
+`bridgingReason`도 브리지 도입 전 문장("두 면을 잇는 정점이 존재할 수 없음")을
+그대로 내보내고 있었다. 필드 의미도 "미봉합 개구폭"이었는데 이제 그 구간들은
+덮여 있어서, 다음에 읽는 사람이 구멍으로 오해할 수 있는 상태였다.
+
+갱신 내용 (로그 태그도 `[SHOULDER-GAP-GEOMETRY]` → `[SEAM-COVERAGE]`):
+- `bridge.triangles` — 지오메트리 인덱스 버퍼에서 **직접 센다**. `bridge.strips`에
+  스트립별 `{name, pairs, closed, triangles}`.
+- `bridgingReason` **삭제**.
+- `armholeToSleeveCm`/`frontBackRow0Cm` → **`bridgedSpanCm`**(스트립 이름별,
+  쌍마다 두 정점 사이 거리 = 그 자리에서 띠가 덮는 폭). **구멍 폭이 아니라
+  덮는 폭**이고 값이 커도 결함이 아니라는 걸 주석과 필드명에 명시.
+- **`unbridgedSpanCm`** 신설 — 아직 폴리곤이 없는 이음매만. 현재는 옆선.
+- `stripJunction` — 아래 조사용.
+
+**세로 슬릿 원인 규명 — 접합부는 무죄**: 사용자가 앞뒤 대칭 세로 슬릿을 보고
+"어깨/암홀 두 스트립 접합부에 미커버 구간이 있는 것 같다"고 추정했으나,
+참조(source+index) 대조 결과 **정확히 같은 정점을 공유한다**:
+```
+어깨 첫 쌍(x=xMin)  a=front row0 xMin ≡ 왼팔 링 k=0  a
+                    b=back  row0 xMin ≡ 왼팔 링 k=11 a
+어깨 끝 쌍(x=xMax)  a=front row0 xMax ≡ 오른팔 링 k=0  a
+                    b=back  row0 xMax ≡ 오른팔 링 k=11 a
+```
+`check:seambridge`에 이 연속성 검사를 추가해 못 박음(PASS).
+
+**진범은 옆선**: `addTorsoSideSeamConstraints`(buildGarmentSim.ts)가 열
+xMin/xMax의 **row armholeStartRow(5)~ROWS-1(27)** 에서 앞판↔뒤판을 물리
+제약으로만 잡는다 — 브리지가 없다. 즉 **겨드랑이부터 밑단까지 세로로 이어지는
+슬릿**이고, 좌우 두 곳에 앞뒤 대칭으로 존재한다. 사용자가 본 형상과 정확히
+일치한다. 21번에서 "남은 미봉합 이음매는 옆선과 넥라인"이라고 이미 적어둔
+것이 실제로 화면에 드러난 것.
+
+**다음 단계(미착수)**: 옆선 스트립 추가 — `(front (col,y), back (col,y))`
+쌍을 y=armholeStartRow..ROWS-1로, 좌우 2개, `closed: false`. 일반화 형태
+그대로라 쌍 목록만 추가하면 된다. 넥라인은 그 다음(row0의 xMin~xMax 구간은
+이미 어깨 스트립이 덮고 있어 실제로 남은 건 목둘레 곡선 안쪽인지 재확인 필요).

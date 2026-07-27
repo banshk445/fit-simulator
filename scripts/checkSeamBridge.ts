@@ -170,4 +170,27 @@ function assertIndicesInRange(bridge: ReturnType<typeof buildSeamBridge>): void 
   assert.ok(normalSum > 0, "법선이 전부 0 — computeVertexNormals가 안 돌았거나 스트립이 축퇴함");
 }
 
-console.log("[checkSeamBridge] PASS — 열린/닫힌 스트립 토폴로지, 암홀 링 순회 순서(물리 봉제선과 동일), wrap 닫힘, 오프셋, 좌표 복사, 법선 생성 확인");
+// 5) 스트립 접합부 연속성 — 어깨 스트립 양 끝 쌍과 좌/우 암홀 링의 첫/마지막
+// 쌍이 **같은 몸판 정점**을 참조해야 두 띠가 변 하나를 공유하며 이어진다.
+// 참조가 어긋나면 어깨 모서리에 삼각형 크기의 구멍이 남는다.
+{
+  const xMin = 10;
+  const xMax = 33;
+  const shoulder = shoulderSeamStrip(xMin, xMax, COLS);
+  const ringLeft = armholeSeamStrip("armholeLeft", xMin, "sleeveLeft", ARMHOLE_START_ROW, COLS);
+  const ringRight = armholeSeamStrip("armholeRight", xMax, "sleeveRight", ARMHOLE_START_ROW, COLS);
+
+  const sameRef = (p: { source: string; index: number }, q: { source: string; index: number }) => p.source === q.source && p.index === q.index;
+
+  // 왼팔 링은 어깨 스트립의 첫 쌍(xMin)과 만난다.
+  // 링 k=0은 front row0, 링 마지막(k=11)은 back row0 — 어깨 쌍의 a/b와 각각 같아야 한다.
+  assert.ok(sameRef(ringLeft.pairs[0].a, shoulder.pairs[0].a), "왼팔 링 k=0(front row0)이 어깨 스트립 첫 쌍 a와 다른 정점");
+  assert.ok(sameRef(ringLeft.pairs[ringLeft.pairs.length - 1].a, shoulder.pairs[0].b), "왼팔 링 마지막(back row0)이 어깨 스트립 첫 쌍 b와 다른 정점");
+
+  // 오른팔 링은 어깨 스트립의 마지막 쌍(xMax)과 만난다.
+  const shLast = shoulder.pairs[shoulder.pairs.length - 1];
+  assert.ok(sameRef(ringRight.pairs[0].a, shLast.a), "오른팔 링 k=0(front row0)이 어깨 스트립 마지막 쌍 a와 다른 정점");
+  assert.ok(sameRef(ringRight.pairs[ringRight.pairs.length - 1].a, shLast.b), "오른팔 링 마지막(back row0)이 어깨 스트립 마지막 쌍 b와 다른 정점");
+}
+
+console.log("[checkSeamBridge] PASS — 열린/닫힌 스트립 토폴로지, 암홀 링 순회 순서(물리 봉제선과 동일), wrap 닫힘, 오프셋, 좌표 복사, 법선 생성, 어깨↔암홀 접합부 정점 일치 확인");
