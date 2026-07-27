@@ -67,6 +67,46 @@ export function shoulderSeamStrip(xMin: number, xMax: number, cols: number): Sea
   return { name: "shoulder", pairs, closed: false };
 }
 
+// 암홀 링: 몸판 암홀 가장자리 ↔ 소매 row0. 실측 개구폭 2.7cm로 어깨선(0.8cm)
+// 보다 훨씬 큰 주범이다(문서 21번).
+//
+// **순회 순서는 물리 봉제선 addSleeveArmholeSeam(buildGarmentSim.ts)과 반드시
+// 같아야 한다** — 아래는 그 함수와 나란히 읽히도록 일부러 같은 구조로 썼다:
+//   k = 0..armholeStartRow          → front (col, y=0..armholeStartRow)
+//   k = armholeStartRow+1..2·asr+1  → back  (col, y=armholeStartRow..0, 역순)
+//   반대쪽(b)은 언제나 소매 (k, row0)
+// 순서가 어긋나면 쿼드가 꼬여 화면에 "나비넥타이"로 즉시 드러난다.
+// 좌/우 대응도 호출부와 같다: 왼팔 소매 ↔ 열 xMin, 오른팔 소매 ↔ 열 xMax.
+//
+// 링이므로 closed: true — 마지막 쌍(k=2·asr+1, back row0)과 첫 쌍(k=0,
+// front row0)을 잇는 wrap 쿼드가 어깨 코너를 덮는다. 그 코너의 몸판 쪽 두
+// 점은 shoulderSeamStrip의 첫(또는 마지막) 쌍과 같은 점이라, 두 스트립이
+// 변 하나를 공유하며 어깨 모서리에서 자연스럽게 이어진다(겹침이 아니다).
+//
+// ponytail: 소매 정점 인덱스가 그냥 k인 건 row0이라 r*SLEEVE_RING_COLS가 0이기
+// 때문. 전제는 2*(armholeStartRow+1) === SLEEVE_RING_COLS(현재 12=12)이고,
+// 어긋나면 k가 소매 row1로 넘어가 조용히 엉뚱한 정점을 읽는다 —
+// scripts/checkSeamBridge.ts가 이 불변식을 실제 상수로 검사한다.
+export function armholeSeamStrip(
+  name: string,
+  torsoCol: number,
+  sleeveSource: Extract<SeamSource, "sleeveLeft" | "sleeveRight">,
+  armholeStartRow: number,
+  cols: number,
+): SeamStrip {
+  const pairs: SeamPair[] = [];
+  let k = 0;
+  for (let y = 0; y <= armholeStartRow; y++) {
+    pairs.push({ a: { source: "front", index: y * cols + torsoCol }, b: { source: sleeveSource, index: k } });
+    k++;
+  }
+  for (let y = armholeStartRow; y >= 0; y--) {
+    pairs.push({ a: { source: "back", index: y * cols + torsoCol }, b: { source: sleeveSource, index: k } });
+    k++;
+  }
+  return { name, pairs, closed: true };
+}
+
 // ---------------------------------------------------------------------------
 // 지오메트리 (위상만 — 위치는 매 프레임 updateSeamBridge가 채운다)
 // ---------------------------------------------------------------------------

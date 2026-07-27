@@ -818,3 +818,42 @@ ref 패턴을 쓴다(지오메트리와 쌍 테이블이 같은 `useMemo`에서 
 **다음 단계**: 어깨 브리지 화면 확인 → 괜찮으면 암홀 링(12쌍 closed) 쌍 목록
 추가. 암홀은 개구폭이 2.7cm로 훨씬 크고 링 wrap 순서가 얽혀 있어, 어깨보다
 쌍 순서 실수 위험이 크다(나비넥타이 쿼드로 즉시 드러남).
+
+### 21-2. 2단계 — 암홀 링 추가 (좌/우 12쌍 closed)
+
+**1단계 화면 확인 결과(사용자)**: 법선 아티팩트 없음 — 스트립 자체
+`computeVertexNormals`(평면 법선)로 충분함이 확인됐다. **둥근 스윕 업그레이드는
+계속 보류**(`seamBridge.ts`의 `ponytail:` 주석 유지). 메커니즘 전체 정상 작동,
+회귀 없음.
+
+**추가**: `armholeSeamStrip(name, torsoCol, sleeveSource, armholeStartRow, cols)`.
+좌/우 두 링 모두 `closed: true`. `Garment.tsx`의 `seamBridge` useMemo에 두 줄
+추가한 게 전부 — 지오메트리 생성/매 프레임 갱신/마운트/법선은 1단계 코드가
+그대로 처리한다(일반화 형태가 실제로 값을 한 이유).
+
+**순회 순서(물리 봉제선과 동일해야 하는 유일한 규약)**:
+```
+k = 0..armholeStartRow          → front (col, y=0..armholeStartRow)
+k = armholeStartRow+1..2·asr+1  → back  (col, y=armholeStartRow..0, 역순)
+b쪽은 언제나 소매 (k, row0)
+좌: sleeveLeft ↔ 열 xMin  /  우: sleeveRight ↔ 열 xMax
+```
+`addSleeveArmholeSeam`(buildGarmentSim.ts)과 나란히 읽히도록 같은 구조로 썼다.
+wrap 쿼드(k=11 back row0 → k=0 front row0)가 어깨 코너를 덮는데, 그 코너의
+몸판 쪽 두 점은 `shoulderSeamStrip`의 끝 쌍과 같은 점이라 두 스트립이 변
+하나를 공유하며 자연스럽게 이어진다(겹침 아님).
+
+**검증 — `check:seambridge` 확장**: 합성 링을 실제 `armholeSeamStrip`으로
+교체하고, k별로 소스(front/back)·행 번호(역순 포함)·소매 인덱스를 전부
+대조한다. 겨드랑이 경계(k=asr → k=asr+1이 같은 행에서 앞→뒤로 넘어감)와 어깨
+wrap도 명시적으로 확인. 하드코딩을 없애고 `clothConfig`의 실제 상수를 import해,
+`2*(armholeStartRow+1) === SLEEVE_RING_COLS` 불변식도 검사한다 — 어긋나면
+소매 인덱스 `k`가 row0을 넘어 row1로 조용히 넘어가는 종류의 버그다(이 프로젝트가
+16번에서 실제로 밟았던 지점).
+
+**변이 테스트로 체크 실효성 확인**: back 구간을 역순→정순으로 일부러 바꾸니
+`k=6 back row5(역순)`에서 즉시 실패, 원복 후 PASS. 체크가 순서 오류를 실제로
+잡는다.
+
+`npx tsc -b` 클린, `check:seambridge` PASS, `check:sleeve` PASS(2.16cm, 회귀
+없음). 물리 코드 무변경. 화면 확인은 사용자.

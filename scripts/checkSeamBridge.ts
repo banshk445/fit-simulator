@@ -7,9 +7,12 @@
 // 물리도 three 렌더도 안 돌린다 — 순수하게 정점 개수/삼각형 개수/인덱스 범위/
 // 좌표 복사만 본다.
 import assert from "node:assert/strict";
-import { buildSeamBridge, shoulderSeamStrip, updateSeamBridge, type SeamSourceArrays, type SeamStrip } from "../src/components/seamBridge";
+import { armholeSeamStrip, buildSeamBridge, shoulderSeamStrip, updateSeamBridge, type SeamSourceArrays } from "../src/components/seamBridge";
+import { ARMHOLE_ROW_FRACTION, COLS, ROWS, SLEEVE_RING_COLS, SLEEVE_RING_ROWS } from "../src/lib/clothConfig";
 
-const COLS = 44;
+// Garment.tsx가 쓰는 것과 같은 식 — 하드코딩하면 상수가 바뀌었을 때 이
+// 체크가 먼저 거짓 통과한다.
+const ARMHOLE_START_ROW = Math.round(ROWS * ARMHOLE_ROW_FRACTION);
 
 function zeros(n: number): Float32Array {
   return new Float32Array(n * 3);
@@ -67,17 +70,47 @@ function assertIndicesInRange(bridge: ReturnType<typeof buildSeamBridge>): void 
   assertIndicesInRange(bridge);
 }
 
-// 2) 닫힌 스트립(암홀 링, 아직 미사용 — 잠복 방지): P쌍 → 2P정점, P쿼드 = 2P삼각형.
+// 2) 닫힌 스트립 = 실제 암홀 링. 순회 순서가 물리 봉제선
+// (addSleeveArmholeSeam)과 정확히 같은지가 핵심 — 어긋나면 화면에
+// "나비넥타이" 쿼드로 나온다.
 {
-  const P = 12;
-  const ring: SeamStrip = {
-    name: "test-ring",
-    closed: true,
-    pairs: Array.from({ length: P }, (_, k) => ({
-      a: { source: "front" as const, index: k },
-      b: { source: "sleeveLeft" as const, index: k },
-    })),
-  };
+  // 전제: 링 쌍 개수 = 소매 열 개수. 어긋나면 armholeSeamStrip의 소매
+  // 인덱스 k가 row0을 넘어 row1로 넘어가 조용히 엉뚱한 정점을 읽는다.
+  assert.equal(
+    2 * (ARMHOLE_START_ROW + 1),
+    SLEEVE_RING_COLS,
+    `링 쌍 개수 2*(armholeStartRow+1)=${2 * (ARMHOLE_START_ROW + 1)}가 SLEEVE_RING_COLS=${SLEEVE_RING_COLS}와 다르다 — armholeSeamStrip의 소매 인덱스가 row1로 넘어간다`,
+  );
+
+  const torsoCol = 10;
+  const ring = armholeSeamStrip("armholeLeft", torsoCol, "sleeveLeft", ARMHOLE_START_ROW, COLS);
+  const P = ring.pairs.length;
+  assert.equal(P, SLEEVE_RING_COLS, "암홀 링 쌍 개수 = 소매 열 개수");
+  assert.equal(ring.closed, true, "암홀 링은 닫힌 스트립이어야 한다");
+
+  // 순서 검증 — addSleeveArmholeSeam과 같은 규약:
+  //   k=0..asr           : front, y=k
+  //   k=asr+1..2*asr+1   : back,  y=2*asr+1-k (역순)
+  //   b쪽은 언제나 소매 (k, row0) → 정점 인덱스 k
+  for (let k = 0; k < P; k++) {
+    const { a, b } = ring.pairs[k];
+    assert.equal(b.source, "sleeveLeft", `k=${k} b쪽 소스`);
+    assert.equal(b.index, k, `k=${k} 소매 정점 인덱스는 k여야 한다(row0)`);
+    if (k <= ARMHOLE_START_ROW) {
+      assert.equal(a.source, "front", `k=${k}는 front 구간`);
+      assert.equal(a.index, k * COLS + torsoCol, `k=${k} front row${k}`);
+    } else {
+      const y = 2 * ARMHOLE_START_ROW + 1 - k;
+      assert.equal(a.source, "back", `k=${k}는 back 구간`);
+      assert.equal(a.index, y * COLS + torsoCol, `k=${k} back row${y}(역순)`);
+    }
+  }
+  // 경계 두 지점을 명시적으로 한 번 더 — 겨드랑이(front asr ↔ back asr)와
+  // 어깨 코너(wrap: back row0 ↔ front row0).
+  assert.equal(ring.pairs[ARMHOLE_START_ROW].a.index, ARMHOLE_START_ROW * COLS + torsoCol, "겨드랑이 직전 = front row(asr)");
+  assert.equal(ring.pairs[ARMHOLE_START_ROW + 1].a.index, ARMHOLE_START_ROW * COLS + torsoCol, "겨드랑이 직후 = back row(asr) — 같은 행에서 앞→뒤로 넘어감");
+  assert.equal(ring.pairs[P - 1].a.index, 0 * COLS + torsoCol, "마지막 쌍 = back row0(어깨), wrap으로 front row0과 이어짐");
+
   const bridge = buildSeamBridge([ring]);
   assert.equal(bridge.geometry.getAttribute("position").count, 2 * P, "닫힌 스트립 정점 수");
   assert.equal(triangleCount(bridge), 2 * P, "닫힌 스트립 삼각형 수(wrap 1쿼드 포함)");
@@ -112,10 +145,10 @@ function assertIndicesInRange(bridge: ReturnType<typeof buildSeamBridge>): void 
   const strip = shoulderSeamStrip(xMin, xMax, COLS);
   const bridge = buildSeamBridge([strip]);
   const arrays: SeamSourceArrays = {
-    front: fillRibbon(zeros(COLS * 28), 0.5),
-    back: fillRibbon(zeros(COLS * 28), -0.5),
-    sleeveLeft: zeros(144),
-    sleeveRight: zeros(144),
+    front: fillRibbon(zeros(COLS * ROWS), 0.5),
+    back: fillRibbon(zeros(COLS * ROWS), -0.5),
+    sleeveLeft: zeros(SLEEVE_RING_COLS * SLEEVE_RING_ROWS),
+    sleeveRight: zeros(SLEEVE_RING_COLS * SLEEVE_RING_ROWS),
   };
   updateSeamBridge(bridge, arrays);
   const pos = bridge.geometry.getAttribute("position");
@@ -137,4 +170,4 @@ function assertIndicesInRange(bridge: ReturnType<typeof buildSeamBridge>): void 
   assert.ok(normalSum > 0, "법선이 전부 0 — computeVertexNormals가 안 돌았거나 스트립이 축퇴함");
 }
 
-console.log("[checkSeamBridge] PASS — 열린/닫힌 스트립 토폴로지, 오프셋, 좌표 복사, 법선 생성 확인");
+console.log("[checkSeamBridge] PASS — 열린/닫힌 스트립 토폴로지, 암홀 링 순회 순서(물리 봉제선과 동일), wrap 닫힘, 오프셋, 좌표 복사, 법선 생성 확인");

@@ -26,7 +26,7 @@ import {
 } from "../lib/clothConfig";
 import type { MainToGarmentWorkerMessage, GarmentWorkerToMainMessage, ArmShapeMsg } from "../lib/garmentProtocol";
 import { MODEL_URL } from "./Mannequin";
-import { buildSeamBridge, shoulderSeamStrip, updateSeamBridge } from "./seamBridge";
+import { armholeSeamStrip, buildSeamBridge, shoulderSeamStrip, updateSeamBridge } from "./seamBridge";
 
 interface Props {
   imageUrl: string;
@@ -521,10 +521,19 @@ export function Garment({ imageUrl }: Props) {
   const sleeveTubeGeometryLeft = useMemo(() => buildSleeveTubeGeometry(SLEEVE_RING_COLS, SLEEVE_RING_ROWS), []);
   const sleeveTubeGeometryRight = useMemo(() => buildSleeveTubeGeometry(SLEEVE_RING_COLS, SLEEVE_RING_ROWS), []);
   // 문서 21번: 이음매를 덮는 폴리곤이 하나도 없어 생기는 구멍을 메우는 렌더
-  // 전용 띠. 1단계는 어깨선(앞판 row0 ↔ 뒤판 row0, 열린 스트립)만 —
-  // 암홀 링(wrap 순서가 얽혀 이 프로젝트가 여러 번 당한 지점)은 이 메커니즘이
-  // 화면에서 검증된 뒤 쌍 목록만 추가한다.
-  const seamBridge = useMemo(() => buildSeamBridge([shoulderSeamStrip(torsoSleeveMin, torsoSleeveMax, COLS)]), [torsoSleeveMin, torsoSleeveMax]);
+  // 전용 띠. 1단계 어깨선(0.8cm)이 화면 확인에서 법선 아티팩트 없이 통과해,
+  // 2단계로 실제 주범인 암홀 링(2.7cm, 좌우 2개)을 같은 메커니즘에 쌍 목록만
+  // 추가했다 — 스트립 = (순서있는 쌍 목록, closed 플래그) 형태 그대로.
+  const seamBridge = useMemo(() => {
+    const armholeStartRow = Math.round(ROWS * ARMHOLE_ROW_FRACTION);
+    return buildSeamBridge([
+      shoulderSeamStrip(torsoSleeveMin, torsoSleeveMax, COLS),
+      // 좌/우 대응은 buildUnifiedGarmentSim의 addSleeveArmholeSeam 호출부와 동일:
+      // 왼팔 소매 ↔ xMin, 오른팔 소매 ↔ xMax.
+      armholeSeamStrip("armholeLeft", torsoSleeveMin, "sleeveLeft", armholeStartRow, COLS),
+      armholeSeamStrip("armholeRight", torsoSleeveMax, "sleeveRight", armholeStartRow, COLS),
+    ]);
+  }, [torsoSleeveMin, torsoSleeveMax]);
   // onmessage 클로저는 torsoSleeveMin/Max를 deps에 안 갖고 있어 사이즈 변경 시
   // 낡은 seamBridge를 붙들 수 있다 — torsoColumnRangeRef와 같은 ref 패턴으로
   // 항상 현재 것을 보게 한다(지오메트리와 쌍 테이블이 같은 useMemo에서 나오므로
