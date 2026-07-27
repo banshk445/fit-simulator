@@ -7,7 +7,7 @@
 // 물리도 three 렌더도 안 돌린다 — 순수하게 정점 개수/삼각형 개수/인덱스 범위/
 // 좌표 복사만 본다.
 import assert from "node:assert/strict";
-import { armholeSeamStrip, buildSeamBridge, shoulderSeamStrip, updateSeamBridge, type SeamSourceArrays } from "../src/components/seamBridge";
+import { armholeSeamStrip, buildSeamBridge, shoulderSeamStrip, sideSeamStrip, updateSeamBridge, type SeamSourceArrays } from "../src/components/seamBridge";
 import { ARMHOLE_ROW_FRACTION, COLS, ROWS, SLEEVE_RING_COLS, SLEEVE_RING_ROWS } from "../src/lib/clothConfig";
 
 // Garment.tsx가 쓰는 것과 같은 식 — 하드코딩하면 상수가 바뀌었을 때 이
@@ -193,4 +193,56 @@ function assertIndicesInRange(bridge: ReturnType<typeof buildSeamBridge>): void 
   assert.ok(sameRef(ringRight.pairs[ringRight.pairs.length - 1].a, shLast.b), "오른팔 링 마지막(back row0)이 어깨 스트립 마지막 쌍 b와 다른 정점");
 }
 
-console.log("[checkSeamBridge] PASS — 열린/닫힌 스트립 토폴로지, 암홀 링 순회 순서(물리 봉제선과 동일), wrap 닫힘, 오프셋, 좌표 복사, 법선 생성, 어깨↔암홀 접합부 정점 일치 확인");
+// 6) 옆선 스트립 + 겨드랑이 접합 + 몸판 경계열 커버리지 완결성.
+{
+  const torsoCol = 10;
+  const side = sideSeamStrip("sideLeft", torsoCol, ARMHOLE_START_ROW, ROWS, COLS);
+  const ring = armholeSeamStrip("armholeLeft", torsoCol, "sleeveLeft", ARMHOLE_START_ROW, COLS);
+
+  // 쌍 목록: (front(col,y), back(col,y)) for y=asr..ROWS-1
+  assert.equal(side.pairs.length, ROWS - ARMHOLE_START_ROW, "옆선 쌍 개수 = ROWS - armholeStartRow");
+  assert.equal(side.closed, false, "옆선은 열린 스트립이어야 한다");
+  for (let i = 0; i < side.pairs.length; i++) {
+    const y = ARMHOLE_START_ROW + i;
+    const { a, b } = side.pairs[i];
+    assert.equal(a.source, "front", `옆선 i=${i} a쪽은 front`);
+    assert.equal(b.source, "back", `옆선 i=${i} b쪽은 back`);
+    assert.equal(a.index, y * COLS + torsoCol, `옆선 i=${i} front row${y}`);
+    assert.equal(b.index, y * COLS + torsoCol, `옆선 i=${i} back row${y}`);
+  }
+
+  // 겨드랑이 접합: 암홀 링의 k=asr → k=asr+1 쿼드가 갖는 몸판 쪽 변이
+  // (front row asr ↔ back row asr)이고, 옆선 첫 쌍이 같은 두 정점이어야 한다.
+  const sameRef = (p: { source: string; index: number }, q: { source: string; index: number }) => p.source === q.source && p.index === q.index;
+  assert.ok(sameRef(side.pairs[0].a, ring.pairs[ARMHOLE_START_ROW].a), "옆선 첫 쌍 a가 암홀 링 k=asr(front row asr)과 다른 정점 — 겨드랑이에 구멍");
+  assert.ok(sameRef(side.pairs[0].b, ring.pairs[ARMHOLE_START_ROW + 1].a), "옆선 첫 쌍 b가 암홀 링 k=asr+1(back row asr)과 다른 정점 — 겨드랑이에 구멍");
+
+  // 커버리지 완결성: 몸판 경계열(col=torsoCol)의 앞/뒤 모든 행 0..ROWS-1이
+  // 암홀 링 또는 옆선 중 적어도 한 곳에는 등장해야 한다. row 0~4가 어디에도
+  // 안 덮이는 상황을 여기서 잡는다(그 구간은 암홀 링이 소매로 덮는다 —
+  // 앞↔뒤 슬릿이 아니라 암홀 구멍 자체라 옆선이 담당하지 않는 게 맞다).
+  const covered = new Set<string>();
+  for (const strip of [ring, side]) {
+    for (const pr of strip.pairs) {
+      for (const ref of [pr.a, pr.b]) {
+        if (ref.source === "front" || ref.source === "back") covered.add(`${ref.source}:${(ref.index - torsoCol) / COLS}`);
+      }
+    }
+  }
+  for (const source of ["front", "back"]) {
+    for (let y = 0; y < ROWS; y++) {
+      assert.ok(covered.has(`${source}:${y}`), `${source} row${y}(col ${torsoCol})이 어느 스트립에도 안 덮임`);
+    }
+  }
+
+  // 겹침 확인: 링은 몸판 행 0..asr, 옆선은 asr..ROWS-1 — 교집합은 asr 한 행뿐
+  // (면이 아니라 변 하나를 공유하는 것이므로 정상).
+  const ringRows = new Set<number>();
+  for (const pr of ring.pairs) ringRows.add((pr.a.index - torsoCol) / COLS);
+  const sideRows = new Set<number>();
+  for (const pr of side.pairs) sideRows.add((pr.a.index - torsoCol) / COLS);
+  const overlap = [...ringRows].filter((y) => sideRows.has(y));
+  assert.deepEqual(overlap, [ARMHOLE_START_ROW], `링과 옆선이 공유하는 행은 armholeStartRow 하나여야 하는데 ${JSON.stringify(overlap)}`);
+}
+
+console.log("[checkSeamBridge] PASS — 열린/닫힌 스트립 토폴로지, 암홀 링 순회 순서(물리 봉제선과 동일), wrap 닫힘, 오프셋, 좌표 복사, 법선 생성, 어깨↔암홀 접합부 정점 일치, 옆선 쌍/겨드랑이 접합/경계열 커버리지 완결성 확인");

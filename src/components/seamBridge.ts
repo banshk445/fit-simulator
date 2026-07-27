@@ -107,6 +107,33 @@ export function armholeSeamStrip(
   return { name, pairs, closed: true };
 }
 
+// 옆선: 앞판 ↔ 뒤판, 열 xMin(또는 xMax)의 row armholeStartRow..ROWS-1.
+// `addTorsoSideSeamConstraints`(buildGarmentSim.ts)가 잇는 구간과 같다 —
+// 물리로만 잡혀 있고 폴리곤이 없어서 겨드랑이부터 밑단까지 세로 슬릿으로
+// 보였다(문서 21-3).
+//
+// 실측 개구폭(Node 하네스, 소매통 18cm): row5(겨드랑이) 1.9~3.4cm에서 4행에
+// 걸쳐 급감해 row9부터 밑단까지는 0.6cm 고정 —
+// `addTorsoSideSeamConstraints`의 이즈인(SEAM_EASE_ROWS=4, 3cm→6mm)이 그대로
+// 나타난 값이다. 즉 대부분 구간은 실제 옆선 봉제선처럼 가는 선이고, 넓은 곳은
+// 겨드랑이 몇 행뿐인데 거긴 암홀 링이 이미 비슷한 폭으로 덮고 있어 이어진다.
+//
+// 시작 행이 armholeStartRow인 게 중요하다 — 암홀 링의 겨드랑이 쿼드(k=asr →
+// k=asr+1)가 갖는 몸판 쪽 변이 바로 (front row asr ↔ back row asr)이라,
+// 이 스트립의 첫 쌍과 같은 정점이 되어 두 띠가 변 하나를 공유한다.
+// 그 위(row 0..asr-1)의 앞↔뒤 간격은 슬릿이 아니라 **암홀 구멍 자체**이고,
+// 소매가 암홀 링을 통해 덮는다.
+export function sideSeamStrip(name: string, torsoCol: number, armholeStartRow: number, rows: number, cols: number): SeamStrip {
+  const pairs: SeamPair[] = [];
+  for (let y = armholeStartRow; y < rows; y++) {
+    pairs.push({
+      a: { source: "front", index: y * cols + torsoCol },
+      b: { source: "back", index: y * cols + torsoCol },
+    });
+  }
+  return { name, pairs, closed: false };
+}
+
 // ---------------------------------------------------------------------------
 // 지오메트리 (위상만 — 위치는 매 프레임 updateSeamBridge가 채운다)
 // ---------------------------------------------------------------------------

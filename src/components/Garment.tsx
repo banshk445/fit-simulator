@@ -26,7 +26,7 @@ import {
 } from "../lib/clothConfig";
 import type { MainToGarmentWorkerMessage, GarmentWorkerToMainMessage, ArmShapeMsg } from "../lib/garmentProtocol";
 import { MODEL_URL } from "./Mannequin";
-import { armholeSeamStrip, buildSeamBridge, shoulderSeamStrip, updateSeamBridge } from "./seamBridge";
+import { armholeSeamStrip, buildSeamBridge, shoulderSeamStrip, sideSeamStrip, updateSeamBridge } from "./seamBridge";
 
 interface Props {
   imageUrl: string;
@@ -532,6 +532,10 @@ export function Garment({ imageUrl }: Props) {
       // 왼팔 소매 ↔ xMin, 오른팔 소매 ↔ xMax.
       armholeSeamStrip("armholeLeft", torsoSleeveMin, "sleeveLeft", armholeStartRow, COLS),
       armholeSeamStrip("armholeRight", torsoSleeveMax, "sleeveRight", armholeStartRow, COLS),
+      // 3단계: 옆선(겨드랑이~밑단). 암홀 링의 겨드랑이 쿼드와 변 하나를 공유해
+      // 이어진다 — 시작 행이 armholeStartRow로 같기 때문(문서 21-4).
+      sideSeamStrip("sideLeft", torsoSleeveMin, armholeStartRow, ROWS, COLS),
+      sideSeamStrip("sideRight", torsoSleeveMax, armholeStartRow, ROWS, COLS),
     ]);
   }, [torsoSleeveMin, torsoSleeveMax]);
   // onmessage 클로저는 torsoSleeveMin/Max를 deps에 안 갖고 있어 사이즈 변경 시
@@ -894,17 +898,12 @@ export function Garment({ imageUrl }: Props) {
     const win = window as unknown as { __fitDebug?: Record<string, unknown> };
     if (!win.__fitDebug) win.__fitDebug = {};
     win.__fitDebug.shoulderGapGeometry = () => {
-      const armholeStartRow = Math.round(ROWS * ARMHOLE_ROW_FRACTION);
       const { xMin, xMax } = torsoColumnRangeRef.current;
       const arrays = {
         front: frontPositions,
         back: backPositions,
         sleeveLeft: sleevePositionsLeft,
         sleeveRight: sleevePositionsRight,
-      };
-      const torsoPt = (arr: Float32Array, col: number, row: number) => {
-        const i = (row * COLS + col) * 3;
-        return { x: arr[i], y: arr[i + 1], z: arr[i + 2] };
       };
       const refPt = (ref: { source: keyof typeof arrays; index: number }) => {
         const arr = arrays[ref.source];
@@ -931,17 +930,30 @@ export function Garment({ imageUrl }: Props) {
         }),
       );
 
-      // (b) 아직 폴리곤이 없는 이음매 = 진짜 구멍.
-      // 옆선: addTorsoSideSeamConstraints가 열 xMin/xMax의 row
-      // armholeStartRow..ROWS-1에서 앞/뒤판을 물리로만 잡는다 — 브리지 없음.
-      // 겨드랑이부터 밑단까지 세로로 이어지는 슬릿이고 좌우·앞뒤 대칭이다.
-      const sideSeam = (col: number) => {
-        const out: number[] = [];
-        for (let y = armholeStartRow; y < ROWS; y++) out.push(cm(torsoPt(frontPositions, col, y), torsoPt(backPositions, col, y)));
-        return out;
-      };
-      const sideLeft = sideSeam(xMin);
-      const sideRight = sideSeam(xMax);
+      // (b) 아직 안 덮인 구간이 있나 — 하드코딩하지 않고 실제 쌍 목록에서 훑는다.
+      // (이 필드를 "옆선은 미봉합"으로 적어뒀다가 3단계에서 옆선을 덮는 순간
+      // 곧바로 stale이 됐던 전례가 있다 — 그래서 사실을 적지 말고 도출한다.)
+      //
+      // 몸판 경계열(xMin/xMax)의 앞/뒤 각 행이 어느 스트립엔가 등장하는지 본다.
+      // 등장하지 않는 행 = 그 자리에 폴리곤이 없다 = 구멍.
+      const coveredTorso = new Set<string>();
+      for (const { strip } of bridge.layouts) {
+        for (const pr of strip.pairs) {
+          for (const ref of [pr.a, pr.b]) {
+            if (ref.source !== "front" && ref.source !== "back") continue;
+            const row = Math.floor(ref.index / COLS);
+            coveredTorso.add(`${ref.source}:${ref.index % COLS}:${row}`);
+          }
+        }
+      }
+      const uncoveredTorsoRows: string[] = [];
+      for (const col of [xMin, xMax]) {
+        for (const source of ["front", "back"] as const) {
+          for (let y = 0; y < ROWS; y++) {
+            if (!coveredTorso.has(`${source}:${col}:${y}`)) uncoveredTorsoRows.push(`${source} col${col} row${y}`);
+          }
+        }
+      }
 
       // (c) 스트립 접합부 정점 일치 — 어깨 스트립 양 끝 쌍과 암홀 링의
       // 첫/마지막 쌍이 같은 몸판 정점을 참조해야 두 띠가 변 하나를 공유하며
@@ -972,18 +984,10 @@ export function Garment({ imageUrl }: Props) {
         },
         // 구멍 아님 — 브리지가 덮고 있는 폭.
         bridgedSpanCm,
-        // 진짜 구멍 — 아직 폴리곤이 없는 구간.
-        unbridgedSpanCm: {
-          sideSeam: {
-            left: sideLeft,
-            right: sideRight,
-            maxLeft: maxOf(sideLeft),
-            maxRight: maxOf(sideRight),
-            rowRange: [armholeStartRow, ROWS - 1],
-            cols: [xMin, xMax],
-          },
-        },
-        maxUnbridgedSpanCm: maxOf([...sideLeft, ...sideRight]),
+        // 몸판 경계열에서 아직 어느 스트립에도 안 덮인 행(=구멍). 비어 있으면
+        // 경계열은 전부 덮인 것. 목둘레/밑단/소맷부리는 애초에 열려 있어야 하는
+        // 개구부라 여기 대상이 아니다(그 행들은 스트립에 등장하므로 안 잡힌다).
+        uncoveredTorsoRows,
         stripJunction: junction,
       };
       console.log("[SEAM-COVERAGE]", JSON.stringify(result));
