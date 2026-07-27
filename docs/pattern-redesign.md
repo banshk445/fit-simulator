@@ -463,3 +463,67 @@ row3~8 최댓값 171.5°→161.3°(-10.2°). row0은 133.9°→125.2°로 오히
 코드는 원복함(`git checkout` — `buildGarmentSim.ts`의
 `stiffenSleeveCapRows`, `buildUnifiedGarmentSim.ts`의 호출부 모두
 제거됨). 이 문단은 실측 기록 및 폐기 근거로 남김.
+
+## 14. 몸판 암홀 해상도 — 보류 (우선순위 밀림)
+화면 확인 결과 더 급한 결함(넥라인/어깨 구멍, 소매 처짐)이 발견되어
+우선순위 밀림. 조사(12점 유래·꺾임각 실측)는 완료했지만 착수하지
+않음 — 계속 out-of-scope로 보류.
+
+## 15. 넥라인/어깨 구멍 조사 + 소매 처짐 수정(applySleeveArmPull)
+
+**배경**: 스크린샷에서 뒷모습 어깨~목 부위에 마네킹 피부가 노출되는
+실제 구멍(각짐이 아니라 갭) 확인. 두 후보를 조사.
+
+**Q1/Q2 — 넥라인 봉제선 스킵(`addNecklineSeamConstraints`) 재확인**:
+`pinCorners`(buildGarmentSim.ts:114-146)가 row0에서 `frac<=1`인 24개
+열(COLS=44 중 x=10~33)을 front/back 각각 독립 pin — `clothPhysics.ts:257`
+(`if(pinnedA&&pinnedB) continue`)가 이 24열 전부에서 스킵. 실제 갭(pin
+직후, 프레임 무관 상수) 측정 결과 어깨점(x=10/33) 0.25cm → 목 옆
+(shoulderU≈±0.3, x=14/29) 최대 0.80cm. `pin()`이 x/y/z를 전부 덮어써서
+`FRONT_BACK_HALF_GAP`(0.05, 앞뒤 두께) 흔적은 없고, 남은 건 순수
+`necklineRise(isFront,...)`의 front(0.06)/back(0.052) 차이뿐. row1(물리
+정착 후)도 비슷한 크기(0.74cm) 유지 — 커지지 않음. **갭이 작아(≤0.8cm)
+스크린샷 구멍의 주범일 가능성 낮다고 판단.**
+
+**Q3 — 소매 처짐 프레임별 추이**: 왼쪽 소맷부리(k=0, row11) Y좌표를
+frame0/1/5/10/30/60/120/180에서 측정(paramSweep.ts 하네스, 대표 포즈
+품55/소매통18). frame10까지 완만하다가 frame30 부근에서 급격히
+14~15cm대로 떨어진 뒤 그 근방(±2cm)에서 유지 — **일시적 정착이 아니라
+영구적 처짐(frame180 기준 -14.34cm)**. 원인: 독립 소매 패널이
+`addSleeveArmholeSeam`(row0 봉제선) 하나에만 의지해 나머지 행(1~11)은
+중력에 그대로 늘어짐. **넥라인 갭보다 이쪽이 스크린샷 구멍의 더 유력한
+원인으로 판단, 수정 착수.**
+
+**구현**: `buildGarmentSim.ts`에 `applySleeveArmPull` 신설 — 매 프레임
+row0 현재 위치 평균을 암홀 중심으로 삼아, rows 1..ringRows-1을 팔
+방향 원통 타깃(반지름 `computeArmTubeRadius(sleeveWidthM)`)으로 부드럽게
+당김. `garmentWorker.ts`의 `applyNecklineHug` 호출 직후(`if(lastLayout)`
+블록 안)에 배선. `SLEEVE_ARM_PULL_WEIGHT=0.35`, `weight = WEIGHT*(1-0.5*rT)`
+(봉제선 쪽이 더 강함)로 커밋(9e3c5bb, origin push 완료).
+
+**가중치 튜닝 실험(서브에이전트 위임, 3콤보: 0.55/0.18, 0.5/0.14,
+0.65/0.22)** — 무처리(A) / 커밋값 w=0.35(B) / w=0.7·테이퍼 역전
+`WEIGHT*(0.5+0.5*rT)`(C) 3방향 비교:
+
+처짐(frame180, 품55/소매통18 기준): A -14.34cm → B -4.65cm → C -1.43cm.
+B도 크게 개선하지만 C가 처짐을 거의 완전히 해결(B의 약 1/3 수준).
+
+회귀(A→C): `maxSeamGapCm` 전 콤보 0.72cm 불변. `maxPenetrationMm`은
+품50/소매통14에서 54.82→62.88mm(+14.7%, **위험 신호 발동**).
+`armholeJaggednessDeg`는 품55/소매통18에서 44.1°→77.9°(**거의 2배
+악화, 위험 신호 발동**). `sleeveJaggednessDeg`는 콤보별로 방향이
+갈림(개선 2, 악화 1 — 13번 문단의 "비단조" 패턴과 동일한 성격).
+발산(NaN/Infinity)은 3콤보·전 variant 모두 없음.
+
+**판정**: 위험 신호 2개(관통량 증가, armhole 톱니 악화) 발동 —
+**C(w=0.7) 기각**, 코드 원복(`git checkout -- src/lib/buildGarmentSim.ts`,
+9e3c5bb=w=0.35 상태로 복귀, 추가 커밋 없음). B(w=0.35, 현재 유지 중인
+상태)도 완전 무손실은 아님(품55/소매통18 armhole 44.1°→49.1°로 소폭
+상승 — 원인 미규명) — "확실한 해결"이 아니라 절반의 개선으로 남음.
+
+**다음 결정 지점**:
+1. 0.35~0.7 사이 값 재탐색으로 처짐/회귀 트레이드오프 더 좁히기
+2. armhole 톱니 악화가 소매 풀이 몸판 암홀 링(row0 시접)을 통해
+   간접적으로 흔드는 건지 추가 진단 (14번 문단의 몸판 저해상도 문제와
+   같은 근원일 가능성)
+3. 3콤보만 본 것이라 12콤합 전체 스윕으로 편차 크기 재확인 필요
