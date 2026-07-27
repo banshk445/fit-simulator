@@ -26,6 +26,7 @@ import {
 } from "../lib/clothConfig";
 import type { MainToGarmentWorkerMessage, GarmentWorkerToMainMessage, ArmShapeMsg } from "../lib/garmentProtocol";
 import { MODEL_URL } from "./Mannequin";
+import { buildSeamBridge, shoulderSeamStrip, updateSeamBridge } from "./seamBridge";
 
 interface Props {
   imageUrl: string;
@@ -381,6 +382,9 @@ export function Garment({ imageUrl }: Props) {
   // 함정이 이 파일 43-42행 위쪽 주석에 이미 실측 기록돼 있다(같은 파일의
   // 다른 이유였지만 THREE.Color 자체의 함정이라 여기도 똑같이 적용된다).
   const [sleeveColor, setSleeveColor] = useState("#888888");
+  // 문서 21번(시임 브리지): 실제 봉제선처럼 대표색보다 살짝 어둡게. 0.8 배율은
+  // 실측이 아니라 눈대중 초기값 — 화면 확인 후 조정될 수 있다.
+  const seamColor = useMemo(() => new THREE.Color(sleeveColor).multiplyScalar(0.8), [sleeveColor]);
   useEffect(() => {
     const image = rawTexture.image as HTMLImageElement | undefined;
     if (!image) {
@@ -516,6 +520,17 @@ export function Garment({ imageUrl }: Props) {
   // 그대로 — RENDER_SUBDIV 세분화 없이 원본 SLEEVE_RING_COLS×ROWS 그대로 쓴다.
   const sleeveTubeGeometryLeft = useMemo(() => buildSleeveTubeGeometry(SLEEVE_RING_COLS, SLEEVE_RING_ROWS), []);
   const sleeveTubeGeometryRight = useMemo(() => buildSleeveTubeGeometry(SLEEVE_RING_COLS, SLEEVE_RING_ROWS), []);
+  // 문서 21번: 이음매를 덮는 폴리곤이 하나도 없어 생기는 구멍을 메우는 렌더
+  // 전용 띠. 1단계는 어깨선(앞판 row0 ↔ 뒤판 row0, 열린 스트립)만 —
+  // 암홀 링(wrap 순서가 얽혀 이 프로젝트가 여러 번 당한 지점)은 이 메커니즘이
+  // 화면에서 검증된 뒤 쌍 목록만 추가한다.
+  const seamBridge = useMemo(() => buildSeamBridge([shoulderSeamStrip(torsoSleeveMin, torsoSleeveMax, COLS)]), [torsoSleeveMin, torsoSleeveMax]);
+  // onmessage 클로저는 torsoSleeveMin/Max를 deps에 안 갖고 있어 사이즈 변경 시
+  // 낡은 seamBridge를 붙들 수 있다 — torsoColumnRangeRef와 같은 ref 패턴으로
+  // 항상 현재 것을 보게 한다(지오메트리와 쌍 테이블이 같은 useMemo에서 나오므로
+  // 둘이 어긋날 일도 없다).
+  const seamBridgeRef = useRef(seamBridge);
+  seamBridgeRef.current = seamBridge;
   const frontPosTex = useMemo(() => makeDataTexture(COLS, ROWS), []);
   const backPosTex = useMemo(() => makeDataTexture(COLS, ROWS), []);
   const frontNormalTex = useMemo(() => makeDataTexture(COLS, ROWS), []);
@@ -852,6 +867,74 @@ export function Garment({ imageUrl }: Props) {
     };
   }, [sleeveGeometryLeft, sleeveGeometryRight]);
 
+  // 어깨 갭이 "물리 문제"인지 "메시 연결 부재"인지 가르는 진단.
+  //
+  // sleeveSeamCheck는 몸판 점↔소매 점 거리만 재지만, 화면에 구멍으로 보이는지를
+  // 결정하는 건 그 사이를 덮는 삼각형이 있느냐다. 렌더 경로를 따라가 보면
+  // 이음매를 덮는 삼각형은 구조적으로 0개다:
+  //   - 몸판: frontTorsoRenderGeometry/backTorsoRenderGeometry가
+  //     buildRegionPlaneGeometry(xMin..xMax)로 만들어져 frontPosTex/backPosTex를
+  //     샘플링(injectProxyBinding). 바깥 경계가 정확히 열 xMin/xMax에서 끝난다.
+  //   - 소매: sleeveTubeGeometryLeft/Right가 sleevePosTexLeft/Right를 샘플링.
+  //   두 메시는 서로 다른 텍스처를 읽는 별개 BufferGeometry라, 두 면을 동시에
+  //   참조하는 정점 자체가 존재할 수 없다 → 이음매를 잇는 폴리곤 0개.
+  //   앞판↔뒤판도 같다(별개 <mesh>). 즉 이 옷은 어디에서도 폴리곤으로 안 붙어
+  //   있고 오직 물리 제약(addSleeveArmholeSeam 등)으로만 붙어 있다.
+  //
+  // 그래서 남는 질문은 "어느 이음매가 제일 넓게 벌어져 있나"뿐이고 이 훅이
+  // 그걸 잰다. 여기서 나온 cm가 곧 화면에서 마네킹이 비쳐 보이는 폭이다.
+  // 콘솔에서 `window.__fitDebug.shoulderGapGeometry()` 호출.
+  useEffect(() => {
+    const win = window as unknown as { __fitDebug?: Record<string, unknown> };
+    if (!win.__fitDebug) win.__fitDebug = {};
+    win.__fitDebug.shoulderGapGeometry = () => {
+      const armholeStartRow = Math.round(ROWS * ARMHOLE_ROW_FRACTION);
+      const { xMin, xMax } = torsoColumnRangeRef.current;
+      const torsoPt = (arr: Float32Array, col: number, row: number) => {
+        const i = (row * COLS + col) * 3;
+        return { x: arr[i], y: arr[i + 1], z: arr[i + 2] };
+      };
+      const sleevePt = (arr: Float32Array, k: number, r: number) => {
+        const i = (r * SLEEVE_RING_COLS + k) * 3;
+        return { x: arr[i], y: arr[i + 1], z: arr[i + 2] };
+      };
+      const cm = (a: { x: number; y: number; z: number }, b: { x: number; y: number; z: number }) =>
+        Number((Math.hypot(a.x - b.x, a.y - b.y, a.z - b.z) * 100).toFixed(3));
+
+      // (1) 몸판 암홀 경계 ↔ 소매 row0 — 링 순서(front row0..asr, back asr..0).
+      const armholeToSleeve = (col: number, sleeve: Float32Array) => {
+        const out: number[] = [];
+        let k = 0;
+        for (let y = 0; y <= armholeStartRow; y++) out.push(cm(torsoPt(frontPositions, col, y), sleevePt(sleeve, k++, 0)));
+        for (let y = armholeStartRow; y >= 0; y--) out.push(cm(torsoPt(backPositions, col, y), sleevePt(sleeve, k++, 0)));
+        return out;
+      };
+      const leftArmhole = armholeToSleeve(xMin, sleevePositionsLeft);
+      const rightArmhole = armholeToSleeve(xMax, sleevePositionsRight);
+
+      // (2) 앞판 ↔ 뒤판 어깨선(row0) 슬릿 — 실제로 렌더되는 몸통 열만.
+      // pinCorners가 이 구간 row0을 앞/뒤 각각 독립적으로 핀하고,
+      // clothPhysics.ts:257(pinnedA && pinnedB면 제약 스킵)이 넥라인 시접을
+      // 통째로 스킵하므로 물리가 이 간격을 아예 안 좁힌다(문서 15번 Q1/Q2).
+      const frontBackRow0: number[] = [];
+      for (let x = xMin; x <= xMax; x++) frontBackRow0.push(cm(torsoPt(frontPositions, x, 0), torsoPt(backPositions, x, 0)));
+
+      const maxOf = (a: number[]) => Number(Math.max(...a).toFixed(3));
+      const result = {
+        // 이음매를 덮는 삼각형 수 — 위 주석대로 구조적으로 0(런타임 측정이
+        // 아니라 렌더 그래프상 불가능하다는 사실 자체를 명시한다).
+        bridgingTriangles: 0,
+        bridgingReason:
+          "몸판(frontPosTex/backPosTex)과 소매(sleevePosTexLeft/Right)가 별개 BufferGeometry+별개 텍스처라 두 면을 잇는 정점이 존재할 수 없음. 앞판↔뒤판도 별개 mesh.",
+        armholeToSleeveCm: { left: leftArmhole, right: rightArmhole, maxLeft: maxOf(leftArmhole), maxRight: maxOf(rightArmhole) },
+        frontBackRow0Cm: { perColumn: frontBackRow0, max: maxOf(frontBackRow0), colRange: [xMin, xMax] },
+        maxOpenSpanCm: maxOf([...leftArmhole, ...rightArmhole, ...frontBackRow0]),
+      };
+      console.log("[SHOULDER-GAP-GEOMETRY]", JSON.stringify(result));
+      return result;
+    };
+  }, [frontPositions, backPositions, sleevePositionsLeft, sleevePositionsRight]);
+
   // 톱니 정도를 링 전체로 일반화한 지표 — sleeveSeamNormalCheck는 wrap
   // 지점(첫/끝)만 비교하지만, 이번 조사(sleeveSeamCheck 실측)에서 코너
   // 인접 열(k1/k10)이 코너 자체보다 더 벌어지는 게 확인돼 wrap 지점만
@@ -1015,6 +1098,15 @@ export function Garment({ imageUrl }: Props) {
       sleeveGeometryRight.computeVertexNormals();
       averageSleeveSeamNormals(sleeveGeometryLeft, SLEEVE_RING_COLS, SLEEVE_RING_ROWS);
       averageSleeveSeamNormals(sleeveGeometryRight, SLEEVE_RING_COLS, SLEEVE_RING_ROWS);
+      // 네 위치 배열이 다 갱신된 직후 — 시임 브리지는 그 배열들에서 좌표를
+      // 그대로 복사하므로 여기가 올바른 지점이다(법선은 스트립 자체 기하에서
+      // 뽑으므로 패널 법선 계산 순서와는 무관).
+      updateSeamBridge(seamBridgeRef.current, {
+        front: frontPositions,
+        back: backPositions,
+        sleeveLeft: sleevePositionsLeft,
+        sleeveRight: sleevePositionsRight,
+      });
       frontGeometry.computeBoundingSphere();
       backGeometry.computeBoundingSphere();
 
@@ -1428,6 +1520,16 @@ export function Garment({ imageUrl }: Props) {
       {!showAllRegionsWireframe && (
         <mesh geometry={sleeveTubeGeometryRight} frustumCulled={false}>
           <meshStandardMaterial key="sleeve-right" color={sleeveColor} side={THREE.DoubleSide} roughness={0.85} onBeforeCompile={sleeveRightOnBeforeCompile} />
+        </mesh>
+      )}
+      {/* 문서 21번(시임 브리지 1단계 — 어깨선): 위치가 이미 월드 좌표로
+          들어있는 평범한 지오메트리라 onBeforeCompile이 아예 없다 —
+          핏맵/와이어프레임/사진맵 셰이더 변형과 상호작용할 여지 자체가 없고,
+          three.js 프로그램 캐시 사고(위 핏맵 주석 참고)와도 무관하다.
+          색은 실제 봉제선처럼 대표색보다 살짝 어둡게. */}
+      {!showAllRegionsWireframe && (
+        <mesh geometry={seamBridge.geometry} frustumCulled={false}>
+          <meshStandardMaterial key="seam-bridge" color={seamColor} side={THREE.DoubleSide} roughness={0.85} />
         </mesh>
       )}
       {/* 47번(디버그 전용): 영역별 와이어프레임 — showFrontWireframe(초록,

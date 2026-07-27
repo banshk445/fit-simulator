@@ -13,6 +13,7 @@
     "electron:build": "tsc -b && vite build && electron-builder",
     "electron:pack": "tsc -b && vite build && electron-builder --dir",
     "check:sleeve": "tsx scripts/checkSleeveSeam.ts",
+    "check:seambridge": "tsx scripts/checkSeamBridge.ts",
     "sweep:pattern": "tsx scripts/paramSweep.ts"
   },
   "build": {
