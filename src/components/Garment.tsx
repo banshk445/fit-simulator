@@ -12,7 +12,7 @@ import { findArmDirection, findShortSleeveDirection, findShoulderBones } from ".
 import { computeShoulderPin } from "../lib/shoulderPin";
 import { compositeGarmentTexture } from "../lib/garmentTextureComposite";
 import { torsoColumnRange } from "../lib/buildGarmentSim";
-import { angleDegBetweenNormals, ringJaggedness } from "../lib/seamDiagnostics";
+import { angleDegBetweenNormals, armholeRingJaggedness, ringJaggedness } from "../lib/seamDiagnostics";
 import {
   ARM_COLLISION_RADIUS,
   ARMHOLE_ROW_FRACTION,
@@ -893,8 +893,12 @@ export function Garment({ imageUrl }: Props) {
       const sleeveRightRows = sleeveRowsJaggedness(sleeveGeometryRight);
 
       const result = {
-        armholeLeft: ringJaggedness(armholeRingNormals(xMin)),
-        armholeRight: ringJaggedness(armholeRingNormals(xMax)),
+        // 암홀만 armholeRingJaggedness — maxDeg에서 어깨 접합부(앞판↔뒤판
+        // 별개 geometry라 구조적으로 ~90~111°)를 빼고, 뺀 값은
+        // panelBoundaryDeg.shoulder로 따로 본다(seamDiagnostics.ts 주석 참고).
+        // 소매 링은 같은 패널이라 기존 ringJaggedness 그대로.
+        armholeLeft: armholeRingJaggedness(armholeRingNormals(xMin)),
+        armholeRight: armholeRingJaggedness(armholeRingNormals(xMax)),
         sleeveLeftRows,
         sleeveRightRows,
         sleeveLeftMax: Number(Math.max(...sleeveLeftRows.map((r) => r.maxDeg)).toFixed(2)),

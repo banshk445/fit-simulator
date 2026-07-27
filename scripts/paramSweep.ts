@@ -33,7 +33,7 @@ import {
 } from "../src/lib/clothConfig";
 import { FABRIC_PRESETS } from "../src/lib/fabricPresets";
 import type { Vec3Like } from "../src/lib/clothProtocol";
-import { ringJaggedness } from "../src/lib/seamDiagnostics";
+import { armholeRingJaggedness, ringJaggedness } from "../src/lib/seamDiagnostics";
 
 // 대표 포즈 — checkSleeveSeam.ts와 같은 출처(이 세션 __fitDebug 실측), 반팔
 // 기본값(소매길이 22cm), 어깨너비 45cm 기준.
@@ -116,7 +116,13 @@ interface ComboResult {
   maxJaggednessDeg: number;
   // 톱니가 몸판(암홀 링, 소매 무관)에서 오는지 소매 링에서 오는지 구분 —
   // pattern-redesign.md 4번(소매 전용 구현) 검증용 세부 지표.
+  //
+  // armholeJaggednessDeg는 어깨 접합부(앞판↔뒤판 별개 geometry, 구조적으로
+  // ~90~111°)를 제외한 값이다 — 제외한 값 자체는 armholeShoulderDeg로 따로
+  // 낸다(seamDiagnostics.ts의 armholeRingJaggedness 주석 참고).
   armholeJaggednessDeg: number;
+  armholeShoulderDeg: number;
+  armholeArmpitDeg: number;
   sleeveJaggednessDeg: number;
   // row0(캡)~row(SLEEVE_RING_ROWS-1)(소맷부리) 각 행의 최댓값(좌우 중 큰 쪽) —
   // sleeveJaggednessDeg는 이 배열의 최댓값과 같다.
@@ -154,7 +160,12 @@ function runCombo(widthM: number, sleeveWidthM: number): ComboResult {
         maxSeamGapCm: NaN,
         maxJaggednessDeg: NaN,
         armholeJaggednessDeg: NaN,
+        armholeShoulderDeg: NaN,
+        armholeArmpitDeg: NaN,
         sleeveJaggednessDeg: NaN,
+        // 원래 빠져 있어 발산 조합에서 undefined가 나갔다(아래 행별 출력이
+        // 그대로 터짐) — scripts/는 tsc -b 대상이 아니라 여태 안 잡혔다.
+        sleeveRowsMaxDeg: [],
       };
     }
   }
@@ -200,7 +211,14 @@ function runCombo(widthM: number, sleeveWidthM: number): ComboResult {
     for (let k = 0; k < SLEEVE_RING_COLS; k++) pts.push(readNormal(attr, row * SLEEVE_RING_COLS + k));
     return pts;
   };
-  const armholeJaggednessDeg = Math.max(ringJaggedness(armholeRingNormalsAt(xMin)).maxDeg, ringJaggedness(armholeRingNormalsAt(xMax)).maxDeg);
+  // 암홀만 armholeRingJaggedness — maxDeg에서 어깨 접합부를 뺀 값이라
+  // "실제 개선에 반응하는" 지표다. 뺀 값(shoulder)과 참고용 경계값(armpit)은
+  // 좌우 중 큰 쪽을 그대로 같이 낸다.
+  const armholeLeft = armholeRingJaggedness(armholeRingNormalsAt(xMin));
+  const armholeRight = armholeRingJaggedness(armholeRingNormalsAt(xMax));
+  const armholeJaggednessDeg = Math.max(armholeLeft.maxDeg, armholeRight.maxDeg);
+  const armholeShoulderDeg = Math.max(armholeLeft.panelBoundaryDeg.shoulder, armholeRight.panelBoundaryDeg.shoulder);
+  const armholeArmpitDeg = Math.max(armholeLeft.panelBoundaryDeg.armpit, armholeRight.panelBoundaryDeg.armpit);
   // row0(캡)뿐 아니라 링 전체(row0~SLEEVE_RING_ROWS-1)를 훑는다 —
   // pattern-redesign.md 11번(화면 확인 후 row0만으론 부족할 수 있다는 가설).
   const sleeveRowsMaxDeg: number[] = [];
@@ -220,6 +238,8 @@ function runCombo(widthM: number, sleeveWidthM: number): ComboResult {
     maxSeamGapCm: Number(maxSeamGapCm.toFixed(2)),
     maxJaggednessDeg: Number(maxJaggednessDeg.toFixed(1)),
     armholeJaggednessDeg: Number(armholeJaggednessDeg.toFixed(1)),
+    armholeShoulderDeg: Number(armholeShoulderDeg.toFixed(1)),
+    armholeArmpitDeg: Number(armholeArmpitDeg.toFixed(1)),
     sleeveJaggednessDeg: Number(sleeveJaggednessDeg.toFixed(1)),
     sleeveRowsMaxDeg: sleeveRowsMaxDeg.map((d) => Number(d.toFixed(1))),
   };
@@ -234,6 +254,13 @@ for (const widthM of WIDTHS_M) {
 
 console.log(`[paramSweep] ${FRAMES}프레임(${SECONDS}s) × ${results.length}조합`);
 console.table(results);
+// armhole은 어깨 접합부 제외값(=지표) / 제외한 어깨값 / 참고용 겨드랑이값을
+// 나란히 찍는다 — console.table이 잘려도 이 셋은 항상 보이게, 그리고 어깨값이
+// 계속 90~111°대인지(=제외 인덱스가 맞게 잡혔는지) 매번 자체 확인되도록.
+console.log("[paramSweep] armhole (지표=어깨제외 / 어깨접합부 / 겨드랑이참고):");
+for (const r of results) {
+  console.log(`  품${r.widthM * 100}cm/소매통${r.sleeveWidthM * 100}cm: ${r.armholeJaggednessDeg}° / ${r.armholeShoulderDeg}° / ${r.armholeArmpitDeg}°`);
+}
 console.log("[paramSweep] sleeve row0~row%d breakdown (품/소매통 → 행별 최댓값):", SLEEVE_RING_ROWS - 1);
 for (const r of results) {
   console.log(`  품${r.widthM * 100}cm/소매통${r.sleeveWidthM * 100}cm:`, r.sleeveRowsMaxDeg);
