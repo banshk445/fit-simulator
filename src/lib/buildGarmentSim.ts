@@ -548,6 +548,66 @@ export function applyArmSoftPull(
   }
 }
 
+// 소매 패널(PANEL_SLEEVE_LEFT/RIGHT) 전용 소프트 풀.
+// applyArmSoftPull은 몸판(PANEL_FRONT/BACK)의 frac>1 열만 처리하고
+// 독립 소매 패널은 건드리지 않아, row0 봉제선 하나만 의지하면 전체가
+// 중력에 그대로 늘어진다. 매 프레임 row0 평균을 암홀 중심으로 쓰므로
+// 봉제선 정착 후 소매가 움직여도 타깃이 따라온다.
+const SLEEVE_ARM_PULL_WEIGHT = 0.35;
+
+export function applySleeveArmPull(
+  sim: ClothSimulation,
+  sleeveLeftPanel: number,
+  sleeveRightPanel: number,
+  ringCols: number,
+  ringRows: number,
+  armLeft: ArmDir,
+  armRight: ArmDir,
+  sleeveWidthM: number,
+): void {
+  const targetRadius = computeArmTubeRadius(sleeveWidthM);
+
+  for (const [panel, arm] of [
+    [sleeveLeftPanel, armLeft],
+    [sleeveRightPanel, armRight],
+  ] as [number, ArmDir][]) {
+    const basis = armOrthogonalBasis(arm.dir);
+
+    // row0 현재 위치 평균 → 암홀 중심 (봉제선이 이미 몸판에 묶어둔 값)
+    let cx = 0, cy = 0, cz = 0;
+    for (let k = 0; k < ringCols; k++) {
+      const idx = sim.index(panel, k, 0) * 3;
+      cx += sim.positions[idx];
+      cy += sim.positions[idx + 1];
+      cz += sim.positions[idx + 2];
+    }
+    cx /= ringCols;
+    cy /= ringCols;
+    cz /= ringCols;
+
+    for (let r = 1; r < ringRows; r++) {
+      const rT = r / (ringRows - 1);
+      const weight = SLEEVE_ARM_PULL_WEIGHT * (1 - 0.5 * rT);
+      const reach = arm.length * rT;
+
+      for (let k = 0; k < ringCols; k++) {
+        const angle = Math.PI / 2 - (k * (2 * Math.PI)) / ringCols;
+        const cosA = Math.cos(angle);
+        const sinA = Math.sin(angle);
+        const tx = cx + arm.dir.x * reach + (basis.right.x * cosA + basis.up.x * sinA) * targetRadius;
+        const ty = cy + arm.dir.y * reach + (basis.right.y * cosA + basis.up.y * sinA) * targetRadius;
+        const tz = cz + arm.dir.z * reach + (basis.right.z * cosA + basis.up.z * sinA) * targetRadius;
+        const i = sim.index(panel, k, r);
+        if (sim.pinned[i]) continue;
+        const ix = i * 3;
+        sim.positions[ix]     += (tx - sim.positions[ix])     * weight;
+        sim.positions[ix + 1] += (ty - sim.positions[ix + 1]) * weight;
+        sim.positions[ix + 2] += (tz - sim.positions[ix + 2]) * weight;
+      }
+    }
+  }
+}
+
 // 46번 실측(거리 제약은 방향을 못 가림 — 진짜 원인 재확인): ARM_SOFT_PULL_WEIGHT
 // 를 풍선 실루엣 개선을 위해 낮추면(예: 0.15), 소매 구간(0~ARM_ROWS 행)의
 // 앞판/뒤판이 실제로 최대 3.7cm까지 Y로 벌어지는 게 실측(전체 행/열 스캔)

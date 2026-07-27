@@ -6,7 +6,7 @@ import { SelfCollision } from "../lib/selfCollision";
 import { applyCapsuleCollision, applyFrontBackSidedness } from "../lib/torsoCapsule";
 import type { Capsule } from "../lib/torsoCapsule";
 import { FABRIC_PRESETS } from "../lib/fabricPresets";
-import { applyArmSoftPull, applyNecklineHug, enforceArmFrontBackYAlignment, pinCorners, torsoColumnRange } from "../lib/buildGarmentSim";
+import { applyArmSoftPull, applyNecklineHug, applySleeveArmPull, enforceArmFrontBackYAlignment, pinCorners, torsoColumnRange } from "../lib/buildGarmentSim";
 import { buildUnifiedGarmentSim } from "../lib/buildUnifiedGarmentSim";
 import { enforceLeftRightSymmetry } from "../lib/garmentStitch";
 import {
@@ -458,6 +458,16 @@ ctx.onmessage = (event) => {
           msg.pinRight,
           armLeft,
           armRight,
+        );
+        applySleeveArmPull(
+          activeSim,
+          PANEL_SLEEVE_LEFT,
+          PANEL_SLEEVE_RIGHT,
+          SLEEVE_RING_COLS,
+          SLEEVE_RING_ROWS,
+          armLeft,
+          armRight,
+          lastLayout.sleeveWidthM,
         );
       }
       enforceArmFrontBackYAlignment(activeSim, PANEL_FRONT, PANEL_BACK, msg.pinLeft, msg.pinRight, armLeft, armRight);
