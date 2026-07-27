@@ -884,11 +884,21 @@ export function Garment({ imageUrl }: Props) {
         return pts;
       };
 
+      // row0(어깨 캡)뿐 아니라 링 전체(row0~SLEEVE_RING_ROWS-1, 캡~소맷부리)를
+      // 훑는다 — row0만 보면 캡 바깥(row3~8 등)의 톱니를 놓칠 수 있어서
+      // (pattern-redesign.md 11번, 화면 확인 후 지표 확장 필요성 확인).
+      const sleeveRowsJaggedness = (geometry: THREE.BufferGeometry) =>
+        Array.from({ length: SLEEVE_RING_ROWS }, (_, row) => ringJaggedness(sleeveRingNormals(geometry, row)));
+      const sleeveLeftRows = sleeveRowsJaggedness(sleeveGeometryLeft);
+      const sleeveRightRows = sleeveRowsJaggedness(sleeveGeometryRight);
+
       const result = {
         armholeLeft: ringJaggedness(armholeRingNormals(xMin)),
         armholeRight: ringJaggedness(armholeRingNormals(xMax)),
-        sleeveLeft: ringJaggedness(sleeveRingNormals(sleeveGeometryLeft)),
-        sleeveRight: ringJaggedness(sleeveRingNormals(sleeveGeometryRight)),
+        sleeveLeftRows,
+        sleeveRightRows,
+        sleeveLeftMax: Number(Math.max(...sleeveLeftRows.map((r) => r.maxDeg)).toFixed(2)),
+        sleeveRightMax: Number(Math.max(...sleeveRightRows.map((r) => r.maxDeg)).toFixed(2)),
       };
       console.log("[SEAM-NORMAL-JAGGEDNESS]", JSON.stringify(result));
       return result;

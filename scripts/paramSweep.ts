@@ -118,6 +118,9 @@ interface ComboResult {
   // pattern-redesign.md 4번(소매 전용 구현) 검증용 세부 지표.
   armholeJaggednessDeg: number;
   sleeveJaggednessDeg: number;
+  // row0(캡)~row(SLEEVE_RING_ROWS-1)(소맷부리) 각 행의 최댓값(좌우 중 큰 쪽) —
+  // sleeveJaggednessDeg는 이 배열의 최댓값과 같다.
+  sleeveRowsMaxDeg: number[];
 }
 
 function runCombo(widthM: number, sleeveWidthM: number): ComboResult {
@@ -192,16 +195,21 @@ function runCombo(widthM: number, sleeveWidthM: number): ComboResult {
     for (let y = armholeStartRow; y >= 0; y--) pts.push(readNormal(backNormals, y * COLS + col));
     return pts;
   };
-  const sleeveRingNormalsAt = (attr: THREE.BufferAttribute): Vec3Like[] => {
+  const sleeveRingNormalsAt = (attr: THREE.BufferAttribute, row: number): Vec3Like[] => {
     const pts: Vec3Like[] = [];
-    for (let k = 0; k < SLEEVE_RING_COLS; k++) pts.push(readNormal(attr, k));
+    for (let k = 0; k < SLEEVE_RING_COLS; k++) pts.push(readNormal(attr, row * SLEEVE_RING_COLS + k));
     return pts;
   };
   const armholeJaggednessDeg = Math.max(ringJaggedness(armholeRingNormalsAt(xMin)).maxDeg, ringJaggedness(armholeRingNormalsAt(xMax)).maxDeg);
-  const sleeveJaggednessDeg = Math.max(
-    ringJaggedness(sleeveRingNormalsAt(sleeveLeftNormals)).maxDeg,
-    ringJaggedness(sleeveRingNormalsAt(sleeveRightNormals)).maxDeg,
-  );
+  // row0(캡)뿐 아니라 링 전체(row0~SLEEVE_RING_ROWS-1)를 훑는다 —
+  // pattern-redesign.md 11번(화면 확인 후 row0만으론 부족할 수 있다는 가설).
+  const sleeveRowsMaxDeg: number[] = [];
+  for (let row = 0; row < SLEEVE_RING_ROWS; row++) {
+    sleeveRowsMaxDeg.push(
+      Math.max(ringJaggedness(sleeveRingNormalsAt(sleeveLeftNormals, row)).maxDeg, ringJaggedness(sleeveRingNormalsAt(sleeveRightNormals, row)).maxDeg),
+    );
+  }
+  const sleeveJaggednessDeg = Math.max(...sleeveRowsMaxDeg);
   const maxJaggednessDeg = Math.max(armholeJaggednessDeg, sleeveJaggednessDeg);
 
   return {
@@ -213,6 +221,7 @@ function runCombo(widthM: number, sleeveWidthM: number): ComboResult {
     maxJaggednessDeg: Number(maxJaggednessDeg.toFixed(1)),
     armholeJaggednessDeg: Number(armholeJaggednessDeg.toFixed(1)),
     sleeveJaggednessDeg: Number(sleeveJaggednessDeg.toFixed(1)),
+    sleeveRowsMaxDeg: sleeveRowsMaxDeg.map((d) => Number(d.toFixed(1))),
   };
 }
 
@@ -225,6 +234,10 @@ for (const widthM of WIDTHS_M) {
 
 console.log(`[paramSweep] ${FRAMES}프레임(${SECONDS}s) × ${results.length}조합`);
 console.table(results);
+console.log("[paramSweep] sleeve row0~row%d breakdown (품/소매통 → 행별 최댓값):", SLEEVE_RING_ROWS - 1);
+for (const r of results) {
+  console.log(`  품${r.widthM * 100}cm/소매통${r.sleeveWidthM * 100}cm:`, r.sleeveRowsMaxDeg);
+}
 
 const diverged = results.filter((r) => r.diverged);
 if (diverged.length > 0) {
