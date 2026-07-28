@@ -548,7 +548,32 @@ function runFixture(path: string): void {
             return { frictionIteration: createSdfIterationFrictionPass(() => sdfField, fparams) };
           }
           const cached = createCachedSdfIterationFriction(() => sdfField, fparams);
-          return { frictionIteration: cached.apply, frictionIterationReset: cached.reset };
+          // CONTACT=1: 어깨/몸통 대역 마찰 접촉 발화 카운트(선행 진단).
+          // 흡착(BVH)은 탐지 반경 15cm 안이면 항상 발화라 정보가 없다 —
+          // 수직항력이 실제로 생기는 접촉(sd <= contactBand)만 센다.
+          const wrappedReset =
+            process.env.CONTACT === "1"
+              ? (positions: Float32Array, pinned: Uint8Array, n: number) => {
+                  cached.reset(positions, pinned, n);
+                  const loads = cached.getLoads();
+                  const { xMin, xMax } = reconRange;
+                  let sh = 0, shN = 0, to = 0, toN = 0;
+                  for (const panel of [PANEL_FRONT, PANEL_BACK]) {
+                    for (let y = 0; y <= 20; y++) {
+                      for (let x = xMin; x <= xMax; x++) {
+                        const i = sim.index(panel, x, y);
+                        const isShoulder = y <= armholeStartRowConst;
+                        if (isShoulder) { shN++; if (loads[i] > 0) sh++; }
+                        else { toN++; if (loads[i] > 0) to++; }
+                      }
+                    }
+                  }
+                  contactShoulder += sh; contactShoulderN += shN;
+                  contactTorso += to; contactTorsoN += toN;
+                  contactFrames++;
+                }
+              : cached.reset;
+          return { frictionIteration: cached.apply, frictionIterationReset: wrappedReset };
         })()
       : {}),
     // 핀 전환 원복 — 기본 1(하드 핀). PIN=0.5 등으로 재현만 가능.
@@ -561,6 +586,8 @@ function runFixture(path: string): void {
   });
 
   let collarFired = 0;
+  let contactShoulder = 0, contactShoulderN = 0, contactTorso = 0, contactTorsoN = 0, contactFrames = 0;
+  const armholeStartRowConst = Math.round(ROWS * ARMHOLE_ROW_FRACTION);
   const preset = FABRIC_PRESETS[pose.fabric];
   const gravity = new THREE.Vector3(...GRAVITY_BASE).multiplyScalar(preset.gravityScale);
   const framePose = { pinLeft: pose.pinLeft, pinRight: pose.pinRight, armLeft, armRight, necklineLift: pose.necklineLift };
@@ -726,6 +753,11 @@ function runFixture(path: string): void {
       return ((ringCircumference(row) / rest - 1) * 100).toFixed(1);
     };
     console.log(`  ring 신장률: row0 ${st(0)}% / row1 ${st(1)}% / row2 ${st(2)}% | row0 평균높이 ${ringH(0).toFixed(2)}cm`);
+  }
+  if (process.env.CONTACT === "1") {
+    console.log(
+      `  마찰접촉 발화율: 어깨 ${(contactShoulder / (contactShoulderN || 1) * 100).toFixed(2)}% (${(contactShoulder / (contactFrames || 1)).toFixed(1)}개/프레임) / 몸통 ${(contactTorso / (contactTorsoN || 1) * 100).toFixed(2)}% (${(contactTorso / (contactFrames || 1)).toFixed(1)}개/프레임)`,
+    );
   }
   console.log(`  collar 발화 ${collarFired}회 (배선 검증 — 핀 고정 상태면 0이 정상)`);
   console.log(`  물리 ${physMs}ms/프레임 (BVH+자체충돌 포함)`);

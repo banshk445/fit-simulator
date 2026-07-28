@@ -299,6 +299,8 @@ export interface CachedIterationFriction {
   // 서브스텝 시작(적분 직전) 위치로 접촉/법선/하중 캐시를 갱신.
   reset(positions: Float32Array, pinned: Uint8Array, n: number): void;
   apply(positions: Float32Array, prevPositions: Float32Array, pinned: Uint8Array, n: number): void;
+  // 진단용 — 파티클별 접촉 하중(0=비접촉). reset 직후 읽어야 유효.
+  getLoads(): Float32Array;
 }
 
 export function createCachedSdfIterationFriction(
@@ -330,6 +332,9 @@ export function createCachedSdfIterationFriction(
         normals[ix + 1] = normal.y;
         normals[ix + 2] = normal.z;
       }
+    },
+    getLoads() {
+      return loads;
     },
     apply(positions, prevPositions, pinned, n) {
       for (let i = 0; i < n; i++) {
