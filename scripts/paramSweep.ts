@@ -366,6 +366,9 @@ interface CollisionFixture {
 }
 
 function runFixture(path: string): void {
+  // NEWCORE=1이면 M1 신 코어(암홀 링 용접) — 신구 대조는 같은 fixture로
+  // 이 스위치만 바꿔 두 번 돌린다.
+  const newCore = process.env.NEWCORE === "1";
   const fixture = JSON.parse(readFileSync(path, "utf8")) as CollisionFixture;
   const { layout, pose } = fixture;
   const armLeft: ArmDir = { dir: pose.armLeft.dir, length: pose.armLeft.length };
@@ -390,6 +393,8 @@ function runFixture(path: string): void {
     torsoCapsules: fixture.collision.capsules,
     armCapsules: [...buildFrameArmCapsules(pose.armLeft), ...buildFrameArmCapsules(pose.armRight)],
     centerZ: fixture.collision.centerZ,
+    // M2 제거 ①: 신 코어면 sidedness off(SIDEDNESS=1로 강제 복원 가능 — 대조용).
+    sidedness: !newCore || process.env.SIDEDNESS === "1",
   };
   const unified = createUnifiedResolver(meshResolver, collisionState);
 
@@ -433,9 +438,6 @@ function runFixture(path: string): void {
       })
     : undefined;
 
-  // NEWCORE=1이면 M1 신 코어(암홀 링 용접) — 신구 대조는 같은 fixture로
-  // 이 스위치만 바꿔 두 번 돌린다.
-  const newCore = process.env.NEWCORE === "1";
   const { sim, seamSkipPairs } = buildUnifiedGarmentSim(
     layout.widthM, layout.heightM, layout.topY, layout.centerZ,
     pose.pinLeft, pose.pinRight, armLeft, armRight, layout.sleeveWidthM, pose.necklineLift, newCore,
@@ -528,6 +530,23 @@ function runFixture(path: string): void {
   // 잔물결 — 어깨~겨드랑이(row1~asr) 몸통 열, B-1류(스무딩 완화) 실패 감시.
   const ripple = computeRippleMm(sim, [PANEL_FRONT, PANEL_BACK], 1, armholeStartRow, xMin, xMax);
   console.log(`  ripple(2차차분): max ${ripple.maxMm}mm @ ${JSON.stringify(ripple.maxAt)} / mean ${ripple.meanMm}mm`);
+  // M2 제거 ① 게이트: 앞뒤판 관통 — sidedness가 막던 바로 그것.
+  // (a) 반평면 위반: 앞판이 centerZ보다 뒤, 뒤판이 앞. (b) 교차: 같은 (x,y)에서 front.z < back.z.
+  {
+    let halfPlaneViol = 0, halfPlaneMaxMm = 0, crossed = 0, crossMaxMm = 0;
+    for (let y = 0; y < ROWS; y++) {
+      for (let x = xMin; x <= xMax; x++) {
+        const fz = sim.positions[sim.index(PANEL_FRONT, x, y) * 3 + 2];
+        const bz = sim.positions[sim.index(PANEL_BACK, x, y) * 3 + 2];
+        const cz = fixture.collision.centerZ;
+        if (fz < cz) { halfPlaneViol++; halfPlaneMaxMm = Math.max(halfPlaneMaxMm, (cz - fz) * 1000); }
+        if (bz > cz) { halfPlaneViol++; halfPlaneMaxMm = Math.max(halfPlaneMaxMm, (bz - cz) * 1000); }
+        if (fz < bz) { crossed++; crossMaxMm = Math.max(crossMaxMm, (bz - fz) * 1000); }
+      }
+    }
+    const total = (xMax - xMin + 1) * ROWS;
+    console.log(`  앞뒤판: 반평면위반 ${halfPlaneViol}/${total * 2} (max ${halfPlaneMaxMm.toFixed(1)}mm) / 교차 ${crossed}/${total} (max ${crossMaxMm.toFixed(1)}mm)`);
+  }
   console.log(`  maxSeamGapCm: ${maxSeamGapCm.toFixed(2)} (브라우저 실측과 직접 대조용)`);
   console.log(`  drape: ${drape.faceAngleMeanDeg} / ${drape.faceAngleMaxDeg} / ${drape.wrinkleRmsMm} / ${drape.maxStrain}`);
   console.log(

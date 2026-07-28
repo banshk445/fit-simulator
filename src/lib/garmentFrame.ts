@@ -94,6 +94,11 @@ export interface CollisionState {
   torsoCapsules: readonly Capsule[];
   armCapsules: readonly Capsule[];
   centerZ: number;
+  // M2 보정 제거 ①: applyFrontBackSidedness(앞/뒤판을 centerZ 반평면에
+  // 가두는 클램프) on/off. SDF 마찰이 접촉을 실제로 붙잡게 된 뒤로는
+  // 이 클램프가 옆구리에서 천이 몸을 감아 도는 폴드를 원천 금지하는
+  // 부작용만 남는다는 게 제거 근거 — 게이트는 3지표 + 앞뒤 관통.
+  sidedness: boolean;
 }
 
 const armholeStartRowConst = Math.round(ROWS * ARMHOLE_ROW_FRACTION);
@@ -147,7 +152,7 @@ export function createUnifiedResolver(meshResolver: CollisionResolver, state: Co
       SHOULDER_CAP_SKIP_START,
       SHOULDER_CAP_SKIP_END,
     );
-    applyFrontBackSidedness(positions, pinned, PARTICLES_PER_PANEL, state.centerZ);
+    if (state.sidedness) applyFrontBackSidedness(positions, pinned, PARTICLES_PER_PANEL, state.centerZ);
     applyCapsuleCollision(positions.subarray(0, frontCount * 3), pinned.subarray(0, frontCount), frontCount, state.armCapsules, 0.006);
     applyCapsuleCollision(positions.subarray(frontCount * 3, backEnd), pinned.subarray(frontCount, frontCount + backCount), backCount, state.armCapsules, 0.006);
     const sleeveCount = SLEEVE_RING_COLS * SLEEVE_RING_ROWS;

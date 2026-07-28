@@ -137,7 +137,7 @@ const meshResolver = createPanelSplitResolver([frontMeshResolver, backMeshResolv
 
 // 37번/범위 B의 unifiedResolver 본체는 garmentFrame.ts의
 // createUnifiedResolver로 이사(M0) — 워커는 살아있는 상태 객체만 관리한다.
-const collisionState: CollisionState = { torsoCapsules: [], armCapsules: [], centerZ: 0 };
+const collisionState: CollisionState = { torsoCapsules: [], armCapsules: [], centerZ: 0, sidedness: true };
 const unifiedResolver = createUnifiedResolver(meshResolver, collisionState);
 
 // 자체충돌은 몸판(앞+뒤)+소매(좌+우) 전체에 적용한다. 범위 B(소매 재설계
@@ -240,6 +240,8 @@ ctx.onmessage = (event) => {
       // M2: 마찰은 신 코어 경로에서만(구 코어는 비트 동일 유지). 레이아웃이
       // 바뀌면 굽기 범위도 달라지므로 여기서 무효화한다.
       sdfFrictionEnabled = (msg.newCore ?? false) && (msg.friction ?? true);
+      // M2 보정 제거 ①: 신 코어에선 sidedness 클램프를 끄고 SDF/마찰에 맡긴다.
+      collisionState.sidedness = !(msg.newCore ?? false);
       sdfField = null;
       session = createGarmentSession(sim, {
         collisionResolver: unifiedResolver,
