@@ -69,6 +69,10 @@ interface FitState {
   // on/off 토글 — 끄면 물리 격자 해상도 그대로 렌더(원복 비교용), dev 전용.
   renderSmoothing: boolean;
   setRenderSmoothing: (show: boolean) => void;
+  // M1(신 코어): 암홀 링 정점 용접 + physIndex 직결 렌더(DataTexture 프록시
+  // 미사용) 경로 토글 — 신구 대조용, dev 전용. 끄면 기존 경로 그대로.
+  newCore: boolean;
+  setNewCore: (on: boolean) => void;
   setFabric: (fabric: FabricType) => void;
   setBodyHeight: (height: number) => void;
   setBodyChest: (chest: number) => void;
@@ -142,6 +146,8 @@ export const useFitStore = create<FitState>((set) => ({
   setShowFitMap: (show) => set({ showFitMap: show }),
   renderSmoothing: true,
   setRenderSmoothing: (show) => set({ renderSmoothing: show }),
+  newCore: false,
+  setNewCore: (on) => set({ newCore: on }),
   setFabric: (fabric) => set({ fabric }),
   setBodyHeight: (height) => set((state) => ({ bodySize: { ...state.bodySize, height } })),
   setBodyChest: (chest) => set((state) => ({ bodySize: { ...state.bodySize, chest } })),

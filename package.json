@@ -14,7 +14,8 @@
     "electron:pack": "tsc -b && vite build && electron-builder --dir",
     "check:sleeve": "tsx scripts/checkSleeveSeam.ts",
     "check:seambridge": "tsx scripts/checkSeamBridge.ts",
-    "sweep:pattern": "tsx scripts/paramSweep.ts"
+    "sweep:pattern": "tsx scripts/paramSweep.ts",
+    "check:weld": "tsx scripts/checkWeldTopology.ts"
   },
   "build": {
     "appId": "com.fitsimulator.app",

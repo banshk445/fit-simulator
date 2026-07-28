@@ -32,6 +32,9 @@ export type MainToGarmentWorkerMessage =
       necklineLift: number[];
       armLeft: ArmShapeMsg;
       armRight: ArmShapeMsg;
+      // M1(신 코어): true면 암홀 링 시접을 정점 용접으로 전환하고 weldInfo를
+      // 회신한다 — 렌더가 physIndex 산란+용접 법선 경로로 전환하는 신호.
+      newCore?: boolean;
     }
   | {
       type: "rebuildCollision";
@@ -93,4 +96,14 @@ export type GarmentWorkerToMainMessage =
       sleeveRight: Float32Array;
       panelParticleStart: number[]; // [front, back, sleeveLeft, sleeveRight]
       panelParticleCount: number[];
+    }
+  | {
+      // M1(신 코어): init(newCore=true) 직후 1회 — 용접 테이블. 렌더의
+      // 용접 법선 계산(같은 canon에 면 법선 누적)이 물리와 같은 테이블을
+      // 보게 하는 단일 출처. 인덱스는 sim 전역 파티클 인덱스
+      // (panelParticleStart 오프셋 포함).
+      type: "weldInfo";
+      aliases: Uint32Array;
+      canons: Uint32Array;
+      panelParticleStart: number[];
     };

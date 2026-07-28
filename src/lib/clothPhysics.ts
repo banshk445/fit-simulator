@@ -226,6 +226,75 @@ export class ClothSimulation {
     this.kindTargetStiffness = [clamp01(structural), clamp01(shear), clamp01(bend), clamp01(seam)];
   }
 
+  // M1(용접): alias 파티클을 canon 파티클의 별칭으로 만든다 — 제약 끝점을
+  // 전부 canon으로 리맵하고(자기 자신을 잇게 된 제약=원래 시접은 제거,
+  // 리맵으로 기존 제약과 중복된 것도 제거), alias는 pinned 처리해 물리에서
+  // 완전히 제외한다(적분·충돌·보정 전부 pinned 스킵). 렌더/지표가 alias
+  // 인덱스로 읽어도 항상 canon과 같은 값을 보도록 syncWeldedPositions()를
+  // 프레임 루프(garmentFrame.ts)가 주기적으로 호출한다.
+  // buildConstraints()+시접 추가가 전부 끝난 뒤에 한 번만 불러야 한다.
+  private weldAliases: Uint32Array = new Uint32Array(0);
+  private weldCanons: Uint32Array = new Uint32Array(0);
+
+  applyWelds(pairs: ReadonlyArray<{ alias: number; canon: number }>): void {
+    const n = this.positions.length / 3;
+    const canonOf = new Uint32Array(n);
+    for (let i = 0; i < n; i++) canonOf[i] = i;
+    for (const { alias, canon } of pairs) canonOf[alias] = canon;
+    // 연쇄(canon 자신이 다른 쌍의 alias인 경우) 해소 — 현재 용접 셋(암홀
+    // 링)엔 연쇄가 없지만 일반성 유지.
+    for (let i = 0; i < n; i++) {
+      let c = canonOf[i];
+      while (canonOf[c] !== c) c = canonOf[c];
+      canonOf[i] = c;
+    }
+
+    const seen = new Set<number>();
+    const kept: Constraint[] = [];
+    for (const c of this.constraints) {
+      const a = canonOf[c.a];
+      const b = canonOf[c.b];
+      if (a === b) continue; // 용접된 시접 자체
+      const key = Math.min(a, b) * n + Math.max(a, b);
+      if (seen.has(key)) continue; // 리맵으로 기존 제약과 겹침(원본 유지)
+      seen.add(key);
+      kept.push(a === c.a && b === c.b ? c : { ...c, a, b });
+    }
+    this.constraints = kept;
+
+    const aliases: number[] = [];
+    const canons: number[] = [];
+    for (const { alias } of pairs) {
+      const canon = canonOf[alias];
+      aliases.push(alias);
+      canons.push(canon);
+      this.pinned[alias] = 1;
+      const ai = alias * 3;
+      const ci = canon * 3;
+      for (let k = 0; k < 3; k++) {
+        this.positions[ai + k] = this.positions[ci + k];
+        this.prevPositions[ai + k] = this.positions[ci + k];
+      }
+    }
+    this.weldAliases = Uint32Array.from(aliases);
+    this.weldCanons = Uint32Array.from(canons);
+  }
+
+  get weldPairs(): { aliases: Uint32Array; canons: Uint32Array } {
+    return { aliases: this.weldAliases, canons: this.weldCanons };
+  }
+
+  syncWeldedPositions(): void {
+    for (let i = 0; i < this.weldAliases.length; i++) {
+      const ai = this.weldAliases[i] * 3;
+      const ci = this.weldCanons[i] * 3;
+      for (let k = 0; k < 3; k++) {
+        this.positions[ai + k] = this.positions[ci + k];
+        this.prevPositions[ai + k] = this.positions[ci + k];
+      }
+    }
+  }
+
   // collisionEvery: 충돌 검사는 비용이 커서(특히 메시 BVH 기반) 매 반복마다
   // 하지 않고 N번째 반복마다 한 번씩만 수행한다. 마지막 반복에는 항상 수행해
   // 최종 결과가 뚫고 지나가지 않게 한다.

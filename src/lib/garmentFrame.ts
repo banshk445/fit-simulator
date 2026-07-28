@@ -256,6 +256,10 @@ export function createGarmentSession(sim: ClothSimulation, env: GarmentFrameEnv)
         }
         if (env.orderPasses) torsoOrderExtra(sim.positions, sim.pinned, sim.positions.length / 3);
         if (env.clampInSubstep) sim.clampOverstretchedConstraints();
+        // M1(용접): alias 파티클을 canon 최신 위치로 동기화 — 후처리(sleeve
+        // ArmPull의 row0 링 중심 등)가 alias를 읽기 전에 반영돼야 한다.
+        // 용접 없는 구 코어에선 빈 루프(비트 동일).
+        sim.syncWeldedPositions();
         accumulator -= SUBSTEP_DT;
       }
 
@@ -291,6 +295,9 @@ export function createGarmentSession(sim: ClothSimulation, env: GarmentFrameEnv)
       if (env.clampAfterPost) {
         sim.clampOverstretchedConstraints();
       }
+      // 후처리(스무딩/order/소프트풀 등)가 canon을 움직였을 수 있어 프레임
+      // 확정 직전 한 번 더 동기화 — 렌더/지표는 항상 용접 일치 상태를 본다.
+      sim.syncWeldedPositions();
     },
   };
 }

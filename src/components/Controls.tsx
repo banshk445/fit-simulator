@@ -78,6 +78,8 @@ export function Controls() {
   const setShowFitMap = useFitStore((s) => s.setShowFitMap);
   const renderSmoothing = useFitStore((s) => s.renderSmoothing);
   const setRenderSmoothing = useFitStore((s) => s.setRenderSmoothing);
+  const newCore = useFitStore((s) => s.newCore);
+  const setNewCore = useFitStore((s) => s.setNewCore);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [isProcessingImage, setIsProcessingImage] = useState(false);
 
@@ -344,6 +346,15 @@ export function Controls() {
               className="accent-red-500"
             />
             <span>[DEV] 렌더 스무딩(서브디비전) — 끄면 물리 격자 해상도 그대로</span>
+          </label>
+          <label className="mt-2 flex cursor-pointer items-center gap-2 text-sm text-slate-300">
+            <input
+              type="checkbox"
+              checked={newCore}
+              onChange={(e) => setNewCore(e.target.checked)}
+              className="accent-red-500"
+            />
+            <span>[DEV] 신 코어(M1) — 암홀 용접 + 직결 렌더 (신구 대조)</span>
           </label>
         </section>
       )}

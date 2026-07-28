@@ -28,6 +28,7 @@ import {
 import type { MainToGarmentWorkerMessage, GarmentWorkerToMainMessage, ArmShapeMsg } from "../lib/garmentProtocol";
 import { MODEL_URL } from "./Mannequin";
 import { armholeSeamStrip, buildSeamBridge, shoulderSeamStrip, sideSeamStrip, updateSeamBridge } from "./seamBridge";
+import { buildWeldedGarmentGeometry, WELDED_TOTAL_PARTICLES } from "./weldedGarmentGeometry";
 
 interface Props {
   imageUrl: string;
@@ -427,6 +428,15 @@ export function Garment({ imageUrl }: Props) {
   const showFitMap = useFitStore((s) => s.showFitMap);
   const renderSmoothing = useFitStore((s) => s.renderSmoothing);
   const renderSubdiv = renderSmoothing ? RENDER_SUBDIV : RENDER_SUBDIV_OFF;
+  // M1(신 코어): 워커 물리(암홀 용접) + 직결 렌더 경로 토글. onmessage
+  // 클로저가 최신 값을 보도록 ref로도 노출(seamBridgeRef와 같은 패턴).
+  const newCore = useFitStore((s) => s.newCore);
+  const newCoreRef = useRef(newCore);
+  newCoreRef.current = newCore;
+  const weldedGeometry = useMemo(() => buildWeldedGarmentGeometry(), []);
+  useEffect(() => () => weldedGeometry.dispose(), [weldedGeometry]);
+  // weldInfo(용접 테이블) — 항등으로 시작, 워커 회신으로 갱신.
+  const canonOfRef = useRef<Uint32Array | null>(null);
   // 47번(디버그 전용): 영역별 와이어프레임 지오메트리를 나눌 몸통(xMin~xMax)
   // 경계 — torsoColumnRange가 이미 계산하는 값을 아래 useEffect에서 그대로
   // 채워 넣는다(포즈가 바뀔 때마다 다시 자르진 않는다 — 치수가 바뀔 때만
@@ -532,16 +542,23 @@ export function Garment({ imageUrl }: Props) {
     const armholeStartRow = Math.round(ROWS * ARMHOLE_ROW_FRACTION);
     return buildSeamBridge([
       shoulderSeamStrip(torsoSleeveMin, torsoSleeveMax, COLS),
-      // 좌/우 대응은 buildUnifiedGarmentSim의 addSleeveArmholeSeam 호출부와 동일:
-      // 왼팔 소매 ↔ xMin, 오른팔 소매 ↔ xMax.
-      armholeSeamStrip("armholeLeft", torsoSleeveMin, "sleeveLeft", armholeStartRow, COLS),
-      armholeSeamStrip("armholeRight", torsoSleeveMax, "sleeveRight", armholeStartRow, COLS),
+      // M1(신 코어): 암홀 링은 용접돼 좌표가 비트 일치 — 덮을 간격 자체가
+      // 없으므로 브리지 대상에서 뺀다. 어깨(넥라인 rise 차)·옆선(6mm)은
+      // 의도된 간격이라 신구 공통으로 유지.
+      ...(newCore
+        ? []
+        : [
+            // 좌/우 대응은 buildUnifiedGarmentSim의 addSleeveArmholeSeam 호출부와 동일:
+            // 왼팔 소매 ↔ xMin, 오른팔 소매 ↔ xMax.
+            armholeSeamStrip("armholeLeft", torsoSleeveMin, "sleeveLeft", armholeStartRow, COLS),
+            armholeSeamStrip("armholeRight", torsoSleeveMax, "sleeveRight", armholeStartRow, COLS),
+          ]),
       // 3단계: 옆선(겨드랑이~밑단). 암홀 링의 겨드랑이 쿼드와 변 하나를 공유해
       // 이어진다 — 시작 행이 armholeStartRow로 같기 때문(문서 21-4).
       sideSeamStrip("sideLeft", torsoSleeveMin, armholeStartRow, ROWS, COLS),
       sideSeamStrip("sideRight", torsoSleeveMax, armholeStartRow, ROWS, COLS),
     ]);
-  }, [torsoSleeveMin, torsoSleeveMax]);
+  }, [torsoSleeveMin, torsoSleeveMax, newCore]);
   // onmessage 클로저는 torsoSleeveMin/Max를 deps에 안 갖고 있어 사이즈 변경 시
   // 낡은 seamBridge를 붙들 수 있다 — torsoColumnRangeRef와 같은 ref 패턴으로
   // 항상 현재 것을 보게 한다(지오메트리와 쌍 테이블이 같은 useMemo에서 나오므로
@@ -1198,6 +1215,14 @@ export function Garment({ imageUrl }: Props) {
         sleeveGridDebugRef.current = msg;
         return;
       }
+      if (msg.type === "weldInfo") {
+        // M1: 용접 테이블 — 항등 맵에 alias→canon만 덮어쓴다.
+        const canonOf = new Uint32Array(WELDED_TOTAL_PARTICLES);
+        for (let i = 0; i < canonOf.length; i++) canonOf[i] = i;
+        for (let i = 0; i < msg.aliases.length; i++) canonOf[msg.aliases[i]] = msg.canons[i];
+        canonOfRef.current = canonOf;
+        return;
+      }
       if (msg.type !== "positions") return;
       pendingRef.current = false;
       if (msg.generation !== generationRef.current) return; // 낡은 세대의 응답은 버린다.
@@ -1206,6 +1231,21 @@ export function Garment({ imageUrl }: Props) {
       backPositions.set(msg.back);
       sleevePositionsLeft.set(msg.sleeveLeft);
       sleevePositionsRight.set(msg.sleeveRight);
+
+      // M1(신 코어): 직결 지오메트리 갱신 + 브리지(어깨/옆선)만 — DataTexture
+      // 프록시 경로(아래 전부)는 신 코어에서 미사용이라 건너뛴다. 핏 맵/
+      // 와이어프레임 DEV 토글은 구 경로 전용(신 코어에선 미지원, 대조용
+      // 토글이니 그대로 둠).
+      if (newCoreRef.current) {
+        weldedGeometry.update(msg.front, msg.back, msg.sleeveLeft, msg.sleeveRight, canonOfRef.current);
+        updateSeamBridge(seamBridgeRef.current, {
+          front: frontPositions,
+          back: backPositions,
+          sleeveLeft: sleevePositionsLeft,
+          sleeveRight: sleevePositionsRight,
+        });
+        return;
+      }
       (frontGeometry.getAttribute("position") as THREE.BufferAttribute).needsUpdate = true;
       (backGeometry.getAttribute("position") as THREE.BufferAttribute).needsUpdate = true;
       (sleeveGeometryLeft.getAttribute("position") as THREE.BufferAttribute).needsUpdate = true;
@@ -1482,6 +1522,7 @@ export function Garment({ imageUrl }: Props) {
       necklineLift,
       armLeft: armShapes.left,
       armRight: armShapes.right,
+      newCore,
     } satisfies MainToGarmentWorkerMessage);
     pendingDtRef.current = 0;
     pendingRef.current = false;
@@ -1497,6 +1538,7 @@ export function Garment({ imageUrl }: Props) {
     sleeveType,
     garmentSize.sleeveLength,
     garmentSize.sleeveWidth,
+    newCore,
   ]);
 
   useFrame((_, delta) => {
@@ -1606,7 +1648,17 @@ export function Garment({ imageUrl }: Props) {
       {/* 47번(디버그 전용 — "전 영역 표시" 진단 모드): 텍스처 완전 교체를
           위해, 그 모드가 켜져 있으면 원본 앞/뒤판 메시 자체를 렌더하지
           않는다(오버레이가 아니라 교체 — 아래 4구역 메시만 보이게 됨). */}
-      {!showAllRegionsWireframe && (
+      {/* M1(신 코어): 4개 패널 메시 + DataTexture 프록시 대신 용접 직결
+          지오메트리 하나 — 그룹별 머티리얼(앞판 미러 텍스처/뒤판/소매 대표색)은
+          구 경로와 동일 구성. 셰이더 주입이 없어 프로그램 캐시 함정과 무관. */}
+      {newCore && !showAllRegionsWireframe && (
+        <mesh geometry={weldedGeometry.geometry} frustumCulled={false}>
+          <meshStandardMaterial key="welded-front" attach="material-0" map={mirroredTexture} side={THREE.DoubleSide} roughness={0.85} />
+          <meshStandardMaterial key="welded-back" attach="material-1" map={compositedTexture} side={THREE.DoubleSide} roughness={0.85} />
+          <meshStandardMaterial key="welded-sleeve" attach="material-2" color={sleeveColor} side={THREE.DoubleSide} roughness={0.85} />
+        </mesh>
+      )}
+      {!newCore && !showAllRegionsWireframe && (
         // 범위 B 구현 5번(렌더링 전환): 기본 경로는 몸통 폭만(frontTorsoRenderGeometry)
         // 그린다 — 구 플랩(frontRenderGeometry, 전체 폭)은 아직 지우지 않고
         // showFrontWireframe 토글 전용으로 남겨둔다(408행 기존 의도 유지 —
@@ -1662,7 +1714,7 @@ export function Garment({ imageUrl }: Props) {
           )}
         </mesh>
       )}
-      {!showAllRegionsWireframe && (
+      {!newCore && !showAllRegionsWireframe && (
         // 범위 B 구현 5번(렌더링 전환): 뒤판엔 앞판 같은 "전체 폭" 디버그
         // 토글이 없으므로(showBackTorsoWireframe은 이미 몸통 전용) 조건 없이
         // 바로 교체 — 구 플랩(backRenderGeometry) 정의 자체는 아직 안 지운다.
@@ -1698,12 +1750,12 @@ export function Garment({ imageUrl }: Props) {
           (sleeveColor)만 — UV 매핑 자체가 필요 없다. onBeforeCompile은
           위치/법선 바인딩(injectProxyBinding)만, injectFitMapBinding류는
           핏 맵이 몸판 전용 기능이라 소매엔 적용 안 함. */}
-      {!showAllRegionsWireframe && (
+      {!newCore && !showAllRegionsWireframe && (
         <mesh geometry={sleeveTubeGeometryLeft} frustumCulled={false}>
           <meshStandardMaterial key="sleeve-left" color={sleeveColor} side={THREE.DoubleSide} roughness={0.85} onBeforeCompile={sleeveLeftOnBeforeCompile} />
         </mesh>
       )}
-      {!showAllRegionsWireframe && (
+      {!newCore && !showAllRegionsWireframe && (
         <mesh geometry={sleeveTubeGeometryRight} frustumCulled={false}>
           <meshStandardMaterial key="sleeve-right" color={sleeveColor} side={THREE.DoubleSide} roughness={0.85} onBeforeCompile={sleeveRightOnBeforeCompile} />
         </mesh>

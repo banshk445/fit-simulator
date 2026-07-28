@@ -46,6 +46,11 @@ export function buildUnifiedGarmentSim(
   armRight: ArmDir,
   sleeveWidthM: number,
   necklineLift?: readonly number[],
+  // M1(신 코어): 암홀 링 시접(레이아웃이 정확히 겹치게 배치해둔 24쌍 —
+  // 중간 10쌍 실측 0.00mm)을 rest 6mm 제약 대신 정점 용접으로 전환.
+  // 어깨선(necklineRise 앞뒤 차 0~8mm)·옆선(6mm)·이즈인은 의도된 간격이라
+  // 용접 대상이 아니다(과제 실측 결론).
+  newCore = false,
 ): { sim: ClothSimulation; seamSkipPairs: ReadonlyArray<{ a: number; b: number }> } {
   const panelDims: PanelDims[] = [
     { cols: COLS, rows: ROWS }, // PANEL_FRONT
@@ -93,11 +98,19 @@ export function buildUnifiedGarmentSim(
   const seamSkipStart = sim.constraintPairs.length;
   addSleeveArmholeSeam(sim, PANEL_FRONT, PANEL_BACK, PANEL_SLEEVE_LEFT, xMin, armholeStartRow);
   addSleeveArmholeSeam(sim, PANEL_FRONT, PANEL_BACK, PANEL_SLEEVE_RIGHT, xMax, armholeStartRow);
+  // M1: addSleeveArmholeSeam이 등록한 쌍(a=몸판, b=소매 row0)이 곧 용접
+  // 테이블 — 같은 출처를 재사용해 wrap 순서 3중 동기화를 늘리지 않는다.
+  const armholeWeldPairs = sim.constraintPairs.slice(seamSkipStart).map(({ a, b }) => ({ canon: a, alias: b }));
   addSleeveWrapConstraint(sim, PANEL_SLEEVE_LEFT, SLEEVE_RING_COLS, SLEEVE_RING_ROWS);
   addSleeveWrapConstraint(sim, PANEL_SLEEVE_RIGHT, SLEEVE_RING_COLS, SLEEVE_RING_ROWS);
   const seamSkipPairs = sim.constraintPairs.slice(seamSkipStart).map(({ a, b }) => ({ a, b }));
 
+  if (newCore) sim.applyWelds(armholeWeldPairs);
+
   pinCorners(sim, pinLeft, pinRight, PANEL_FRONT, PANEL_BACK, armLeft, armRight, necklineLift);
+  // pinCorners가 row0(코너 canon 포함)을 재배치하므로 용접 좌표를 다시
+  // 맞춘다 — 구 코어에선 빈 루프.
+  sim.syncWeldedPositions();
 
   return { sim, seamSkipPairs };
 }

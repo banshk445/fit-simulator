@@ -387,9 +387,12 @@ function runFixture(path: string): void {
   };
   const unified = createUnifiedResolver(meshResolver, collisionState);
 
+  // NEWCORE=1이면 M1 신 코어(암홀 링 용접) — 신구 대조는 같은 fixture로
+  // 이 스위치만 바꿔 두 번 돌린다.
+  const newCore = process.env.NEWCORE === "1";
   const { sim, seamSkipPairs } = buildUnifiedGarmentSim(
     layout.widthM, layout.heightM, layout.topY, layout.centerZ,
-    pose.pinLeft, pose.pinRight, armLeft, armRight, layout.sleeveWidthM, pose.necklineLift,
+    pose.pinLeft, pose.pinRight, armLeft, armRight, layout.sleeveWidthM, pose.necklineLift, newCore,
   );
   const panelStarts: number[] = [];
   const panelCols: number[] = [];
@@ -459,7 +462,7 @@ function runFixture(path: string): void {
     },
   );
 
-  console.log(`[paramSweep:fixture] ${FRAMES}프레임(${SECONDS}s), fabric=${pose.fabric}, 워커 전체 파이프라인 재현`);
+  console.log(`[paramSweep:fixture] ${FRAMES}프레임(${SECONDS}s), fabric=${pose.fabric}, 코어=${newCore ? "신(용접)" : "구"}, 워커 전체 파이프라인 재현`);
   console.log(`  coverage: 노출 ${coverage.exposed}/${coverage.samples} (${(coverage.exposedRatio * 100).toFixed(1)}%)`);
   console.log(`  coverage 버킷(노출/샘플):`, JSON.stringify(Object.fromEntries(Object.entries(coverage.buckets).map(([k, v]) => [k, `${v.exposed}/${v.samples}`]))));
   console.log(`  coverage 노출 예시:`, JSON.stringify(coverage.exposedExamples.slice(0, 5)));

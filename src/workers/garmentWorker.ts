@@ -169,8 +169,22 @@ ctx.onmessage = (event) => {
         toArmDir(msg.armRight),
         msg.sleeveWidthM,
         msg.necklineLift,
+        msg.newCore ?? false,
       );
       sim = built.sim;
+
+      // M1(신 코어): 용접 테이블을 렌더에 회신 — 용접 법선 계산의 단일 출처.
+      if (msg.newCore) {
+        const { aliases, canons } = sim.weldPairs;
+        const panelParticleStart: number[] = [];
+        for (let p = 0; p < sim.panels; p++) panelParticleStart.push(sim.panelParticleStart(p));
+        const aliasCopy = aliases.slice();
+        const canonCopy = canons.slice();
+        ctx.postMessage(
+          { type: "weldInfo", aliases: aliasCopy, canons: canonCopy, panelParticleStart },
+          [aliasCopy.buffer, canonCopy.buffer],
+        );
+      }
 
       {
         const panelStarts: number[] = [];
