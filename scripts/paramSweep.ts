@@ -390,10 +390,12 @@ function runFixture(path: string): void {
     x: fixture.collision.capsules[0]?.top.x ?? 0,
     z: fixture.collision.capsules[0]?.top.z ?? 0,
   };
+  // MARGIN=값(mm) 이면 COLLISION_MARGIN override — margin 스윕용.
+  const collisionMargin = process.env.MARGIN ? Number(process.env.MARGIN) / 1000 : COLLISION_MARGIN;
   const meshResolver = createPanelSplitResolver(
     [
-      frontMesh.createResolver(COLLISION_MARGIN, COLLISION_DETECTION_RADIUS, 0, 0, meshColumnRange, penetrationAxis),
-      backMesh.createResolver(COLLISION_MARGIN, COLLISION_DETECTION_RADIUS, 0, 0, meshColumnRange, penetrationAxis),
+      frontMesh.createResolver(collisionMargin, COLLISION_DETECTION_RADIUS, 0, 0, meshColumnRange, penetrationAxis),
+      backMesh.createResolver(collisionMargin, COLLISION_DETECTION_RADIUS, 0, 0, meshColumnRange, penetrationAxis),
       null,
       null,
     ],
