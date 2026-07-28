@@ -397,6 +397,8 @@ function runFixture(path: string): void {
     centerZ: fixture.collision.centerZ,
     // M2 제거 ①: 신 코어면 sidedness off(SIDEDNESS=1로 강제 복원 가능 — 대조용).
     sidedness: !newCore || process.env.SIDEDNESS === "1",
+    // M2-4 선행: 신 코어 기본 on. PAIRSEP=0으로 끄고 대조.
+    pairSeparation: newCore && process.env.PAIRSEP !== "0",
   };
   let unified = createUnifiedResolver(meshResolver, collisionState);
 

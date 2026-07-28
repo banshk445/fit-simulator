@@ -13,7 +13,7 @@
 import * as THREE from "three";
 import { ClothSimulation } from "./clothPhysics";
 import type { CollisionResolver } from "./clothPhysics";
-import { applyCapsuleCollision, applyFrontBackSidedness } from "./torsoCapsule";
+import { applyCapsuleCollision, applyFrontBackPairSeparation, applyFrontBackSidedness } from "./torsoCapsule";
 import type { Capsule } from "./torsoCapsule";
 import {
   applyArmSoftPull,
@@ -99,6 +99,9 @@ export interface CollisionState {
   // 이 클램프가 옆구리에서 천이 몸을 감아 도는 폴드를 원천 금지하는
   // 부작용만 남는다는 게 제거 근거 — 게이트는 3지표 + 앞뒤 관통.
   sidedness: boolean;
+  // M2-4 선행: 반평면 클램프 대신 "실제로 자리를 바꾼 쌍만" 되돌리는
+  // 경량 분리(applyFrontBackPairSeparation). sidedness와 배타적으로 쓴다.
+  pairSeparation: boolean;
 }
 
 const armholeStartRowConst = Math.round(ROWS * ARMHOLE_ROW_FRACTION);
@@ -153,6 +156,7 @@ export function createUnifiedResolver(meshResolver: CollisionResolver, state: Co
       SHOULDER_CAP_SKIP_END,
     );
     if (state.sidedness) applyFrontBackSidedness(positions, pinned, PARTICLES_PER_PANEL, state.centerZ);
+    if (state.pairSeparation) applyFrontBackPairSeparation(positions, pinned, PARTICLES_PER_PANEL);
     applyCapsuleCollision(positions.subarray(0, frontCount * 3), pinned.subarray(0, frontCount), frontCount, state.armCapsules, 0.006);
     applyCapsuleCollision(positions.subarray(frontCount * 3, backEnd), pinned.subarray(frontCount, frontCount + backCount), backCount, state.armCapsules, 0.006);
     const sleeveCount = SLEEVE_RING_COLS * SLEEVE_RING_ROWS;

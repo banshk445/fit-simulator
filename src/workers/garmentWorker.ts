@@ -138,7 +138,7 @@ const meshResolver = createPanelSplitResolver([frontMeshResolver, backMeshResolv
 
 // 37번/범위 B의 unifiedResolver 본체는 garmentFrame.ts의
 // createUnifiedResolver로 이사(M0) — 워커는 살아있는 상태 객체만 관리한다.
-const collisionState: CollisionState = { torsoCapsules: [], armCapsules: [], centerZ: 0, sidedness: true };
+const collisionState: CollisionState = { torsoCapsules: [], armCapsules: [], centerZ: 0, sidedness: true, pairSeparation: false };
 const unifiedResolver = createUnifiedResolver(meshResolver, collisionState);
 
 // 자체충돌은 몸판(앞+뒤)+소매(좌+우) 전체에 적용한다. 범위 B(소매 재설계
@@ -295,17 +295,23 @@ ctx.onmessage = (event) => {
       sdfPushEnabled = false;
       // M2 보정 제거 ①: 신 코어에선 sidedness 클램프를 끄고 SDF/마찰에 맡긴다.
       collisionState.sidedness = !(msg.newCore ?? false);
+      // M2-4 선행: 신 코어는 반평면 클램프 대신 경량 쌍 분리.
+      collisionState.pairSeparation = msg.newCore ?? false;
       sdfField = null;
       sdfPushField = null;
       session = createGarmentSession(sim, {
         collisionResolver: sdfPushEnabled ? sdfUnifiedResolver : unifiedResolver,
         collisionEvery: COLLISION_EVERY,
         selfCollision: (positions, pinned, n) => selfCollisionResolver!(positions, pinned, n),
-        // ④-1(화면 판정 대기): preserveColumnOrder를 신 코어에서 뗀다.
-        // 도입 사유는 "어깨 테이퍼 구간 열 순서 역전 → 찢어짐"인데, 뗀 뒤
-        // 열역전 68개 중 어깨는 2개뿐이고 나머지는 밑단 쪽(최대 25.9mm @
-        // row23)이라 폴드로 보인다. bowtie(접힌 쿼드)는 1→2로 하나 늘었다.
-        orderColumn: !(msg.newCore ?? false),
+        // ④-1 원복(화면 판정 실패): bowtie는 비가시였고 밑단 열교차도
+        // 정상이었지만, 등 상단 자유 경계가 톱니형으로 거칠어졌다
+        // (jitter +18.6%의 실루엣 발현). 드레이프 이득이 없어(면각평균
+        // -4%, 주름RMS -6.7%) 순손해다.
+        // 여기서 얻은 결론: **"order가 최대 드레이프 차단 요인"은 기각.**
+        // 접힘 금지를 풀어도 접힘이 안 생겼다는 건 접힘을 만드는 힘이
+        // 부족하다는 뜻이고, 유력 용의자는 흡착(15cm 반경 87%/프레임 스냅)
+        // 이다. ④-2(preserveRowOrder)도 같은 논리라 보류.
+        orderColumn: true,
         orderRow: true,
         clampInSubstep: true,
         // M2 제거 ② 재개(화면 판정 대기): 처음 원복했던 근거(ripple

@@ -131,6 +131,43 @@ export function applyFrontBackSidedness(
   }
 }
 
+// M2-4 선행 조건: 흡착과 독립적인 앞뒤 분리 장치.
+//
+// applyFrontBackSidedness(위)는 앞/뒤판을 centerZ 반평면에 **전부** 가두는
+// 방식이라, 제거 ①에서 뗐을 때 옆구리 폴드가 살아났다(반평면 위반 176개
+// = 천이 몸을 감아 도는 폭 최대 5.2cm). 되살릴 수는 없다.
+//
+// 그런데 앞뒤 분리를 실제로 담당하던 게 하나 더 있었다: BVH 리졸버가
+// frontIndex/backIndex로 나뉘어 "앞판은 앞면 삼각형에만 붙는다"를 보장하던
+// 것. M2-4(흡착 완화)는 그 흡착 자체를 끊으므로 이 장치도 같이 약해진다
+// (M2-3 3차 실측: 필드를 안 나누면 교차 33개, 나누면 8개).
+//
+// 그래서 반평면 클램프의 **최소 부분집합**만 남긴다: 같은 (x,y)의 앞/뒤판
+// 파티클이 실제로 자리를 바꿨을 때(front.z < back.z)만 minGap까지 되돌린다.
+// 반평면 위반(옆구리 폴드)은 건드리지 않는다 — 실측상 제약 대상이 1~2개
+// 정점뿐이라 드레이프에 사실상 영향이 없다.
+export function applyFrontBackPairSeparation(
+  positions: Float32Array,
+  pinned: Uint8Array,
+  particlesPerPanel: number,
+  minGap = 0.002,
+): void {
+  for (let i = 0; i < particlesPerPanel; i++) {
+    const fz = i * 3 + 2;
+    const bz = (i + particlesPerPanel) * 3 + 2;
+    const gap = positions[fz] - positions[bz];
+    if (gap >= minGap) continue;
+    const need = minGap - gap;
+    const pinnedF = pinned[i];
+    const pinnedB = pinned[i + particlesPerPanel];
+    if (pinnedF && pinnedB) continue;
+    const moveF = pinnedF ? 0 : pinnedB ? 1 : 0.5;
+    const moveB = pinnedB ? 0 : pinnedF ? 1 : 0.5;
+    positions[fz] += need * moveF;
+    positions[bz] -= need * moveB;
+  }
+}
+
 // 몸 실측(키/가슴둘레)과 어깨 뼈 월드 좌표만으로 가슴/골반 캡슐 2개를
 // 만든다. 실제 뼈대 메시를 굽지 않으므로 살아있는 Object3D 없이도 계산
 // 가능하다. 골반 둘레 슬라이더가 없어 가슴둘레를 그대로 재사용한다 —
