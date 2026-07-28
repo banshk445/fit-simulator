@@ -432,6 +432,11 @@ export function Garment({ imageUrl }: Props) {
   // 클로저가 최신 값을 보도록 ref로도 노출(seamBridgeRef와 같은 패턴).
   const newCore = useFitStore((s) => s.newCore);
   const friction = useFitStore((s) => s.friction);
+  // DEV: ?pin= 쿼리로 핀 강도 override(화면 판정용).
+  const pinStrengthOverride = useMemo(() => {
+    const v = new URLSearchParams(window.location.search).get("pin");
+    return v === null ? undefined : Number(v);
+  }, []);
   const newCoreRef = useRef(newCore);
   newCoreRef.current = newCore;
   // 47번(디버그 전용): 영역별 와이어프레임 지오메트리를 나눌 몸통(xMin~xMax)
@@ -1608,6 +1613,7 @@ export function Garment({ imageUrl }: Props) {
       armRight: armShapes.right,
       newCore,
       friction,
+      pinStrength: pinStrengthOverride,
     } satisfies MainToGarmentWorkerMessage);
     pendingDtRef.current = 0;
     pendingRef.current = false;
@@ -1625,6 +1631,7 @@ export function Garment({ imageUrl }: Props) {
     garmentSize.sleeveWidth,
     newCore,
     friction,
+    pinStrengthOverride,
   ]);
 
   useFrame((_, delta) => {

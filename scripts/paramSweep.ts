@@ -18,6 +18,7 @@ import {
   ARMHOLE_ROW_FRACTION,
   COLLISION_DETECTION_RADIUS,
   COLLISION_EVERY,
+  COLLAR_STRAIN_LIMIT,
   COLLISION_MARGIN,
   COLS,
   GRAVITY_BASE,
@@ -552,8 +553,14 @@ function runFixture(path: string): void {
       : {}),
     // 핀 전환 원복 — 기본 1(하드 핀). PIN=0.5 등으로 재현만 가능.
     pinStrength: process.env.PIN ? Number(process.env.PIN) : 1,
+    // M2-6: COLLAR=0으로 끄고 대조(신 코어 기본 on).
+    collarStrainLimit: newCore && process.env.COLLAR !== "0" ? COLLAR_STRAIN_LIMIT : undefined,
+    onCollarFired: (n) => {
+      collarFired += n;
+    },
   });
 
+  let collarFired = 0;
   const preset = FABRIC_PRESETS[pose.fabric];
   const gravity = new THREE.Vector3(...GRAVITY_BASE).multiplyScalar(preset.gravityScale);
   const framePose = { pinLeft: pose.pinLeft, pinRight: pose.pinRight, armLeft, armRight, necklineLift: pose.necklineLift };
@@ -576,6 +583,7 @@ function runFixture(path: string): void {
     return len;
   };
   const reconRest: number[] = process.env.RECON === "1" ? [0, 1, 2].map(ringCircumference) : [];
+  const reconRestAlways: number[] = [0, 1, 2].map(ringCircumference);
 
   const t0 = performance.now();
   for (let f = 0; f < FRAMES; f++) {
@@ -702,6 +710,24 @@ function runFixture(path: string): void {
   console.log(
     `  capsuleGap(mm): 어깨 ${shoulder.maxMm}|${shoulder.meanMm} / 어깨free ${shoulderFree.maxMm}|${shoulderFree.meanMm} / 몸통 ${torso.maxMm}|${torso.meanMm} / 밑단 ${hem.maxMm}|${hem.meanMm}`,
   );
+  {
+    const ringH = (row: number) => {
+      let sum = 0, n = 0;
+      for (let x = reconRange.xMin; x <= reconRange.xMax; x++) {
+        for (const panel of [PANEL_FRONT, PANEL_BACK]) {
+          sum += sim.positions[sim.index(panel, x, row) * 3 + 1];
+          n++;
+        }
+      }
+      return (sum / n) * 100;
+    };
+    const st = (row: number) => {
+      const rest = reconRestAlways[row];
+      return ((ringCircumference(row) / rest - 1) * 100).toFixed(1);
+    };
+    console.log(`  ring 신장률: row0 ${st(0)}% / row1 ${st(1)}% / row2 ${st(2)}% | row0 평균높이 ${ringH(0).toFixed(2)}cm`);
+  }
+  console.log(`  collar 발화 ${collarFired}회 (배선 검증 — 핀 고정 상태면 0이 정상)`);
   console.log(`  물리 ${physMs}ms/프레임 (BVH+자체충돌 포함)`);
   if (process.env.RECON === "1") {
     for (const row of [0, 1, 2]) {

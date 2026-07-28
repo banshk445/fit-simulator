@@ -223,6 +223,10 @@ export interface GarmentFrameEnv {
   frictionIterationReset?: (positions: Float32Array, pinned: Uint8Array, n: number) => void;
   // 핀 전환 3단계: 1=하드 핀(기존), 1미만=칼라 소프트 앵커, 0=앵커 없음.
   pinStrength?: number;
+  // M2-6: row0 링 신장 상한(예: 1.02). 0/undefined면 미적용.
+  collarStrainLimit?: number;
+  // 발화 카운트 수집(배선 검증용) — 있으면 프레임마다 누적 호출.
+  onCollarFired?: (count: number) => void;
 }
 
 export interface GarmentSession {
@@ -302,6 +306,10 @@ export function createGarmentSession(sim: ClothSimulation, env: GarmentFrameEnv)
         }
         if (anyOrder) torsoOrderExtra(sim.positions, sim.pinned, sim.positions.length / 3);
         if (env.clampInSubstep) sim.clampOverstretchedConstraints();
+        if (env.collarStrainLimit) {
+          const fired = sim.limitCollarStrain(env.collarStrainLimit);
+          if (fired > 0) env.onCollarFired?.(fired);
+        }
         // M1(용접): alias 파티클을 canon 최신 위치로 동기화 — 후처리(sleeve
         // ArmPull의 row0 링 중심 등)가 alias를 읽기 전에 반영돼야 한다.
         // 용접 없는 구 코어에선 빈 루프(비트 동일).

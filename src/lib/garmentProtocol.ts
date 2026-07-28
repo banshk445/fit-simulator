@@ -37,6 +37,8 @@ export type MainToGarmentWorkerMessage =
       newCore?: boolean;
       // M2: 신 코어 안에서 마찰만 독립 토글(A/B 판정용).
       friction?: boolean;
+      // DEV 화면 판정용 핀 강도 override(?pin= 쿼리) — 없으면 상수.
+      pinStrength?: number;
     }
   | {
       type: "rebuildCollision";

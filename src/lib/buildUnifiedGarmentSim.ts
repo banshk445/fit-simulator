@@ -112,5 +112,16 @@ export function buildUnifiedGarmentSim(
   // 맞춘다 — 구 코어에선 빈 루프.
   sim.syncWeldedPositions();
 
+  // M2-6: row0 닫힌 링(앞판 xMin..xMax → 뒤판 역순 → 복귀). pinCorners
+  // 이후에 구성해야 레스트가 "설계 목선 원주"가 된다(정찰 실측 96.2cm).
+  {
+    const ring: { a: number; b: number }[] = [];
+    for (let x = xMin; x < xMax; x++) ring.push({ a: sim.index(PANEL_FRONT, x, 0), b: sim.index(PANEL_FRONT, x + 1, 0) });
+    ring.push({ a: sim.index(PANEL_FRONT, xMax, 0), b: sim.index(PANEL_BACK, xMax, 0) });
+    for (let x = xMax; x > xMin; x--) ring.push({ a: sim.index(PANEL_BACK, x, 0), b: sim.index(PANEL_BACK, x - 1, 0) });
+    ring.push({ a: sim.index(PANEL_BACK, xMin, 0), b: sim.index(PANEL_FRONT, xMin, 0) });
+    sim.setCollarRing(ring);
+  }
+
   return { sim, seamSkipPairs };
 }

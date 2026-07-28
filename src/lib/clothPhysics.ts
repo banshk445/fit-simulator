@@ -284,6 +284,63 @@ export class ClothSimulation {
     return { aliases: this.weldAliases, canons: this.weldCanons };
   }
 
+  // M2-6(칼라 원주 제약): row0 링 엣지의 **신장만** 상한을 건다(압축은
+  // 자유 — 목선이 오므라드는 건 막을 이유가 없다). limitStrain과 같은
+  // 기계지만 대상이 링 엣지 한정이고 상한이 훨씬 빡빡하다(1.02 vs 1.2).
+  // 목적은 "천이 어깨를 넘어 흘러내리려면 목선 원주가 늘어야 한다"는
+  // 기하 조건(정찰: row0 레스트 96.2cm < 어깨 통과 106.7cm, 통과에
+  // +10.9% 필요)을 물리로 강제하는 것.
+  private collarRing: { a: number; b: number; restLength: number }[] = [];
+
+  setCollarRing(pairs: ReadonlyArray<{ a: number; b: number }>): void {
+    this.collarRing = pairs.map(({ a, b }) => {
+      const ai = a * 3;
+      const bi = b * 3;
+      return {
+        a,
+        b,
+        restLength: Math.hypot(
+          this.positions[bi] - this.positions[ai],
+          this.positions[bi + 1] - this.positions[ai + 1],
+          this.positions[bi + 2] - this.positions[ai + 2],
+        ),
+      };
+    });
+  }
+
+  // 발화 횟수를 돌려준다 — 배선 검증(0이면 제약이 안 걸린 것)용.
+  limitCollarStrain(maxStretch: number): number {
+    let fired = 0;
+    for (const c of this.collarRing) {
+      const ai = c.a * 3;
+      const bi = c.b * 3;
+      const pinnedA = this.pinned[c.a];
+      const pinnedB = this.pinned[c.b];
+      if (pinnedA && pinnedB) continue;
+      const dx = this.positions[bi] - this.positions[ai];
+      const dy = this.positions[bi + 1] - this.positions[ai + 1];
+      const dz = this.positions[bi + 2] - this.positions[ai + 2];
+      const dist = Math.hypot(dx, dy, dz) || 1e-6;
+      const maxDist = c.restLength * maxStretch;
+      if (dist <= maxDist) continue;
+      fired++;
+      const diff = (dist - maxDist) / dist;
+      const moveA = pinnedA ? 0 : pinnedB ? 1 : 0.5;
+      const moveB = pinnedB ? 0 : pinnedA ? 1 : 0.5;
+      if (!pinnedA) {
+        this.positions[ai] += dx * diff * moveA;
+        this.positions[ai + 1] += dy * diff * moveA;
+        this.positions[ai + 2] += dz * diff * moveA;
+      }
+      if (!pinnedB) {
+        this.positions[bi] -= dx * diff * moveB;
+        this.positions[bi + 1] -= dy * diff * moveB;
+        this.positions[bi + 2] -= dz * diff * moveB;
+      }
+    }
+    return fired;
+  }
+
   syncWeldedPositions(): void {
     for (let i = 0; i < this.weldAliases.length; i++) {
       const ai = this.weldAliases[i] * 3;

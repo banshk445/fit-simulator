@@ -17,6 +17,7 @@ import {
   COLLISION_MARGIN,
   COLS,
   FRICTION_CONTACT_BAND,
+  COLLAR_STRAIN_LIMIT,
   FRICTION_MU_ITER,
   FRICTION_MU_KINETIC,
   PIN_STRENGTH,
@@ -363,7 +364,9 @@ ctx.onmessage = (event) => {
         frictionIteration: sdfFrictionEnabled ? iterationFriction.apply : undefined,
         frictionIterationReset: sdfFrictionEnabled ? iterationFriction.reset : undefined,
         // 핀 전환 후보(화면 판정 대기) — 신 코어에서만 소프트 앵커.
-        pinStrength: (msg.newCore ?? false) ? PIN_STRENGTH : 1,
+        pinStrength: (msg.newCore ?? false) ? (msg.pinStrength ?? PIN_STRENGTH) : 1,
+        // M2-6: 칼라 원주 제약(신 코어 전용).
+        collarStrainLimit: (msg.newCore ?? false) ? COLLAR_STRAIN_LIMIT : undefined,
       });
 
       // 범위 B 구현 1번(격자 생성) 검증용 — buildConstraints()/step() 이전
