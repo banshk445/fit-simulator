@@ -457,8 +457,9 @@ function runFixture(path: string): void {
     selfCollision,
     orderPasses: true,
     clampInSubstep: true,
-    // M2 제거 ②: 신 코어면 스무딩 off(SMOOTHING=1로 강제 복원 — 대조용).
-    smoothing: !newCore || process.env.SMOOTHING === "1" || process.env.SMOOTH_BLEND !== undefined,
+    // M2 제거 ②는 원복됨(워커와 동일하게 기본 on) — SMOOTHING=0으로 끄고,
+    // SMOOTH_BLEND=값으로 중간값을 재는 실험 손잡이만 남긴다.
+    smoothing: process.env.SMOOTHING !== "0",
     smoothingBlend: process.env.SMOOTH_BLEND ? Number(process.env.SMOOTH_BLEND) : undefined,
     postOrder: true,
     armSoftPull: true,
