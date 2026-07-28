@@ -19,6 +19,13 @@ import type { Vec3Like } from "./clothProtocol";
 export interface CoverageBucket {
   samples: number;
   exposed: number;
+  // hover — 히트된(덮인) 샘플의 레이 히트 거리(몸 표면→천). "덮였는가"
+  // (coverage)와 별개로 "얼마나 뜬 채 덮였는가"를 잰다. 미스 샘플은
+  // hover 집계에서 제외(그건 coverage 몫). maxAt은 몸 샘플 좌표 —
+  // max 인질 이력(5회) 때문에 위치 필수.
+  hoverSumMm: number;
+  hoverMaxMm: number;
+  hoverMaxAt: { x: number; y: number; z: number } | null;
 }
 
 export interface CoverageResult {
@@ -139,14 +146,17 @@ function clothTriangles(sim: GridView, panels: readonly ClothPanelRange[]): Floa
 
 // Möller–Trumbore. 양면 판정(천은 안팎 어느 쪽이든 덮은 것) — t가
 // [tMin, tMax] 안이면 교차.
-function rayHitsAnyTriangle(
+// 최근접 히트 거리(m)를 돌려준다(없으면 -1). hover 지표가 거리를 쓰므로
+// 조기 탈출 대신 전 삼각형에서 최소 t를 찾는다.
+function rayNearestHit(
   ox: number, oy: number, oz: number,
   dx: number, dy: number, dz: number,
   tris: Float32Array,
   tMin: number,
   tMax: number,
-): boolean {
+): number {
   const EPS = 1e-9;
+  let best = -1;
   for (let t = 0; t < tris.length; t += 9) {
     const ax = tris[t], ay = tris[t + 1], az = tris[t + 2];
     const e1x = tris[t + 3] - ax, e1y = tris[t + 4] - ay, e1z = tris[t + 5] - az;
@@ -166,9 +176,9 @@ function rayHitsAnyTriangle(
     const v = (dx * qx + dy * qy + dz * qz) * invDet;
     if (v < 0 || u + v > 1) continue;
     const hitT = (e2x * qx + e2y * qy + e2z * qz) * invDet;
-    if (hitT >= tMin && hitT <= tMax) return true;
+    if (hitT >= tMin && hitT <= tMax && (best < 0 || hitT < best)) best = hitT;
   }
-  return false;
+  return best;
 }
 
 // 첫 실측(A-② fixture)에서 mid-back 버킷이 93~96% "노출"로 나왔다 — 화면상
@@ -227,13 +237,22 @@ export function computeBodyCoverage(
     const z = body.points[i * 3 + 2];
     const yBand = y > params.yMax - bandH ? "top" : y > params.yMax - 2 * bandH ? "mid" : "bot";
     const key = `${yBand}-${z >= params.centerZ ? "front" : "back"}-${x >= params.centerX ? "left" : "right"}`;
-    const bucket = (buckets[key] ??= { samples: 0, exposed: 0 });
+    const bucket = (buckets[key] ??= { samples: 0, exposed: 0, hoverSumMm: 0, hoverMaxMm: 0, hoverMaxAt: null });
     bucket.samples++;
     const [nx, ny, nz] = orientOutward(
       body.normals[i * 3], body.normals[i * 3 + 1], body.normals[i * 3 + 2],
       x, z, params.centerX, params.centerZ,
     );
-    const hit = rayHitsAnyTriangle(x, y, z, nx, ny, nz, tris, rayMin, rayMax);
+    const hitT = rayNearestHit(x, y, z, nx, ny, nz, tris, rayMin, rayMax);
+    const hit = hitT >= 0;
+    if (hit) {
+      const mm = hitT * 1000;
+      bucket.hoverSumMm += mm;
+      if (mm > bucket.hoverMaxMm) {
+        bucket.hoverMaxMm = mm;
+        bucket.hoverMaxAt = { x: Number(x.toFixed(4)), y: Number(y.toFixed(4)), z: Number(z.toFixed(4)) };
+      }
+    }
     if (!hit) {
       exposed++;
       bucket.exposed++;

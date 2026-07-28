@@ -592,6 +592,39 @@ function runFixture(path: string): void {
   console.log(`  coverage: 노출 ${coverage.exposed}/${coverage.samples} (${(coverage.exposedRatio * 100).toFixed(1)}%)`);
   console.log(`  coverage 버킷(노출/샘플):`, JSON.stringify(Object.fromEntries(Object.entries(coverage.buckets).map(([k, v]) => [k, `${v.exposed}/${v.samples}`]))));
   console.log(`  coverage 노출 예시:`, JSON.stringify(coverage.exposedExamples.slice(0, 5)));
+  // 어깨 hover — top 버킷(어깨 상면)의 히트율 + 히트 거리(몸→천).
+  {
+    const band = (names: string[]) => {
+      let samples = 0, exposed = 0, hoverSum = 0, hoverMax = 0;
+      let hoverMaxAt: unknown = null;
+      for (const nm of names) {
+        const b = coverage.buckets[nm];
+        if (!b) continue;
+        samples += b.samples;
+        exposed += b.exposed;
+        hoverSum += b.hoverSumMm;
+        if (b.hoverMaxMm > hoverMax) {
+          hoverMax = b.hoverMaxMm;
+          hoverMaxAt = b.hoverMaxAt;
+        }
+      }
+      const hits = samples - exposed;
+      return {
+        hitRatio: samples ? Number((hits / samples).toFixed(3)) : 0,
+        hoverMean: hits ? Number((hoverSum / hits).toFixed(2)) : 0,
+        hoverMax: Number(hoverMax.toFixed(2)),
+        hoverMaxAt,
+      };
+    };
+    const tf = band(["top-front-left", "top-front-right"]);
+    const tb = band(["top-back-left", "top-back-right"]);
+    console.log(
+      `  shoulderHover top-front: hit ${tf.hitRatio} / hover ${tf.hoverMean}|${tf.hoverMax}mm @ ${JSON.stringify(tf.hoverMaxAt)}`,
+    );
+    console.log(
+      `  shoulderHover top-back : hit ${tb.hitRatio} / hover ${tb.hoverMean}|${tb.hoverMax}mm @ ${JSON.stringify(tb.hoverMaxAt)}`,
+    );
+  }
   // 신구 대조에서 "새로 노출된 지점"을 집합 차로 특정하기 위한 전체 덤프.
   if (process.env.COVERAGE_DUMP) {
     writeFileSync(process.env.COVERAGE_DUMP, JSON.stringify(coverage.exposedExamples));
