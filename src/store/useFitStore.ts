@@ -187,4 +187,25 @@ export const useFitStore = create<FitState>((set) => ({
 // window.__fitStore.getState().setGarmentImage(dataUrl).
 if (import.meta.env.DEV) {
   (window as unknown as { __fitStore?: typeof useFitStore }).__fitStore = useFitStore;
+
+  // 화면 판정 자립 워크플로우: 쿼리 파라미터로 페이지 로드 시 상태를
+  // 자동 복원한다 — vite 재시작(라이브 리로드) 후에도 콘솔 조작 없이
+  // 항상 같은 판정 상태로 돌아오게. 예:
+  //   localhost:5173/?autofit=1&newcore=1        (신 코어 판정 상태)
+  //   localhost:5173/?autofit=1&newcore=1&friction=0  (마찰 A/B)
+  const q = new URLSearchParams(window.location.search);
+  if (q.get("autofit") === "1") {
+    const canvas = document.createElement("canvas");
+    canvas.width = 400;
+    canvas.height = 400;
+    const g = canvas.getContext("2d");
+    if (g) {
+      g.fillStyle = "#3a6ea5";
+      g.fillRect(0, 0, 400, 400);
+      useFitStore.getState().setGarmentImage(canvas.toDataURL());
+    }
+  }
+  if (q.get("newcore") === "1") useFitStore.getState().setNewCore(true);
+  if (q.get("friction") === "0") useFitStore.getState().setFriction(false);
+  if (q.get("smoothing") === "0") useFitStore.getState().setRenderSmoothing(false);
 }
