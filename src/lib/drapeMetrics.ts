@@ -185,6 +185,60 @@ export function bodyGapBands(armholeStartRow: number, rows: number): GapBand[] {
   ];
 }
 
+// 잔물결(리플) 지표 — B-1(스무딩 완화) 실패("인접 열 잔물결 재현", 과거
+// 실측 인접 열 Y차 최대 2cm)를 정량화. 커버리지 지표는 이 실패를 원리적으로
+// 못 잡는다(잔물결은 노출이 아님 — 실측: B-1에서 커버리지는 오히려 개선).
+// 인접 열 1차 차분은 어깨 경사(정상 기울기)가 섞이므로, 행 방향 2차 차분
+// |p(x-1)+p(x+1)-2p(x)| (지그재그만 반응)의 max/mean을 낸다.
+export interface RippleStats {
+  maxMm: number;
+  meanMm: number;
+  maxAt: { panel: number; x: number; y: number };
+}
+
+export function computeRippleMm(
+  sim: GridView,
+  panels: readonly number[],
+  rowStart: number,
+  rowEndInclusive: number,
+  colMin = 0,
+  colMax = Infinity,
+): RippleStats {
+  const p = sim.positions;
+  let maxV = 0;
+  let sum = 0;
+  let count = 0;
+  let maxAt = { panel: -1, x: -1, y: -1 };
+  for (const panel of panels) {
+    const { cols, rows } = sim.panelDims[panel];
+    const x0 = Math.max(1, colMin + 1);
+    const x1 = Math.min(cols - 2, colMax - 1);
+    const yEnd = Math.min(rows - 1, rowEndInclusive);
+    for (let y = Math.max(0, rowStart); y <= yEnd; y++) {
+      for (let x = x0; x <= x1; x++) {
+        const i = sim.index(panel, x, y) * 3;
+        const l = sim.index(panel, x - 1, y) * 3;
+        const r = sim.index(panel, x + 1, y) * 3;
+        const dx = p[l] + p[r] - 2 * p[i];
+        const dy = p[l + 1] + p[r + 1] - 2 * p[i + 1];
+        const dz = p[l + 2] + p[r + 2] - 2 * p[i + 2];
+        const v = Math.hypot(dx, dy, dz);
+        sum += v;
+        count++;
+        if (v > maxV) {
+          maxV = v;
+          maxAt = { panel, x, y };
+        }
+      }
+    }
+  }
+  return {
+    maxMm: Number((maxV * 1000).toFixed(2)),
+    meanMm: Number(((sum / (count || 1)) * 1000).toFixed(2)),
+    maxAt,
+  };
+}
+
 export function computeBodyGapChannels(
   sim: GridView,
   panels: readonly number[],

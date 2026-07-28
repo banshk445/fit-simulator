@@ -35,7 +35,8 @@ import {
 import { FABRIC_PRESETS } from "../src/lib/fabricPresets";
 import type { Vec3Like } from "../src/lib/clothProtocol";
 import { armholeRingJaggedness, ringJaggedness } from "../src/lib/seamDiagnostics";
-import { bodyGapBands, computeBodyGapChannels, computeDrapeMetrics, type DrapeMetrics, type GapStats } from "../src/lib/drapeMetrics";
+import { bodyGapBands, computeBodyGapChannels, computeDrapeMetrics, computeRippleMm, type DrapeMetrics, type GapStats } from "../src/lib/drapeMetrics";
+import { computeBodyCoverage } from "../src/lib/coverageMetric";
 
 // 대표 포즈 — checkSleeveSeam.ts와 같은 출처(이 세션 __fitDebug 실측), 반팔
 // 기본값(소매길이 22cm), 어깨너비 45cm 기준.
@@ -438,7 +439,33 @@ function runFixture(path: string): void {
     sim, [PANEL_FRONT, PANEL_BACK], fixture.collision.capsules, bodyGapBands(armholeStartRow, ROWS), xMin, xMax,
   );
 
+  // 커버리지 — 어깨~겨드랑이 대역(옷 row0~armholeStartRow가 덮는 높이,
+  // 행간격 = heightM/(ROWS-1)). 목 구멍은 원래 노출이 정상이라 목 축 주변
+  // 수평 반경 제외 — 반경 9cm는 A-② 상태에서 넥라인 정상 개구부가 노출로
+  // 안 잡히는 값으로 보정(calibrated)한 눈대중 초기값.
+  const rowH = layout.heightM / (ROWS - 1);
+  const coverage = computeBodyCoverage(
+    position,
+    [fixture.collision.frontIndex, fixture.collision.backIndex],
+    sim,
+    [PANEL_FRONT, PANEL_BACK, PANEL_SLEEVE_LEFT, PANEL_SLEEVE_RIGHT],
+    {
+      yMin: layout.topY - rowH * (armholeStartRow + 0.5),
+      yMax: layout.topY + 0.03,
+      neckCenter: { x: (pose.pinLeft.x + pose.pinRight.x) / 2, y: 0, z: (pose.pinLeft.z + pose.pinRight.z) / 2 },
+      neckRadius: 0.09,
+      centerX: (pose.pinLeft.x + pose.pinRight.x) / 2,
+      centerZ: fixture.collision.centerZ,
+    },
+  );
+
   console.log(`[paramSweep:fixture] ${FRAMES}프레임(${SECONDS}s), fabric=${pose.fabric}, 워커 전체 파이프라인 재현`);
+  console.log(`  coverage: 노출 ${coverage.exposed}/${coverage.samples} (${(coverage.exposedRatio * 100).toFixed(1)}%)`);
+  console.log(`  coverage 버킷(노출/샘플):`, JSON.stringify(Object.fromEntries(Object.entries(coverage.buckets).map(([k, v]) => [k, `${v.exposed}/${v.samples}`]))));
+  console.log(`  coverage 노출 예시:`, JSON.stringify(coverage.exposedExamples.slice(0, 5)));
+  // 잔물결 — 어깨~겨드랑이(row1~asr) 몸통 열, B-1류(스무딩 완화) 실패 감시.
+  const ripple = computeRippleMm(sim, [PANEL_FRONT, PANEL_BACK], 1, armholeStartRow, xMin, xMax);
+  console.log(`  ripple(2차차분): max ${ripple.maxMm}mm @ ${JSON.stringify(ripple.maxAt)} / mean ${ripple.meanMm}mm`);
   console.log(`  maxSeamGapCm: ${maxSeamGapCm.toFixed(2)} (브라우저 실측과 직접 대조용)`);
   console.log(`  drape: ${drape.faceAngleMeanDeg} / ${drape.faceAngleMaxDeg} / ${drape.wrinkleRmsMm} / ${drape.maxStrain}`);
   console.log(
