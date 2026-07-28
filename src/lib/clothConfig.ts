@@ -125,6 +125,19 @@ export const MAX_DISPLACEMENT_PER_SUBSTEP = 0.05;
 export const SELF_COLLISION_MIN_DIST = 0.0055;
 // 옆선(사이드심) 시접의 목표 간격.
 export const SEAM_REST_LENGTH = 0.006;
+
+// 드레이프 개선 A안(A-②): 제약 종류별 목표 강성. step()이 iteration 수로
+// 보정(k'=1-(1-k)^(1/n))해 적용하므로 "반복이 많으면 유효 강성이 도로
+// 1에 붙는" 문제 없이 이 값이 곧 프레임당 유효 강성이다(clothPhysics.ts
+// setKindTargetStiffness 참고). 표준 천 시뮬은 bend를 stretch 대비
+// 0.01~0.1로 두는데 기존엔 셋 다 1.0이라 2칸 거리 제약이 "펴진 상태"를
+// 100% 강도로 유지 — 44×28 셀(~2.5×3cm)보다 작은 곡률의 접힘이 아예
+// 불가능해 큰 평면 폴리곤이 각지게 굳는 원인이었다(A-① 조사).
+// 1 초과 금지 — docs/pattern-redesign.md 13번(stiffness>1 카오스적 불안정).
+export const STIFFNESS_STRUCTURAL = 1.0;
+export const STIFFNESS_SHEAR = 1.0; // A-③ 후보(0.6) — 지금은 현행 유지
+export const STIFFNESS_BEND = 0.1;
+export const STIFFNESS_SEAM = 1.0;
 // 겨드랑이 밑부터 밑단까지만 옆선을 잇고, 그 위(어깨~겨드랑이)는 트여 있는
 // 암홀(진동)로 남겨둔다 — 별도 소매 패널 없이도 최소한의 팔 통로를 만든다.
 // 이 구간이 넓을수록 앞/뒤판이 서로 안 붙잡아 주는 구간도 넓어져서, 뒤판이

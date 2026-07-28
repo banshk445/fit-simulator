@@ -26,6 +26,10 @@ import {
   ROWS,
   SLEEVE_RING_COLS,
   SLEEVE_RING_ROWS,
+  STIFFNESS_BEND,
+  STIFFNESS_SEAM,
+  STIFFNESS_SHEAR,
+  STIFFNESS_STRUCTURAL,
 } from "./clothConfig";
 
 // 46번(전면 재설계 — 통합 단일 패널): 소매가 더 이상 별도 패널이 아니라
@@ -66,6 +70,8 @@ export function buildUnifiedGarmentSim(
   layoutSleevePanel(sim, PANEL_SLEEVE_RIGHT, SLEEVE_RING_COLS, SLEEVE_RING_ROWS, rightArmholeVertex, armRight, sleeveWidthM);
 
   sim.buildConstraints();
+  // 드레이프 개선 A-②: 종류별 목표 강성(clothConfig.ts 주석 참고).
+  sim.setKindTargetStiffness(STIFFNESS_STRUCTURAL, STIFFNESS_SHEAR, STIFFNESS_BEND, STIFFNESS_SEAM);
   relaxSleeveStiffness(sim, widthM, pinLeft, pinRight, armLeft, armRight);
   applyShoulderRollStiffness(sim, widthM, pinLeft, pinRight, armLeft, armRight);
 
