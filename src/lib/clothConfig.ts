@@ -135,7 +135,7 @@ export const SEAM_REST_LENGTH = 0.006;
 // 불가능해 큰 평면 폴리곤이 각지게 굳는 원인이었다(A-① 조사).
 // 1 초과 금지 — docs/pattern-redesign.md 13번(stiffness>1 카오스적 불안정).
 export const STIFFNESS_STRUCTURAL = 1.0;
-export const STIFFNESS_SHEAR = 1.0; // A-③ 후보(0.6) — 지금은 현행 유지
+export const STIFFNESS_SHEAR = 0.6; // A-③: 대각(전단) 완화 — 골판지 잠김의 남은 절반
 export const STIFFNESS_BEND = 0.1;
 export const STIFFNESS_SEAM = 1.0;
 // 겨드랑이 밑부터 밑단까지만 옆선을 잇고, 그 위(어깨~겨드랑이)는 트여 있는
