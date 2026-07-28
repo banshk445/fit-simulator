@@ -482,13 +482,6 @@ const UNDERARM_LIFT = 0.15; // 15cm 위쪽/안쪽으로 추가 당김
 // 포물선(0, ARM_ROWS에서 0, 중간에서 최대)으로 아래로 살짝 더 당겨,
 // 양 끝은 그대로 두고 중간만 무게감 있게 늘어지게 한다.
 const DRAPE_SAG = 0.05; // 중간 지점 최대 처짐 5cm
-// C단계(소매 절차적 스냅 축소): 소매 형태가 "물리 결과"가 아니라 이 소프트
-// 풀이 매 프레임 찍어 누르는 수식 형태였던 게 A-① 조사의 소매 한정 최우선
-// 원인(H4). A-②(bend 0.1)로 제약 자체가 형태를 유지할 여지가 생겼으므로
-// 스냅 의존도를 절반으로 낮춰 물리에 더 맡긴다. U자 커브/underarmBoost의
-// 내부 상수(커프 최소값 0.1 포함)는 긴팔 망토화 이력 때문에 건드리지 않고
-// 전 구간 균일 스케일 하나만 얹는다. 원복 = 1.0.
-const ARM_SOFT_PULL_SCALE = 0.5;
 
 export function applyArmSoftPull(
   sim: ClothSimulation,
@@ -543,7 +536,7 @@ export function applyArmSoftPull(
         const underarmT = ARM_ROWS > 0 ? Math.min(y / ARM_ROWS, 1) : 1;
         const underarmSmooth = underarmT * underarmT * (3 - 2 * underarmT);
         const underarmBoost = UNDERARM_HUG_WEIGHT * underarmSmooth * sleeveT;
-        const pullWeight = Math.max(weight, underarmBoost) * ARM_SOFT_PULL_SCALE;
+        const pullWeight = Math.max(weight, underarmBoost);
         const dropBell = 4 * underarmT * (1 - underarmT); // 0(어깨)~1(중간)~0(밑단)
         const targetY = target.y + UNDERARM_LIFT * underarmSmooth * sleeveT - DRAPE_SAG * dropBell * sleeveT;
         const ix = i * 3;
@@ -560,10 +553,7 @@ export function applyArmSoftPull(
 // 독립 소매 패널은 건드리지 않아, row0 봉제선 하나만 의지하면 전체가
 // 중력에 그대로 늘어진다. 매 프레임 row0 평균을 암홀 중심으로 쓰므로
 // 봉제선 정착 후 소매가 움직여도 타깃이 따라온다.
-// C단계: 0.35→0.2 — 독립 소매 패널도 원통 목표 스냅을 줄여 물리에 맡긴다
-// (ARM_SOFT_PULL_SCALE과 같은 취지). 예상 트레이드오프 = 커프 처짐 증가,
-// paramSweep cuffDroopCm으로 감시. 원복 = 0.35.
-const SLEEVE_ARM_PULL_WEIGHT = 0.2;
+const SLEEVE_ARM_PULL_WEIGHT = 0.35;
 
 export function applySleeveArmPull(
   sim: ClothSimulation,
