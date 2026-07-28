@@ -19,6 +19,7 @@ import {
   FRICTION_CONTACT_BAND,
   FRICTION_MU_ITER,
   FRICTION_MU_KINETIC,
+  PIN_STRENGTH,
   FRICTION_MU_STATIC,
   GRAVITY_BASE,
   MAX_DISPLACEMENT_PER_SUBSTEP,
@@ -361,6 +362,8 @@ ctx.onmessage = (event) => {
         // 주의 — 물리 ms가 아직 2.3배(비용 최적화는 화면 통과 후).
         frictionIteration: sdfFrictionEnabled ? iterationFriction.apply : undefined,
         frictionIterationReset: sdfFrictionEnabled ? iterationFriction.reset : undefined,
+        // 핀 전환 후보(화면 판정 대기) — 신 코어에서만 소프트 앵커.
+        pinStrength: (msg.newCore ?? false) ? PIN_STRENGTH : 1,
       });
 
       // 범위 B 구현 1번(격자 생성) 검증용 — buildConstraints()/step() 이전
