@@ -5,21 +5,29 @@
 // 찾는 탐색 도구다.
 // ponytail: 조합 그리드는 아래 WIDTHS_M/SLEEVE_WIDTHS_M 배열을 직접 고쳐라
 // (CLI 파싱 없음 — 필요해지면 추가).
+import { readFileSync } from "node:fs";
 import * as THREE from "three";
 import { armholeRingVertices, torsoColumnRange, type ArmDir } from "../src/lib/buildGarmentSim";
-import { createGarmentSession } from "../src/lib/garmentFrame";
+import { buildArmCapsules as buildFrameArmCapsules, createGarmentSession, createPanelSplitResolver, createUnifiedResolver, PANEL_COUNTS } from "../src/lib/garmentFrame";
+import { ArrayBvhCollision } from "../src/lib/bvhFromArrays";
+import { SelfCollision } from "../src/lib/selfCollision";
 import { buildUnifiedGarmentSim } from "../src/lib/buildUnifiedGarmentSim";
 import { applyCapsuleCollision, buildTorsoProxyCapsules, type Capsule } from "../src/lib/torsoCapsule";
 import {
   ARM_ROWS,
   ARMHOLE_ROW_FRACTION,
+  COLLISION_DETECTION_RADIUS,
+  COLLISION_EVERY,
+  COLLISION_MARGIN,
   COLS,
   GRAVITY_BASE,
+  MAX_DISPLACEMENT_PER_SUBSTEP,
   PANEL_BACK,
   PANEL_FRONT,
   PANEL_SLEEVE_LEFT,
   PANEL_SLEEVE_RIGHT,
   ROWS,
+  SELF_COLLISION_MIN_DIST,
   SLEEVE_RING_COLS,
   SLEEVE_RING_ROWS,
   SUBSTEP_DT,
@@ -323,6 +331,126 @@ function runCombo(widthM: number, sleeveWidthM: number, sleeveLengthM = SLEEVE_L
     ]),
     physMsPerFrame,
   };
+}
+
+// M0(fixture 모드): FIXTURE=경로 를 주면 12콤보 대신, 브라우저
+// __fitDebug.exportCollision()이 내보낸 스냅샷(몸 BVH 메시/캡슐/실제
+// 레이아웃·포즈)으로 **워커와 같은 전체 파이프라인**(BVH 충돌+자체충돌+
+// 스무딩+순서+대칭+sleeveArmPull, env 전부 on)을 재현해 돌린다 —
+// "하네스 0.72cm 통과 vs 브라우저 2.9cm 실패" 괴리를 좁히는 게 목적.
+interface CollisionFixture {
+  layout: { widthM: number; heightM: number; topY: number; centerZ: number; sleeveWidthM: number };
+  pose: {
+    pinLeft: Vec3Like;
+    pinRight: Vec3Like;
+    necklineLift: number[];
+    fabric: keyof typeof FABRIC_PRESETS;
+    armLeft: { dir: Vec3Like; trueShoulder: Vec3Like; length: number };
+    armRight: { dir: Vec3Like; trueShoulder: Vec3Like; length: number };
+  };
+  collision: {
+    position: number[];
+    frontIndex: number[] | null;
+    backIndex: number[] | null;
+    wholeBodyIndex: number[] | null;
+    capsules: Capsule[];
+    centerZ: number;
+  };
+}
+
+function runFixture(path: string): void {
+  const fixture = JSON.parse(readFileSync(path, "utf8")) as CollisionFixture;
+  const { layout, pose } = fixture;
+  const armLeft: ArmDir = { dir: pose.armLeft.dir, length: pose.armLeft.length };
+  const armRight: ArmDir = { dir: pose.armRight.dir, length: pose.armRight.length };
+
+  const frontMesh = new ArrayBvhCollision();
+  const backMesh = new ArrayBvhCollision();
+  const position = Float32Array.from(fixture.collision.position);
+  frontMesh.rebuild(position, fixture.collision.frontIndex ? Uint32Array.from(fixture.collision.frontIndex) : null);
+  backMesh.rebuild(position, fixture.collision.backIndex ? Uint32Array.from(fixture.collision.backIndex) : null);
+  const meshColumnRange = { cols: COLS, min: 0, max: COLS - 1 };
+  const meshResolver = createPanelSplitResolver(
+    [
+      frontMesh.createResolver(COLLISION_MARGIN, COLLISION_DETECTION_RADIUS, 0, 0, meshColumnRange),
+      backMesh.createResolver(COLLISION_MARGIN, COLLISION_DETECTION_RADIUS, 0, 0, meshColumnRange),
+      null,
+      null,
+    ],
+    PANEL_COUNTS,
+  );
+  const collisionState = {
+    torsoCapsules: fixture.collision.capsules,
+    armCapsules: [...buildFrameArmCapsules(pose.armLeft), ...buildFrameArmCapsules(pose.armRight)],
+    centerZ: fixture.collision.centerZ,
+  };
+  const unified = createUnifiedResolver(meshResolver, collisionState);
+
+  const { sim, seamSkipPairs } = buildUnifiedGarmentSim(
+    layout.widthM, layout.heightM, layout.topY, layout.centerZ,
+    pose.pinLeft, pose.pinRight, armLeft, armRight, layout.sleeveWidthM, pose.necklineLift,
+  );
+  const panelStarts: number[] = [];
+  const panelCols: number[] = [];
+  for (let p = 0; p < sim.panels; p++) {
+    panelStarts.push(sim.panelParticleStart(p));
+    panelCols.push(sim.panelDims[p].cols);
+  }
+  const armholeStartRow = Math.round(ROWS * ARMHOLE_ROW_FRACTION);
+  const selfCollision = new SelfCollision(panelStarts, panelCols, armholeStartRow, seamSkipPairs).createResolver(SELF_COLLISION_MIN_DIST);
+
+  const session = createGarmentSession(sim, {
+    collisionResolver: unified,
+    collisionEvery: COLLISION_EVERY,
+    selfCollision,
+    orderPasses: true,
+    clampInSubstep: true,
+    smoothing: true,
+    postOrder: true,
+    armSoftPull: true,
+    necklineHug: true,
+    sleeveArmPull: true,
+    yAlign: true,
+    symmetry: true,
+    clampAfterPost: false,
+    maxDisplacement: MAX_DISPLACEMENT_PER_SUBSTEP,
+    columnRange: meshColumnRange,
+  });
+
+  const preset = FABRIC_PRESETS[pose.fabric];
+  const gravity = new THREE.Vector3(...GRAVITY_BASE).multiplyScalar(preset.gravityScale);
+  const framePose = { pinLeft: pose.pinLeft, pinRight: pose.pinRight, armLeft, armRight, necklineLift: pose.necklineLift };
+  const t0 = performance.now();
+  for (let f = 0; f < FRAMES; f++) {
+    session.step(SUBSTEP_DT, gravity, preset, layout, framePose);
+  }
+  const physMs = Number(((performance.now() - t0) / FRAMES).toFixed(3));
+
+  const { xMin, xMax } = torsoColumnRange(COLS, pose.pinLeft, pose.pinRight, armLeft, armRight);
+  const seamGapCm = (col: number, sleevePanel: number): number[] =>
+    armholeRingVertices(sim, PANEL_FRONT, PANEL_BACK, col, armholeStartRow).map((pt, k) => {
+      const si = sim.index(sleevePanel, k, 0) * 3;
+      return Math.hypot(pt.x - sim.positions[si], pt.y - sim.positions[si + 1], pt.z - sim.positions[si + 2]) * 100;
+    });
+  const maxSeamGapCm = Math.max(...seamGapCm(xMin, PANEL_SLEEVE_LEFT), ...seamGapCm(xMax, PANEL_SLEEVE_RIGHT));
+  const drape = computeDrapeMetrics(sim, [PANEL_FRONT, PANEL_BACK], xMin, xMax);
+  const [shoulder, shoulderFree, torso, hem] = computeBodyGapChannels(
+    sim, [PANEL_FRONT, PANEL_BACK], fixture.collision.capsules, bodyGapBands(armholeStartRow, ROWS), xMin, xMax,
+  );
+
+  console.log(`[paramSweep:fixture] ${FRAMES}프레임(${SECONDS}s), fabric=${pose.fabric}, 워커 전체 파이프라인 재현`);
+  console.log(`  maxSeamGapCm: ${maxSeamGapCm.toFixed(2)} (브라우저 실측과 직접 대조용)`);
+  console.log(`  drape: ${drape.faceAngleMeanDeg} / ${drape.faceAngleMaxDeg} / ${drape.wrinkleRmsMm} / ${drape.maxStrain}`);
+  console.log(
+    `  bodyGap(mm): 어깨 ${shoulder.maxMm}|${shoulder.meanMm} / 어깨free ${shoulderFree.maxMm}|${shoulderFree.meanMm} / 몸통 ${torso.maxMm}|${torso.meanMm} / 밑단 ${hem.maxMm}|${hem.meanMm}`,
+  );
+  console.log(`  물리 ${physMs}ms/프레임 (BVH+자체충돌 포함)`);
+}
+
+const fixturePath = process.env.FIXTURE;
+if (fixturePath) {
+  runFixture(fixturePath);
+  process.exit(0);
 }
 
 const results: ComboResult[] = [];

@@ -100,6 +100,29 @@ const armholeStartRowConst = Math.round(ROWS * ARMHOLE_ROW_FRACTION);
 const SHOULDER_CAP_SKIP_START = COLS * 1;
 const SHOULDER_CAP_SKIP_END = COLS * (armholeStartRowConst + 1);
 
+// 워커에서 이사(범위 B 주석 이력은 git 이력 참고): 패널별 리졸버(없으면
+// null=스킵)와 패널별 개수를 받아 각 패널을 정확히 그 폭만큼 잘라 넘긴다.
+export function createPanelSplitResolver(resolvers: readonly (CollisionResolver | null)[], panelCounts: readonly number[]): CollisionResolver {
+  return (positions, pinned) => {
+    let offset = 0;
+    for (let p = 0; p < panelCounts.length; p++) {
+      const count = panelCounts[p];
+      const resolver = resolvers[p];
+      if (resolver) {
+        resolver(positions.subarray(offset * 3, (offset + count) * 3), pinned.subarray(offset, offset + count), count);
+      }
+      offset += count;
+    }
+  };
+}
+
+export const PANEL_COUNTS: readonly number[] = [
+  PARTICLES_PER_PANEL,
+  PARTICLES_PER_PANEL,
+  SLEEVE_RING_COLS * SLEEVE_RING_ROWS,
+  SLEEVE_RING_COLS * SLEEVE_RING_ROWS,
+];
+
 export function createUnifiedResolver(meshResolver: CollisionResolver, state: CollisionState): CollisionResolver {
   return (positions, pinned, n) => {
     meshResolver(positions, pinned, n);

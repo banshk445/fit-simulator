@@ -620,6 +620,11 @@ export function Garment({ imageUrl }: Props) {
   // bodyGapChannels 디버그용 — rebuildCollision effect가 워커로 보내는 것과
   // 같은 토르소 캡슐의 최신본(같은 물체를 봐야 stale 함정이 없다).
   const torsoCapsulesRef = useRef<Capsule[] | null>(null);
+  // M0(fixture 수출용): 마지막 "init" 레이아웃과 마지막 "step" 포즈를 그대로
+  // 보관 — exportCollision()이 워커가 실제로 받은 값과 동일한 것을 내보내야
+  // Node 재현이 의미 있다(다시 계산하면 미세하게 어긋날 수 있음).
+  const lastInitLayoutRef = useRef<{ widthM: number; heightM: number; topY: number; centerZ: number; sleeveWidthM: number } | null>(null);
+  const lastStepPoseRef = useRef<Extract<MainToGarmentWorkerMessage, { type: "step" }> | null>(null);
   // 범위 B 구현 1번(격자 생성) 검증용 — 워커가 "init"마다 한 번 보내는
   // gridDebug(물리 이전 순수 초기 배치)를 그대로 들고 있는다.
   const sleeveGridDebugRef = useRef<Extract<GarmentWorkerToMainMessage, { type: "gridDebug" }> | null>(null);
@@ -1338,6 +1343,68 @@ export function Garment({ imageUrl }: Props) {
     const root = mannequinRootRef.current;
     const { left: leftShoulder, right: rightShoulder } = shoulderBones;
     if (!root || !leftShoulder || !rightShoulder) return;
+    // M0(fixture 수출): 충돌 스냅샷(몸 메시/캡슐)+마지막 레이아웃·포즈를
+    // JSON으로 다운로드 — Node 하네스(FIXTURE=경로 npm run sweep:pattern)가
+    // 워커와 같은 환경을 재현하는 입력. 이 effect 안에 두는 이유: 아래
+    // 워커 전송과 같은 굽기(collisionMesh.bake)·같은 캡슐 공식을 쓰는
+    // 최신 클로저를 공유하기 위해서다.
+    const win = window as unknown as { __fitDebug?: Record<string, unknown> };
+    if (!win.__fitDebug) win.__fitDebug = {};
+    win.__fitDebug.exportCollision = () => {
+      const layout = lastInitLayoutRef.current;
+      const step = lastStepPoseRef.current;
+      if (!layout || !step) {
+        console.log("[EXPORT-COLLISION] init/step 아직 없음 — 옷 마운트 후 다시 호출");
+        return null;
+      }
+      const baked = collisionMesh.bake(root);
+      leftShoulder.updateWorldMatrix(true, false);
+      rightShoulder.updateWorldMatrix(true, false);
+      leftShoulder.getWorldPosition(shoulderVec);
+      rightShoulder.getWorldPosition(rightShoulderVec);
+      const proxy = buildTorsoProxyCapsules(
+        { x: shoulderVec.x, y: shoulderVec.y, z: shoulderVec.z },
+        { x: rightShoulderVec.x, y: rightShoulderVec.y, z: rightShoulderVec.z },
+        bodySize.height / 100,
+        bodySize.chest / 100,
+      );
+      const fixture = {
+        layout,
+        pose: {
+          pinLeft: step.pinLeft,
+          pinRight: step.pinRight,
+          necklineLift: step.necklineLift,
+          fabric: step.fabric,
+          armLeft: step.armLeft,
+          armRight: step.armRight,
+        },
+        collision: {
+          position: Array.from(baked.position),
+          frontIndex: baked.frontIndex ? Array.from(baked.frontIndex) : null,
+          backIndex: baked.backIndex ? Array.from(baked.backIndex) : null,
+          wholeBodyIndex: baked.wholeBodyIndex ? Array.from(baked.wholeBodyIndex) : null,
+          capsules: proxy.capsules,
+          centerZ: proxy.centerZ,
+        },
+      };
+      const blob = new Blob([JSON.stringify(fixture)], { type: "application/json" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = "collision-fixture.json";
+      a.click();
+      setTimeout(() => URL.revokeObjectURL(url), 10_000);
+      const summary = {
+        positionFloats: baked.position.length,
+        frontIndex: baked.frontIndex?.length ?? 0,
+        backIndex: baked.backIndex?.length ?? 0,
+        wholeBodyIndex: baked.wholeBodyIndex?.length ?? 0,
+        capsules: proxy.capsules.length,
+        fabric: step.fabric,
+      };
+      console.log("[EXPORT-COLLISION]", JSON.stringify(summary));
+      return summary;
+    };
     const timer = setTimeout(() => {
       const { position, frontIndex, backIndex, wholeBodyIndex } = collisionMesh.bake(root);
       // 46번(프레임 드랍 수정): position/wholeBodyIndex는 메인 스레드
@@ -1402,6 +1469,7 @@ export function Garment({ imageUrl }: Props) {
     setTorsoSleeveMax(xMax);
 
     generationRef.current += 1;
+    lastInitLayoutRef.current = { widthM, heightM, topY, centerZ, sleeveWidthM: garmentSize.sleeveWidth / 100 };
     worker.postMessage({
       type: "init",
       widthM,
@@ -1480,7 +1548,7 @@ export function Garment({ imageUrl }: Props) {
     torsoColumnRangeRef.current = { xMin, xMax };
     const necklineLift = neckSurfaceBvh.ready ? Array.from(computeNecklineLift(neckSurfaceBvh, pins.left, pins.right, COLS, xMin, xMax)) : [];
 
-    worker.postMessage({
+    const stepMsg = {
       type: "step",
       dt,
       pinLeft: { x: pins.left.x, y: pins.left.y, z: pins.left.z },
@@ -1490,7 +1558,9 @@ export function Garment({ imageUrl }: Props) {
       armLeft: armShapes.left,
       armRight: armShapes.right,
       generation: generationRef.current,
-    } satisfies MainToGarmentWorkerMessage);
+    } satisfies MainToGarmentWorkerMessage;
+    lastStepPoseRef.current = stepMsg;
+    worker.postMessage(stepMsg);
   });
 
   // 임시 디버그 훅 — 어깨 근처에 나타나는 회색/무늬 없는 삼각형 조각이

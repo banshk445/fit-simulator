@@ -7,7 +7,7 @@ import { FABRIC_PRESETS } from "../lib/fabricPresets";
 import { buildUnifiedGarmentSim } from "../lib/buildUnifiedGarmentSim";
 // M0(파이프라인 일원화): 프레임 시퀀스·unifiedResolver·팔 캡슐 빌더는
 // garmentFrame.ts로 이사 — paramSweep(Node)과 이 워커가 같은 함수를 쓴다.
-import { buildArmCapsules, createGarmentSession, createUnifiedResolver } from "../lib/garmentFrame";
+import { buildArmCapsules, createGarmentSession, createPanelSplitResolver, createUnifiedResolver, PANEL_COUNTS } from "../lib/garmentFrame";
 import type { CollisionState, GarmentSession } from "../lib/garmentFrame";
 import {
   ARMHOLE_ROW_FRACTION,
@@ -21,11 +21,8 @@ import {
   PANEL_FRONT,
   PANEL_SLEEVE_LEFT,
   PANEL_SLEEVE_RIGHT,
-  PARTICLES_PER_PANEL,
   ROWS,
   SELF_COLLISION_MIN_DIST,
-  SLEEVE_RING_COLS,
-  SLEEVE_RING_ROWS,
 } from "../lib/clothConfig";
 import type { MainToGarmentWorkerMessage, GarmentWorkerToMainMessage, ArmShapeMsg } from "../lib/garmentProtocol";
 
@@ -128,31 +125,7 @@ const backMeshResolver = backCollisionMesh.createResolver(
   meshColumnRange,
 );
 
-// 범위 B(소매 재설계 — 별도 패널): 예전엔 항상 앞/뒤 2패널·n=2*particlesPerPanel
-// 라는 전제가 성립해 backCount=n-particlesPerPanel로 뒤판 몫을 역산해도
-// 맞았다 — 지금은 n에 소매(panel 2·3, 144×2)가 더 얹혀 있어 그 역산이
-// 소매 파티클까지 뒤판 리졸버에 흘려보낸다(뒤판 몸통 메시 충돌이 소매
-// 정점에 엉뚱한 로컬 인덱스로 적용됨). 패널별 리졸버(없으면 null=스킵)와
-// 패널별 개수를 배열로 받아, 각 패널을 정확히 그 폭만큼만 잘라 넘긴다 —
-// 소매(현재 리졸버 없음)는 자동으로 건너뛴다.
-function createPanelSplitResolver(resolvers: readonly (CollisionResolver | null)[], panelCounts: readonly number[]): CollisionResolver {
-  return (positions, pinned) => {
-    let offset = 0;
-    for (let p = 0; p < panelCounts.length; p++) {
-      const count = panelCounts[p];
-      const resolver = resolvers[p];
-      if (resolver) {
-        resolver(positions.subarray(offset * 3, (offset + count) * 3), pinned.subarray(offset, offset + count), count);
-      }
-      offset += count;
-    }
-  };
-}
-
-// panelDims는 전부 상수(COLS/ROWS/SLEEVE_RING_*)라 sim 인스턴스 없이도
-// 패널별 개수를 미리 알 수 있다 — buildUnifiedGarmentSim.ts의 panelDims
-// 배열과 반드시 같은 순서([front, back, sleeveLeft, sleeveRight])여야 한다.
-const PANEL_COUNTS = [PARTICLES_PER_PANEL, PARTICLES_PER_PANEL, SLEEVE_RING_COLS * SLEEVE_RING_ROWS, SLEEVE_RING_COLS * SLEEVE_RING_ROWS];
+// createPanelSplitResolver/PANEL_COUNTS는 garmentFrame.ts로 이사(M0).
 const meshResolver = createPanelSplitResolver([frontMeshResolver, backMeshResolver, null, null], PANEL_COUNTS);
 
 
