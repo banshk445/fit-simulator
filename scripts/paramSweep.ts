@@ -41,7 +41,7 @@ import {
 import { FABRIC_PRESETS } from "../src/lib/fabricPresets";
 import type { Vec3Like } from "../src/lib/clothProtocol";
 import { armholeRingJaggedness, ringJaggedness } from "../src/lib/seamDiagnostics";
-import { bodyGapBands, computeBodyGapChannels, computeDrapeMetrics, computeRippleMm, type DrapeMetrics, type GapStats } from "../src/lib/drapeMetrics";
+import { bodyGapBands, computeBodyGapChannels, computeDrapeMetrics, computeOrderViolations, computeRippleMm, type DrapeMetrics, type GapStats } from "../src/lib/drapeMetrics";
 import { computeBodyCoverage } from "../src/lib/coverageMetric";
 import { bakeSdf, createSdfFrictionPass, createSdfPushResolver, makeRadialSignedSampler, type SdfField } from "../src/lib/sdfCollision";
 
@@ -206,7 +206,8 @@ function runCombo(widthM: number, sleeveWidthM: number, sleeveLengthM = SLEEVE_L
     collisionResolver: resolver,
     collisionEvery: 3,
     selfCollision: null,
-    orderPasses: false,
+    orderColumn: false,
+    orderRow: false,
     clampInSubstep: false,
     smoothing: false,
     postOrder: false,
@@ -489,7 +490,9 @@ function runFixture(path: string): void {
     collisionResolver: unified,
     collisionEvery: COLLISION_EVERY,
     selfCollision,
-    orderPasses: true,
+    // ④: ORDER_COL=0 / ORDER_ROW=0 / SYMMETRY=0 으로 하나씩 뗀다.
+    orderColumn: process.env.ORDER_COL !== "0",
+    orderRow: process.env.ORDER_ROW !== "0",
     clampInSubstep: true,
     // M2 제거 ②는 원복됨(워커와 동일하게 기본 on) — SMOOTHING=0으로 끄고,
     // SMOOTH_BLEND=값으로 중간값을 재는 실험 손잡이만 남긴다.
@@ -500,7 +503,7 @@ function runFixture(path: string): void {
     necklineHug: true,
     sleeveArmPull: true,
     yAlign: true,
-    symmetry: true,
+    symmetry: process.env.SYMMETRY !== "0",
     clampAfterPost: false,
     maxDisplacement: MAX_DISPLACEMENT_PER_SUBSTEP,
     columnRange: meshColumnRange,
@@ -568,6 +571,18 @@ function runFixture(path: string): void {
   const ripple = computeRippleMm(sim, [PANEL_FRONT, PANEL_BACK], 1, armholeStartRow, xMin, xMax);
   console.log(`  ripple(2차차분=곡률): max ${ripple.maxMm}mm @ ${JSON.stringify(ripple.maxAt)} / mean ${ripple.meanMm}mm`);
   console.log(`  jitter(4차차분=지그재그): max ${ripple.jitterMaxMm}mm @ ${JSON.stringify(ripple.jitterMaxAt)} / mean ${ripple.jitterMeanMm}mm / 부호반전 ${ripple.signFlipRatio}`);
+  // ④ 게이트: order 도입 사유(어깨 열 역전 → 찢어짐) 자체를 잰다.
+  {
+    const dx = pose.pinRight.x - pose.pinLeft.x;
+    const dy = pose.pinRight.y - pose.pinLeft.y;
+    const dz = pose.pinRight.z - pose.pinLeft.z;
+    const dl = Math.hypot(dx, dy, dz) || 1;
+    const ov = computeOrderViolations(sim, [PANEL_FRONT, PANEL_BACK], armholeStartRow, { x: dx / dl, y: dy / dl, z: dz / dl }, xMin, xMax);
+    console.log(
+      `  order위반: 열역전 어깨 ${ov.colInvShoulder} / 전체 ${ov.colInvAll} (max ${ov.colInvMaxMm}mm @ ${JSON.stringify(ov.colInvMaxAt)}) / 행역전 ${ov.rowInvAll} (max ${ov.rowInvMaxMm}mm)`,
+    );
+    console.log(`  bowtie(접힌 쿼드): 어깨 ${ov.bowtieShoulder} / 전체 ${ov.bowtieAll} @ ${JSON.stringify(ov.bowtieMaxAt)}`);
+  }
   // M2 제거 ① 게이트: 앞뒤판 관통 — sidedness가 막던 바로 그것.
   // (a) 반평면 위반: 앞판이 centerZ보다 뒤, 뒤판이 앞. (b) 교차: 같은 (x,y)에서 front.z < back.z.
   {

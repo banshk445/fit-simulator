@@ -342,3 +342,102 @@ export function computeBodyGapChannels(
     };
   });
 }
+
+// ④(order/symmetry 제거) 전용 게이트 — 일반 지표가 아니라 **도입 사유였던
+// 실패 자체**를 잰다. preserveColumnOrder는 "어깨 테이퍼 구간에서 같은 행의
+// 인접 두 열이 서로를 추월해 자리를 바꿔(순서 역전) 찢어진 것처럼 보인다"는
+// 실측 때문에 들어왔다(clothPhysics.ts preserveColumnOrder 주석). 그
+// minGap(6mm) 미달은 위반이 아니다 — 실제 역전(투영이 음수)만 실패다.
+//
+// bowtie: 격자 쿼드의 두 삼각형 법선이 반대를 향하면 그 쿼드는 접혀
+// 겹친 것 = 화면에서 찢어짐/나비넥타이로 보이는 바로 그 형태다. 어느
+// 보정이 원인이든 결과를 직접 잡으므로 order/symmetry 공통 게이트로 쓴다.
+export interface OrderViolationStats {
+  colInvShoulder: number;
+  colInvAll: number;
+  colInvMaxMm: number;
+  colInvMaxAt: { panel: number; x: number; y: number };
+  rowInvAll: number;
+  rowInvMaxMm: number;
+  bowtieShoulder: number;
+  bowtieAll: number;
+  bowtieMaxAt: { panel: number; x: number; y: number };
+}
+
+export function computeOrderViolations(
+  sim: GridView,
+  panels: readonly number[],
+  shoulderRowEnd: number,
+  dir: { x: number; y: number; z: number },
+  colMin = 0,
+  colMax = Infinity,
+): OrderViolationStats {
+  const p = sim.positions;
+  let colInvShoulder = 0, colInvAll = 0, colInvMaxMm = 0;
+  let colInvMaxAt = { panel: -1, x: -1, y: -1 };
+  let rowInvAll = 0, rowInvMaxMm = 0;
+  let bowtieShoulder = 0, bowtieAll = 0;
+  let bowtieMaxAt = { panel: -1, x: -1, y: -1 };
+  let worstBowtie = 1;
+
+  for (const panel of panels) {
+    const { cols, rows } = sim.panelDims[panel];
+    const x0 = Math.max(0, colMin);
+    const x1 = Math.min(cols - 1, colMax);
+    for (let y = 0; y < rows; y++) {
+      for (let x = x0; x < x1; x++) {
+        const a = sim.index(panel, x, y) * 3;
+        const b = sim.index(panel, x + 1, y) * 3;
+        // 열 역전 — 어깨 방향 투영이 음수면 두 열이 자리를 바꾼 것.
+        const proj = (p[b] - p[a]) * dir.x + (p[b + 1] - p[a + 1]) * dir.y + (p[b + 2] - p[a + 2]) * dir.z;
+        if (proj < 0) {
+          colInvAll++;
+          if (y <= shoulderRowEnd) colInvShoulder++;
+          const mm = -proj * 1000;
+          if (mm > colInvMaxMm) {
+            colInvMaxMm = mm;
+            colInvMaxAt = { panel, x, y };
+          }
+        }
+        // 행 역전 — 아래 행이 위 행보다 위에 있으면 뒤집힌 것.
+        if (y < rows - 1) {
+          const c = sim.index(panel, x, y + 1) * 3;
+          const down = p[a + 1] - p[c + 1]; // 위 행이 더 높아야 양수
+          if (down < 0) {
+            rowInvAll++;
+            const mm = -down * 1000;
+            if (mm > rowInvMaxMm) rowInvMaxMm = mm;
+          }
+          // bowtie — 쿼드의 두 삼각형 법선이 반대면 접혀 겹친 것.
+          const d = sim.index(panel, x + 1, y + 1) * 3;
+          const n = (i: number, j: number, k: number) => {
+            const e1x = p[j] - p[i], e1y = p[j + 1] - p[i + 1], e1z = p[j + 2] - p[i + 2];
+            const e2x = p[k] - p[i], e2y = p[k + 1] - p[i + 1], e2z = p[k + 2] - p[i + 2];
+            return [e1y * e2z - e1z * e2y, e1z * e2x - e1x * e2z, e1x * e2y - e1y * e2x];
+          };
+          const [n1x, n1y, n1z] = n(a, b, c);
+          const [n2x, n2y, n2z] = n(b, d, c);
+          const l1 = Math.hypot(n1x, n1y, n1z) || 1e-12;
+          const l2 = Math.hypot(n2x, n2y, n2z) || 1e-12;
+          const cosA = (n1x * n2x + n1y * n2y + n1z * n2z) / (l1 * l2);
+          if (cosA < 0) {
+            bowtieAll++;
+            if (y <= shoulderRowEnd) bowtieShoulder++;
+            if (cosA < worstBowtie) {
+              worstBowtie = cosA;
+              bowtieMaxAt = { panel, x, y };
+            }
+          }
+        }
+      }
+    }
+  }
+  return {
+    colInvShoulder, colInvAll,
+    colInvMaxMm: Number(colInvMaxMm.toFixed(2)),
+    colInvMaxAt,
+    rowInvAll,
+    rowInvMaxMm: Number(rowInvMaxMm.toFixed(2)),
+    bowtieShoulder, bowtieAll, bowtieMaxAt,
+  };
+}

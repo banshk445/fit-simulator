@@ -182,8 +182,11 @@ export interface GarmentFrameEnv {
   // 서브스텝마다 step() 직후 실행되는 자체충돌(없으면 스킵).
   selfCollision: CollisionResolver | null;
   // torsoOrderExtra — 매 Gauss-Seidel 반복(step의 everyIterationExtra) +
-  // 서브스텝 직후 1회. 워커 on / 기존 하네스 off.
-  orderPasses: boolean;
+  // 서브스텝 직후 1회. ④에서 하나씩 떼기 위해 열/행을 분리한다.
+  // postOrder(후처리 열 순서 2회)는 같은 연산자라 orderColumn에 종속시킨다 —
+  // 그걸 남기면 "제거"가 아니다.
+  orderColumn: boolean;
+  orderRow: boolean;
   // 서브스텝 안(자체충돌·order 직후) clamp. 워커의 위치.
   clampInSubstep: boolean;
   // 프레임 후처리: 스무딩 → order → (softPull/hug/sleevePull) → yAlign →
@@ -244,11 +247,16 @@ export function createGarmentSession(sim: ClothSimulation, env: GarmentFrameEnv)
       const dirZ = rawDirZ / dirLen;
 
       const torsoOrderExtra: CollisionResolver = () => {
-        sim.preserveColumnOrder(dirX, dirY, dirZ, undefined, false, PANEL_FRONT, PANEL_BACK + 1);
-        sim.preserveColumnOrder(dirX, dirY, dirZ, undefined, true, PANEL_FRONT, PANEL_BACK + 1);
-        sim.preserveRowOrder(undefined, false, PANEL_FRONT, PANEL_BACK + 1);
-        sim.preserveRowOrder(undefined, true, PANEL_FRONT, PANEL_BACK + 1);
+        if (env.orderColumn) {
+          sim.preserveColumnOrder(dirX, dirY, dirZ, undefined, false, PANEL_FRONT, PANEL_BACK + 1);
+          sim.preserveColumnOrder(dirX, dirY, dirZ, undefined, true, PANEL_FRONT, PANEL_BACK + 1);
+        }
+        if (env.orderRow) {
+          sim.preserveRowOrder(undefined, false, PANEL_FRONT, PANEL_BACK + 1);
+          sim.preserveRowOrder(undefined, true, PANEL_FRONT, PANEL_BACK + 1);
+        }
       };
+      const anyOrder = env.orderColumn || env.orderRow;
 
       accumulator = Math.min(accumulator + dt, SUBSTEP_DT * MAX_SUBSTEPS);
       while (accumulator >= SUBSTEP_DT) {
@@ -260,7 +268,7 @@ export function createGarmentSession(sim: ClothSimulation, env: GarmentFrameEnv)
           env.collisionEvery,
           preset.damping,
           env.maxDisplacement,
-          env.orderPasses ? torsoOrderExtra : undefined,
+          anyOrder ? torsoOrderExtra : undefined,
         );
         // M2: 마찰 — 충돌이 법선 방향을 푼 직후, 그 접촉의 접선 성분을
         // 감쇠/정지시킨다(자체충돌·순서 보정 이전).
@@ -269,7 +277,7 @@ export function createGarmentSession(sim: ClothSimulation, env: GarmentFrameEnv)
           env.selfCollision(sim.positions, sim.pinned, sim.positions.length / 3);
           // 자체충돌이 흐트러뜨린 순서를 한 번 더 정리 — 이중 안전장치(워커 원본 주석).
         }
-        if (env.orderPasses) torsoOrderExtra(sim.positions, sim.pinned, sim.positions.length / 3);
+        if (anyOrder) torsoOrderExtra(sim.positions, sim.pinned, sim.positions.length / 3);
         if (env.clampInSubstep) sim.clampOverstretchedConstraints();
         // M1(용접): alias 파티클을 canon 최신 위치로 동기화 — 후처리(sleeve
         // ArmPull의 row0 링 중심 등)가 alias를 읽기 전에 반영돼야 한다.
@@ -284,7 +292,7 @@ export function createGarmentSession(sim: ClothSimulation, env: GarmentFrameEnv)
         sim.smoothColumns(armholeStartRow + 1, blend, PANEL_FRONT, PANEL_BACK + 1, env.columnRange.min, env.columnRange.max);
         sim.smoothRows(armholeStartRow + 1, blend, PANEL_FRONT, PANEL_BACK + 1, env.columnRange.min, env.columnRange.max);
       }
-      if (env.postOrder) {
+      if (env.postOrder && env.orderColumn) {
         sim.preserveColumnOrder(dirX, dirY, dirZ, undefined, false, PANEL_FRONT, PANEL_BACK + 1);
         sim.preserveColumnOrder(dirX, dirY, dirZ, undefined, true, PANEL_FRONT, PANEL_BACK + 1);
       }
@@ -304,7 +312,7 @@ export function createGarmentSession(sim: ClothSimulation, env: GarmentFrameEnv)
       if (env.symmetry) {
         enforceLeftRightSymmetry(sim, PANEL_FRONT, PANEL_BACK, COLS, ROWS);
       }
-      if (env.postOrder) {
+      if (env.postOrder && env.orderColumn) {
         sim.preserveColumnOrder(dirX, dirY, dirZ, undefined, false, PANEL_FRONT, PANEL_BACK + 1);
         sim.preserveColumnOrder(dirX, dirY, dirZ, undefined, true, PANEL_FRONT, PANEL_BACK + 1);
       }

@@ -301,7 +301,12 @@ ctx.onmessage = (event) => {
         collisionResolver: sdfPushEnabled ? sdfUnifiedResolver : unifiedResolver,
         collisionEvery: COLLISION_EVERY,
         selfCollision: (positions, pinned, n) => selfCollisionResolver!(positions, pinned, n),
-        orderPasses: true,
+        // ④-1(화면 판정 대기): preserveColumnOrder를 신 코어에서 뗀다.
+        // 도입 사유는 "어깨 테이퍼 구간 열 순서 역전 → 찢어짐"인데, 뗀 뒤
+        // 열역전 68개 중 어깨는 2개뿐이고 나머지는 밑단 쪽(최대 25.9mm @
+        // row23)이라 폴드로 보인다. bowtie(접힌 쿼드)는 1→2로 하나 늘었다.
+        orderColumn: !(msg.newCore ?? false),
+        orderRow: true,
         clampInSubstep: true,
         // M2 제거 ② 재개(화면 판정 대기): 처음 원복했던 근거(ripple
         // +85%)는 2차 차분 지표가 곡률 측정기라서 정상 폴드에도 반응한
