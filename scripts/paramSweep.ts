@@ -372,7 +372,21 @@ function runFixture(path: string): void {
   // NEWCORE=1이면 M1 신 코어(암홀 링 용접) — 신구 대조는 같은 fixture로
   // 이 스위치만 바꿔 두 번 돌린다.
   const newCore = process.env.NEWCORE === "1";
-  const fixture = JSON.parse(readFileSync(path, "utf8")) as CollisionFixture;
+  // PINLIFT=cm 이면 SHOULDER_PIN_LIFT 스윕 — fixture의 핀 좌표에는 브라우저
+  // 기준값(5.5cm)이 이미 구워져 있으므로 차이만큼 핀 Y와 topY를 함께
+  // 이동시킨다(topY = max(pin.y) 파생값). necklineLift는 불변(단일 변수).
+  const fixture0 = JSON.parse(readFileSync(path, "utf8"));
+  // 측정 대역(coverage/hover)은 몸 기준이라 핀과 무관하게 고정한다 —
+  // 처음엔 layout.topY를 그대로 대역 기준으로 썼다가 샘플 수가 셀마다
+  // 달라지는(644→693/720) 배선 함정을 밟았다. 원본 topY를 따로 보관.
+  const bandTopY: number = fixture0.layout.topY;
+  if (process.env.PINLIFT) {
+    const delta = Number(process.env.PINLIFT) / 100 - 0.055;
+    fixture0.pose.pinLeft.y += delta;
+    fixture0.pose.pinRight.y += delta;
+    fixture0.layout.topY += delta;
+  }
+  const fixture = fixture0 as CollisionFixture;
   const { layout, pose } = fixture;
   const armLeft: ArmDir = { dir: pose.armLeft.dir, length: pose.armLeft.length };
   const armRight: ArmDir = { dir: pose.armRight.dir, length: pose.armRight.length };
@@ -579,8 +593,8 @@ function runFixture(path: string): void {
       { panel: PANEL_SLEEVE_RIGHT, wrapCols: true },
     ],
     {
-      yMin: layout.topY - rowH * (armholeStartRow + 0.5),
-      yMax: layout.topY + 0.03,
+      yMin: bandTopY - rowH * (armholeStartRow + 0.5),
+      yMax: bandTopY + 0.03,
       neckCenter: { x: (pose.pinLeft.x + pose.pinRight.x) / 2, y: 0, z: (pose.pinLeft.z + pose.pinRight.z) / 2 },
       neckRadius: 0.09,
       centerX: (pose.pinLeft.x + pose.pinRight.x) / 2,
