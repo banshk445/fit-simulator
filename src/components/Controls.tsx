@@ -80,6 +80,8 @@ export function Controls() {
   const setRenderSmoothing = useFitStore((s) => s.setRenderSmoothing);
   const newCore = useFitStore((s) => s.newCore);
   const setNewCore = useFitStore((s) => s.setNewCore);
+  const friction = useFitStore((s) => s.friction);
+  const setFriction = useFitStore((s) => s.setFriction);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [isProcessingImage, setIsProcessingImage] = useState(false);
 
@@ -355,6 +357,16 @@ export function Controls() {
               className="accent-red-500"
             />
             <span>[DEV] 신 코어(M1) — 암홀 용접 + 직결 렌더 (신구 대조)</span>
+          </label>
+          <label className="mt-2 flex cursor-pointer items-center gap-2 text-sm text-slate-300">
+            <input
+              type="checkbox"
+              checked={friction}
+              onChange={(e) => setFriction(e.target.checked)}
+              disabled={!newCore}
+              className="accent-red-500"
+            />
+            <span>[DEV] └ SDF 마찰(M2) — 신 코어 켠 상태에서만</span>
           </label>
         </section>
       )}

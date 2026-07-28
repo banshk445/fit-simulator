@@ -35,6 +35,8 @@ export type MainToGarmentWorkerMessage =
       // M1(신 코어): true면 암홀 링 시접을 정점 용접으로 전환하고 weldInfo를
       // 회신한다 — 렌더가 physIndex 산란+용접 법선 경로로 전환하는 신호.
       newCore?: boolean;
+      // M2: 신 코어 안에서 마찰만 독립 토글(A/B 판정용).
+      friction?: boolean;
     }
   | {
       type: "rebuildCollision";

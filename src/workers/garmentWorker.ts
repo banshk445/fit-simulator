@@ -251,7 +251,7 @@ ctx.onmessage = (event) => {
       // 살아있는 객체라 세션이 매 스텝 갱신하면 리졸버가 최신 값을 본다.
       // M2: 마찰은 신 코어 경로에서만(구 코어는 비트 동일 유지). 레이아웃이
       // 바뀌면 굽기 범위도 달라지므로 여기서 무효화한다.
-      sdfFrictionEnabled = msg.newCore ?? false;
+      sdfFrictionEnabled = (msg.newCore ?? false) && (msg.friction ?? true);
       sdfField = null;
       session = createGarmentSession(sim, {
         collisionResolver: unifiedResolver,

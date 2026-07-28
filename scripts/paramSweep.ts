@@ -423,11 +423,13 @@ function runFixture(path: string): void {
       `[paramSweep:fixture] SDF 굽기 ${sdfField.nx}x${sdfField.ny}x${sdfField.nz}(${(sdfField.nx * sdfField.ny * sdfField.nz / 1000).toFixed(1)}k복셀) ${Math.round(performance.now() - t)}ms`,
     );
   }
+  // MU=값 이면 정지/운동 계수를 그 값으로 함께 덮어쓴다(μ 스윕용).
+  const muOverride = process.env.MU ? Number(process.env.MU) : null;
   const friction = sdfField
     ? createSdfFrictionPass(() => sdfField, {
         contactBand: FRICTION_CONTACT_BAND,
-        muStatic: FRICTION_MU_STATIC,
-        muKinetic: FRICTION_MU_KINETIC,
+        muStatic: muOverride ?? FRICTION_MU_STATIC,
+        muKinetic: muOverride ?? FRICTION_MU_KINETIC,
       })
     : undefined;
 

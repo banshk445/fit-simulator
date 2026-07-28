@@ -73,6 +73,9 @@ interface FitState {
   // 미사용) 경로 토글 — 신구 대조용, dev 전용. 끄면 기존 경로 그대로.
   newCore: boolean;
   setNewCore: (on: boolean) => void;
+  // M2: SDF 접선 마찰 — 신 코어 안에서 마찰만 독립 on/off(A/B 판정용).
+  friction: boolean;
+  setFriction: (on: boolean) => void;
   setFabric: (fabric: FabricType) => void;
   setBodyHeight: (height: number) => void;
   setBodyChest: (chest: number) => void;
@@ -148,6 +151,8 @@ export const useFitStore = create<FitState>((set) => ({
   setRenderSmoothing: (show) => set({ renderSmoothing: show }),
   newCore: false,
   setNewCore: (on) => set({ newCore: on }),
+  friction: true,
+  setFriction: (on) => set({ friction: on }),
   setFabric: (fabric) => set({ fabric }),
   setBodyHeight: (height) => set((state) => ({ bodySize: { ...state.bodySize, height } })),
   setBodyChest: (chest) => set((state) => ({ bodySize: { ...state.bodySize, chest } })),

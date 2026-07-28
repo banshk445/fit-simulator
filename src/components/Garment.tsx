@@ -431,6 +431,7 @@ export function Garment({ imageUrl }: Props) {
   // M1(신 코어): 워커 물리(암홀 용접) + 직결 렌더 경로 토글. onmessage
   // 클로저가 최신 값을 보도록 ref로도 노출(seamBridgeRef와 같은 패턴).
   const newCore = useFitStore((s) => s.newCore);
+  const friction = useFitStore((s) => s.friction);
   const newCoreRef = useRef(newCore);
   newCoreRef.current = newCore;
   // weldInfo(용접 테이블) — 항등으로 시작, 워커 회신으로 갱신.
@@ -738,6 +739,93 @@ export function Garment({ imageUrl }: Props) {
       return result;
     };
   }, [frontPositions, backPositions]);
+
+  // M2 조사(뒤판 어깨선 프린지): 어깨 가장자리가 갈라져 보이는 원인이
+  // (a) 시임 브리지 스트립인지 (b) 소매캡 경계인지 (c) M1 플랩 컷의 렌더
+  // 삼각형 경계인지 가리기 위한 숫자. 마운트 시 1회 등록 —
+  // `window.__fitDebug.shoulderFringeCheck()`.
+  useEffect(() => {
+    const win = window as unknown as { __fitDebug?: Record<string, unknown> };
+    if (!win.__fitDebug) win.__fitDebug = {};
+    win.__fitDebug.shoulderFringeCheck = () => {
+      const bridge = seamBridgeRef.current;
+      const { xMin, xMax } = torsoColumnRangeRef.current;
+      const src: Record<string, Float32Array> = {
+        front: frontPositions,
+        back: backPositions,
+        sleeveLeft: sleevePositionsLeft,
+        sleeveRight: sleevePositionsRight,
+      };
+      // (a) 브리지: 어떤 스트립이 살아있고, 각 쌍의 실제 간격은 얼마인지.
+      const strips = bridge.layouts.map(({ strip }) => {
+        const gaps = strip.pairs.map((pair) => {
+          const A = src[pair.a.source];
+          const B = src[pair.b.source];
+          const ai = pair.a.index * 3;
+          const bi = pair.b.index * 3;
+          return Math.hypot(A[ai] - B[bi], A[ai + 1] - B[bi + 1], A[ai + 2] - B[bi + 2]) * 100;
+        });
+        return {
+          name: strip.name,
+          pairs: strip.pairs.length,
+          closed: strip.closed,
+          gapCm: { min: Number(Math.min(...gaps).toFixed(3)), max: Number(Math.max(...gaps).toFixed(3)) },
+          // 폭이 0에 가까운 쿼드는 슬리버(찢어진 것처럼 보이는 렌더 아티팩트)가 된다.
+          degenerateQuads: gaps.filter((g) => g < 0.05).length,
+        };
+      });
+      // (b) 소매캡 경계: 용접이라 물리적으로 0이어야 한다. 실제 거리 확인.
+      const armholeStartRow = Math.round(ROWS * ARMHOLE_ROW_FRACTION);
+      const capGap = (col: number, sleeve: Float32Array) => {
+        const out: number[] = [];
+        let k = 0;
+        for (let y = 0; y <= armholeStartRow; y++, k++) {
+          const t = (y * COLS + col) * 3;
+          const sIdx = k * 3;
+          out.push(Math.hypot(frontPositions[t] - sleeve[sIdx], frontPositions[t + 1] - sleeve[sIdx + 1], frontPositions[t + 2] - sleeve[sIdx + 2]) * 100);
+        }
+        for (let y = armholeStartRow; y >= 0; y--, k++) {
+          const t = (y * COLS + col) * 3;
+          const sIdx = k * 3;
+          out.push(Math.hypot(backPositions[t] - sleeve[sIdx], backPositions[t + 1] - sleeve[sIdx + 1], backPositions[t + 2] - sleeve[sIdx + 2]) * 100);
+        }
+        return Number(Math.max(...out).toFixed(4));
+      };
+      // (c) 렌더 삼각형 경계: 신 코어 지오메트리의 그룹별 삼각형 수 + row0
+      // 근방 퇴화(면적≈0) 삼각형 수.
+      const geo = weldedGeometryRef.current.geometry;
+      const idx = geo.getIndex();
+      const pos = geo.getAttribute("position");
+      let degenerateTris = 0;
+      let shoulderTris = 0;
+      if (idx) {
+        for (let t = 0; t < idx.count; t += 3) {
+          const i0 = idx.getX(t), i1 = idx.getX(t + 1), i2 = idx.getX(t + 2);
+          const row0 = i0 % (COLS * ROWS) < COLS || i1 % (COLS * ROWS) < COLS || i2 % (COLS * ROWS) < COLS;
+          if (!row0) continue;
+          shoulderTris++;
+          const ax = pos.getX(i0), ay = pos.getY(i0), az = pos.getZ(i0);
+          const e1x = pos.getX(i1) - ax, e1y = pos.getY(i1) - ay, e1z = pos.getZ(i1) - az;
+          const e2x = pos.getX(i2) - ax, e2y = pos.getY(i2) - ay, e2z = pos.getZ(i2) - az;
+          const cx = e1y * e2z - e1z * e2y, cy = e1z * e2x - e1x * e2z, cz = e1x * e2y - e1y * e2x;
+          if (Math.hypot(cx, cy, cz) / 2 < 1e-7) degenerateTris++;
+        }
+      }
+      const result = {
+        newCore: newCoreRef.current,
+        xMin,
+        xMax,
+        bridgeStrips: strips,
+        bridgeTriangles: idx ? undefined : undefined,
+        sleeveCapMaxGapCm: { left: capGap(xMin, sleevePositionsLeft), right: capGap(xMax, sleevePositionsRight) },
+        weldedRenderTriangles: idx ? idx.count / 3 : 0,
+        row0Triangles: shoulderTris,
+        row0DegenerateTriangles: degenerateTris,
+      };
+      console.log("[SHOULDER-FRINGE]", JSON.stringify(result));
+      return result;
+    };
+  }, [frontPositions, backPositions, sleevePositionsLeft, sleevePositionsRight]);
 
   // 소매 범위 B 별개 이슈(뒤판 겨드랑이 캡슐 침투) 조사용 — 지정한 행(기본
   // row4)의 front/back 정점이 왼팔 캡슐(armCapsuleCollision과 완전히 같은
@@ -1529,6 +1617,7 @@ export function Garment({ imageUrl }: Props) {
       armLeft: armShapes.left,
       armRight: armShapes.right,
       newCore,
+      friction,
     } satisfies MainToGarmentWorkerMessage);
     pendingDtRef.current = 0;
     pendingRef.current = false;
@@ -1545,6 +1634,7 @@ export function Garment({ imageUrl }: Props) {
     garmentSize.sleeveLength,
     garmentSize.sleeveWidth,
     newCore,
+    friction,
   ]);
 
   useFrame((_, delta) => {
@@ -1659,9 +1749,12 @@ export function Garment({ imageUrl }: Props) {
           구 경로와 동일 구성. 셰이더 주입이 없어 프로그램 캐시 함정과 무관. */}
       {newCore && !showAllRegionsWireframe && (
         <mesh geometry={weldedGeometry.geometry} frustumCulled={false}>
-          <meshStandardMaterial key="welded-front" attach="material-0" map={mirroredTexture} side={THREE.DoubleSide} roughness={0.85} />
-          <meshStandardMaterial key="welded-back" attach="material-1" map={compositedTexture} side={THREE.DoubleSide} roughness={0.85} />
-          <meshStandardMaterial key="welded-sleeve" attach="material-2" color={sleeveColor} side={THREE.DoubleSide} roughness={0.85} />
+          {/* polygonOffset은 구 경로 앞/뒤판과 같은 값 — 시임 브리지(오프셋
+              없음)와 같은 깊이에 놓이면 어깨선을 따라 z-fighting이 생겨
+              가장자리가 너덜너덜하게 갈라져 보인다(M1 화면 실측). */}
+          <meshStandardMaterial key="welded-front" attach="material-0" map={mirroredTexture} side={THREE.DoubleSide} roughness={0.85} polygonOffset polygonOffsetFactor={-4} polygonOffsetUnits={-4} />
+          <meshStandardMaterial key="welded-back" attach="material-1" map={compositedTexture} side={THREE.DoubleSide} roughness={0.85} polygonOffset polygonOffsetFactor={-4} polygonOffsetUnits={-4} />
+          <meshStandardMaterial key="welded-sleeve" attach="material-2" color={sleeveColor} side={THREE.DoubleSide} roughness={0.85} polygonOffset polygonOffsetFactor={-4} polygonOffsetUnits={-4} />
         </mesh>
       )}
       {!newCore && !showAllRegionsWireframe && (
