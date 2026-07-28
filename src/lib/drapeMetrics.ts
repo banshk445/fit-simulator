@@ -170,13 +170,17 @@ export interface GapStats {
   maxAt: { panel: number; x: number; y: number };
 }
 
+// (개명: bodyGap → capsuleGap — 이 채널은 **토르소 캡슐 근사** 기준이다.
+// "상대 비교 전용" 주석만으론 절대 목표 오용을 못 막았다(margin 스윕에서
+// 어깨 mean을 '0 근처' 목표로 오용, 지표 함정 6번). 이름에 캡슐임을 박아
+// 구조적으로 차단한다. 메시 기준 안착은 computeShoulderSeatMm가 담당.)
 // 대역 정의의 단일 출처 — paramSweep(Node)과 Garment.tsx(브라우저)가 각자
 // 배열을 들고 있으면 stale 함정 재발 경로라 여기로 모은다. 순서 고정:
 // [shoulder(row0~asr), shoulderFree(row1~asr, row0 핀 제외), torso, hem].
 // shoulderFree: 브라우저 실측에서 shoulder max(58.2mm)가 물리 변경(C)에
 // 소수점까지 불변 — row0은 pinCorners가 매 프레임 고정하는 행이라 물리에
 // 반응하지 않는 고정점이 max를 지배할 수 있다는 가설의 검증용 채널.
-export function bodyGapBands(armholeStartRow: number, rows: number): GapBand[] {
+export function capsuleGapBands(armholeStartRow: number, rows: number): GapBand[] {
   return [
     { rowStart: 0, rowEndInclusive: armholeStartRow },
     { rowStart: 1, rowEndInclusive: armholeStartRow },
@@ -286,7 +290,7 @@ export function computeRippleMm(
   };
 }
 
-export function computeBodyGapChannels(
+export function computeCapsuleGapChannels(
   sim: GridView,
   panels: readonly number[],
   capsules: readonly Capsule[],
@@ -441,3 +445,13 @@ export function computeOrderViolations(
     bowtieShoulder, bowtieAll, bowtieMaxAt,
   };
 }
+
+// (폐기 기록) shoulderSeatMm — 어깨 대역 천 정점의 메시 무부호 거리로
+// "어깨 안착"을 재려던 시도. 화면 정답지 검증(metrics-log 2026-07-28
+// 22:20 블록)에서 즉시 기각: 흘러내린 상태(PIN 0.5, 화면상 견갑골
+// 노출)가 mean 14.2로 정상(22.0)보다 **작게** 나왔다 — 흘러내린 천은
+// 가슴/등 벽면에 붙어 거리가 오히려 줄고, 정상 안착은 목선 아치가
+// 승모근 위 공중을 가로질러 거리가 크다. 즉 "몸 어딘가에 가깝다"와
+// "어깨를 덮고 있다"는 다른 질문이다. 재구현하려면 천 쪽이 아니라
+// **몸 쪽**(어깨 상면 샘플)에서 천까지의 레이 거리로 — coverage 지표
+// 계열의 확장이 맞다.

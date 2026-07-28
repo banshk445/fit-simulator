@@ -42,7 +42,7 @@ import {
 import { FABRIC_PRESETS } from "../src/lib/fabricPresets";
 import type { Vec3Like } from "../src/lib/clothProtocol";
 import { armholeRingJaggedness, ringJaggedness } from "../src/lib/seamDiagnostics";
-import { bodyGapBands, computeBodyGapChannels, computeDrapeMetrics, computeOrderViolations, computeRippleMm, type DrapeMetrics, type GapStats } from "../src/lib/drapeMetrics";
+import { capsuleGapBands, computeCapsuleGapChannels, computeDrapeMetrics, computeOrderViolations, computeRippleMm, type DrapeMetrics, type GapStats } from "../src/lib/drapeMetrics";
 import { computeBodyCoverage } from "../src/lib/coverageMetric";
 import { bakeSdf, createCachedSdfIterationFriction, createSdfFrictionPass, createSdfIterationFrictionPass, createSdfPushResolver, makeRadialSignedSampler, type SdfField } from "../src/lib/sdfCollision";
 
@@ -143,11 +143,11 @@ interface ComboResult {
   // 물리 ms(이 하네스의 프레임 루프 전체 평균 — 브라우저 절대값과는 다르지만
   // 전/후 상대 비교용으로 충분).
   drape: DrapeMetrics | null;
-  // 천-몸 이탈(mm) — 영역별 채널(drapeMetrics.ts computeBodyGapChannels 주석
+  // 천-몸 이탈(mm) — 영역별 채널(drapeMetrics.ts computeCapsuleGapChannels 주석
   // 참고). shoulder=row0~5(밀착해야 하는 영역, 판정 1순위), torso=row6~20,
   // hem=row21~27(자연 낙하가 정상, 참고용). Garment.tsx가 쓰는
   // buildTorsoProxyCapsules(기본 체형 170cm/가슴100cm)를 그대로 재사용.
-  bodyGap: { shoulder: GapStats; shoulderFree: GapStats; torso: GapStats; hem: GapStats } | null;
+  capsuleGap: { shoulder: GapStats; shoulderFree: GapStats; torso: GapStats; hem: GapStats } | null;
   // 소맷부리 처짐(cm, 좌/우 중 더 처진 쪽) — C단계(소매 스냅 축소)가
   // sleeveArmPull을 낮추면 커질 수 있는 예상 트레이드오프의 정량 감시.
   // 커프 링(마지막 행) 중심이 "이상 커프 중심"(row0 링 중심 + 팔축×팔길이,
@@ -245,7 +245,7 @@ function runCombo(widthM: number, sleeveWidthM: number, sleeveLengthM = SLEEVE_L
         // 그대로 터짐) — scripts/는 tsc -b 대상이 아니라 여태 안 잡혔다.
         sleeveRowsMaxDeg: [],
         drape: null,
-        bodyGap: null,
+        capsuleGap: null,
         cuffDroopCm: null,
         physMsPerFrame,
       };
@@ -324,12 +324,12 @@ function runCombo(widthM: number, sleeveWidthM: number, sleeveLengthM = SLEEVE_L
     sleeveJaggednessDeg: Number(sleeveJaggednessDeg.toFixed(1)),
     sleeveRowsMaxDeg: sleeveRowsMaxDeg.map((d) => Number(d.toFixed(1))),
     drape: computeDrapeMetrics(sim, [PANEL_FRONT, PANEL_BACK], xMin, xMax),
-    bodyGap: (() => {
-      const [shoulder, shoulderFree, torso, hem] = computeBodyGapChannels(
+    capsuleGap: (() => {
+      const [shoulder, shoulderFree, torso, hem] = computeCapsuleGapChannels(
         sim,
         [PANEL_FRONT, PANEL_BACK],
         torsoCapsules,
-        bodyGapBands(armholeStartRow, ROWS),
+        capsuleGapBands(armholeStartRow, ROWS),
         xMin,
         xMax,
       );
@@ -557,8 +557,8 @@ function runFixture(path: string): void {
     });
   const maxSeamGapCm = Math.max(...seamGapCm(xMin, PANEL_SLEEVE_LEFT), ...seamGapCm(xMax, PANEL_SLEEVE_RIGHT));
   const drape = computeDrapeMetrics(sim, [PANEL_FRONT, PANEL_BACK], xMin, xMax);
-  const [shoulder, shoulderFree, torso, hem] = computeBodyGapChannels(
-    sim, [PANEL_FRONT, PANEL_BACK], fixture.collision.capsules, bodyGapBands(armholeStartRow, ROWS), xMin, xMax,
+  const [shoulder, shoulderFree, torso, hem] = computeCapsuleGapChannels(
+    sim, [PANEL_FRONT, PANEL_BACK], fixture.collision.capsules, capsuleGapBands(armholeStartRow, ROWS), xMin, xMax,
   );
 
   // 커버리지 — 어깨~겨드랑이 대역(옷 row0~armholeStartRow가 덮는 높이,
@@ -633,7 +633,7 @@ function runFixture(path: string): void {
   console.log(`  maxSeamGapCm: ${maxSeamGapCm.toFixed(2)} (브라우저 실측과 직접 대조용)`);
   console.log(`  drape: ${drape.faceAngleMeanDeg} / ${drape.faceAngleMaxDeg} / ${drape.wrinkleRmsMm} / ${drape.maxStrain}`);
   console.log(
-    `  bodyGap(mm): 어깨 ${shoulder.maxMm}|${shoulder.meanMm} / 어깨free ${shoulderFree.maxMm}|${shoulderFree.meanMm} / 몸통 ${torso.maxMm}|${torso.meanMm} / 밑단 ${hem.maxMm}|${hem.meanMm}`,
+    `  capsuleGap(mm): 어깨 ${shoulder.maxMm}|${shoulder.meanMm} / 어깨free ${shoulderFree.maxMm}|${shoulderFree.meanMm} / 몸통 ${torso.maxMm}|${torso.meanMm} / 밑단 ${hem.maxMm}|${hem.meanMm}`,
   );
   console.log(`  물리 ${physMs}ms/프레임 (BVH+자체충돌 포함)`);
 }
@@ -672,9 +672,9 @@ for (const r of results) {
     `  품${r.widthM * 100}cm/소매통${r.sleeveWidthM * 100}cm: ${d ? `${d.faceAngleMeanDeg} / ${d.faceAngleMaxDeg} / ${d.wrinkleRmsMm} / ${d.maxStrain}` : "발산"} / ${r.cuffDroopCm ?? "-"} / ${r.physMsPerFrame}ms`,
   );
 }
-console.log("[paramSweep] bodyGap 채널 (어깨 max|mean / 어깨free(row0제외) max|mean / 몸통 max|mean / 밑단 max|mean, mm):");
+console.log("[paramSweep] capsuleGap 채널 (어깨 max|mean / 어깨free(row0제외) max|mean / 몸통 max|mean / 밑단 max|mean, mm):");
 for (const r of results) {
-  const g = r.bodyGap;
+  const g = r.capsuleGap;
   console.log(
     `  품${r.widthM * 100}cm/소매통${r.sleeveWidthM * 100}cm: ${g ? `${g.shoulder.maxMm}|${g.shoulder.meanMm} / ${g.shoulderFree.maxMm}|${g.shoulderFree.meanMm} / ${g.torso.maxMm}|${g.torso.meanMm} / ${g.hem.maxMm}|${g.hem.meanMm}` : "발산"}`,
   );
@@ -686,7 +686,7 @@ for (const r of results) {
 const longSleeve = runCombo(0.55, 0.18, 0.58);
 const ld = longSleeve.drape;
 console.log(
-  `[paramSweep] 긴팔(58cm) 품55/소매통18: ${ld ? `${ld.faceAngleMeanDeg} / ${ld.faceAngleMaxDeg} / ${ld.wrinkleRmsMm} / ${ld.maxStrain}` : "발산"} / 어깨갭 ${longSleeve.bodyGap ? `${longSleeve.bodyGap.shoulder.maxMm}|${longSleeve.bodyGap.shoulder.meanMm}` : "-"} / 커프처짐 ${longSleeve.cuffDroopCm ?? "-"}cm / sleeve톱니 ${longSleeve.sleeveJaggednessDeg}° / 관통 ${longSleeve.maxPenetrationMm}mm / seamGap ${longSleeve.maxSeamGapCm}cm`,
+  `[paramSweep] 긴팔(58cm) 품55/소매통18: ${ld ? `${ld.faceAngleMeanDeg} / ${ld.faceAngleMaxDeg} / ${ld.wrinkleRmsMm} / ${ld.maxStrain}` : "발산"} / 어깨갭 ${longSleeve.capsuleGap ? `${longSleeve.capsuleGap.shoulder.maxMm}|${longSleeve.capsuleGap.shoulder.meanMm}` : "-"} / 커프처짐 ${longSleeve.cuffDroopCm ?? "-"}cm / sleeve톱니 ${longSleeve.sleeveJaggednessDeg}° / 관통 ${longSleeve.maxPenetrationMm}mm / seamGap ${longSleeve.maxSeamGapCm}cm`,
 );
 
 const diverged = results.filter((r) => r.diverged);
