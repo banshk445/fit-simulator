@@ -457,7 +457,9 @@ function runFixture(path: string): void {
     selfCollision,
     orderPasses: true,
     clampInSubstep: true,
-    smoothing: true,
+    // M2 제거 ②: 신 코어면 스무딩 off(SMOOTHING=1로 강제 복원 — 대조용).
+    smoothing: !newCore || process.env.SMOOTHING === "1" || process.env.SMOOTH_BLEND !== undefined,
+    smoothingBlend: process.env.SMOOTH_BLEND ? Number(process.env.SMOOTH_BLEND) : undefined,
     postOrder: true,
     armSoftPull: true,
     necklineHug: true,

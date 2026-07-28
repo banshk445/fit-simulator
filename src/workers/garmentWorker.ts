@@ -249,6 +249,11 @@ ctx.onmessage = (event) => {
         selfCollision: (positions, pinned, n) => selfCollisionResolver!(positions, pinned, n),
         orderPasses: true,
         clampInSubstep: true,
+        // M2 보정 제거 ②: 원복됨. 스무딩을 끄면 ripple mean이 3.22→5.95
+        // (+85%)로 튀었다 — B-1 실패값(5.03)보다도 나쁘다. 전제("SDF가
+        // 잔물결 발생원을 없앴다")가 아직 성립 안 하는 게 원인: 밀어내기는
+        // 여전히 BVH 면 법선을 쓰고 SDF는 마찰 접촉에만 쓰인다. 밀어내기를
+        // SDF로 교체한 뒤 재시도할 것.
         smoothing: true,
         postOrder: true,
         armSoftPull: true,

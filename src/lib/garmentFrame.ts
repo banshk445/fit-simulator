@@ -189,6 +189,9 @@ export interface GarmentFrameEnv {
   // 프레임 후처리: 스무딩 → order → (softPull/hug/sleevePull) → yAlign →
   // symmetry → order. 각 토글은 기존 두 호출자의 실제 차이 그대로.
   smoothing: boolean;
+  // 라플라시안 blend(기본 0.5) — 완전 제거(smoothing:false)와 유지 사이의
+  // 중간값을 재기 위한 손잡이. B-1 이력: 구 코어에서 0.5→0.15가 화면 실패.
+  smoothingBlend?: number;
   postOrder: boolean;
   armSoftPull: boolean;
   necklineHug: boolean;
@@ -277,8 +280,9 @@ export function createGarmentSession(sim: ClothSimulation, env: GarmentFrameEnv)
 
       // 29번(스무딩-보정 순서): 스무딩 먼저, 정밀 보정이 "마지막 발언권".
       if (env.smoothing && env.columnRange) {
-        sim.smoothColumns(armholeStartRow + 1, 0.5, PANEL_FRONT, PANEL_BACK + 1, env.columnRange.min, env.columnRange.max);
-        sim.smoothRows(armholeStartRow + 1, 0.5, PANEL_FRONT, PANEL_BACK + 1, env.columnRange.min, env.columnRange.max);
+        const blend = env.smoothingBlend ?? 0.5;
+        sim.smoothColumns(armholeStartRow + 1, blend, PANEL_FRONT, PANEL_BACK + 1, env.columnRange.min, env.columnRange.max);
+        sim.smoothRows(armholeStartRow + 1, blend, PANEL_FRONT, PANEL_BACK + 1, env.columnRange.min, env.columnRange.max);
       }
       if (env.postOrder) {
         sim.preserveColumnOrder(dirX, dirY, dirZ, undefined, false, PANEL_FRONT, PANEL_BACK + 1);
