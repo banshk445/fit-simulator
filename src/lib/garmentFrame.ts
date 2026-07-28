@@ -196,6 +196,10 @@ export interface GarmentFrameEnv {
   // 살아있는 몸통 열 범위 — 주면 매 프레임 torsoColumnRange로 갱신해준다
   // (워커는 이 객체를 meshResolver와 공유). 스무딩 경계로도 쓰인다.
   columnRange?: { min: number; max: number };
+  // M2: 접선 마찰 패스(sdfCollision.ts) — 서브스텝의 충돌 해소 직후,
+  // 자체충돌 전에 1회. prevPositions를 고쳐야 해서 CollisionResolver와
+  // 시그니처가 다르다. 없으면 스킵(기존과 비트 동일).
+  friction?: (positions: Float32Array, prevPositions: Float32Array, pinned: Uint8Array, n: number) => void;
 }
 
 export interface GarmentSession {
@@ -250,6 +254,9 @@ export function createGarmentSession(sim: ClothSimulation, env: GarmentFrameEnv)
           env.maxDisplacement,
           env.orderPasses ? torsoOrderExtra : undefined,
         );
+        // M2: 마찰 — 충돌이 법선 방향을 푼 직후, 그 접촉의 접선 성분을
+        // 감쇠/정지시킨다(자체충돌·순서 보정 이전).
+        env.friction?.(sim.positions, sim.prevPositions, sim.pinned, sim.positions.length / 3);
         if (env.selfCollision) {
           env.selfCollision(sim.positions, sim.pinned, sim.positions.length / 3);
           // 자체충돌이 흐트러뜨린 순서를 한 번 더 정리 — 이중 안전장치(워커 원본 주석).

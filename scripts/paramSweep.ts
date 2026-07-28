@@ -27,6 +27,11 @@ import {
   PANEL_SLEEVE_LEFT,
   PANEL_SLEEVE_RIGHT,
   ROWS,
+  FRICTION_CONTACT_BAND,
+  FRICTION_MU_KINETIC,
+  FRICTION_MU_STATIC,
+  SDF_FAR,
+  SDF_VOXEL,
   SELF_COLLISION_MIN_DIST,
   SLEEVE_RING_COLS,
   SLEEVE_RING_ROWS,
@@ -37,6 +42,7 @@ import type { Vec3Like } from "../src/lib/clothProtocol";
 import { armholeRingJaggedness, ringJaggedness } from "../src/lib/seamDiagnostics";
 import { bodyGapBands, computeBodyGapChannels, computeDrapeMetrics, computeRippleMm, type DrapeMetrics, type GapStats } from "../src/lib/drapeMetrics";
 import { computeBodyCoverage } from "../src/lib/coverageMetric";
+import { bakeSdf, createSdfFrictionPass, type SdfField } from "../src/lib/sdfCollision";
 
 // 대표 포즈 — checkSleeveSeam.ts와 같은 출처(이 세션 __fitDebug 실측), 반팔
 // 기본값(소매길이 22cm), 어깨너비 45cm 기준.
@@ -387,6 +393,44 @@ function runFixture(path: string): void {
   };
   const unified = createUnifiedResolver(meshResolver, collisionState);
 
+  // M2: SDF 굽기 + 마찰(FRICTION=1일 때만) — 굽기 범위는 옷이 실제로 닿는
+  // 구간(어깨 위 10cm ~ 밑단 아래 15cm)의 몸 메시 bbox.
+  let sdfField: SdfField | null = null;
+  if (process.env.FRICTION === "1") {
+    const yTop = layout.topY + 0.1;
+    const yBot = layout.topY - layout.heightM - 0.15;
+    let minX = Infinity, maxX = -Infinity, minZ = Infinity, maxZ = -Infinity;
+    for (let i = 0; i < position.length; i += 3) {
+      const y = position[i + 1];
+      if (y < yBot || y > yTop) continue;
+      if (position[i] < minX) minX = position[i];
+      if (position[i] > maxX) maxX = position[i];
+      if (position[i + 2] < minZ) minZ = position[i + 2];
+      if (position[i + 2] > maxZ) maxZ = position[i + 2];
+    }
+    const pad = 0.08;
+    const wholeMesh = new ArrayBvhCollision();
+    wholeMesh.rebuild(position, fixture.collision.wholeBodyIndex ? Uint32Array.from(fixture.collision.wholeBodyIndex) : null);
+    const t = performance.now();
+    sdfField = bakeSdf(
+      (x, y, z) => wholeMesh.signedClearance(x, y, z, SDF_FAR),
+      { x: minX - pad, y: yBot, z: minZ - pad },
+      { x: maxX + pad, y: yTop, z: maxZ + pad },
+      SDF_VOXEL,
+      SDF_FAR,
+    );
+    console.log(
+      `[paramSweep:fixture] SDF 굽기 ${sdfField.nx}x${sdfField.ny}x${sdfField.nz}(${(sdfField.nx * sdfField.ny * sdfField.nz / 1000).toFixed(1)}k복셀) ${Math.round(performance.now() - t)}ms`,
+    );
+  }
+  const friction = sdfField
+    ? createSdfFrictionPass(() => sdfField, {
+        contactBand: FRICTION_CONTACT_BAND,
+        muStatic: FRICTION_MU_STATIC,
+        muKinetic: FRICTION_MU_KINETIC,
+      })
+    : undefined;
+
   // NEWCORE=1이면 M1 신 코어(암홀 링 용접) — 신구 대조는 같은 fixture로
   // 이 스위치만 바꿔 두 번 돌린다.
   const newCore = process.env.NEWCORE === "1";
@@ -419,6 +463,7 @@ function runFixture(path: string): void {
     clampAfterPost: false,
     maxDisplacement: MAX_DISPLACEMENT_PER_SUBSTEP,
     columnRange: meshColumnRange,
+    friction,
   });
 
   const preset = FABRIC_PRESETS[pose.fabric];

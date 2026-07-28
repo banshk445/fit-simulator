@@ -5,6 +5,7 @@ import { ArrayBvhCollision } from "../lib/bvhFromArrays";
 import { SelfCollision } from "../lib/selfCollision";
 import { FABRIC_PRESETS } from "../lib/fabricPresets";
 import { buildUnifiedGarmentSim } from "../lib/buildUnifiedGarmentSim";
+import { bakeSdf, createSdfFrictionPass, type SdfField } from "../lib/sdfCollision";
 // M0(파이프라인 일원화): 프레임 시퀀스·unifiedResolver·팔 캡슐 빌더는
 // garmentFrame.ts로 이사 — paramSweep(Node)과 이 워커가 같은 함수를 쓴다.
 import { buildArmCapsules, createGarmentSession, createPanelSplitResolver, createUnifiedResolver, PANEL_COUNTS } from "../lib/garmentFrame";
@@ -15,6 +16,9 @@ import {
   COLLISION_EVERY,
   COLLISION_MARGIN,
   COLS,
+  FRICTION_CONTACT_BAND,
+  FRICTION_MU_KINETIC,
+  FRICTION_MU_STATIC,
   GRAVITY_BASE,
   MAX_DISPLACEMENT_PER_SUBSTEP,
   PANEL_BACK,
@@ -22,6 +26,8 @@ import {
   PANEL_SLEEVE_LEFT,
   PANEL_SLEEVE_RIGHT,
   ROWS,
+  SDF_FAR,
+  SDF_VOXEL,
   SELF_COLLISION_MIN_DIST,
 } from "../lib/clothConfig";
 import type { MainToGarmentWorkerMessage, GarmentWorkerToMainMessage, ArmShapeMsg } from "../lib/garmentProtocol";
@@ -144,6 +150,50 @@ const unifiedResolver = createUnifiedResolver(meshResolver, collisionState);
 // 이 값을 들고 있는 곳이 없어 sim 생성 이후로 옮겨야 한다.
 let selfCollisionResolver: CollisionResolver | null = null;
 
+// M2(SDF 마찰): rebuildCollision이 준 몸 메시를 들고 있다가, 레이아웃까지
+// 확정된 뒤(첫 step) 한 번 굽는다 — 굽기 범위가 옷이 닿는 Y 구간에
+// 의존하기 때문. 몸이 바뀌면(rebuildCollision) 무효화 후 재굽기.
+let bakedBody: { position: Float32Array; wholeBodyIndex: Uint32Array | null } | null = null;
+let sdfField: SdfField | null = null;
+let sdfFrictionEnabled = false;
+
+function ensureSdf(): void {
+  if (sdfField || !bakedBody || !lastLayout || !sdfFrictionEnabled) return;
+  const { position, wholeBodyIndex } = bakedBody;
+  const yTop = lastLayout.topY + 0.1;
+  const yBot = lastLayout.topY - lastLayout.heightM - 0.15;
+  let minX = Infinity, maxX = -Infinity, minZ = Infinity, maxZ = -Infinity;
+  for (let i = 0; i < position.length; i += 3) {
+    const y = position[i + 1];
+    if (y < yBot || y > yTop) continue;
+    if (position[i] < minX) minX = position[i];
+    if (position[i] > maxX) maxX = position[i];
+    if (position[i + 2] < minZ) minZ = position[i + 2];
+    if (position[i + 2] > maxZ) maxZ = position[i + 2];
+  }
+  if (!Number.isFinite(minX)) return;
+  const mesh = new ArrayBvhCollision();
+  mesh.rebuild(position, wholeBodyIndex);
+  const pad = 0.08;
+  const t = performance.now();
+  sdfField = bakeSdf(
+    (x, y, z) => mesh.signedClearance(x, y, z, SDF_FAR),
+    { x: minX - pad, y: yBot, z: minZ - pad },
+    { x: maxX + pad, y: yTop, z: maxZ + pad },
+    SDF_VOXEL,
+    SDF_FAR,
+  );
+  console.log(
+    `[SDF] ${sdfField.nx}x${sdfField.ny}x${sdfField.nz} (${((sdfField.nx * sdfField.ny * sdfField.nz) / 1000).toFixed(1)}k복셀) ${Math.round(performance.now() - t)}ms`,
+  );
+}
+
+const frictionPass = createSdfFrictionPass(() => sdfField, {
+  contactBand: FRICTION_CONTACT_BAND,
+  muStatic: FRICTION_MU_STATIC,
+  muKinetic: FRICTION_MU_KINETIC,
+});
+
 const gravityBase = new THREE.Vector3(...GRAVITY_BASE);
 const scratchGravity = new THREE.Vector3();
 // 몸판 충돌 메시가 아직 준비 안 됐을 때 중력을 끄는 용도(아래 "step" 참고).
@@ -199,6 +249,10 @@ ctx.onmessage = (event) => {
       // M0: 워커의 기존 시퀀스를 그대로 재현하는 환경 — 토글 전부 on,
       // clamp는 서브스텝 안(기존 위치). columnRange는 meshResolver와 공유하는
       // 살아있는 객체라 세션이 매 스텝 갱신하면 리졸버가 최신 값을 본다.
+      // M2: 마찰은 신 코어 경로에서만(구 코어는 비트 동일 유지). 레이아웃이
+      // 바뀌면 굽기 범위도 달라지므로 여기서 무효화한다.
+      sdfFrictionEnabled = msg.newCore ?? false;
+      sdfField = null;
       session = createGarmentSession(sim, {
         collisionResolver: unifiedResolver,
         collisionEvery: COLLISION_EVERY,
@@ -215,6 +269,7 @@ ctx.onmessage = (event) => {
         clampAfterPost: false,
         maxDisplacement: MAX_DISPLACEMENT_PER_SUBSTEP,
         columnRange: meshColumnRange,
+        friction: sdfFrictionEnabled ? frictionPass : undefined,
       });
 
       // 범위 B 구현 1번(격자 생성) 검증용 — buildConstraints()/step() 이전
@@ -262,6 +317,9 @@ ctx.onmessage = (event) => {
       wholeBodyCollisionMesh.rebuild(msg.position, msg.wholeBodyIndex);
       collisionState.torsoCapsules = msg.capsules;
       collisionState.centerZ = msg.centerZ;
+      // M2: 몸이 바뀌었으니 SDF 재굽기(다음 step에서 ensureSdf가 처리).
+      bakedBody = { position: msg.position, wholeBodyIndex: msg.wholeBodyIndex };
+      sdfField = null;
       break;
     }
     case "step": {
@@ -279,6 +337,7 @@ ctx.onmessage = (event) => {
       // false거나 capsules=[]) unifiedResolver가 사실상 아무 일도 안 한다.
       // 충돌 메시가 아직 준비 안 됐으면 중력을 꺼서(구조 제약과 핀만으로
       // 유지) 이 구간에서 옷감이 무너지지 않게 막는다.
+      ensureSdf();
       const collisionReady = frontCollisionMesh.ready && backCollisionMesh.ready;
       scratchGravity.copy(collisionReady ? gravityBase : ZERO_VEC3).multiplyScalar(preset.gravityScale);
 

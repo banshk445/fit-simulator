@@ -143,6 +143,19 @@ export const STIFFNESS_STRUCTURAL = 1.0;
 export const STIFFNESS_SHEAR = 1.0;
 export const STIFFNESS_BEND = 0.1;
 export const STIFFNESS_SEAM = 1.0;
+
+// M2(SDF 마찰). 복셀 2cm — 몸통 굴곡(어깨 캡 돔 반경 수 cm)을 담을 만큼
+// 촘촘하면서 굽기 비용(수만 회 BVH 질의, rebuild 시 1회)이 감당되는 선.
+// 팔은 여전히 해석적 캡슐이 담당한다(4.56cm 반경 팔은 2cm 복셀로 부정확).
+export const SDF_VOXEL = 0.02;
+export const SDF_FAR = 0.3;
+// 접촉 판정 폭 — COLLISION_MARGIN(1.5cm)보다 살짝 넓게 잡아, 밀어내기가
+// 목표 거리에 안착한 파티클도 접촉으로 계속 인식되게 한다.
+export const FRICTION_CONTACT_BAND = 0.02;
+// 계수는 실측이 아니라 눈대중 초기값 — 면(cotton) 대 인체 마찰이 대략
+// 0.3~0.6대라는 통념에서 시작. 게이트 수치·화면 판정으로 조정될 값이다.
+export const FRICTION_MU_STATIC = 0.6;
+export const FRICTION_MU_KINETIC = 0.4;
 // 겨드랑이 밑부터 밑단까지만 옆선을 잇고, 그 위(어깨~겨드랑이)는 트여 있는
 // 암홀(진동)로 남겨둔다 — 별도 소매 패널 없이도 최소한의 팔 통로를 만든다.
 // 이 구간이 넓을수록 앞/뒤판이 서로 안 붙잡아 주는 구간도 넓어져서, 뒤판이
