@@ -90,6 +90,51 @@ export function sdfNormal(f: SdfField, x: number, y: number, z: number, out: { x
   return true;
 }
 
+// M2-3: 밀어내기를 BVH 면 법선 → SDF 기울기로 교체. 의미는 기존
+// ArrayBvhCollision.createResolver와 **문자 그대로 동일**하게 유지한다:
+// 탐지 반경 안이면 관통 여부와 무관하게 목표를 "표면 + margin"으로 잡고
+// PUSH_RELAXATION만큼 이동(= 양방향 흡착). 바뀌는 건 법선의 출처뿐 —
+// BVH는 삼각형 단위로 법선이 튀어서 인접 열이 서로 다른 면에 달라붙는
+// 잔물결(스무딩 도입 사유)을 만들고, SDF 기울기는 연속이라 그게 없다.
+// 흡착 자체를 완화하는 건 별개 단계(M2-4)로 분리한다 — 한 번에 두 개를
+// 바꾸면 원인 분리가 안 된다.
+//
+// columnRange: 몸통 열 범위만 대상(소매 열은 팔 캡슐 담당) — 기존
+// 리졸버와 같은 살아있는 참조 객체.
+export function createSdfPushResolver(
+  getField: () => SdfField | null,
+  margin: number,
+  detectionRadius: number,
+  relaxation: number,
+  columnRange?: { cols: number; min: number; max: number },
+): (positions: Float32Array, pinned: Uint8Array, n: number) => void {
+  const normal = { x: 0, y: 0, z: 0 };
+  return (positions, pinned, n) => {
+    const field = getField();
+    if (!field) return;
+    for (let i = 0; i < n; i++) {
+      if (pinned[i]) continue;
+      if (columnRange) {
+        const col = i % columnRange.cols;
+        if (col < columnRange.min || col > columnRange.max) continue;
+      }
+      const ix = i * 3;
+      const px = positions[ix];
+      const py = positions[ix + 1];
+      const pz = positions[ix + 2];
+      const d = sampleSdf(field, px, py, pz);
+      // BVH의 "hit 없으면 continue"에 대응 — 필드 밖은 farValue라 자동 스킵.
+      if (d > detectionRadius) continue;
+      if (!sdfNormal(field, px, py, pz, normal)) continue;
+      // 표면점 = p - d*n, 목표 = 표면점 + margin*n = p + (margin - d)*n.
+      const push = (margin - d) * relaxation;
+      positions[ix] = px + normal.x * push;
+      positions[ix + 1] = py + normal.y * push;
+      positions[ix + 2] = pz + normal.z * push;
+    }
+  };
+}
+
 export interface FrictionParams {
   // 접촉으로 볼 거리(표면에서 이 이내면 접촉) — COLLISION_MARGIN 근처.
   contactBand: number;

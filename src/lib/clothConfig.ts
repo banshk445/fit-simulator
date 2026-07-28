@@ -155,6 +155,10 @@ export const FRICTION_CONTACT_BAND = 0.02;
 // 계수는 실측이 아니라 눈대중 초기값 — 면(cotton) 대 인체 마찰이 대략
 // 0.3~0.6대라는 통념에서 시작. 게이트 수치·화면 판정으로 조정될 값이다.
 export const FRICTION_MU_STATIC = 0.6;
+// M2-3: SDF 밀어내기의 under-relaxation — bvhFromArrays.ts의
+// PUSH_RELAXATION(0.4)과 같은 값·같은 이유(한 번에 다 풀면 구조 제약이
+// 저항하기 전에 옷이 표면으로 수축한다).
+export const SDF_PUSH_RELAXATION = 0.4;
 export const FRICTION_MU_KINETIC = 0.4;
 // 겨드랑이 밑부터 밑단까지만 옆선을 잇고, 그 위(어깨~겨드랑이)는 트여 있는
 // 암홀(진동)로 남겨둔다 — 별도 소매 패널 없이도 최소한의 팔 통로를 만든다.

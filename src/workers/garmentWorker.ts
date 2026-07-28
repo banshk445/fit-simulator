@@ -5,7 +5,7 @@ import { ArrayBvhCollision } from "../lib/bvhFromArrays";
 import { SelfCollision } from "../lib/selfCollision";
 import { FABRIC_PRESETS } from "../lib/fabricPresets";
 import { buildUnifiedGarmentSim } from "../lib/buildUnifiedGarmentSim";
-import { bakeSdf, createSdfFrictionPass, type SdfField } from "../lib/sdfCollision";
+import { bakeSdf, createSdfFrictionPass, createSdfPushResolver, type SdfField } from "../lib/sdfCollision";
 // M0(파이프라인 일원화): 프레임 시퀀스·unifiedResolver·팔 캡슐 빌더는
 // garmentFrame.ts로 이사 — paramSweep(Node)과 이 워커가 같은 함수를 쓴다.
 import { buildArmCapsules, createGarmentSession, createPanelSplitResolver, createUnifiedResolver, PANEL_COUNTS } from "../lib/garmentFrame";
@@ -27,6 +27,7 @@ import {
   PANEL_SLEEVE_RIGHT,
   ROWS,
   SDF_FAR,
+  SDF_PUSH_RELAXATION,
   SDF_VOXEL,
   SELF_COLLISION_MIN_DIST,
 } from "../lib/clothConfig";
@@ -153,13 +154,27 @@ let selfCollisionResolver: CollisionResolver | null = null;
 // M2(SDF 마찰): rebuildCollision이 준 몸 메시를 들고 있다가, 레이아웃까지
 // 확정된 뒤(첫 step) 한 번 굽는다 — 굽기 범위가 옷이 닿는 Y 구간에
 // 의존하기 때문. 몸이 바뀌면(rebuildCollision) 무효화 후 재굽기.
-let bakedBody: { position: Float32Array; wholeBodyIndex: Uint32Array | null } | null = null;
+// 두 필드를 따로 굽는다. 마찰용은 몸 전체(팔 포함) — 소매가 팔에 대해
+// 마찰을 받아야 하므로. 밀어내기용은 팔 제외(frontIndex+backIndex 합집합)
+// — 기존 BVH 리졸버가 정확히 그 인덱스를 쓰고 팔은 캡슐이 따로 담당하기
+// 때문. 하나로 합치면 몸통 천이 팔 표면에도 흡착돼 M2-3에 변화가 하나 더
+// 섞인다. 비용은 rebuild당 2회(각 ~0.36s, 디바운스 200ms 뒤 워커에서).
+let bakedBody: {
+  position: Float32Array;
+  wholeBodyIndex: Uint32Array | null;
+  frontIndex: Uint32Array | null;
+  backIndex: Uint32Array | null;
+} | null = null;
 let sdfField: SdfField | null = null;
+let sdfPushField: SdfField | null = null;
 let sdfFrictionEnabled = false;
+let sdfPushEnabled = false;
 
 function ensureSdf(): void {
-  if (sdfField || !bakedBody || !lastLayout || !sdfFrictionEnabled) return;
-  const { position, wholeBodyIndex } = bakedBody;
+  if (!bakedBody || !lastLayout) return;
+  if (!sdfFrictionEnabled && !sdfPushEnabled) return;
+  if ((sdfField || !sdfFrictionEnabled) && (sdfPushField || !sdfPushEnabled)) return;
+  const { position, wholeBodyIndex, frontIndex, backIndex } = bakedBody;
   const yTop = lastLayout.topY + 0.1;
   const yBot = lastLayout.topY - lastLayout.heightM - 0.15;
   let minX = Infinity, maxX = -Infinity, minZ = Infinity, maxZ = -Infinity;
@@ -172,21 +187,45 @@ function ensureSdf(): void {
     if (position[i + 2] > maxZ) maxZ = position[i + 2];
   }
   if (!Number.isFinite(minX)) return;
-  const mesh = new ArrayBvhCollision();
-  mesh.rebuild(position, wholeBodyIndex);
   const pad = 0.08;
-  const t = performance.now();
-  sdfField = bakeSdf(
-    (x, y, z) => mesh.signedClearance(x, y, z, SDF_FAR),
-    { x: minX - pad, y: yBot, z: minZ - pad },
-    { x: maxX + pad, y: yTop, z: maxZ + pad },
-    SDF_VOXEL,
-    SDF_FAR,
-  );
-  console.log(
-    `[SDF] ${sdfField.nx}x${sdfField.ny}x${sdfField.nz} (${((sdfField.nx * sdfField.ny * sdfField.nz) / 1000).toFixed(1)}k복셀) ${Math.round(performance.now() - t)}ms`,
-  );
+  const min = { x: minX - pad, y: yBot, z: minZ - pad };
+  const max = { x: maxX + pad, y: yTop, z: maxZ + pad };
+  const bake = (index: Uint32Array | null, label: string): SdfField => {
+    const mesh = new ArrayBvhCollision();
+    mesh.rebuild(position, index);
+    const t = performance.now();
+    const f = bakeSdf((x, y, z) => mesh.signedClearance(x, y, z, SDF_FAR), min, max, SDF_VOXEL, SDF_FAR);
+    console.log(`[SDF:${label}] ${f.nx}x${f.ny}x${f.nz} (${((f.nx * f.ny * f.nz) / 1000).toFixed(1)}k복셀) ${Math.round(performance.now() - t)}ms`);
+    return f;
+  };
+  if (sdfFrictionEnabled && !sdfField) sdfField = bake(wholeBodyIndex, "마찰/몸전체");
+  if (sdfPushEnabled && !sdfPushField) {
+    // frontIndex+backIndex 합집합 = 팔 제외 몸통(기존 BVH 리졸버와 동일 대상).
+    let merged: Uint32Array | null = null;
+    if (frontIndex && backIndex) {
+      merged = new Uint32Array(frontIndex.length + backIndex.length);
+      merged.set(frontIndex, 0);
+      merged.set(backIndex, frontIndex.length);
+    } else {
+      merged = frontIndex ?? backIndex;
+    }
+    sdfPushField = bake(merged, "밀어내기/팔제외");
+  }
 }
+
+// M2-3: BVH 면 법선 밀어내기(meshResolver) 대신 SDF 기울기 밀어내기.
+// 나머지 스테이지(토르소/팔 캡슐, sidedness)는 createUnifiedResolver가
+// 그대로 담당하므로 mesh 자리만 바꿔 끼운다.
+const sdfPushResolver = createPanelSplitResolver(
+  [
+    createSdfPushResolver(() => sdfPushField, COLLISION_MARGIN, COLLISION_DETECTION_RADIUS, SDF_PUSH_RELAXATION, meshColumnRange),
+    createSdfPushResolver(() => sdfPushField, COLLISION_MARGIN, COLLISION_DETECTION_RADIUS, SDF_PUSH_RELAXATION, meshColumnRange),
+    null,
+    null,
+  ],
+  PANEL_COUNTS,
+);
+const sdfUnifiedResolver = createUnifiedResolver(sdfPushResolver, collisionState);
 
 const frictionPass = createSdfFrictionPass(() => sdfField, {
   contactBand: FRICTION_CONTACT_BAND,
@@ -240,11 +279,23 @@ ctx.onmessage = (event) => {
       // M2: 마찰은 신 코어 경로에서만(구 코어는 비트 동일 유지). 레이아웃이
       // 바뀌면 굽기 범위도 달라지므로 여기서 무효화한다.
       sdfFrictionEnabled = (msg.newCore ?? false) && (msg.friction ?? true);
+      // M2-3 원복: SDF 밀어내기는 하드 실패(앞뒤판 실제 교차 31~36개
+      // 발생, coverage +10.8pp). 원인은 마네킹 메시의 삼각형 와인딩 불일치
+      // — signedClearance가 면 법선 내적으로 부호를 정하므로 그 영역에서
+      // 부호가 뒤집힌 필드가 구워지고, 기울기가 몸 안쪽을 가리켜 파티클을
+      // 관통시킨다(같은 와인딩 문제를 coverageMetric에서 이미 실측해
+      // 방사방향 교정으로 우회한 전례가 있다). 부호 결정을 와인딩에
+      // 의존하지 않는 방식으로 바꾸기 전엔 켜지 말 것.
+      // 부수 확인: ripple mean이 3.22→3.21(팔제외)/2.98(팔포함)로 거의
+      // 불변 — **잔물결 원인은 BVH 면 법선 튐이 아니다**. ②(스무딩 제거)의
+      // 전제가 이 측정으로 기각됐다.
+      sdfPushEnabled = false;
       // M2 보정 제거 ①: 신 코어에선 sidedness 클램프를 끄고 SDF/마찰에 맡긴다.
       collisionState.sidedness = !(msg.newCore ?? false);
       sdfField = null;
+      sdfPushField = null;
       session = createGarmentSession(sim, {
-        collisionResolver: unifiedResolver,
+        collisionResolver: sdfPushEnabled ? sdfUnifiedResolver : unifiedResolver,
         collisionEvery: COLLISION_EVERY,
         selfCollision: (positions, pinned, n) => selfCollisionResolver!(positions, pinned, n),
         orderPasses: true,
@@ -313,8 +364,9 @@ ctx.onmessage = (event) => {
       collisionState.torsoCapsules = msg.capsules;
       collisionState.centerZ = msg.centerZ;
       // M2: 몸이 바뀌었으니 SDF 재굽기(다음 step에서 ensureSdf가 처리).
-      bakedBody = { position: msg.position, wholeBodyIndex: msg.wholeBodyIndex };
+      bakedBody = { position: msg.position, wholeBodyIndex: msg.wholeBodyIndex, frontIndex: msg.frontIndex, backIndex: msg.backIndex };
       sdfField = null;
+      sdfPushField = null;
       break;
     }
     case "step": {

@@ -31,6 +31,7 @@ import {
   FRICTION_MU_KINETIC,
   FRICTION_MU_STATIC,
   SDF_FAR,
+  SDF_PUSH_RELAXATION,
   SDF_VOXEL,
   SELF_COLLISION_MIN_DIST,
   SLEEVE_RING_COLS,
@@ -42,7 +43,7 @@ import type { Vec3Like } from "../src/lib/clothProtocol";
 import { armholeRingJaggedness, ringJaggedness } from "../src/lib/seamDiagnostics";
 import { bodyGapBands, computeBodyGapChannels, computeDrapeMetrics, computeRippleMm, type DrapeMetrics, type GapStats } from "../src/lib/drapeMetrics";
 import { computeBodyCoverage } from "../src/lib/coverageMetric";
-import { bakeSdf, createSdfFrictionPass, type SdfField } from "../src/lib/sdfCollision";
+import { bakeSdf, createSdfFrictionPass, createSdfPushResolver, type SdfField } from "../src/lib/sdfCollision";
 
 // 대표 포즈 — checkSleeveSeam.ts와 같은 출처(이 세션 __fitDebug 실측), 반팔
 // 기본값(소매길이 22cm), 어깨너비 45cm 기준.
@@ -396,40 +397,73 @@ function runFixture(path: string): void {
     // M2 제거 ①: 신 코어면 sidedness off(SIDEDNESS=1로 강제 복원 가능 — 대조용).
     sidedness: !newCore || process.env.SIDEDNESS === "1",
   };
-  const unified = createUnifiedResolver(meshResolver, collisionState);
+  let unified = createUnifiedResolver(meshResolver, collisionState);
 
   // M2: SDF 굽기 + 마찰(FRICTION=1일 때만) — 굽기 범위는 옷이 실제로 닿는
   // 구간(어깨 위 10cm ~ 밑단 아래 15cm)의 몸 메시 bbox.
+  const yTop = layout.topY + 0.1;
+  const yBot = layout.topY - layout.heightM - 0.15;
+  let minX = Infinity, maxX = -Infinity, minZ = Infinity, maxZ = -Infinity;
+  for (let i = 0; i < position.length; i += 3) {
+    const y = position[i + 1];
+    if (y < yBot || y > yTop) continue;
+    if (position[i] < minX) minX = position[i];
+    if (position[i] > maxX) maxX = position[i];
+    if (position[i + 2] < minZ) minZ = position[i + 2];
+    if (position[i + 2] > maxZ) maxZ = position[i + 2];
+  }
+  const pad = 0.08;
+  const sdfMin = { x: minX - pad, y: yBot, z: minZ - pad };
+  const sdfMax = { x: maxX + pad, y: yTop, z: maxZ + pad };
+
   let sdfField: SdfField | null = null;
   if (process.env.FRICTION === "1") {
-    const yTop = layout.topY + 0.1;
-    const yBot = layout.topY - layout.heightM - 0.15;
-    let minX = Infinity, maxX = -Infinity, minZ = Infinity, maxZ = -Infinity;
-    for (let i = 0; i < position.length; i += 3) {
-      const y = position[i + 1];
-      if (y < yBot || y > yTop) continue;
-      if (position[i] < minX) minX = position[i];
-      if (position[i] > maxX) maxX = position[i];
-      if (position[i + 2] < minZ) minZ = position[i + 2];
-      if (position[i + 2] > maxZ) maxZ = position[i + 2];
-    }
-    const pad = 0.08;
     const wholeMesh = new ArrayBvhCollision();
     wholeMesh.rebuild(position, fixture.collision.wholeBodyIndex ? Uint32Array.from(fixture.collision.wholeBodyIndex) : null);
     const t = performance.now();
-    sdfField = bakeSdf(
-      (x, y, z) => wholeMesh.signedClearance(x, y, z, SDF_FAR),
-      { x: minX - pad, y: yBot, z: minZ - pad },
-      { x: maxX + pad, y: yTop, z: maxZ + pad },
-      SDF_VOXEL,
-      SDF_FAR,
-    );
+    sdfField = bakeSdf((x, y, z) => wholeMesh.signedClearance(x, y, z, SDF_FAR), sdfMin, sdfMax, SDF_VOXEL, SDF_FAR);
     console.log(
       `[paramSweep:fixture] SDF 굽기 ${sdfField.nx}x${sdfField.ny}x${sdfField.nz}(${(sdfField.nx * sdfField.ny * sdfField.nz / 1000).toFixed(1)}k복셀) ${Math.round(performance.now() - t)}ms`,
     );
   }
   // MU=값 이면 정지/운동 계수를 그 값으로 함께 덮어쓴다(μ 스윕용).
   const muOverride = process.env.MU ? Number(process.env.MU) : null;
+  // M2-3: 신 코어면 밀어내기를 SDF 기울기로(팔 제외 필드 = 기존 BVH
+  // 리졸버와 같은 대상). PUSH=bvh로 강제 복원해 대조 가능.
+  let sdfPushField: SdfField | null = null;
+  // M2-3 원복 — 기본 off. PUSH=sdf(팔제외) / PUSH=whole(팔포함)로 재현만 가능.
+  if (newCore && (process.env.PUSH === "sdf" || process.env.PUSH === "whole")) {
+    // 진단용: PUSH=whole 이면 팔 포함 필드(마찰용과 동일)를 밀어내기에 쓴다 —
+    // 팔 제외 필드가 절단 경계에서 부호를 잘못 잡는지 가리기 위한 대조.
+    const useWhole = process.env.PUSH === "whole";
+    const mergedIdx = (() => {
+      const f = fixture.collision.frontIndex;
+      const b = fixture.collision.backIndex;
+      if (f && b) {
+        const m = new Uint32Array(f.length + b.length);
+        m.set(Uint32Array.from(f), 0);
+        m.set(Uint32Array.from(b), f.length);
+        return m;
+      }
+      return f ? Uint32Array.from(f) : b ? Uint32Array.from(b) : null;
+    })();
+    const armless = new ArrayBvhCollision();
+    armless.rebuild(position, useWhole ? (fixture.collision.wholeBodyIndex ? Uint32Array.from(fixture.collision.wholeBodyIndex) : null) : mergedIdx);
+    const t = performance.now();
+    sdfPushField = bakeSdf((x, y, z) => armless.signedClearance(x, y, z, SDF_FAR), sdfMin, sdfMax, SDF_VOXEL, SDF_FAR);
+    console.log(`[paramSweep:fixture] SDF 밀어내기/팔제외 굽기 ${Math.round(performance.now() - t)}ms`);
+    const push = createPanelSplitResolver(
+      [
+        createSdfPushResolver(() => sdfPushField, COLLISION_MARGIN, COLLISION_DETECTION_RADIUS, SDF_PUSH_RELAXATION, meshColumnRange),
+        createSdfPushResolver(() => sdfPushField, COLLISION_MARGIN, COLLISION_DETECTION_RADIUS, SDF_PUSH_RELAXATION, meshColumnRange),
+        null,
+        null,
+      ],
+      PANEL_COUNTS,
+    );
+    unified = createUnifiedResolver(push, collisionState);
+  }
+
   const friction = sdfField
     ? createSdfFrictionPass(() => sdfField, {
         contactBand: FRICTION_CONTACT_BAND,
