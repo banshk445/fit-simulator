@@ -117,12 +117,16 @@ const armholeStartRow = Math.round(ROWS * ARMHOLE_ROW_FRACTION);
 // "전체 범위"(min=0, max=COLS-1)로 둬 collisionRange가 아직 갱신되기 전에도
 // 안전하게 동작한다.
 const meshColumnRange = { cols: COLS, min: 0, max: COLS - 1 };
+// M2-4: 흡착 완화 모드와 그 부호 판정 기준축(살아있는 참조).
+// rebuildCollision에서 토르소 캡슐 축으로 갱신한다.
+const penetrationAxis = { enabled: false, x: 0, z: 0 };
 const frontMeshResolver = frontCollisionMesh.createResolver(
   COLLISION_MARGIN,
   COLLISION_DETECTION_RADIUS,
   MESH_SKIP_START,
   MESH_SKIP_END,
   meshColumnRange,
+  penetrationAxis,
 );
 const backMeshResolver = backCollisionMesh.createResolver(
   COLLISION_MARGIN,
@@ -130,6 +134,7 @@ const backMeshResolver = backCollisionMesh.createResolver(
   MESH_SKIP_START,
   MESH_SKIP_END,
   meshColumnRange,
+  penetrationAxis,
 );
 
 // createPanelSplitResolver/PANEL_COUNTS는 garmentFrame.ts로 이사(M0).
@@ -297,6 +302,17 @@ ctx.onmessage = (event) => {
       collisionState.sidedness = !(msg.newCore ?? false);
       // M2-4 선행: 신 코어는 반평면 클램프 대신 경량 쌍 분리.
       collisionState.pairSeparation = msg.newCore ?? false;
+      // M2-4 원복(하드 실패): 흡착을 완전히 끊으니 coverage 20.0→57.8%
+      // (+37.8pp), 드레이프 면각평균 17.41→7.82(-55%)·주름RMS
+      // 4.456→2.372(-47%)로 무너졌다. 흡착은 드레이프를 막는 힘이기만 한
+      // 게 아니라 **천을 몸에 붙들어 두는 유일한 힘**이기도 했다 — 끊으면
+      // 어깨 핀에 매달린 커튼처럼 평평하게 떨어진다(면각 반토막이 그 신호).
+      // 마찰(μ0.6, 접촉폭 2cm)은 흡착이 눌러주지 않으면 접촉 자체가 거의
+      // 안 생겨 하중을 못 받는다 — "보조 힘은 마찰의 대체품" 패턴의 재현.
+      // 완전 이분법 말고 중간값(반경 축소·거리 반비례 감쇠)이 다음 후보.
+      // 부수 확인(중요): maxStrain이 4.1952→3.7801로 **처음 내려갔다** —
+      // limiter 상한 1.2의 3.5배 문제의 원인이 흡착임이 확인됐다.
+      penetrationAxis.enabled = false;
       sdfField = null;
       sdfPushField = null;
       session = createGarmentSession(sim, {
@@ -380,6 +396,10 @@ ctx.onmessage = (event) => {
       wholeBodyCollisionMesh.rebuild(msg.position, msg.wholeBodyIndex);
       collisionState.torsoCapsules = msg.capsules;
       collisionState.centerZ = msg.centerZ;
+      if (msg.capsules.length > 0) {
+        penetrationAxis.x = msg.capsules[0].top.x;
+        penetrationAxis.z = msg.capsules[0].top.z;
+      }
       // M2: 몸이 바뀌었으니 SDF 재굽기(다음 step에서 ensureSdf가 처리).
       bakedBody = { position: msg.position, wholeBodyIndex: msg.wholeBodyIndex, frontIndex: msg.frontIndex, backIndex: msg.backIndex };
       sdfField = null;

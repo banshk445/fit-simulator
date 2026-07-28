@@ -187,12 +187,26 @@ export class ArrayBvhCollision {
   // 이 메시 충돌 대상이 될 필요 자체가 없다. columnRange(살아있는 참조
   // 객체 — 매 프레임 garmentWorker.ts가 torsoColumnRange로 갱신)가 주어지면
   // 몸통 열 범위 밖은 트리 탐색 자체를 건너뛴다.
+  // M2-4(흡착 완화): penetrationAxis를 주면 "관통 시에만" 모드로 바뀐다 —
+  // 표면 밖(d>=0)인 파티클은 아예 건드리지 않고, 안쪽으로 들어간 것만
+  // 표면+margin으로 밀어낸다. 기존 동작은 탐지 반경(15cm) 안이면 관통
+  // 여부와 무관하게 목표를 표면+margin으로 잡아 40%씩 끌어당기는
+  // **양방향 흡착**이었고(프레임당 4회 → 87% 스냅), 몸통 전체가 상시
+  // 15cm 안이라 천이 몸에서 떨어져 늘어지는 것 자체가 금지돼 있었다.
+  //
+  // 안/밖 판정에 signedClearance(면 법선 내적)를 쓰지 않는 이유: 이
+  // 마네킹 메시는 일부 영역 와인딩이 뒤집혀 있어 그 영역 부호가 통째로
+  // 반대가 된다(M2-3이 이 함정으로 3연속 실패). sdfCollision.ts의
+  // makeRadialSignedSampler / coverageMetric.ts의 orientOutward와 같은
+  // 전제(몸통은 세로축 기준 star-shaped)로 방사 방향 부호를 쓴다.
+  // penetrationAxis는 살아있는 참조(columnRange와 같은 패턴).
   createResolver(
     margin: number,
     detectionRadius = margin,
     skipLocalStart?: number,
     skipLocalEndExclusive?: number,
     columnRange?: ColumnRange,
+    penetrationAxis?: { enabled: boolean; x: number; z: number },
   ): CollisionResolver {
     return (positions, pinned, n) => {
       const bvh = this.bvh;
@@ -210,6 +224,17 @@ export class ArrayBvhCollision {
         scratchPoint.set(positions[ix], positions[ix + 1], positions[ix + 2]);
         const hit = bvh.closestPointToPoint(scratchPoint, this.hitInfo, 0, detectionRadius);
         if (!hit) continue;
+        if (penetrationAxis?.enabled) {
+          const px = positions[ix];
+          const py = positions[ix + 1];
+          const pz = positions[ix + 2];
+          const rx = px - penetrationAxis.x;
+          const rz = pz - penetrationAxis.z;
+          const rl = Math.hypot(rx, rz) || 1e-9;
+          // 방사 바깥 + 위쪽 25%(어깨 꼭대기는 방사 성분이 0에 가깝다).
+          const outward = (px - hit.point.x) * (rx / rl) + (py - hit.point.y) * 0.25 + (pz - hit.point.z) * (rz / rl);
+          if (outward >= 0) continue; // 표면 밖 — 건드리지 않음
+        }
         this.faceNormal(hit.faceIndex, scratchNormal);
         const targetX = hit.point.x + scratchNormal.x * margin;
         const targetY = hit.point.y + scratchNormal.y * margin;

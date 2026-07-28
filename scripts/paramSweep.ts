@@ -382,10 +382,16 @@ function runFixture(path: string): void {
   frontMesh.rebuild(position, fixture.collision.frontIndex ? Uint32Array.from(fixture.collision.frontIndex) : null);
   backMesh.rebuild(position, fixture.collision.backIndex ? Uint32Array.from(fixture.collision.backIndex) : null);
   const meshColumnRange = { cols: COLS, min: 0, max: COLS - 1 };
+  // M2-4: 신 코어면 흡착 완화(관통 시에만). ADHESION=1로 기존 흡착 복원.
+  const penetrationAxis = {
+    enabled: newCore && process.env.ADHESION !== "1",
+    x: fixture.collision.capsules[0]?.top.x ?? 0,
+    z: fixture.collision.capsules[0]?.top.z ?? 0,
+  };
   const meshResolver = createPanelSplitResolver(
     [
-      frontMesh.createResolver(COLLISION_MARGIN, COLLISION_DETECTION_RADIUS, 0, 0, meshColumnRange),
-      backMesh.createResolver(COLLISION_MARGIN, COLLISION_DETECTION_RADIUS, 0, 0, meshColumnRange),
+      frontMesh.createResolver(COLLISION_MARGIN, COLLISION_DETECTION_RADIUS, 0, 0, meshColumnRange, penetrationAxis),
+      backMesh.createResolver(COLLISION_MARGIN, COLLISION_DETECTION_RADIUS, 0, 0, meshColumnRange, penetrationAxis),
       null,
       null,
     ],
