@@ -232,3 +232,58 @@ export function createSdfFrictionPass(
     }
   };
 }
+
+// M2-5(마찰을 반복 안으로): 위치 수준 마찰 — PBD 표준 위치(Macklin류
+// position-based friction은 솔버 루프 안에 있다). 지금까지 마찰은
+// 서브스텝당 1회, prevPositions(속도)만 보정했는데, 거리 제약이 18회
+// 돌며 그 사이 접선 이동을 계속 다시 만들므로 마찰이 넣은 보정이 매
+// 반복 지워졌다(M2-4·핀 스윕에서 "마찰이 하중을 못 받는다"가 반복 확인).
+//
+// 이 패스는 매 반복(everyIterationExtra) 위치의 접선 성분을 직접 죽인다.
+// 기준점은 prevPositions — Verlet에서 적분 직후 prev는 서브스텝 시작
+// 위치와 같고 반복 동안 아무도 안 건드리므로 "이번 서브스텝의 이동"을
+// 정확히 잰다. prev 자체는 여기서 안 고친다(반복마다 고치면 중복 감쇠) —
+// 속도 보정은 기존 createSdfFrictionPass가 서브스텝 말미 1회로 담당.
+export function createSdfIterationFrictionPass(
+  getField: () => SdfField | null,
+  params: FrictionParams,
+): (positions: Float32Array, prevPositions: Float32Array, pinned: Uint8Array, n: number) => void {
+  const normal = { x: 0, y: 0, z: 0 };
+  return (positions, prevPositions, pinned, n) => {
+    const field = getField();
+    if (!field) return;
+    for (let i = 0; i < n; i++) {
+      if (pinned[i]) continue;
+      const ix = i * 3;
+      const px = positions[ix];
+      const py = positions[ix + 1];
+      const pz = positions[ix + 2];
+      const sd = sampleSdf(field, px, py, pz);
+      if (sd > params.contactBand) continue;
+      if (!sdfNormal(field, px, py, pz, normal)) continue;
+      const load = Math.min(1, Math.max(0, (params.contactBand - sd) / params.contactBand));
+      if (load <= 0) continue;
+      const dx = px - prevPositions[ix];
+      const dy = py - prevPositions[ix + 1];
+      const dz = pz - prevPositions[ix + 2];
+      const dn = dx * normal.x + dy * normal.y + dz * normal.z;
+      const tx = dx - dn * normal.x;
+      const ty = dy - dn * normal.y;
+      const tz = dz - dn * normal.z;
+      const tLen = Math.hypot(tx, ty, tz);
+      if (tLen < 1e-9) continue;
+      const staticLimit = params.muStatic * load * params.contactBand;
+      let scale: number;
+      if (tLen <= staticLimit) {
+        scale = 0;
+      } else {
+        const drop = params.muKinetic * load * params.contactBand;
+        scale = Math.max(0, (tLen - drop) / tLen);
+      }
+      // 위치만 보정 — prev는 그대로(속도 보정은 서브스텝 말미 패스 담당).
+      positions[ix] = prevPositions[ix] + dn * normal.x + tx * scale;
+      positions[ix + 1] = prevPositions[ix + 1] + dn * normal.y + ty * scale;
+      positions[ix + 2] = prevPositions[ix + 2] + dn * normal.z + tz * scale;
+    }
+  };
+}

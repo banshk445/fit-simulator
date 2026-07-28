@@ -5,7 +5,7 @@ import { ArrayBvhCollision } from "../lib/bvhFromArrays";
 import { SelfCollision } from "../lib/selfCollision";
 import { FABRIC_PRESETS } from "../lib/fabricPresets";
 import { buildUnifiedGarmentSim } from "../lib/buildUnifiedGarmentSim";
-import { bakeSdf, createSdfFrictionPass, createSdfPushResolver, makeRadialSignedSampler, type SdfField } from "../lib/sdfCollision";
+import { bakeSdf, createSdfFrictionPass, createSdfIterationFrictionPass, createSdfPushResolver, makeRadialSignedSampler, type SdfField } from "../lib/sdfCollision";
 // M0(파이프라인 일원화): 프레임 시퀀스·unifiedResolver·팔 캡슐 빌더는
 // garmentFrame.ts로 이사 — paramSweep(Node)과 이 워커가 같은 함수를 쓴다.
 import { buildArmCapsules, createGarmentSession, createPanelSplitResolver, createUnifiedResolver, PANEL_COUNTS } from "../lib/garmentFrame";
@@ -237,6 +237,11 @@ const sdfPushResolver = createPanelSplitResolver(
 );
 const sdfUnifiedResolver = createUnifiedResolver(sdfPushResolver, collisionState);
 
+const iterationFrictionPass = createSdfIterationFrictionPass(() => sdfField, {
+  contactBand: FRICTION_CONTACT_BAND,
+  muStatic: FRICTION_MU_STATIC,
+  muKinetic: FRICTION_MU_KINETIC,
+});
 const frictionPass = createSdfFrictionPass(() => sdfField, {
   contactBand: FRICTION_CONTACT_BAND,
   muStatic: FRICTION_MU_STATIC,
@@ -349,6 +354,14 @@ ctx.onmessage = (event) => {
         maxDisplacement: MAX_DISPLACEMENT_PER_SUBSTEP,
         columnRange: meshColumnRange,
         friction: sdfFrictionEnabled ? frictionPass : undefined,
+        // M2-5 보류(혼재 — 기록 후 정지): 반복 안 마찰은 가설을 증명했다
+        // (maxStrain 4.20→2.86, 역대 첫 대폭 하락 = 마찰이 드디어 하중을
+        // 받는다. 면각평균 17.4→22.9·주름RMS 4.46→5.75 역대 최고 드레이프).
+        // 그러나 같은 μ(0.6/0.4)를 반복 안으로 옮기면 운동 마찰 감쇠가
+        // 반복 수만큼 누적돼 실효 마찰이 폭증한다 — coverage 20.0→50.6%
+        // (앞면 버킷 붕괴), jitter 2배, 물리 59ms(2.5배)로 하드 실패 급.
+        // 반복 모드 전용 μ 재조정 + 비용 최적화 전엔 켜지 말 것.
+        frictionIteration: undefined,
       });
 
       // 범위 B 구현 1번(격자 생성) 검증용 — buildConstraints()/step() 이전

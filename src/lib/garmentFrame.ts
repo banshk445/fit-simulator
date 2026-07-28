@@ -215,6 +215,10 @@ export interface GarmentFrameEnv {
   // 자체충돌 전에 1회. prevPositions를 고쳐야 해서 CollisionResolver와
   // 시그니처가 다르다. 없으면 스킵(기존과 비트 동일).
   friction?: (positions: Float32Array, prevPositions: Float32Array, pinned: Uint8Array, n: number) => void;
+  // M2-5: 반복 안 위치 수준 마찰(createSdfIterationFrictionPass) — 매
+  // Gauss-Seidel 반복(everyIterationExtra 훅)에서 접선 이동을 죽인다.
+  // 서브스텝 말미 속도 보정(friction)과 역할 분담(중복 감쇠 방지).
+  frictionIteration?: (positions: Float32Array, prevPositions: Float32Array, pinned: Uint8Array, n: number) => void;
   // 핀 전환 3단계: 1=하드 핀(기존), 1미만=칼라 소프트 앵커, 0=앵커 없음.
   pinStrength?: number;
 }
@@ -263,6 +267,14 @@ export function createGarmentSession(sim: ClothSimulation, env: GarmentFrameEnv)
         }
       };
       const anyOrder = env.orderColumn || env.orderRow;
+      // everyIterationExtra 훅 — order 패스 + (M2-5) 반복 안 마찰.
+      const iterExtra: CollisionResolver | undefined =
+        anyOrder || env.frictionIteration
+          ? (positions, pinned, n) => {
+              if (anyOrder) torsoOrderExtra(positions, pinned, n);
+              env.frictionIteration?.(positions, sim.prevPositions, pinned, n);
+            }
+          : undefined;
 
       accumulator = Math.min(accumulator + dt, SUBSTEP_DT * MAX_SUBSTEPS);
       while (accumulator >= SUBSTEP_DT) {
@@ -274,7 +286,7 @@ export function createGarmentSession(sim: ClothSimulation, env: GarmentFrameEnv)
           env.collisionEvery,
           preset.damping,
           env.maxDisplacement,
-          anyOrder ? torsoOrderExtra : undefined,
+          iterExtra,
         );
         // M2: 마찰 — 충돌이 법선 방향을 푼 직후, 그 접촉의 접선 성분을
         // 감쇠/정지시킨다(자체충돌·순서 보정 이전).

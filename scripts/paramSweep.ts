@@ -43,7 +43,7 @@ import type { Vec3Like } from "../src/lib/clothProtocol";
 import { armholeRingJaggedness, ringJaggedness } from "../src/lib/seamDiagnostics";
 import { bodyGapBands, computeBodyGapChannels, computeDrapeMetrics, computeOrderViolations, computeRippleMm, type DrapeMetrics, type GapStats } from "../src/lib/drapeMetrics";
 import { computeBodyCoverage } from "../src/lib/coverageMetric";
-import { bakeSdf, createSdfFrictionPass, createSdfPushResolver, makeRadialSignedSampler, type SdfField } from "../src/lib/sdfCollision";
+import { bakeSdf, createSdfFrictionPass, createSdfIterationFrictionPass, createSdfPushResolver, makeRadialSignedSampler, type SdfField } from "../src/lib/sdfCollision";
 
 // 대표 포즈 — checkSleeveSeam.ts와 같은 출처(이 세션 __fitDebug 실측), 반팔
 // 기본값(소매길이 22cm), 어깨너비 45cm 기준.
@@ -517,7 +517,15 @@ function runFixture(path: string): void {
     maxDisplacement: MAX_DISPLACEMENT_PER_SUBSTEP,
     columnRange: meshColumnRange,
     friction,
-    // 핀 전환 3단계 — PIN=0.5 / PIN=0 등으로 단계별 게이트.
+    // M2-5: FRICITER=0으로 끄고 대조(기본은 마찰 켜짐과 동일 조건).
+    frictionIteration:
+      sdfField && process.env.FRICITER !== "0"
+        ? createSdfIterationFrictionPass(() => sdfField, {
+            contactBand: FRICTION_CONTACT_BAND,
+            muStatic: muOverride ?? FRICTION_MU_STATIC,
+            muKinetic: muOverride ?? FRICTION_MU_KINETIC,
+          })
+        : undefined,
     // 핀 전환 원복 — 기본 1(하드 핀). PIN=0.5 등으로 재현만 가능.
     pinStrength: process.env.PIN ? Number(process.env.PIN) : 1,
   });
