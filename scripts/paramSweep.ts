@@ -16,7 +16,7 @@ import {
   type ArmDir,
 } from "../src/lib/buildGarmentSim";
 import { buildUnifiedGarmentSim } from "../src/lib/buildUnifiedGarmentSim";
-import { applyCapsuleCollision, type Capsule } from "../src/lib/torsoCapsule";
+import { applyCapsuleCollision, buildTorsoProxyCapsules, type Capsule } from "../src/lib/torsoCapsule";
 import {
   ARM_ROWS,
   ARMHOLE_ROW_FRACTION,
@@ -34,7 +34,7 @@ import {
 import { FABRIC_PRESETS } from "../src/lib/fabricPresets";
 import type { Vec3Like } from "../src/lib/clothProtocol";
 import { armholeRingJaggedness, ringJaggedness } from "../src/lib/seamDiagnostics";
-import { computeDrapeMetrics, type DrapeMetrics } from "../src/lib/drapeMetrics";
+import { computeBodyGapMm, computeDrapeMetrics, type DrapeMetrics } from "../src/lib/drapeMetrics";
 
 // 대표 포즈 — checkSleeveSeam.ts와 같은 출처(이 세션 __fitDebug 실측), 반팔
 // 기본값(소매길이 22cm), 어깨너비 45cm 기준.
@@ -133,8 +133,15 @@ interface ComboResult {
   // 물리 ms(이 하네스의 프레임 루프 전체 평균 — 브라우저 절대값과는 다르지만
   // 전/후 상대 비교용으로 충분).
   drape: DrapeMetrics | null;
+  // 천-몸 이탈(mm) — 어깨~겨드랑이 구간 파티클이 토르소 캡슐 표면에서 뜬
+  // 거리의 최댓값(drapeMetrics.ts computeBodyGapMm 주석 참고). Garment.tsx가
+  // 쓰는 buildTorsoProxyCapsules(기본 체형 170cm/가슴100cm)를 그대로 재사용.
+  bodyGapMm: number | null;
   physMsPerFrame: number;
 }
+
+// 몸 프록시 — 워커의 토르소 캡슐과 같은 함수, 기본 체형(useFitStore 기본값).
+const torsoCapsules = buildTorsoProxyCapsules(trueShoulderLeft, trueShoulderRight, 1.7, 1.0).capsules;
 
 function runCombo(widthM: number, sleeveWidthM: number): ComboResult {
   const armLeft: ArmDir = { dir: dirLeft, length: SLEEVE_LENGTH_M };
@@ -176,6 +183,7 @@ function runCombo(widthM: number, sleeveWidthM: number): ComboResult {
         // 그대로 터짐) — scripts/는 tsc -b 대상이 아니라 여태 안 잡혔다.
         sleeveRowsMaxDeg: [],
         drape: null,
+        bodyGapMm: null,
         physMsPerFrame,
       };
     }
@@ -253,6 +261,7 @@ function runCombo(widthM: number, sleeveWidthM: number): ComboResult {
     sleeveJaggednessDeg: Number(sleeveJaggednessDeg.toFixed(1)),
     sleeveRowsMaxDeg: sleeveRowsMaxDeg.map((d) => Number(d.toFixed(1))),
     drape: computeDrapeMetrics(sim, [PANEL_FRONT, PANEL_BACK], xMin, xMax),
+    bodyGapMm: computeBodyGapMm(sim, [PANEL_FRONT, PANEL_BACK], torsoCapsules, armholeStartRow + 1, xMin, xMax),
     physMsPerFrame,
   };
 }
@@ -278,11 +287,11 @@ console.log("[paramSweep] sleeve row0~row%d breakdown (품/소매통 → 행별 
 for (const r of results) {
   console.log(`  품${r.widthM * 100}cm/소매통${r.sleeveWidthM * 100}cm:`, r.sleeveRowsMaxDeg);
 }
-console.log("[paramSweep] drape (면각평균° / 면각최대° / 주름RMSmm / maxStrain / 물리ms):");
+console.log("[paramSweep] drape (면각평균° / 면각최대° / 주름RMSmm / maxStrain / 몸이탈mm / 물리ms):");
 for (const r of results) {
   const d = r.drape;
   console.log(
-    `  품${r.widthM * 100}cm/소매통${r.sleeveWidthM * 100}cm: ${d ? `${d.faceAngleMeanDeg} / ${d.faceAngleMaxDeg} / ${d.wrinkleRmsMm} / ${d.maxStrain}` : "발산"} / ${r.physMsPerFrame}ms`,
+    `  품${r.widthM * 100}cm/소매통${r.sleeveWidthM * 100}cm: ${d ? `${d.faceAngleMeanDeg} / ${d.faceAngleMaxDeg} / ${d.wrinkleRmsMm} / ${d.maxStrain}` : "발산"} / ${r.bodyGapMm ?? "-"} / ${r.physMsPerFrame}ms`,
   );
 }
 

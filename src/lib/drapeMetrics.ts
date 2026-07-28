@@ -7,6 +7,7 @@
 // - maxStrain: 전체 제약의 현재길이/원래길이 최댓값 — 찢어짐 감시
 //   (clampOverstretchedConstraints의 1.2 상한과 같은 단위).
 import type { ClothSimulation } from "./clothPhysics";
+import type { Capsule } from "./torsoCapsule";
 
 export interface DrapeMetrics {
   faceAngleMeanDeg: number;
@@ -130,4 +131,54 @@ export function computeDrapeMetrics(
     wrinkleRmsMm: Number((Math.sqrt(devSqSum / (devCount || 1)) * 1000).toFixed(3)),
     maxStrain: Number(maxStrain.toFixed(4)),
   };
+}
+
+// 천-몸 이탈 거리(mm) — A-③ 사후 추가. A-③(shear 0.6)이 기존 지표
+// 전부(면각/주름/strain/관통/seamGap)를 통과하고도 화면에선 어깨 천이
+// 몸에서 떨어져 등판이 노출되는 참사였다 — 관통(음의 방향)만 재고 그
+// 반대(천이 몸에서 떠서 노출)를 재는 지표가 없었기 때문. 어깨~겨드랑이
+// 구간(row < rowEndExclusive)의 몸통 열 파티클이 몸 프록시(토르소 캡슐)
+// 표면에서 얼마나 떠 있는지의 최댓값을 잰다 — 겨드랑이 아래는 천이
+// 원래 몸에서 떨어져 낙하하는 게 정상이라 포함하면 지표가 무의미해진다.
+// 절대값엔 캡슐 근사 오차+COLLISION_MARGIN이 포함되므로 전/후 상대
+// 비교용이다.
+export function computeBodyGapMm(
+  sim: ClothSimulation,
+  panels: readonly number[],
+  capsules: readonly Capsule[],
+  rowEndExclusive: number,
+  colMin = 0,
+  colMax = Infinity,
+): number {
+  const p = sim.positions;
+  let maxGap = -Infinity;
+  for (const panel of panels) {
+    const { cols } = sim.panelDims[panel];
+    const x0 = Math.max(0, colMin);
+    const x1 = Math.min(cols - 1, colMax);
+    for (let y = 0; y < rowEndExclusive; y++) {
+      for (let x = x0; x <= x1; x++) {
+        const i = sim.index(panel, x, y) * 3;
+        const px = p[i];
+        const py = p[i + 1];
+        const pz = p[i + 2];
+        // 가장 가까운 캡슐 표면까지의 부호 있는 거리(양수=표면 밖).
+        let best = Infinity;
+        for (const c of capsules) {
+          const abx = c.bottom.x - c.top.x;
+          const aby = c.bottom.y - c.top.y;
+          const abz = c.bottom.z - c.top.z;
+          const abLenSq = abx * abx + aby * aby + abz * abz;
+          const apx = px - c.top.x;
+          const apy = py - c.top.y;
+          const apz = pz - c.top.z;
+          const t = abLenSq > 1e-9 ? Math.min(1, Math.max(0, (apx * abx + apy * aby + apz * abz) / abLenSq)) : 0;
+          const dist = Math.hypot(px - (c.top.x + abx * t), py - (c.top.y + aby * t), pz - (c.top.z + abz * t)) - c.radius;
+          if (dist < best) best = dist;
+        }
+        if (best > maxGap) maxGap = best;
+      }
+    }
+  }
+  return Number((maxGap * 1000).toFixed(1));
 }
