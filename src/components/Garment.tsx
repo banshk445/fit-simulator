@@ -433,8 +433,14 @@ export function Garment({ imageUrl }: Props) {
   const newCore = useFitStore((s) => s.newCore);
   const newCoreRef = useRef(newCore);
   newCoreRef.current = newCore;
-  const weldedGeometry = useMemo(() => buildWeldedGarmentGeometry(), []);
+  // 몸통 열 범위 밖 구 플랩 셀은 삼각형 생성에서 제외(실측 회귀: 암홀 옆
+  // 각진 판 돌출 — weldedGarmentGeometry.ts 주석). 범위가 바뀌면 재생성.
+  // onmessage 클로저는 이 memo를 deps에 안 가지므로 ref로 최신 것을 본다
+  // (seamBridgeRef와 같은 패턴).
+  const weldedGeometry = useMemo(() => buildWeldedGarmentGeometry(torsoSleeveMin, torsoSleeveMax), [torsoSleeveMin, torsoSleeveMax]);
   useEffect(() => () => weldedGeometry.dispose(), [weldedGeometry]);
+  const weldedGeometryRef = useRef(weldedGeometry);
+  weldedGeometryRef.current = weldedGeometry;
   // weldInfo(용접 테이블) — 항등으로 시작, 워커 회신으로 갱신.
   const canonOfRef = useRef<Uint32Array | null>(null);
   // 47번(디버그 전용): 영역별 와이어프레임 지오메트리를 나눌 몸통(xMin~xMax)
@@ -1237,7 +1243,7 @@ export function Garment({ imageUrl }: Props) {
       // 와이어프레임 DEV 토글은 구 경로 전용(신 코어에선 미지원, 대조용
       // 토글이니 그대로 둠).
       if (newCoreRef.current) {
-        weldedGeometry.update(msg.front, msg.back, msg.sleeveLeft, msg.sleeveRight, canonOfRef.current);
+        weldedGeometryRef.current.update(msg.front, msg.back, msg.sleeveLeft, msg.sleeveRight, canonOfRef.current);
         updateSeamBridge(seamBridgeRef.current, {
           front: frontPositions,
           back: backPositions,

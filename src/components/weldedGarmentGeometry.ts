@@ -22,6 +22,11 @@ const F = COLS * ROWS;
 const S = SLEEVE_RING_COLS * SLEEVE_RING_ROWS;
 export const WELDED_TOTAL_PARTICLES = F * 2 + S * 2;
 
+// 실측 회귀(M1 화면 확인): 앞/뒤판 삼각형을 전체 44열로 만들었더니 몸통
+// 범위(xMin~xMax) 밖 "구 플랩" 열 — 물리로는 계속 돌지만 구 경로에선
+// 렌더 제외였던 — 이 화면에 되살아나 암홀 옆 각진 판처럼 돌출했다.
+// 구 경로(buildRegionPlaneGeometry)와 동일하게 몸통 열 범위 셀만 삼각형을
+// 만든다(정점 배열은 전체 유지 — 파티클 1:1 복사 경로를 안 바꾸기 위해).
 export interface WeldedGarmentGeometry {
   geometry: THREE.BufferGeometry;
   // canonOf: 전역 파티클 → 용접 대표(weldInfo로 갱신, null이면 항등).
@@ -35,7 +40,7 @@ export interface WeldedGarmentGeometry {
   dispose(): void;
 }
 
-export function buildWeldedGarmentGeometry(): WeldedGarmentGeometry {
+export function buildWeldedGarmentGeometry(torsoColMin = 0, torsoColMax = COLS - 1): WeldedGarmentGeometry {
   const positions = new Float32Array(WELDED_TOTAL_PARTICLES * 3);
   const normals = new Float32Array(WELDED_TOTAL_PARTICLES * 3);
   const uvs = new Float32Array(WELDED_TOTAL_PARTICLES * 2);
@@ -54,10 +59,9 @@ export function buildWeldedGarmentGeometry(): WeldedGarmentGeometry {
 
   // 인덱스 — 그룹 순서: 앞판(머티리얼 0) / 뒤판(1) / 소매 좌+우(2).
   const index: number[] = [];
-  const pushGrid = (base: number, cols: number, rows: number, wrapCols: boolean) => {
-    const colCount = wrapCols ? cols : cols - 1;
+  const pushGrid = (base: number, cols: number, rows: number, wrapCols: boolean, x0 = 0, x1 = cols - 1) => {
     for (let y = 0; y < rows - 1; y++) {
-      for (let x = 0; x < colCount; x++) {
+      for (let x = x0; x < (wrapCols ? x1 + 1 : x1); x++) {
         const x2 = (x + 1) % cols;
         const a = base + y * cols + x;
         const b = base + y * cols + x2;
@@ -68,9 +72,9 @@ export function buildWeldedGarmentGeometry(): WeldedGarmentGeometry {
     }
   };
   const frontStart = index.length;
-  pushGrid(0, COLS, ROWS, false);
+  pushGrid(0, COLS, ROWS, false, torsoColMin, torsoColMax);
   const backStart = index.length;
-  pushGrid(F, COLS, ROWS, false);
+  pushGrid(F, COLS, ROWS, false, torsoColMin, torsoColMax);
   const sleeveStart = index.length;
   pushGrid(F * 2, SLEEVE_RING_COLS, SLEEVE_RING_ROWS, true);
   pushGrid(F * 2 + S, SLEEVE_RING_COLS, SLEEVE_RING_ROWS, true);
