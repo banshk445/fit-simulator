@@ -28,7 +28,7 @@ import {
 import type { MainToGarmentWorkerMessage, GarmentWorkerToMainMessage, ArmShapeMsg } from "../lib/garmentProtocol";
 import { MODEL_URL } from "./Mannequin";
 import { armholeSeamStrip, buildSeamBridge, shoulderSeamStrip, sideSeamStrip, updateSeamBridge } from "./seamBridge";
-import { buildWeldedGarmentGeometry, WELDED_TOTAL_PARTICLES } from "./weldedGarmentGeometry";
+import { buildWeldedGarmentGeometry } from "./weldedGarmentGeometry";
 
 interface Props {
   imageUrl: string;
@@ -434,8 +434,6 @@ export function Garment({ imageUrl }: Props) {
   const friction = useFitStore((s) => s.friction);
   const newCoreRef = useRef(newCore);
   newCoreRef.current = newCore;
-  // weldInfo(용접 테이블) — 항등으로 시작, 워커 회신으로 갱신.
-  const canonOfRef = useRef<Uint32Array | null>(null);
   // 47번(디버그 전용): 영역별 와이어프레임 지오메트리를 나눌 몸통(xMin~xMax)
   // 경계 — torsoColumnRange가 이미 계산하는 값을 아래 useEffect에서 그대로
   // 채워 넣는다(포즈가 바뀔 때마다 다시 자르진 않는다 — 치수가 바뀔 때만
@@ -1309,14 +1307,6 @@ export function Garment({ imageUrl }: Props) {
         sleeveGridDebugRef.current = msg;
         return;
       }
-      if (msg.type === "weldInfo") {
-        // M1: 용접 테이블 — 항등 맵에 alias→canon만 덮어쓴다.
-        const canonOf = new Uint32Array(WELDED_TOTAL_PARTICLES);
-        for (let i = 0; i < canonOf.length; i++) canonOf[i] = i;
-        for (let i = 0; i < msg.aliases.length; i++) canonOf[msg.aliases[i]] = msg.canons[i];
-        canonOfRef.current = canonOf;
-        return;
-      }
       if (msg.type !== "positions") return;
       pendingRef.current = false;
       if (msg.generation !== generationRef.current) return; // 낡은 세대의 응답은 버린다.
@@ -1331,7 +1321,7 @@ export function Garment({ imageUrl }: Props) {
       // 와이어프레임 DEV 토글은 구 경로 전용(신 코어에선 미지원, 대조용
       // 토글이니 그대로 둠).
       if (newCoreRef.current) {
-        weldedGeometryRef.current.update(msg.front, msg.back, msg.sleeveLeft, msg.sleeveRight, canonOfRef.current);
+        weldedGeometryRef.current.update(msg.front, msg.back, msg.sleeveLeft, msg.sleeveRight);
         updateSeamBridge(seamBridgeRef.current, {
           front: frontPositions,
           back: backPositions,

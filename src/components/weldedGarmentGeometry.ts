@@ -8,9 +8,12 @@
 // 폴리곤이 실제로 존재하고(소매 row0 = 몸판 가장자리) 구멍이 구조적으로
 // 없다.
 //
-// 법선: 용접 테이블(canonOf)로 면 법선을 canon 인덱스에 누적 후 정규화 —
-// 암홀 경계 법선 불연속이 소멸한다. 어깨/옆선은 의도된 간격(용접 아님)
-// 이라 기존처럼 각자 계산 + 브리지가 덮는다.
+// 법선: **정점별**로 계산한다(용접 canon으로 평균내지 않는다). 처음엔
+// canon 평균이 "암홀 법선 불연속을 없앤다"고 봤는데, 실측하니 정반대였다 —
+// 몸판 면(±Z)과 소매 튜브 면(팔축 방사)을 한 정점에서 평균내니 암홀 경계
+// 열의 법선이 이웃 열과 최대 130°(뒷면 row0) 어긋나, 그 한 줄이 찢어진
+// 것처럼 보였다(정점별로는 4°). 암홀은 실제 봉제선 = 진짜 크리스인데
+// 그걸 매끄럽게 이으려 한 게 오류였다. 위치만 용접하고 음영은 가른다.
 //
 // UV: 파티클 (x,y) → (x/(COLS-1), y/(ROWS-1)) — 구 경로에서 셰이더
 // gridUv와 머티리얼 map이 공유하던 유효 매핑과 동일 공식이라 텍스처가
@@ -29,14 +32,7 @@ export const WELDED_TOTAL_PARTICLES = F * 2 + S * 2;
 // 만든다(정점 배열은 전체 유지 — 파티클 1:1 복사 경로를 안 바꾸기 위해).
 export interface WeldedGarmentGeometry {
   geometry: THREE.BufferGeometry;
-  // canonOf: 전역 파티클 → 용접 대표(weldInfo로 갱신, null이면 항등).
-  update(
-    front: Float32Array,
-    back: Float32Array,
-    sleeveLeft: Float32Array,
-    sleeveRight: Float32Array,
-    canonOf: Uint32Array | null,
-  ): void;
+  update(front: Float32Array, back: Float32Array, sleeveLeft: Float32Array, sleeveRight: Float32Array): void;
   dispose(): void;
 }
 
@@ -94,17 +90,17 @@ export function buildWeldedGarmentGeometry(torsoColMin = 0, torsoColMax = COLS -
   geometry.addGroup(sleeveStart, indexEnd - sleeveStart, 2);
 
   const indexArr = Uint32Array.from(index);
-  const canonAcc = new Float32Array(WELDED_TOTAL_PARTICLES * 3);
+  const normalAcc = new Float32Array(WELDED_TOTAL_PARTICLES * 3);
 
   return {
     geometry,
-    update(front, back, sleeveLeft, sleeveRight, canonOf) {
+    update(front, back, sleeveLeft, sleeveRight) {
       positions.set(front, 0);
       positions.set(back, F * 3);
       positions.set(sleeveLeft, F * 2 * 3);
       positions.set(sleeveRight, (F * 2 + S) * 3);
 
-      canonAcc.fill(0);
+      normalAcc.fill(0);
       for (let t = 0; t < indexArr.length; t += 3) {
         const a = indexArr[t] * 3;
         const b = indexArr[t + 1] * 3;
@@ -119,18 +115,17 @@ export function buildWeldedGarmentGeometry(torsoColMin = 0, torsoColMax = COLS -
         const ny = e1z * e2x - e1x * e2z;
         const nz = e1x * e2y - e1y * e2x;
         for (let k = 0; k < 3; k++) {
-          const vi = indexArr[t + k];
-          const ci = (canonOf ? canonOf[vi] : vi) * 3;
-          canonAcc[ci] += nx;
-          canonAcc[ci + 1] += ny;
-          canonAcc[ci + 2] += nz;
+          const vi = indexArr[t + k] * 3;
+          normalAcc[vi] += nx;
+          normalAcc[vi + 1] += ny;
+          normalAcc[vi + 2] += nz;
         }
       }
       for (let i = 0; i < WELDED_TOTAL_PARTICLES; i++) {
-        const ci = (canonOf ? canonOf[i] : i) * 3;
-        const nx = canonAcc[ci];
-        const ny = canonAcc[ci + 1];
-        const nz = canonAcc[ci + 2];
+        const ci = i * 3;
+        const nx = normalAcc[ci];
+        const ny = normalAcc[ci + 1];
+        const nz = normalAcc[ci + 2];
         const len = Math.hypot(nx, ny, nz) || 1e-9;
         normals[i * 3] = nx / len;
         normals[i * 3 + 1] = ny / len;
