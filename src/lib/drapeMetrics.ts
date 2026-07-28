@@ -133,52 +133,78 @@ export function computeDrapeMetrics(
   };
 }
 
-// 천-몸 이탈 거리(mm) — A-③ 사후 추가. A-③(shear 0.6)이 기존 지표
-// 전부(면각/주름/strain/관통/seamGap)를 통과하고도 화면에선 어깨 천이
-// 몸에서 떨어져 등판이 노출되는 참사였다 — 관통(음의 방향)만 재고 그
-// 반대(천이 몸에서 떠서 노출)를 재는 지표가 없었기 때문. 어깨~겨드랑이
-// 구간(row < rowEndExclusive)의 몸통 열 파티클이 몸 프록시(토르소 캡슐)
-// 표면에서 얼마나 떠 있는지의 최댓값을 잰다 — 겨드랑이 아래는 천이
-// 원래 몸에서 떨어져 낙하하는 게 정상이라 포함하면 지표가 무의미해진다.
-// 절대값엔 캡슐 근사 오차+COLLISION_MARGIN이 포함되므로 전/후 상대
-// 비교용이다.
-export function computeBodyGapMm(
+// 천-몸 이탈 거리(mm) — A-③ 사후 추가, C 사후 채널 분리로 재설계.
+//
+// 1차 버전(전역 max 하나)의 실패: C단계가 12/12 "개선"으로 나왔는데
+// 화면은 A-③과 동일한 참사(어깨/등 상단 노출)였다. max가 암홀 가장자리
+// 열의 기하 아티팩트(어깨 반폭 ~29.5cm vs 캡슐 반지름 ~15.9cm → 어느
+// 상태든 ~130mm)에 인질로 잡혀, 어깨 들뜸(수 cm)이 그 밑에 묻혔다 —
+// 암홀 톱니 max()가 패널 경계에 인질로 잡혔던 것과 같은 계열.
+//
+// 2차 버전: 행 대역별 채널(어깨/몸통/밑단)로 분리하고, 채널마다 max와
+// mean을 같이 낸다 — 위 가장자리 아티팩트는 행 분리만으론 어깨 채널에
+// 그대로 남으므로(가장자리 열도 row0~5에 있다), 실패 검출은 상태 무관
+// 상수인 아티팩트가 평균에 희석되는 mean 쪽이 담당할 수 있다. 어느
+// 통계가 실제 실패(A-③·C)를 잡는지는 세 상태 재측정으로 검증한다.
+// 절대값엔 캡슐 근사 오차+COLLISION_MARGIN 포함 — 상대 비교 전용.
+export interface GapBand {
+  rowStart: number;
+  rowEndInclusive: number;
+}
+
+export interface GapStats {
+  maxMm: number;
+  meanMm: number;
+}
+
+export function computeBodyGapChannels(
   sim: ClothSimulation,
   panels: readonly number[],
   capsules: readonly Capsule[],
-  rowEndExclusive: number,
+  bands: readonly GapBand[],
   colMin = 0,
   colMax = Infinity,
-): number {
+): GapStats[] {
   const p = sim.positions;
-  let maxGap = -Infinity;
-  for (const panel of panels) {
-    const { cols } = sim.panelDims[panel];
-    const x0 = Math.max(0, colMin);
-    const x1 = Math.min(cols - 1, colMax);
-    for (let y = 0; y < rowEndExclusive; y++) {
-      for (let x = x0; x <= x1; x++) {
-        const i = sim.index(panel, x, y) * 3;
-        const px = p[i];
-        const py = p[i + 1];
-        const pz = p[i + 2];
-        // 가장 가까운 캡슐 표면까지의 부호 있는 거리(양수=표면 밖).
-        let best = Infinity;
-        for (const c of capsules) {
-          const abx = c.bottom.x - c.top.x;
-          const aby = c.bottom.y - c.top.y;
-          const abz = c.bottom.z - c.top.z;
-          const abLenSq = abx * abx + aby * aby + abz * abz;
-          const apx = px - c.top.x;
-          const apy = py - c.top.y;
-          const apz = pz - c.top.z;
-          const t = abLenSq > 1e-9 ? Math.min(1, Math.max(0, (apx * abx + apy * aby + apz * abz) / abLenSq)) : 0;
-          const dist = Math.hypot(px - (c.top.x + abx * t), py - (c.top.y + aby * t), pz - (c.top.z + abz * t)) - c.radius;
-          if (dist < best) best = dist;
+  const surfaceDist = (px: number, py: number, pz: number): number => {
+    let best = Infinity;
+    for (const c of capsules) {
+      const abx = c.bottom.x - c.top.x;
+      const aby = c.bottom.y - c.top.y;
+      const abz = c.bottom.z - c.top.z;
+      const abLenSq = abx * abx + aby * aby + abz * abz;
+      const apx = px - c.top.x;
+      const apy = py - c.top.y;
+      const apz = pz - c.top.z;
+      const t = abLenSq > 1e-9 ? Math.min(1, Math.max(0, (apx * abx + apy * aby + apz * abz) / abLenSq)) : 0;
+      const dist = Math.hypot(px - (c.top.x + abx * t), py - (c.top.y + aby * t), pz - (c.top.z + abz * t)) - c.radius;
+      if (dist < best) best = dist;
+    }
+    return best;
+  };
+
+  return bands.map(({ rowStart, rowEndInclusive }) => {
+    let maxGap = -Infinity;
+    let sum = 0;
+    let count = 0;
+    for (const panel of panels) {
+      const { cols, rows } = sim.panelDims[panel];
+      const x0 = Math.max(0, colMin);
+      const x1 = Math.min(cols - 1, colMax);
+      const yEnd = Math.min(rows - 1, rowEndInclusive);
+      for (let y = Math.max(0, rowStart); y <= yEnd; y++) {
+        for (let x = x0; x <= x1; x++) {
+          const i = sim.index(panel, x, y) * 3;
+          const d = surfaceDist(p[i], p[i + 1], p[i + 2]);
+          if (d > maxGap) maxGap = d;
+          sum += d;
+          count++;
         }
-        if (best > maxGap) maxGap = best;
       }
     }
-  }
-  return Number((maxGap * 1000).toFixed(1));
+    return {
+      maxMm: Number((maxGap * 1000).toFixed(1)),
+      meanMm: Number(((sum / (count || 1)) * 1000).toFixed(1)),
+    };
+  });
 }
