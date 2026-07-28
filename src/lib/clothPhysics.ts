@@ -102,7 +102,8 @@ export class ClothSimulation {
 
   // 시접 등으로 실제 연결된 파티클 쌍을 읽기전용으로 노출 — 자체충돌
   // (selfCollision.ts)이 "이미 제약으로 묶인 쌍"을 정확히 알아야 할 때 씀.
-  get constraintPairs(): ReadonlyArray<{ readonly a: number; readonly b: number }> {
+  // restLength는 drapeMetrics(strain 계산)용 — 타입만 넓혔고 내용은 그대로.
+  get constraintPairs(): ReadonlyArray<{ readonly a: number; readonly b: number; readonly restLength: number }> {
     return this.constraints;
   }
 

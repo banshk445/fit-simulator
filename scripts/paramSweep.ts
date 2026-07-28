@@ -34,6 +34,7 @@ import {
 import { FABRIC_PRESETS } from "../src/lib/fabricPresets";
 import type { Vec3Like } from "../src/lib/clothProtocol";
 import { armholeRingJaggedness, ringJaggedness } from "../src/lib/seamDiagnostics";
+import { computeDrapeMetrics, type DrapeMetrics } from "../src/lib/drapeMetrics";
 
 // 대표 포즈 — checkSleeveSeam.ts와 같은 출처(이 세션 __fitDebug 실측), 반팔
 // 기본값(소매길이 22cm), 어깨너비 45cm 기준.
@@ -128,6 +129,11 @@ interface ComboResult {
   // row0(캡)~row(SLEEVE_RING_ROWS-1)(소맷부리) 각 행의 최댓값(좌우 중 큰 쪽) —
   // sleeveJaggednessDeg는 이 배열의 최댓값과 같다.
   sleeveRowsMaxDeg: number[];
+  // 드레이프 개선(A안) 전/후 대조용 — drapeMetrics.ts 4개 지표 + 프레임당
+  // 물리 ms(이 하네스의 프레임 루프 전체 평균 — 브라우저 절대값과는 다르지만
+  // 전/후 상대 비교용으로 충분).
+  drape: DrapeMetrics | null;
+  physMsPerFrame: number;
 }
 
 function runCombo(widthM: number, sleeveWidthM: number): ComboResult {
@@ -142,6 +148,7 @@ function runCombo(widthM: number, sleeveWidthM: number): ComboResult {
     applyCapsuleCollision(positions, pinned, n, armCapsules, 0.006);
   };
 
+  const t0 = performance.now();
   for (let f = 0; f < FRAMES; f++) {
     pinCorners(sim, pinLeft, pinRight, PANEL_FRONT, PANEL_BACK, armLeft, armRight);
     sim.step(SUBSTEP_DT, gravity, resolver, preset.iterations, 3, preset.damping, 0.05);
@@ -150,6 +157,7 @@ function runCombo(widthM: number, sleeveWidthM: number): ComboResult {
     enforceArmFrontBackYAlignment(sim, PANEL_FRONT, PANEL_BACK, pinLeft, pinRight, armLeft, armRight);
     sim.clampOverstretchedConstraints();
   }
+  const physMsPerFrame = Number(((performance.now() - t0) / FRAMES).toFixed(3));
 
   for (let i = 0; i < sim.positions.length; i++) {
     if (!Number.isFinite(sim.positions[i])) {
@@ -167,6 +175,8 @@ function runCombo(widthM: number, sleeveWidthM: number): ComboResult {
         // 원래 빠져 있어 발산 조합에서 undefined가 나갔다(아래 행별 출력이
         // 그대로 터짐) — scripts/는 tsc -b 대상이 아니라 여태 안 잡혔다.
         sleeveRowsMaxDeg: [],
+        drape: null,
+        physMsPerFrame,
       };
     }
   }
@@ -242,6 +252,8 @@ function runCombo(widthM: number, sleeveWidthM: number): ComboResult {
     armholeArmpitDeg: Number(armholeArmpitDeg.toFixed(1)),
     sleeveJaggednessDeg: Number(sleeveJaggednessDeg.toFixed(1)),
     sleeveRowsMaxDeg: sleeveRowsMaxDeg.map((d) => Number(d.toFixed(1))),
+    drape: computeDrapeMetrics(sim, [PANEL_FRONT, PANEL_BACK], xMin, xMax),
+    physMsPerFrame,
   };
 }
 
@@ -265,6 +277,13 @@ for (const r of results) {
 console.log("[paramSweep] sleeve row0~row%d breakdown (품/소매통 → 행별 최댓값):", SLEEVE_RING_ROWS - 1);
 for (const r of results) {
   console.log(`  품${r.widthM * 100}cm/소매통${r.sleeveWidthM * 100}cm:`, r.sleeveRowsMaxDeg);
+}
+console.log("[paramSweep] drape (면각평균° / 면각최대° / 주름RMSmm / maxStrain / 물리ms):");
+for (const r of results) {
+  const d = r.drape;
+  console.log(
+    `  품${r.widthM * 100}cm/소매통${r.sleeveWidthM * 100}cm: ${d ? `${d.faceAngleMeanDeg} / ${d.faceAngleMaxDeg} / ${d.wrinkleRmsMm} / ${d.maxStrain}` : "발산"} / ${r.physMsPerFrame}ms`,
+  );
 }
 
 const diverged = results.filter((r) => r.diverged);
