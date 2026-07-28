@@ -28,6 +28,7 @@ import {
   PANEL_SLEEVE_RIGHT,
   ROWS,
   FRICTION_CONTACT_BAND,
+  FRICTION_MU_ITER,
   FRICTION_MU_KINETIC,
   FRICTION_MU_STATIC,
   SDF_FAR,
@@ -522,8 +523,11 @@ function runFixture(path: string): void {
       sdfField && process.env.FRICITER !== "0"
         ? createSdfIterationFrictionPass(() => sdfField, {
             contactBand: FRICTION_CONTACT_BAND,
-            muStatic: muOverride ?? FRICTION_MU_STATIC,
-            muKinetic: muOverride ?? FRICTION_MU_KINETIC,
+            // MU_ITER=값 이면 반복 모드 전용 μ(정지/운동 동일) — 서브스텝
+            // 말미 속도 패스(위 friction)의 μ와 독립. 반복 안 운동 감쇠는
+            // 반복 수만큼 누적되므로 ~1/n 스케일이 출발점(M2-5 관찰).
+            muStatic: process.env.MU_ITER ? Number(process.env.MU_ITER) : FRICTION_MU_ITER,
+            muKinetic: process.env.MU_ITER ? Number(process.env.MU_ITER) : FRICTION_MU_ITER,
           })
         : undefined,
     // 핀 전환 원복 — 기본 1(하드 핀). PIN=0.5 등으로 재현만 가능.
