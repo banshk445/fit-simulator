@@ -23,6 +23,40 @@ export interface SdfField {
   farValue: number;
 }
 
+// 와인딩 비의존 부호 샘플러 — SDF 굽기용.
+//
+// M2-3 1차 시도가 하드 실패(앞뒤판 교차 31~36개)한 원인이 이것이다:
+// ArrayBvhCollision.signedClearance는 최근접 삼각형의 면 법선과 내적해
+// 부호를 정하는데, 이 마네킹 메시는 일부 영역 와인딩이 뒤집혀 있어 그
+// 영역의 부호가 통째로 반대가 된다. 그 필드로 밀어내면 기울기가 몸
+// 안쪽을 가리켜 파티클을 관통시킨다.
+//
+// 대신 coverageMetric.ts의 orientOutward와 **같은 전제**를 쓴다: 몸통은
+// 세로축 기준 대략 star-shaped이므로, "표면점 → 질의점" 벡터가 방사
+// 바깥 방향과 같은 쪽이면 밖(양수), 반대면 안(음수)이다. 어깨 꼭대기는
+// 방사 성분이 0에 가까우므로 위쪽 성분을 조금 섞는다(같은 이유, 같은 계수).
+// 이 전제는 커버리지 지표에서 이미 실측 검증됐다.
+export function makeRadialSignedSampler(
+  mesh: { closestPointUnsigned(px: number, py: number, pz: number, r: number): { x: number; y: number; z: number; distance: number } | null },
+  centerX: number,
+  centerZ: number,
+  detectionRadius: number,
+  farValue: number,
+): (x: number, y: number, z: number) => number {
+  return (x, y, z) => {
+    const c = mesh.closestPointUnsigned(x, y, z, detectionRadius);
+    if (!c) return farValue;
+    const rx = x - centerX;
+    const rz = z - centerZ;
+    const rLen = Math.hypot(rx, rz) || 1e-9;
+    const refX = rx / rLen;
+    const refY = 0.25;
+    const refZ = rz / rLen;
+    const dot = (x - c.x) * refX + (y - c.y) * refY + (z - c.z) * refZ;
+    return dot >= 0 ? c.distance : -c.distance;
+  };
+}
+
 // sample: 월드 좌표의 부호거리(몸 안쪽 음수). null이면 탐지 반경 밖.
 export function bakeSdf(
   sample: (x: number, y: number, z: number) => number | null,

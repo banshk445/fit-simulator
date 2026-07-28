@@ -5,7 +5,7 @@ import { ArrayBvhCollision } from "../lib/bvhFromArrays";
 import { SelfCollision } from "../lib/selfCollision";
 import { FABRIC_PRESETS } from "../lib/fabricPresets";
 import { buildUnifiedGarmentSim } from "../lib/buildUnifiedGarmentSim";
-import { bakeSdf, createSdfFrictionPass, createSdfPushResolver, type SdfField } from "../lib/sdfCollision";
+import { bakeSdf, createSdfFrictionPass, createSdfPushResolver, makeRadialSignedSampler, type SdfField } from "../lib/sdfCollision";
 // M0(파이프라인 일원화): 프레임 시퀀스·unifiedResolver·팔 캡슐 빌더는
 // garmentFrame.ts로 이사 — paramSweep(Node)과 이 워커가 같은 함수를 쓴다.
 import { buildArmCapsules, createGarmentSession, createPanelSplitResolver, createUnifiedResolver, PANEL_COUNTS } from "../lib/garmentFrame";
@@ -190,11 +190,16 @@ function ensureSdf(): void {
   const pad = 0.08;
   const min = { x: minX - pad, y: yBot, z: minZ - pad };
   const max = { x: maxX + pad, y: yTop, z: maxZ + pad };
+  // 부호는 와인딩이 아니라 방사 방향으로 정한다(makeRadialSignedSampler
+  // 주석 — M2-3 1차 하드 실패의 원인이 와인딩 의존이었다). 중심축은
+  // 굽기 bbox의 수평 중앙.
+  const cx = (min.x + max.x) / 2;
+  const cz = (min.z + max.z) / 2;
   const bake = (index: Uint32Array | null, label: string): SdfField => {
     const mesh = new ArrayBvhCollision();
     mesh.rebuild(position, index);
     const t = performance.now();
-    const f = bakeSdf((x, y, z) => mesh.signedClearance(x, y, z, SDF_FAR), min, max, SDF_VOXEL, SDF_FAR);
+    const f = bakeSdf(makeRadialSignedSampler(mesh, cx, cz, SDF_FAR, SDF_FAR), min, max, SDF_VOXEL, SDF_FAR);
     console.log(`[SDF:${label}] ${f.nx}x${f.ny}x${f.nz} (${((f.nx * f.ny * f.nz) / 1000).toFixed(1)}k복셀) ${Math.round(performance.now() - t)}ms`);
     return f;
   };
@@ -279,16 +284,14 @@ ctx.onmessage = (event) => {
       // M2: 마찰은 신 코어 경로에서만(구 코어는 비트 동일 유지). 레이아웃이
       // 바뀌면 굽기 범위도 달라지므로 여기서 무효화한다.
       sdfFrictionEnabled = (msg.newCore ?? false) && (msg.friction ?? true);
-      // M2-3 원복: SDF 밀어내기는 하드 실패(앞뒤판 실제 교차 31~36개
-      // 발생, coverage +10.8pp). 원인은 마네킹 메시의 삼각형 와인딩 불일치
-      // — signedClearance가 면 법선 내적으로 부호를 정하므로 그 영역에서
-      // 부호가 뒤집힌 필드가 구워지고, 기울기가 몸 안쪽을 가리켜 파티클을
-      // 관통시킨다(같은 와인딩 문제를 coverageMetric에서 이미 실측해
-      // 방사방향 교정으로 우회한 전례가 있다). 부호 결정을 와인딩에
-      // 의존하지 않는 방식으로 바꾸기 전엔 켜지 말 것.
-      // 부수 확인: ripple mean이 3.22→3.21(팔제외)/2.98(팔포함)로 거의
-      // 불변 — **잔물결 원인은 BVH 면 법선 튐이 아니다**. ②(스무딩 제거)의
-      // 전제가 이 측정으로 기각됐다.
+      // M2-3 원복 — 3연속 실패로 정지(CLAUDE.md 3회 규칙). 1차: 와인딩
+      // 의존 부호 → 교차 31. 2차: 방사 부호로 교정 → 교차 33(부호가
+      // 원인이 아니었다). 3차: 앞/뒤 필드 분리(BVH의 frontIndex/backIndex
+      // 분리를 충실 이식) → 교차 8로 줄었으나 여전히 하드 실패이고
+      // coverage +7.4pp·드레이프 -18%. 원인은 SDF_VOXEL 2cm가 천 열
+      // 간격 1.88cm보다 굵어 몸 표면에 대한 저역통과로 작동하는 것 —
+      // 파라미터가 아니라 층위 문제다. 복셀을 1cm 이하로 낮춰 굽기 비용을
+      // 감당할 방법이 서기 전엔 재시도 금지.
       sdfPushEnabled = false;
       // M2 보정 제거 ①: 신 코어에선 sidedness 클램프를 끄고 SDF/마찰에 맡긴다.
       collisionState.sidedness = !(msg.newCore ?? false);

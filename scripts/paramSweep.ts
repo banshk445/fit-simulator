@@ -43,7 +43,7 @@ import type { Vec3Like } from "../src/lib/clothProtocol";
 import { armholeRingJaggedness, ringJaggedness } from "../src/lib/seamDiagnostics";
 import { bodyGapBands, computeBodyGapChannels, computeDrapeMetrics, computeRippleMm, type DrapeMetrics, type GapStats } from "../src/lib/drapeMetrics";
 import { computeBodyCoverage } from "../src/lib/coverageMetric";
-import { bakeSdf, createSdfFrictionPass, createSdfPushResolver, type SdfField } from "../src/lib/sdfCollision";
+import { bakeSdf, createSdfFrictionPass, createSdfPushResolver, makeRadialSignedSampler, type SdfField } from "../src/lib/sdfCollision";
 
 // 대표 포즈 — checkSleeveSeam.ts와 같은 출처(이 세션 __fitDebug 실측), 반팔
 // 기본값(소매길이 22cm), 어깨너비 45cm 기준.
@@ -415,13 +415,15 @@ function runFixture(path: string): void {
   const pad = 0.08;
   const sdfMin = { x: minX - pad, y: yBot, z: minZ - pad };
   const sdfMax = { x: maxX + pad, y: yTop, z: maxZ + pad };
+  const sdfCx = (sdfMin.x + sdfMax.x) / 2;
+  const sdfCz = (sdfMin.z + sdfMax.z) / 2;
 
   let sdfField: SdfField | null = null;
   if (process.env.FRICTION === "1") {
     const wholeMesh = new ArrayBvhCollision();
     wholeMesh.rebuild(position, fixture.collision.wholeBodyIndex ? Uint32Array.from(fixture.collision.wholeBodyIndex) : null);
     const t = performance.now();
-    sdfField = bakeSdf((x, y, z) => wholeMesh.signedClearance(x, y, z, SDF_FAR), sdfMin, sdfMax, SDF_VOXEL, SDF_FAR);
+    sdfField = bakeSdf(makeRadialSignedSampler(wholeMesh, sdfCx, sdfCz, SDF_FAR, SDF_FAR), sdfMin, sdfMax, SDF_VOXEL, SDF_FAR);
     console.log(
       `[paramSweep:fixture] SDF 굽기 ${sdfField.nx}x${sdfField.ny}x${sdfField.nz}(${(sdfField.nx * sdfField.ny * sdfField.nz / 1000).toFixed(1)}k복셀) ${Math.round(performance.now() - t)}ms`,
     );
@@ -430,32 +432,30 @@ function runFixture(path: string): void {
   const muOverride = process.env.MU ? Number(process.env.MU) : null;
   // M2-3: 신 코어면 밀어내기를 SDF 기울기로(팔 제외 필드 = 기존 BVH
   // 리졸버와 같은 대상). PUSH=bvh로 강제 복원해 대조 가능.
-  let sdfPushField: SdfField | null = null;
-  // M2-3 원복 — 기본 off. PUSH=sdf(팔제외) / PUSH=whole(팔포함)로 재현만 가능.
-  if (newCore && (process.env.PUSH === "sdf" || process.env.PUSH === "whole")) {
-    // 진단용: PUSH=whole 이면 팔 포함 필드(마찰용과 동일)를 밀어내기에 쓴다 —
-    // 팔 제외 필드가 절단 경계에서 부호를 잘못 잡는지 가리기 위한 대조.
-    const useWhole = process.env.PUSH === "whole";
-    const mergedIdx = (() => {
-      const f = fixture.collision.frontIndex;
-      const b = fixture.collision.backIndex;
-      if (f && b) {
-        const m = new Uint32Array(f.length + b.length);
-        m.set(Uint32Array.from(f), 0);
-        m.set(Uint32Array.from(b), f.length);
-        return m;
-      }
-      return f ? Uint32Array.from(f) : b ? Uint32Array.from(b) : null;
-    })();
-    const armless = new ArrayBvhCollision();
-    armless.rebuild(position, useWhole ? (fixture.collision.wholeBodyIndex ? Uint32Array.from(fixture.collision.wholeBodyIndex) : null) : mergedIdx);
-    const t = performance.now();
-    sdfPushField = bakeSdf((x, y, z) => armless.signedClearance(x, y, z, SDF_FAR), sdfMin, sdfMax, SDF_VOXEL, SDF_FAR);
-    console.log(`[paramSweep:fixture] SDF 밀어내기/팔제외 굽기 ${Math.round(performance.now() - t)}ms`);
+  // M2-3 원복(3연속 실패) — 기본 off. PUSH=sdf 로 재현만 가능.
+  // 필드를 앞/뒤로 나눈다 — BVH 리졸버가 frontIndex/backIndex로 분리돼
+  // 있었고, 그 분리가 "앞판은 앞면에만 붙는다"는 앞뒤 분리 장치로도
+  // 작동하고 있었다(sidedness 제거 후엔 유일한 장치). 단일 필드로 합치면
+  // 옆구리로 돌아간 앞판 파티클이 뒤쪽 표면에 붙어 뒤판을 관통한다
+  // (1차·2차 시도의 교차 31~33개 원인 — 부호가 아니라 이것이었다).
+  let sdfPushFront: SdfField | null = null;
+  let sdfPushBack: SdfField | null = null;
+  if (newCore && process.env.PUSH === "sdf") {
+    const toU32 = (a: number[] | null) => (a ? Uint32Array.from(a) : null);
+    const bakeSide = (idx: number[] | null, label: string): SdfField => {
+      const m = new ArrayBvhCollision();
+      m.rebuild(position, toU32(idx));
+      const t = performance.now();
+      const f = bakeSdf(makeRadialSignedSampler(m, sdfCx, sdfCz, SDF_FAR, SDF_FAR), sdfMin, sdfMax, SDF_VOXEL, SDF_FAR);
+      console.log(`[paramSweep:fixture] SDF ${label} 굽기 ${Math.round(performance.now() - t)}ms`);
+      return f;
+    };
+    sdfPushFront = bakeSide(fixture.collision.frontIndex, "밀어내기/앞면");
+    sdfPushBack = bakeSide(fixture.collision.backIndex, "밀어내기/뒷면");
     const push = createPanelSplitResolver(
       [
-        createSdfPushResolver(() => sdfPushField, COLLISION_MARGIN, COLLISION_DETECTION_RADIUS, SDF_PUSH_RELAXATION, meshColumnRange),
-        createSdfPushResolver(() => sdfPushField, COLLISION_MARGIN, COLLISION_DETECTION_RADIUS, SDF_PUSH_RELAXATION, meshColumnRange),
+        createSdfPushResolver(() => sdfPushFront, COLLISION_MARGIN, COLLISION_DETECTION_RADIUS, SDF_PUSH_RELAXATION, meshColumnRange),
+        createSdfPushResolver(() => sdfPushBack, COLLISION_MARGIN, COLLISION_DETECTION_RADIUS, SDF_PUSH_RELAXATION, meshColumnRange),
         null,
         null,
       ],

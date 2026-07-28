@@ -110,6 +110,23 @@ export class ArrayBvhCollision {
     );
   }
 
+  // 부호 없는 최근접점 — 부호(안/밖) 판정을 호출자가 직접 하려는 경우.
+  // signedClearance는 면 법선 내적으로 부호를 정하는데, 이 마네킹 메시는
+  // 일부 영역의 삼각형 와인딩이 뒤집혀 있어(coverageMetric.ts orientOutward
+  // 주석의 실측 — mid-back 버킷이 93~96% "노출"로 오판됐던 그 영역) 그
+  // 영역에서 부호가 통째로 뒤집힌다. SDF를 그 부호로 구우면 기울기가 몸
+  // 안쪽을 가리켜 파티클을 관통시킨다(M2-3 1차 시도의 하드 실패, 앞뒤판
+  // 교차 31~36개). 와인딩에 의존하지 않는 부호 규칙이 필요한 곳은 이걸
+  // 쓴다.
+  closestPointUnsigned(px: number, py: number, pz: number, detectionRadius: number): { x: number; y: number; z: number; distance: number } | null {
+    const bvh = this.bvh;
+    if (!bvh) return null;
+    scratchPoint.set(px, py, pz);
+    const hit = bvh.closestPointToPoint(scratchPoint, this.hitInfo, 0, detectionRadius);
+    if (!hit) return null;
+    return { x: hit.point.x, y: hit.point.y, z: hit.point.z, distance: hit.distance };
+  }
+
   // 핏 맵 전용(물리에 관여 안 함): 점 p가 표면에서 얼마나 떨어져 있는지
   // 부호 있는 거리로 돌려준다(몸 안쪽이면 음수) — createResolver와 똑같은
   // closestPointToPoint 질의를 재사용하지만, 위치를 밀어내지 않고 값만
