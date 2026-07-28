@@ -102,20 +102,33 @@ function collectBandSamples(
 }
 
 // 천 삼각형(그리드 셀당 2개)을 패널들에서 평탄 배열로 뽑는다.
-function clothTriangles(sim: GridView, panels: readonly number[]): Float32Array {
+// colMin/colMax: 렌더와 같은 열 범위만 — 몸통 범위 밖 구 플랩 열은 화면에
+// 안 그리는데 지표에서 "덮개"로 세면(초기 버전 실수) 보이지 않는 천이
+// 커버리지를 과대평가한다. 렌더가 그리는 삼각형 = 지표가 세는 삼각형.
+export interface ClothPanelRange {
+  panel: number;
+  colMin?: number;
+  colMax?: number;
+  wrapCols?: boolean; // 소매 튜브(col 마지막↔0 닫힘)
+}
+
+function clothTriangles(sim: GridView, panels: readonly ClothPanelRange[]): Float32Array {
   const out: number[] = [];
   const p = sim.positions;
   const push = (i: number) => {
     out.push(p[i * 3], p[i * 3 + 1], p[i * 3 + 2]);
   };
-  for (const panel of panels) {
+  for (const { panel, colMin, colMax, wrapCols } of panels) {
     const { cols, rows } = sim.panelDims[panel];
+    const x0 = Math.max(0, colMin ?? 0);
+    const x1 = Math.min(cols - 1, colMax ?? cols - 1);
     for (let y = 0; y < rows - 1; y++) {
-      for (let x = 0; x < cols - 1; x++) {
+      for (let x = x0; x < (wrapCols ? x1 + 1 : x1); x++) {
+        const x2 = (x + 1) % cols;
         const a = sim.index(panel, x, y);
-        const b = sim.index(panel, x + 1, y);
+        const b = sim.index(panel, x2, y);
         const c = sim.index(panel, x, y + 1);
-        const d = sim.index(panel, x + 1, y + 1);
+        const d = sim.index(panel, x2, y + 1);
         push(a); push(b); push(c);
         push(b); push(d); push(c);
       }
@@ -196,7 +209,7 @@ export function computeBodyCoverage(
   bodyPosition: Float32Array,
   bodyIndexes: readonly (ArrayLike<number> | null)[],
   sim: GridView,
-  clothPanels: readonly number[],
+  clothPanels: readonly ClothPanelRange[],
   params: CoverageParams,
 ): CoverageResult {
   const rayMin = params.rayMin ?? 0.005;
@@ -224,7 +237,9 @@ export function computeBodyCoverage(
     if (!hit) {
       exposed++;
       bucket.exposed++;
-      if (exposedExamples.length < 10) exposedExamples.push({ x: Number(x.toFixed(4)), y: Number(y.toFixed(4)), z: Number(z.toFixed(4)) });
+      // 전체 노출 좌표를 담는다(수백 개 수준) — 신구 대조 시 "새로 노출된
+      // 지점"을 집합 차로 특정하는 데 필요. 출력부가 알아서 잘라 보여준다.
+      exposedExamples.push({ x: Number(x.toFixed(4)), y: Number(y.toFixed(4)), z: Number(z.toFixed(4)) });
     }
   }
   return {

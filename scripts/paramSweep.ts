@@ -5,7 +5,7 @@
 // 찾는 탐색 도구다.
 // ponytail: 조합 그리드는 아래 WIDTHS_M/SLEEVE_WIDTHS_M 배열을 직접 고쳐라
 // (CLI 파싱 없음 — 필요해지면 추가).
-import { readFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 import * as THREE from "three";
 import { armholeRingVertices, torsoColumnRange, type ArmDir } from "../src/lib/buildGarmentSim";
 import { buildArmCapsules as buildFrameArmCapsules, createGarmentSession, createPanelSplitResolver, createUnifiedResolver, PANEL_COUNTS } from "../src/lib/garmentFrame";
@@ -451,7 +451,14 @@ function runFixture(path: string): void {
     position,
     [fixture.collision.frontIndex, fixture.collision.backIndex],
     sim,
-    [PANEL_FRONT, PANEL_BACK, PANEL_SLEEVE_LEFT, PANEL_SLEEVE_RIGHT],
+    // 렌더와 같은 삼각형만(몸통 열 범위 + 소매 튜브 wrap) — 구 플랩 열은
+    // 화면에 안 그리므로 지표에서도 덮개로 안 센다.
+    [
+      { panel: PANEL_FRONT, colMin: xMin, colMax: xMax },
+      { panel: PANEL_BACK, colMin: xMin, colMax: xMax },
+      { panel: PANEL_SLEEVE_LEFT, wrapCols: true },
+      { panel: PANEL_SLEEVE_RIGHT, wrapCols: true },
+    ],
     {
       yMin: layout.topY - rowH * (armholeStartRow + 0.5),
       yMax: layout.topY + 0.03,
@@ -466,6 +473,11 @@ function runFixture(path: string): void {
   console.log(`  coverage: 노출 ${coverage.exposed}/${coverage.samples} (${(coverage.exposedRatio * 100).toFixed(1)}%)`);
   console.log(`  coverage 버킷(노출/샘플):`, JSON.stringify(Object.fromEntries(Object.entries(coverage.buckets).map(([k, v]) => [k, `${v.exposed}/${v.samples}`]))));
   console.log(`  coverage 노출 예시:`, JSON.stringify(coverage.exposedExamples.slice(0, 5)));
+  // 신구 대조에서 "새로 노출된 지점"을 집합 차로 특정하기 위한 전체 덤프.
+  if (process.env.COVERAGE_DUMP) {
+    writeFileSync(process.env.COVERAGE_DUMP, JSON.stringify(coverage.exposedExamples));
+    console.log(`  coverage 전체 노출 좌표 → ${process.env.COVERAGE_DUMP}`);
+  }
   // 잔물결 — 어깨~겨드랑이(row1~asr) 몸통 열, B-1류(스무딩 완화) 실패 감시.
   const ripple = computeRippleMm(sim, [PANEL_FRONT, PANEL_BACK], 1, armholeStartRow, xMin, xMax);
   console.log(`  ripple(2차차분): max ${ripple.maxMm}mm @ ${JSON.stringify(ripple.maxAt)} / mean ${ripple.meanMm}mm`);
