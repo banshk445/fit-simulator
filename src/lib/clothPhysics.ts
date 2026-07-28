@@ -41,11 +41,21 @@ export function sphereCollisionResolver(colliders: readonly ClothCollider[]): Co
   };
 }
 
+// 드레이프 개선 A안: 제약을 종류별(structural/shear/bend/seam)로 태깅해
+// 종류별 목표 강성을 따로 걸 수 있게 한다. 숫자 enum인 이유 — solver 안쪽
+// 루프(프레임당 수십만 회)에서 배열 인덱스 lookup이 문자열 키보다 싸다.
+export const CONSTRAINT_STRUCTURAL = 0;
+export const CONSTRAINT_SHEAR = 1;
+export const CONSTRAINT_BEND = 2;
+export const CONSTRAINT_SEAM = 3;
+export type ConstraintKind = 0 | 1 | 2 | 3;
+
 interface Constraint {
   a: number;
   b: number;
   restLength: number;
   stiffness: number;
+  kind: ConstraintKind;
 }
 
 export interface PanelDims {
@@ -74,6 +84,13 @@ export class ClothSimulation {
   prevPositions: Float32Array;
   pinned: Uint8Array;
   private constraints: Constraint[] = [];
+  // 드레이프 개선 A안: 제약 종류별 목표 강성(0~1, 인덱스=ConstraintKind).
+  // step()이 iteration 수 n에 맞춰 per-iteration 배율 k'=1-(1-k)^(1/n)로
+  // 보정해 적용한다 — 단순 배율은 Gauss-Seidel n회 반복이 유효 강성을
+  // 1-(1-k)^n으로 되살려버려서(소매 relaxSleeveStiffness가 0.60/0.35에선
+  // 무효했고 0.15에서야 효과가 보인 실측이 이 수학과 일치, buildGarmentSim.ts
+  // 참고) "목표 강성" 의미가 없었다. 전부 1이면 k'=1이라 기존과 비트 동일.
+  private kindTargetStiffness: [number, number, number, number] = [1, 1, 1, 1];
   // step() 시작 시점 위치를 담아두는 스크래치 버퍼 — displacement clamping이
   // "이번 서브스텝 동안 얼마나 움직였는지"를 비교할 기준점으로 쓴다. 매
   // step() 호출마다 새로 할당하면 60fps 워커에서 GC 압박이 생기므로 한 번만
@@ -139,7 +156,7 @@ export class ClothSimulation {
   // 연결(시접)은 별도로 addConstraint()를 호출해 추가한다.
   buildConstraints(): void {
     this.constraints = [];
-    const add = (a: number, b: number) => {
+    const add = (a: number, b: number, kind: ConstraintKind) => {
       const ax = this.positions[a * 3];
       const ay = this.positions[a * 3 + 1];
       const az = this.positions[a * 3 + 2];
@@ -147,21 +164,21 @@ export class ClothSimulation {
       const by = this.positions[b * 3 + 1];
       const bz = this.positions[b * 3 + 2];
       const restLength = Math.hypot(bx - ax, by - ay, bz - az);
-      this.constraints.push({ a, b, restLength, stiffness: 1 });
+      this.constraints.push({ a, b, restLength, stiffness: 1, kind });
     };
     for (let p = 0; p < this.panels; p++) {
       const { cols, rows } = this.panelDims[p];
       for (let y = 0; y < rows; y++) {
         for (let x = 0; x < cols; x++) {
           const i = this.index(p, x, y);
-          if (x < cols - 1) add(i, this.index(p, x + 1, y)); // structural
-          if (y < rows - 1) add(i, this.index(p, x, y + 1)); // structural
+          if (x < cols - 1) add(i, this.index(p, x + 1, y), CONSTRAINT_STRUCTURAL);
+          if (y < rows - 1) add(i, this.index(p, x, y + 1), CONSTRAINT_STRUCTURAL);
           if (x < cols - 1 && y < rows - 1) {
-            add(i, this.index(p, x + 1, y + 1)); // shear
-            add(this.index(p, x + 1, y), this.index(p, x, y + 1)); // shear
+            add(i, this.index(p, x + 1, y + 1), CONSTRAINT_SHEAR);
+            add(this.index(p, x + 1, y), this.index(p, x, y + 1), CONSTRAINT_SHEAR);
           }
-          if (x < cols - 2) add(i, this.index(p, x + 2, y)); // bend
-          if (y < rows - 2) add(i, this.index(p, x, y + 2)); // bend
+          if (x < cols - 2) add(i, this.index(p, x + 2, y), CONSTRAINT_BEND);
+          if (y < rows - 2) add(i, this.index(p, x, y + 2), CONSTRAINT_BEND);
         }
       }
     }
@@ -170,7 +187,7 @@ export class ClothSimulation {
   // 격자 위상과 무관한 임의의 제약(패널 간 시접 등)을 추가한다. buildConstraints()
   // 호출 이후에 호출해야 한다(그렇지 않으면 buildConstraints가 초기화해버린다).
   addConstraint(a: number, b: number, restLength: number): void {
-    this.constraints.push({ a, b, restLength, stiffness: 1 });
+    this.constraints.push({ a, b, restLength, stiffness: 1, kind: CONSTRAINT_SEAM });
   }
 
   // 46번 실측(면적 자체를 줄이는 접근): 정점 데이터 실측 결과, 소매 뽕이
@@ -199,6 +216,14 @@ export class ClothSimulation {
       const f = factorFor(c.a, c.b);
       if (f !== 1) c.stiffness *= f;
     }
+  }
+
+  // 드레이프 개선 A안: 종류별 목표 강성 설정(0~1). 낮추는 방향만 쓸 것 —
+  // 1 초과는 발산 이력(docs/pattern-redesign.md 13번: stiffness>1 카오스적
+  // 불안정)이 있어 clamp한다.
+  setKindTargetStiffness(structural: number, shear: number, bend: number, seam = 1): void {
+    const clamp01 = (v: number) => Math.min(1, Math.max(0, v));
+    this.kindTargetStiffness = [clamp01(structural), clamp01(shear), clamp01(bend), clamp01(seam)];
   }
 
   // collisionEvery: 충돌 검사는 비용이 커서(특히 메시 BVH 기반) 매 반복마다
@@ -247,6 +272,15 @@ export class ClothSimulation {
     // 짧아짐). 반복마다 훑는 방향을 번갈아(정방향/역방향) 바꿔 이 편향을
     // 상쇄시킨다 — 표준적인 완화 기법이다.
     const constraintCount = this.constraints.length;
+    // 종류별 per-iteration 배율(위 kindTargetStiffness 주석 참고). 목표 1이면
+    // Math.pow(0, 1/n)=0이라 배율이 정확히 1 — 기존 경로와 비트 동일.
+    const invIter = 1 / iterations;
+    const kindFactor = [
+      1 - Math.pow(1 - this.kindTargetStiffness[0], invIter),
+      1 - Math.pow(1 - this.kindTargetStiffness[1], invIter),
+      1 - Math.pow(1 - this.kindTargetStiffness[2], invIter),
+      1 - Math.pow(1 - this.kindTargetStiffness[3], invIter),
+    ];
     for (let iter = 0; iter < iterations; iter++) {
       const forward = iter % 2 === 0;
       for (let ci = 0; ci < constraintCount; ci++) {
@@ -266,7 +300,7 @@ export class ClothSimulation {
         // 저항해, 좌표를 아무리 꺾어도 골판지처럼 각진 채로 굳었다.
         // stiffness(기본 1)를 곱해, 소매 영역처럼 부드럽게 흘러야 하는
         // 구간의 제약만 낮은 강도로 완화할 수 있게 한다.
-        const diff = ((dist - c.restLength) / dist) * c.stiffness;
+        const diff = ((dist - c.restLength) / dist) * c.stiffness * kindFactor[c.kind];
 
         const moveA = pinnedA ? 0 : pinnedB ? 1 : 0.5;
         const moveB = pinnedB ? 0 : pinnedA ? 1 : 0.5;
