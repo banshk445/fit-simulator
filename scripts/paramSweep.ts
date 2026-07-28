@@ -6,15 +6,8 @@
 // ponytail: 조합 그리드는 아래 WIDTHS_M/SLEEVE_WIDTHS_M 배열을 직접 고쳐라
 // (CLI 파싱 없음 — 필요해지면 추가).
 import * as THREE from "three";
-import {
-  applyArmSoftPull,
-  applyNecklineHug,
-  armholeRingVertices,
-  enforceArmFrontBackYAlignment,
-  pinCorners,
-  torsoColumnRange,
-  type ArmDir,
-} from "../src/lib/buildGarmentSim";
+import { armholeRingVertices, torsoColumnRange, type ArmDir } from "../src/lib/buildGarmentSim";
+import { createGarmentSession } from "../src/lib/garmentFrame";
 import { buildUnifiedGarmentSim } from "../src/lib/buildUnifiedGarmentSim";
 import { applyCapsuleCollision, buildTorsoProxyCapsules, type Capsule } from "../src/lib/torsoCapsule";
 import {
@@ -187,14 +180,33 @@ function runCombo(widthM: number, sleeveWidthM: number, sleeveLengthM = SLEEVE_L
     applyCapsuleCollision(positions, pinned, n, armCapsules, 0.006);
   };
 
+  // M0(파이프라인 일원화): 워커와 같은 createGarmentSession을 쓴다. env는
+  // 이 하네스의 기존 시퀀스(핀→step(collisionEvery=3, 순서훅 없음)→소프트풀
+  // →넥라인→yAlign→clamp)를 **정확히 재현**하는 값 — 리팩터링 검증(비트
+  // 동일)이 목적이라 여기서 동작을 바꾸면 안 된다. 워커 전체 시퀀스와의
+  // 차이는 이 토글들이 명시적으로 문서화한다(BVH/자체충돌/스무딩/순서/
+  // 대칭/sleeveArmPull off — fixture 모드가 이 간극을 좁히는 다음 단계).
+  const session = createGarmentSession(sim, {
+    collisionResolver: resolver,
+    collisionEvery: 3,
+    selfCollision: null,
+    orderPasses: false,
+    clampInSubstep: false,
+    smoothing: false,
+    postOrder: false,
+    armSoftPull: true,
+    necklineHug: true,
+    sleeveArmPull: false,
+    yAlign: true,
+    symmetry: false,
+    clampAfterPost: true,
+    maxDisplacement: 0.05,
+  });
+  const layout = { widthM, heightM, topY, centerZ, sleeveWidthM };
+  const pose = { pinLeft, pinRight, armLeft, armRight };
   const t0 = performance.now();
   for (let f = 0; f < FRAMES; f++) {
-    pinCorners(sim, pinLeft, pinRight, PANEL_FRONT, PANEL_BACK, armLeft, armRight);
-    sim.step(SUBSTEP_DT, gravity, resolver, preset.iterations, 3, preset.damping, 0.05);
-    applyArmSoftPull(sim, PANEL_FRONT, PANEL_BACK, widthM, heightM, topY, centerZ, pinLeft, pinRight, armLeft, armRight, sleeveWidthM);
-    applyNecklineHug(sim, PANEL_FRONT, PANEL_BACK, widthM, centerZ, pinLeft, pinRight, armLeft, armRight);
-    enforceArmFrontBackYAlignment(sim, PANEL_FRONT, PANEL_BACK, pinLeft, pinRight, armLeft, armRight);
-    sim.clampOverstretchedConstraints();
+    session.step(SUBSTEP_DT, gravity, preset, layout, pose);
   }
   const physMsPerFrame = Number(((performance.now() - t0) / FRAMES).toFixed(3));
 

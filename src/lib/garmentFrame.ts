@@ -1,0 +1,273 @@
+// B안 M0(파이프라인 일원화): 워커(src/workers/garmentWorker.ts)의 "step"
+// 케이스에 살던 프레임 시퀀스를 여기로 추출해, 워커와 Node 하네스
+// (scripts/paramSweep.ts)가 **같은 함수를 import**한다. 지금까지 하네스가
+// 워커와 다른 물리를 돌려 "하네스 통과 → 브라우저 실패"가 실측 3회
+// (0.72 vs 2.9cm 시접 갭, A-③/C 화면 실패 미검출) 반복된 것의 근본 대응.
+//
+// 환경 차이는 전부 GarmentFrameEnv로 **명시적 주입**한다 — 충돌 리졸버
+// (브라우저=BVH+캡슐 / Node=캡슐만 또는 fixture BVH)와 스테이지 토글.
+// 토글이 많은 건 의도된 것: 기존 두 호출자의 시퀀스 차이를 숨기지 않고
+// 문서화된 플래그로 드러내는 게 M0의 목적이고, 리팩터링 검증(비트 동일)을
+// 위해 두 경로 모두 기존과 정확히 같은 순서를 재현할 수 있어야 한다.
+// M2에서 fixture 모드가 "전부 켠" 환경으로 수렴하면 토글은 줄어든다.
+import * as THREE from "three";
+import { ClothSimulation } from "./clothPhysics";
+import type { CollisionResolver } from "./clothPhysics";
+import { applyCapsuleCollision, applyFrontBackSidedness } from "./torsoCapsule";
+import type { Capsule } from "./torsoCapsule";
+import {
+  applyArmSoftPull,
+  applyNecklineHug,
+  applySleeveArmPull,
+  enforceArmFrontBackYAlignment,
+  pinCorners,
+  torsoColumnRange,
+} from "./buildGarmentSim";
+import type { ArmDir } from "./buildGarmentSim";
+import { enforceLeftRightSymmetry } from "./garmentStitch";
+import {
+  ARM_COLLISION_RADIUS,
+  ARMHOLE_ROW_FRACTION,
+  COLLISION_MARGIN,
+  COLS,
+  MAX_SUBSTEPS,
+  PANEL_BACK,
+  PANEL_FRONT,
+  PANEL_SLEEVE_LEFT,
+  PANEL_SLEEVE_RIGHT,
+  PARTICLES_PER_PANEL,
+  ROWS,
+  SLEEVE_RING_COLS,
+  SLEEVE_RING_ROWS,
+  SUBSTEP_DT,
+} from "./clothConfig";
+import type { Vec3Like } from "./clothProtocol";
+
+export interface ArmShape {
+  dir: Vec3Like;
+  trueShoulder: Vec3Like;
+  length: number;
+}
+
+export interface FrameLayout {
+  widthM: number;
+  heightM: number;
+  topY: number;
+  centerZ: number;
+  sleeveWidthM: number;
+}
+
+export interface FramePose {
+  pinLeft: Vec3Like;
+  pinRight: Vec3Like;
+  armLeft: ArmDir;
+  armRight: ArmDir;
+  necklineLift?: readonly number[];
+}
+
+// 워커에서 이사(33번 주석 그대로): 팔 캡슐은 몸판용으로 바깥으로 민
+// shoulder가 아니라 실제 어깨 관절(trueShoulder)을 축으로 써야 한다.
+export function buildArmCapsules(shape: ArmShape): Capsule[] {
+  const midLength = shape.length * 0.55;
+  const endLength = shape.length * 1.25;
+  const mid = {
+    x: shape.trueShoulder.x + shape.dir.x * midLength,
+    y: shape.trueShoulder.y + shape.dir.y * midLength,
+    z: shape.trueShoulder.z + shape.dir.z * midLength,
+  };
+  const end = {
+    x: shape.trueShoulder.x + shape.dir.x * endLength,
+    y: shape.trueShoulder.y + shape.dir.y * endLength,
+    z: shape.trueShoulder.z + shape.dir.z * endLength,
+  };
+  return [
+    { top: shape.trueShoulder, bottom: mid, radius: ARM_COLLISION_RADIUS },
+    { top: mid, bottom: end, radius: ARM_COLLISION_RADIUS },
+  ];
+}
+
+// 워커의 unifiedResolver에서 이사(37번/범위 B 주석 이력은 워커 원본 참고).
+// 살아있는 상태(state)를 참조로 받아, 호출자가 메시지/프레임마다 필드만
+// 바꿔치기하면 리졸버가 항상 최신 값을 본다 — 워커의 기존 모듈 변수
+// 패턴을 상태 객체로 명시화한 것.
+export interface CollisionState {
+  torsoCapsules: readonly Capsule[];
+  armCapsules: readonly Capsule[];
+  centerZ: number;
+}
+
+const armholeStartRowConst = Math.round(ROWS * ARMHOLE_ROW_FRACTION);
+const SHOULDER_CAP_SKIP_START = COLS * 1;
+const SHOULDER_CAP_SKIP_END = COLS * (armholeStartRowConst + 1);
+
+export function createUnifiedResolver(meshResolver: CollisionResolver, state: CollisionState): CollisionResolver {
+  return (positions, pinned, n) => {
+    meshResolver(positions, pinned, n);
+    const frontCount = PARTICLES_PER_PANEL;
+    const backCount = PARTICLES_PER_PANEL;
+    const backEnd = (frontCount + backCount) * 3;
+    applyCapsuleCollision(
+      positions.subarray(0, frontCount * 3),
+      pinned.subarray(0, frontCount),
+      frontCount,
+      state.torsoCapsules,
+      COLLISION_MARGIN,
+      SHOULDER_CAP_SKIP_START,
+      SHOULDER_CAP_SKIP_END,
+    );
+    applyCapsuleCollision(
+      positions.subarray(frontCount * 3, backEnd),
+      pinned.subarray(frontCount, frontCount + backCount),
+      backCount,
+      state.torsoCapsules,
+      COLLISION_MARGIN,
+      SHOULDER_CAP_SKIP_START,
+      SHOULDER_CAP_SKIP_END,
+    );
+    applyFrontBackSidedness(positions, pinned, PARTICLES_PER_PANEL, state.centerZ);
+    applyCapsuleCollision(positions.subarray(0, frontCount * 3), pinned.subarray(0, frontCount), frontCount, state.armCapsules, 0.006);
+    applyCapsuleCollision(positions.subarray(frontCount * 3, backEnd), pinned.subarray(frontCount, frontCount + backCount), backCount, state.armCapsules, 0.006);
+    const sleeveCount = SLEEVE_RING_COLS * SLEEVE_RING_ROWS;
+    const sleeveLeftEnd = backEnd + sleeveCount * 3;
+    const sleeveRightEnd = sleeveLeftEnd + sleeveCount * 3;
+    applyCapsuleCollision(
+      positions.subarray(backEnd, sleeveLeftEnd),
+      pinned.subarray(frontCount + backCount, frontCount + backCount + sleeveCount),
+      sleeveCount,
+      state.armCapsules,
+      0.006,
+    );
+    applyCapsuleCollision(
+      positions.subarray(sleeveLeftEnd, sleeveRightEnd),
+      pinned.subarray(frontCount + backCount + sleeveCount, frontCount + backCount + sleeveCount * 2),
+      sleeveCount,
+      state.armCapsules,
+      0.006,
+    );
+  };
+}
+
+export interface GarmentFrameEnv {
+  // step() 내부에서 collisionEvery 주기로 도는 충돌 리졸버.
+  collisionResolver: CollisionResolver;
+  collisionEvery: number;
+  // 서브스텝마다 step() 직후 실행되는 자체충돌(없으면 스킵).
+  selfCollision: CollisionResolver | null;
+  // torsoOrderExtra — 매 Gauss-Seidel 반복(step의 everyIterationExtra) +
+  // 서브스텝 직후 1회. 워커 on / 기존 하네스 off.
+  orderPasses: boolean;
+  // 서브스텝 안(자체충돌·order 직후) clamp. 워커의 위치.
+  clampInSubstep: boolean;
+  // 프레임 후처리: 스무딩 → order → (softPull/hug/sleevePull) → yAlign →
+  // symmetry → order. 각 토글은 기존 두 호출자의 실제 차이 그대로.
+  smoothing: boolean;
+  postOrder: boolean;
+  armSoftPull: boolean;
+  necklineHug: boolean;
+  sleeveArmPull: boolean;
+  yAlign: boolean;
+  symmetry: boolean;
+  // 기존 하네스 위치(후처리 끝) clamp. 워커 off.
+  clampAfterPost: boolean;
+  maxDisplacement: number;
+  // 살아있는 몸통 열 범위 — 주면 매 프레임 torsoColumnRange로 갱신해준다
+  // (워커는 이 객체를 meshResolver와 공유). 스무딩 경계로도 쓰인다.
+  columnRange?: { min: number; max: number };
+}
+
+export interface GarmentSession {
+  step(
+    dt: number,
+    gravity: THREE.Vector3,
+    preset: { iterations: number; damping: number },
+    layout: FrameLayout,
+    pose: FramePose,
+  ): void;
+}
+
+export function createGarmentSession(sim: ClothSimulation, env: GarmentFrameEnv): GarmentSession {
+  let accumulator = 0;
+  const armholeStartRow = armholeStartRowConst;
+
+  return {
+    step(dt, gravity, preset, layout, pose) {
+      const { pinLeft, pinRight, armLeft, armRight } = pose;
+      pinCorners(sim, pinLeft, pinRight, PANEL_FRONT, PANEL_BACK, armLeft, armRight, pose.necklineLift);
+
+      if (env.columnRange) {
+        const range = torsoColumnRange(COLS, pinLeft, pinRight, armLeft, armRight);
+        env.columnRange.min = range.xMin;
+        env.columnRange.max = range.xMax;
+      }
+
+      const rawDirX = pinRight.x - pinLeft.x;
+      const rawDirY = pinRight.y - pinLeft.y;
+      const rawDirZ = pinRight.z - pinLeft.z;
+      const dirLen = Math.hypot(rawDirX, rawDirY, rawDirZ) || 1;
+      const dirX = rawDirX / dirLen;
+      const dirY = rawDirY / dirLen;
+      const dirZ = rawDirZ / dirLen;
+
+      const torsoOrderExtra: CollisionResolver = () => {
+        sim.preserveColumnOrder(dirX, dirY, dirZ, undefined, false, PANEL_FRONT, PANEL_BACK + 1);
+        sim.preserveColumnOrder(dirX, dirY, dirZ, undefined, true, PANEL_FRONT, PANEL_BACK + 1);
+        sim.preserveRowOrder(undefined, false, PANEL_FRONT, PANEL_BACK + 1);
+        sim.preserveRowOrder(undefined, true, PANEL_FRONT, PANEL_BACK + 1);
+      };
+
+      accumulator = Math.min(accumulator + dt, SUBSTEP_DT * MAX_SUBSTEPS);
+      while (accumulator >= SUBSTEP_DT) {
+        sim.step(
+          SUBSTEP_DT,
+          gravity,
+          env.collisionResolver,
+          preset.iterations,
+          env.collisionEvery,
+          preset.damping,
+          env.maxDisplacement,
+          env.orderPasses ? torsoOrderExtra : undefined,
+        );
+        if (env.selfCollision) {
+          env.selfCollision(sim.positions, sim.pinned, sim.positions.length / 3);
+          // 자체충돌이 흐트러뜨린 순서를 한 번 더 정리 — 이중 안전장치(워커 원본 주석).
+        }
+        if (env.orderPasses) torsoOrderExtra(sim.positions, sim.pinned, sim.positions.length / 3);
+        if (env.clampInSubstep) sim.clampOverstretchedConstraints();
+        accumulator -= SUBSTEP_DT;
+      }
+
+      // 29번(스무딩-보정 순서): 스무딩 먼저, 정밀 보정이 "마지막 발언권".
+      if (env.smoothing && env.columnRange) {
+        sim.smoothColumns(armholeStartRow + 1, 0.5, PANEL_FRONT, PANEL_BACK + 1, env.columnRange.min, env.columnRange.max);
+        sim.smoothRows(armholeStartRow + 1, 0.5, PANEL_FRONT, PANEL_BACK + 1, env.columnRange.min, env.columnRange.max);
+      }
+      if (env.postOrder) {
+        sim.preserveColumnOrder(dirX, dirY, dirZ, undefined, false, PANEL_FRONT, PANEL_BACK + 1);
+        sim.preserveColumnOrder(dirX, dirY, dirZ, undefined, true, PANEL_FRONT, PANEL_BACK + 1);
+      }
+
+      if (env.armSoftPull) {
+        applyArmSoftPull(sim, PANEL_FRONT, PANEL_BACK, layout.widthM, layout.heightM, layout.topY, layout.centerZ, pinLeft, pinRight, armLeft, armRight, layout.sleeveWidthM);
+      }
+      if (env.necklineHug) {
+        applyNecklineHug(sim, PANEL_FRONT, PANEL_BACK, layout.widthM, layout.centerZ, pinLeft, pinRight, armLeft, armRight);
+      }
+      if (env.sleeveArmPull) {
+        applySleeveArmPull(sim, PANEL_SLEEVE_LEFT, PANEL_SLEEVE_RIGHT, SLEEVE_RING_COLS, SLEEVE_RING_ROWS, armLeft, armRight, layout.sleeveWidthM);
+      }
+      if (env.yAlign) {
+        enforceArmFrontBackYAlignment(sim, PANEL_FRONT, PANEL_BACK, pinLeft, pinRight, armLeft, armRight);
+      }
+      if (env.symmetry) {
+        enforceLeftRightSymmetry(sim, PANEL_FRONT, PANEL_BACK, COLS, ROWS);
+      }
+      if (env.postOrder) {
+        sim.preserveColumnOrder(dirX, dirY, dirZ, undefined, false, PANEL_FRONT, PANEL_BACK + 1);
+        sim.preserveColumnOrder(dirX, dirY, dirZ, undefined, true, PANEL_FRONT, PANEL_BACK + 1);
+      }
+      if (env.clampAfterPost) {
+        sim.clampOverstretchedConstraints();
+      }
+    },
+  };
+}
