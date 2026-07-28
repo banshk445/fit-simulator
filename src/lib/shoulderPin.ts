@@ -78,6 +78,16 @@ function minHalfWidth(center: THREE.Vector3, joint: THREE.Vector3): number {
 // 재측정할 것 — 눈대중으로 이 상수를 올리지 말 것.
 export const SHOULDER_PIN_LIFT = 0.055;
 
+// DEV 스윕용 override(쿼리 파라미터 ?pinlift=cm — useFitStore.ts에서 설정).
+// null이면 기본값. 프로덕션 경로에는 영향 없음.
+let liftOverride: number | null = null;
+export function setShoulderPinLiftOverride(v: number | null): void {
+  liftOverride = v;
+}
+function effectiveLift(): number {
+  return liftOverride ?? SHOULDER_PIN_LIFT;
+}
+
 // garmentHalfWidthM: 옷의 실제 어깨너비(실측 입력)/2. 생략하면(디버그 등
 // 옛 호출부 호환용) 예전처럼 "몸 어깨 관절 + OUTSET"을 그대로 쓴다.
 export function computeShoulderPin(
@@ -96,7 +106,7 @@ export function computeShoulderPin(
   const rightHalfWidth = garmentHalfWidthM === undefined ? rightFloor + SHOULDER_PIN_OUTSET : Math.max(garmentHalfWidthM, rightFloor);
   const pinLeft = center.clone().addScaledVector(leftDir, leftHalfWidth);
   const pinRight = center.clone().addScaledVector(rightDir, rightHalfWidth);
-  pinLeft.y += SHOULDER_PIN_LIFT;
-  pinRight.y += SHOULDER_PIN_LIFT;
+  pinLeft.y += effectiveLift();
+  pinRight.y += effectiveLift();
   return { left: pinLeft, right: pinRight };
 }

@@ -208,4 +208,9 @@ if (import.meta.env.DEV) {
   if (q.get("newcore") === "1") useFitStore.getState().setNewCore(true);
   if (q.get("friction") === "0") useFitStore.getState().setFriction(false);
   if (q.get("smoothing") === "0") useFitStore.getState().setRenderSmoothing(false);
+  if (q.get("fitmap") === "1") useFitStore.getState().setShowFitMap(true);
+  const pinlift = q.get("pinlift");
+  if (pinlift) {
+    void import("../lib/shoulderPin").then((m) => m.setShoulderPinLiftOverride(Number(pinlift) / 100));
+  }
 }

@@ -557,6 +557,26 @@ function runFixture(path: string): void {
   const preset = FABRIC_PRESETS[pose.fabric];
   const gravity = new THREE.Vector3(...GRAVITY_BASE).multiplyScalar(preset.gravityScale);
   const framePose = { pinLeft: pose.pinLeft, pinRight: pose.pinRight, armLeft, armRight, necklineLift: pose.necklineLift };
+  // RECON=1(목선 기하 정찰): row0~2 링 원주의 초기(=레스트, 제약이 초기
+  // 배치에서 구워지므로) 값과 정착 후 실측값 — 신장률. 링 = 앞판 x
+  // xMin..xMax + 뒤판 역순의 닫힌 고리.
+  // xMin/xMax는 프레임 루프 뒤에 선언되므로 여기서 지역으로 계산.
+  const reconRange = torsoColumnRange(COLS, pose.pinLeft, pose.pinRight, armLeft, armRight);
+  const ringCircumference = (row: number): number => {
+    const { xMin, xMax } = reconRange;
+    let len = 0;
+    const seg = (pa: number, pb: number) => {
+      const a = pa * 3, b = pb * 3;
+      len += Math.hypot(sim.positions[a] - sim.positions[b], sim.positions[a + 1] - sim.positions[b + 1], sim.positions[a + 2] - sim.positions[b + 2]);
+    };
+    for (let x = xMin; x < xMax; x++) seg(sim.index(PANEL_FRONT, x, row), sim.index(PANEL_FRONT, x + 1, row));
+    seg(sim.index(PANEL_FRONT, xMax, row), sim.index(PANEL_BACK, xMax, row));
+    for (let x = xMax; x > xMin; x--) seg(sim.index(PANEL_BACK, x, row), sim.index(PANEL_BACK, x - 1, row));
+    seg(sim.index(PANEL_BACK, xMin, row), sim.index(PANEL_FRONT, xMin, row));
+    return len;
+  };
+  const reconRest: number[] = process.env.RECON === "1" ? [0, 1, 2].map(ringCircumference) : [];
+
   const t0 = performance.now();
   for (let f = 0; f < FRAMES; f++) {
     session.step(SUBSTEP_DT, gravity, preset, layout, framePose);
@@ -683,6 +703,59 @@ function runFixture(path: string): void {
     `  capsuleGap(mm): 어깨 ${shoulder.maxMm}|${shoulder.meanMm} / 어깨free ${shoulderFree.maxMm}|${shoulderFree.meanMm} / 몸통 ${torso.maxMm}|${torso.meanMm} / 밑단 ${hem.maxMm}|${hem.meanMm}`,
   );
   console.log(`  물리 ${physMs}ms/프레임 (BVH+자체충돌 포함)`);
+  if (process.env.RECON === "1") {
+    for (const row of [0, 1, 2]) {
+      const rest = reconRest[row];
+      const now = ringCircumference(row);
+      console.log(`  recon row${row} 링: rest ${(rest * 100).toFixed(2)}cm / 실측 ${(now * 100).toFixed(2)}cm / 신장률 ${((now / rest - 1) * 100).toFixed(1)}%`);
+    }
+    // 마네킹 단면 둘레 — 얇은 Y 슬랩의 XZ convex hull 둘레. 팔(T포즈로
+    // 옆으로 뻗음)이 슬라이스에 섬으로 섞이지 않게 |x|<=0.22로 제한
+    // (몸 표면 최대 x 20.5cm + 여유).
+    const slicePerimeter = (yc: number, half: number): number => {
+      const pts: [number, number][] = [];
+      for (let i = 0; i < position.length; i += 3) {
+        if (Math.abs(position[i + 1] - yc) > half) continue;
+        if (Math.abs(position[i]) > 0.22) continue;
+        pts.push([position[i], position[i + 2]]);
+      }
+      if (pts.length < 3) return 0;
+      pts.sort((a, b) => a[0] - b[0] || a[1] - b[1]);
+      const cross = (o: [number, number], a: [number, number], b: [number, number]) => (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0]);
+      const lower: [number, number][] = [];
+      for (const pt of pts) {
+        while (lower.length >= 2 && cross(lower[lower.length - 2], lower[lower.length - 1], pt) <= 0) lower.pop();
+        lower.push(pt);
+      }
+      const upper: [number, number][] = [];
+      for (let i = pts.length - 1; i >= 0; i--) {
+        const pt = pts[i];
+        while (upper.length >= 2 && cross(upper[upper.length - 2], upper[upper.length - 1], pt) <= 0) upper.pop();
+        upper.push(pt);
+      }
+      const hull = lower.slice(0, -1).concat(upper.slice(0, -1));
+      let per = 0;
+      for (let i = 0; i < hull.length; i++) {
+        const a = hull[i], b = hull[(i + 1) % hull.length];
+        per += Math.hypot(a[0] - b[0], a[1] - b[1]);
+      }
+      return per;
+    };
+    // 목: 어깨선 위 3~6cm 구간에서 최소 둘레. 어깨 통과: 어깨선 -2~+2cm
+    // 구간에서 최대 둘레(천이 흘러내리며 넘어야 하는 최대 원주).
+    const shoulderY = bandTopY - 0.055; // 핀에서 리프트 제거한 어깨선 근사
+    let neckMin = Infinity;
+    for (let yc = shoulderY + 0.03; yc <= shoulderY + 0.06; yc += 0.005) {
+      const per = slicePerimeter(yc, 0.004);
+      if (per > 0 && per < neckMin) neckMin = per;
+    }
+    let shoulderMax = 0;
+    for (let yc = shoulderY - 0.02; yc <= shoulderY + 0.02; yc += 0.005) {
+      const per = slicePerimeter(yc, 0.004);
+      if (per > shoulderMax) shoulderMax = per;
+    }
+    console.log(`  recon 몸 단면: 목 최소 둘레 ${(neckMin * 100).toFixed(1)}cm / 어깨 통과 최대 둘레 ${(shoulderMax * 100).toFixed(1)}cm`);
+  }
 }
 
 const fixturePath = process.env.FIXTURE;
