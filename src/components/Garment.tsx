@@ -8,7 +8,7 @@ import { MannequinCollisionMesh } from "../lib/meshCollision";
 import { ArrayBvhCollision } from "../lib/bvhFromArrays";
 import { mannequinRootRef } from "../lib/mannequinRef";
 import { buildTorsoProxyCapsules, type Capsule } from "../lib/torsoCapsule";
-import { computeBodyGapChannels, type GridView } from "../lib/drapeMetrics";
+import { bodyGapBands, computeBodyGapChannels, type GridView } from "../lib/drapeMetrics";
 import { findArmDirection, findShortSleeveDirection, findShoulderBones } from "../lib/boneUtils";
 import { computeShoulderPin } from "../lib/shoulderPin";
 import { compositeGarmentTexture } from "../lib/garmentTextureComposite";
@@ -696,20 +696,16 @@ export function Garment({ imageUrl }: Props) {
       };
       const { xMin, xMax } = torsoColumnRangeRef.current;
       const armholeStartRow = Math.round(ROWS * ARMHOLE_ROW_FRACTION);
-      // 대역 구분은 paramSweep.ts와 동일해야 한다(어깨=row0~asr, 몸통=~20, 밑단=21~).
-      const [shoulder, torso, hem] = computeBodyGapChannels(
+      // 대역 정의는 bodyGapBands(단일 출처) — paramSweep.ts와 자동 동일.
+      const [shoulder, shoulderFree, torso, hem] = computeBodyGapChannels(
         view,
         [0, 1],
         capsules,
-        [
-          { rowStart: 0, rowEndInclusive: armholeStartRow },
-          { rowStart: armholeStartRow + 1, rowEndInclusive: 20 },
-          { rowStart: 21, rowEndInclusive: ROWS - 1 },
-        ],
+        bodyGapBands(armholeStartRow, ROWS),
         xMin,
         xMax,
       );
-      const result = { xMin, xMax, shoulder, torso, hem };
+      const result = { xMin, xMax, shoulder, shoulderFree, torso, hem };
       console.log("[BODY-GAP]", JSON.stringify(result));
       return result;
     };

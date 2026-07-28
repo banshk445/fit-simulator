@@ -34,7 +34,7 @@ import {
 import { FABRIC_PRESETS } from "../src/lib/fabricPresets";
 import type { Vec3Like } from "../src/lib/clothProtocol";
 import { armholeRingJaggedness, ringJaggedness } from "../src/lib/seamDiagnostics";
-import { computeBodyGapChannels, computeDrapeMetrics, type DrapeMetrics, type GapStats } from "../src/lib/drapeMetrics";
+import { bodyGapBands, computeBodyGapChannels, computeDrapeMetrics, type DrapeMetrics, type GapStats } from "../src/lib/drapeMetrics";
 
 // 대표 포즈 — checkSleeveSeam.ts와 같은 출처(이 세션 __fitDebug 실측), 반팔
 // 기본값(소매길이 22cm), 어깨너비 45cm 기준.
@@ -137,7 +137,7 @@ interface ComboResult {
   // 참고). shoulder=row0~5(밀착해야 하는 영역, 판정 1순위), torso=row6~20,
   // hem=row21~27(자연 낙하가 정상, 참고용). Garment.tsx가 쓰는
   // buildTorsoProxyCapsules(기본 체형 170cm/가슴100cm)를 그대로 재사용.
-  bodyGap: { shoulder: GapStats; torso: GapStats; hem: GapStats } | null;
+  bodyGap: { shoulder: GapStats; shoulderFree: GapStats; torso: GapStats; hem: GapStats } | null;
   // 소맷부리 처짐(cm, 좌/우 중 더 처진 쪽) — C단계(소매 스냅 축소)가
   // sleeveArmPull을 낮추면 커질 수 있는 예상 트레이드오프의 정량 감시.
   // 커프 링(마지막 행) 중심이 "이상 커프 중심"(row0 링 중심 + 팔축×팔길이,
@@ -295,19 +295,15 @@ function runCombo(widthM: number, sleeveWidthM: number, sleeveLengthM = SLEEVE_L
     sleeveRowsMaxDeg: sleeveRowsMaxDeg.map((d) => Number(d.toFixed(1))),
     drape: computeDrapeMetrics(sim, [PANEL_FRONT, PANEL_BACK], xMin, xMax),
     bodyGap: (() => {
-      const [shoulder, torso, hem] = computeBodyGapChannels(
+      const [shoulder, shoulderFree, torso, hem] = computeBodyGapChannels(
         sim,
         [PANEL_FRONT, PANEL_BACK],
         torsoCapsules,
-        [
-          { rowStart: 0, rowEndInclusive: armholeStartRow }, // 어깨·등 상단 — 판정 1순위
-          { rowStart: armholeStartRow + 1, rowEndInclusive: 20 },
-          { rowStart: 21, rowEndInclusive: ROWS - 1 }, // 참고용
-        ],
+        bodyGapBands(armholeStartRow, ROWS),
         xMin,
         xMax,
       );
-      return { shoulder, torso, hem };
+      return { shoulder, shoulderFree, torso, hem };
     })(),
     cuffDroopCm: cuffDroopCm(sim, [
       { panel: PANEL_SLEEVE_LEFT, dir: dirLeft, length: sleeveLengthM },
@@ -345,11 +341,11 @@ for (const r of results) {
     `  품${r.widthM * 100}cm/소매통${r.sleeveWidthM * 100}cm: ${d ? `${d.faceAngleMeanDeg} / ${d.faceAngleMaxDeg} / ${d.wrinkleRmsMm} / ${d.maxStrain}` : "발산"} / ${r.cuffDroopCm ?? "-"} / ${r.physMsPerFrame}ms`,
   );
 }
-console.log("[paramSweep] bodyGap 채널 (어깨 max|mean / 몸통 max|mean / 밑단 max|mean, mm — 어깨가 판정 1순위):");
+console.log("[paramSweep] bodyGap 채널 (어깨 max|mean / 어깨free(row0제외) max|mean / 몸통 max|mean / 밑단 max|mean, mm):");
 for (const r of results) {
   const g = r.bodyGap;
   console.log(
-    `  품${r.widthM * 100}cm/소매통${r.sleeveWidthM * 100}cm: ${g ? `${g.shoulder.maxMm}|${g.shoulder.meanMm} / ${g.torso.maxMm}|${g.torso.meanMm} / ${g.hem.maxMm}|${g.hem.meanMm}` : "발산"}`,
+    `  품${r.widthM * 100}cm/소매통${r.sleeveWidthM * 100}cm: ${g ? `${g.shoulder.maxMm}|${g.shoulder.meanMm} / ${g.shoulderFree.maxMm}|${g.shoulderFree.meanMm} / ${g.torso.maxMm}|${g.torso.meanMm} / ${g.hem.maxMm}|${g.hem.meanMm}` : "발산"}`,
   );
 }
 

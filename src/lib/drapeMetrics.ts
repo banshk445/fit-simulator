@@ -165,6 +165,24 @@ export interface GapBand {
 export interface GapStats {
   maxMm: number;
   meanMm: number;
+  // max를 만든 정점 — max가 무관한 지배점에 인질로 잡히는 패턴(이 프로젝트
+  // 네 번째)을 진단하기 위해 항상 같이 낸다. panel 0=앞판, 1=뒤판.
+  maxAt: { panel: number; x: number; y: number };
+}
+
+// 대역 정의의 단일 출처 — paramSweep(Node)과 Garment.tsx(브라우저)가 각자
+// 배열을 들고 있으면 stale 함정 재발 경로라 여기로 모은다. 순서 고정:
+// [shoulder(row0~asr), shoulderFree(row1~asr, row0 핀 제외), torso, hem].
+// shoulderFree: 브라우저 실측에서 shoulder max(58.2mm)가 물리 변경(C)에
+// 소수점까지 불변 — row0은 pinCorners가 매 프레임 고정하는 행이라 물리에
+// 반응하지 않는 고정점이 max를 지배할 수 있다는 가설의 검증용 채널.
+export function bodyGapBands(armholeStartRow: number, rows: number): GapBand[] {
+  return [
+    { rowStart: 0, rowEndInclusive: armholeStartRow },
+    { rowStart: 1, rowEndInclusive: armholeStartRow },
+    { rowStart: armholeStartRow + 1, rowEndInclusive: 20 },
+    { rowStart: 21, rowEndInclusive: rows - 1 },
+  ];
 }
 
 export function computeBodyGapChannels(
@@ -195,6 +213,7 @@ export function computeBodyGapChannels(
 
   return bands.map(({ rowStart, rowEndInclusive }) => {
     let maxGap = -Infinity;
+    let maxAt = { panel: -1, x: -1, y: -1 };
     let sum = 0;
     let count = 0;
     for (const panel of panels) {
@@ -206,7 +225,10 @@ export function computeBodyGapChannels(
         for (let x = x0; x <= x1; x++) {
           const i = sim.index(panel, x, y) * 3;
           const d = surfaceDist(p[i], p[i + 1], p[i + 2]);
-          if (d > maxGap) maxGap = d;
+          if (d > maxGap) {
+            maxGap = d;
+            maxAt = { panel, x, y };
+          }
           sum += d;
           count++;
         }
@@ -215,6 +237,7 @@ export function computeBodyGapChannels(
     return {
       maxMm: Number((maxGap * 1000).toFixed(1)),
       meanMm: Number(((sum / (count || 1)) * 1000).toFixed(1)),
+      maxAt,
     };
   });
 }
