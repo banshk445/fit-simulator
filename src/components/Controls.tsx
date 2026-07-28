@@ -76,6 +76,8 @@ export function Controls() {
   const setShowAllRegionsWireframe = useFitStore((s) => s.setShowAllRegionsWireframe);
   const showFitMap = useFitStore((s) => s.showFitMap);
   const setShowFitMap = useFitStore((s) => s.setShowFitMap);
+  const renderSmoothing = useFitStore((s) => s.renderSmoothing);
+  const setRenderSmoothing = useFitStore((s) => s.setRenderSmoothing);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [isProcessingImage, setIsProcessingImage] = useState(false);
 
@@ -333,6 +335,15 @@ export function Controls() {
               className="accent-red-500"
             />
             <span>[DEV] 전 영역 표시(진단용, 텍스처 완전 교체)</span>
+          </label>
+          <label className="mt-2 flex cursor-pointer items-center gap-2 text-sm text-slate-300">
+            <input
+              type="checkbox"
+              checked={renderSmoothing}
+              onChange={(e) => setRenderSmoothing(e.target.checked)}
+              className="accent-red-500"
+            />
+            <span>[DEV] 렌더 스무딩(서브디비전) — 끄면 물리 격자 해상도 그대로</span>
           </label>
         </section>
       )}

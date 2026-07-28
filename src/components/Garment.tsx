@@ -137,6 +137,7 @@ function toMsg(v: THREE.Vector3): { x: number; y: number; z: number } {
 // 켠 DataTexture를 이 UV로 샘플링하면 GPU 하드웨어가 쌍선형 보간을
 // 대신 해준다(수동으로 네 모서리를 따로 읽어 섞을 필요가 없음).
 const RENDER_SUBDIV = 3; // 저해상도 셀 하나를 3x3으로 쪼갠다(삼각형 수 약 9배)
+const RENDER_SUBDIV_OFF = 1; // renderSmoothing 토글 끔 = 물리 격자 해상도 그대로(원복 비교용)
 
 function makeDataTexture(cols: number, rows: number): { texture: THREE.DataTexture; data: Float32Array } {
   const data = new Float32Array(cols * rows * 4);
@@ -423,6 +424,8 @@ export function Garment({ imageUrl }: Props) {
   const showBackSleeveWireframe = useFitStore((s) => s.showBackSleeveWireframe);
   const showAllRegionsWireframe = useFitStore((s) => s.showAllRegionsWireframe);
   const showFitMap = useFitStore((s) => s.showFitMap);
+  const renderSmoothing = useFitStore((s) => s.renderSmoothing);
+  const renderSubdiv = renderSmoothing ? RENDER_SUBDIV : RENDER_SUBDIV_OFF;
   // 47번(디버그 전용): 영역별 와이어프레임 지오메트리를 나눌 몸통(xMin~xMax)
   // 경계 — torsoColumnRange가 이미 계산하는 값을 아래 useEffect에서 그대로
   // 채워 넣는다(포즈가 바뀔 때마다 다시 자르진 않는다 — 치수가 바뀔 때만
@@ -490,8 +493,8 @@ export function Garment({ imageUrl }: Props) {
   // "구 플랩" 시스템)는 안 건드렸다 — 이건 그 시스템이 아니라 이 렌더
   // 전환으로 생긴 부산물 변수 하나였을 뿐이다.
   const frontRenderGeometry = useMemo(
-    () => new THREE.PlaneGeometry(1, 1, (COLS - 1) * RENDER_SUBDIV, (ROWS - 1) * RENDER_SUBDIV),
-    [],
+    () => new THREE.PlaneGeometry(1, 1, (COLS - 1) * renderSubdiv, (ROWS - 1) * renderSubdiv),
+    [renderSubdiv],
   );
   // 47번(디버그 전용): 영역별 와이어프레임 토글용 부분 지오메트리. 몸통은
   // [torsoSleeveMin, torsoSleeveMax], 소매는 그 밖의 양쪽(x<min, x>max)
@@ -499,20 +502,20 @@ export function Garment({ imageUrl }: Props) {
   // "전 영역 표시" 진단 모드에서만 쓴다 — 기존 showFrontWireframe 토글은
   // 그대로 전체 앞판(frontRenderGeometry)을 쓴다.
   const frontTorsoRenderGeometry = useMemo(
-    () => buildRegionPlaneGeometry(torsoSleeveMin, torsoSleeveMax, COLS, ROWS, RENDER_SUBDIV),
-    [torsoSleeveMin, torsoSleeveMax],
+    () => buildRegionPlaneGeometry(torsoSleeveMin, torsoSleeveMax, COLS, ROWS, renderSubdiv),
+    [torsoSleeveMin, torsoSleeveMax, renderSubdiv],
   );
   const backTorsoRenderGeometry = useMemo(
-    () => buildRegionPlaneGeometry(torsoSleeveMin, torsoSleeveMax, COLS, ROWS, RENDER_SUBDIV),
-    [torsoSleeveMin, torsoSleeveMax],
+    () => buildRegionPlaneGeometry(torsoSleeveMin, torsoSleeveMax, COLS, ROWS, renderSubdiv),
+    [torsoSleeveMin, torsoSleeveMax, renderSubdiv],
   );
   const frontSleeveRenderGeometry = useMemo(
-    () => buildSleeveRegionGeometry(torsoSleeveMin, torsoSleeveMax, COLS, ROWS, RENDER_SUBDIV),
-    [torsoSleeveMin, torsoSleeveMax],
+    () => buildSleeveRegionGeometry(torsoSleeveMin, torsoSleeveMax, COLS, ROWS, renderSubdiv),
+    [torsoSleeveMin, torsoSleeveMax, renderSubdiv],
   );
   const backSleeveRenderGeometry = useMemo(
-    () => buildSleeveRegionGeometry(torsoSleeveMin, torsoSleeveMax, COLS, ROWS, RENDER_SUBDIV),
-    [torsoSleeveMin, torsoSleeveMax],
+    () => buildSleeveRegionGeometry(torsoSleeveMin, torsoSleeveMax, COLS, ROWS, renderSubdiv),
+    [torsoSleeveMin, torsoSleeveMax, renderSubdiv],
   );
   // 범위 B 구현 5번: 새 독립 소매 패널의 실제 렌더 지오메트리(원통, wrap
   // 닫힘) — 위 frontSleeveRenderGeometry(구 플랩 디버그용, 몸통 밖 두

@@ -64,6 +64,11 @@ interface FitState {
   // 색으로 보여주는 핏 맵 — 켜지면 텍스처 대신 이 색으로 렌더한다.
   showFitMap: boolean;
   setShowFitMap: (show: boolean) => void;
+  // 렌더 드레이프 개선(레버 1): 물리 격자(44x28)는 그대로 두고 렌더 지오메트리만
+  // GPU 쌍선형 텍스처 샘플링으로 세분화(RENDER_SUBDIV)하는 기존 파이프라인의
+  // on/off 토글 — 끄면 물리 격자 해상도 그대로 렌더(원복 비교용), dev 전용.
+  renderSmoothing: boolean;
+  setRenderSmoothing: (show: boolean) => void;
   setFabric: (fabric: FabricType) => void;
   setBodyHeight: (height: number) => void;
   setBodyChest: (chest: number) => void;
@@ -135,6 +140,8 @@ export const useFitStore = create<FitState>((set) => ({
   setShowAllRegionsWireframe: (show) => set({ showAllRegionsWireframe: show }),
   showFitMap: false,
   setShowFitMap: (show) => set({ showFitMap: show }),
+  renderSmoothing: true,
+  setRenderSmoothing: (show) => set({ renderSmoothing: show }),
   setFabric: (fabric) => set({ fabric }),
   setBodyHeight: (height) => set((state) => ({ bodySize: { ...state.bodySize, height } })),
   setBodyChest: (chest) => set((state) => ({ bodySize: { ...state.bodySize, chest } })),
