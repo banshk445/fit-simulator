@@ -137,20 +137,51 @@ interface ComboResult {
   // 거리의 최댓값(drapeMetrics.ts computeBodyGapMm 주석 참고). Garment.tsx가
   // 쓰는 buildTorsoProxyCapsules(기본 체형 170cm/가슴100cm)를 그대로 재사용.
   bodyGapMm: number | null;
+  // 소맷부리 처짐(cm, 좌/우 중 더 처진 쪽) — C단계(소매 스냅 축소)가
+  // sleeveArmPull을 낮추면 커질 수 있는 예상 트레이드오프의 정량 감시.
+  // 커프 링(마지막 행) 중심이 "이상 커프 중심"(row0 링 중심 + 팔축×팔길이,
+  // applySleeveArmPull의 목표식과 동일)보다 얼마나 아래(-)인지.
+  cuffDroopCm: number | null;
   physMsPerFrame: number;
 }
 
 // 몸 프록시 — 워커의 토르소 캡슐과 같은 함수, 기본 체형(useFitStore 기본값).
 const torsoCapsules = buildTorsoProxyCapsules(trueShoulderLeft, trueShoulderRight, 1.7, 1.0).capsules;
 
-function runCombo(widthM: number, sleeveWidthM: number): ComboResult {
-  const armLeft: ArmDir = { dir: dirLeft, length: SLEEVE_LENGTH_M };
-  const armRight: ArmDir = { dir: dirRight, length: SLEEVE_LENGTH_M };
+// 커프 링 중심의 이상 지점 대비 Y 처짐(cm, 음수=아래) — 좌/우 중 더 처진 쪽.
+function cuffDroopCm(
+  sim: { index(panel: number, x: number, y: number): number; positions: Float32Array },
+  arms: ReadonlyArray<{ panel: number; dir: Vec3Like; length: number }>,
+): number {
+  let worst = Infinity;
+  for (const { panel, dir, length } of arms) {
+    const ringCenter = (row: number) => {
+      let cx = 0, cy = 0, cz = 0;
+      for (let k = 0; k < SLEEVE_RING_COLS; k++) {
+        const i = sim.index(panel, k, row) * 3;
+        cx += sim.positions[i];
+        cy += sim.positions[i + 1];
+        cz += sim.positions[i + 2];
+      }
+      return { x: cx / SLEEVE_RING_COLS, y: cy / SLEEVE_RING_COLS, z: cz / SLEEVE_RING_COLS };
+    };
+    const c0 = ringCenter(0);
+    const cuff = ringCenter(SLEEVE_RING_ROWS - 1);
+    const idealY = c0.y + dir.y * length;
+    const droop = (cuff.y - idealY) * 100;
+    if (droop < worst) worst = droop;
+  }
+  return Number(worst.toFixed(2));
+}
+
+function runCombo(widthM: number, sleeveWidthM: number, sleeveLengthM = SLEEVE_LENGTH_M): ComboResult {
+  const armLeft: ArmDir = { dir: dirLeft, length: sleeveLengthM };
+  const armRight: ArmDir = { dir: dirRight, length: sleeveLengthM };
   const { sim } = buildUnifiedGarmentSim(widthM, heightM, topY, centerZ, pinLeft, pinRight, armLeft, armRight, sleeveWidthM);
 
   const preset = FABRIC_PRESETS.cotton;
   const gravity = new THREE.Vector3(...GRAVITY_BASE).multiplyScalar(preset.gravityScale);
-  const armCapsules = [...buildArmCapsules(trueShoulderLeft, dirLeft, SLEEVE_LENGTH_M), ...buildArmCapsules(trueShoulderRight, dirRight, SLEEVE_LENGTH_M)];
+  const armCapsules = [...buildArmCapsules(trueShoulderLeft, dirLeft, sleeveLengthM), ...buildArmCapsules(trueShoulderRight, dirRight, sleeveLengthM)];
   const resolver = (positions: Float32Array, pinned: Uint8Array, n: number) => {
     applyCapsuleCollision(positions, pinned, n, armCapsules, 0.006);
   };
@@ -184,6 +215,7 @@ function runCombo(widthM: number, sleeveWidthM: number): ComboResult {
         sleeveRowsMaxDeg: [],
         drape: null,
         bodyGapMm: null,
+        cuffDroopCm: null,
         physMsPerFrame,
       };
     }
@@ -262,6 +294,10 @@ function runCombo(widthM: number, sleeveWidthM: number): ComboResult {
     sleeveRowsMaxDeg: sleeveRowsMaxDeg.map((d) => Number(d.toFixed(1))),
     drape: computeDrapeMetrics(sim, [PANEL_FRONT, PANEL_BACK], xMin, xMax),
     bodyGapMm: computeBodyGapMm(sim, [PANEL_FRONT, PANEL_BACK], torsoCapsules, armholeStartRow + 1, xMin, xMax),
+    cuffDroopCm: cuffDroopCm(sim, [
+      { panel: PANEL_SLEEVE_LEFT, dir: dirLeft, length: sleeveLengthM },
+      { panel: PANEL_SLEEVE_RIGHT, dir: dirRight, length: sleeveLengthM },
+    ]),
     physMsPerFrame,
   };
 }
@@ -287,13 +323,22 @@ console.log("[paramSweep] sleeve row0~row%d breakdown (품/소매통 → 행별 
 for (const r of results) {
   console.log(`  품${r.widthM * 100}cm/소매통${r.sleeveWidthM * 100}cm:`, r.sleeveRowsMaxDeg);
 }
-console.log("[paramSweep] drape (면각평균° / 면각최대° / 주름RMSmm / maxStrain / 몸이탈mm / 물리ms):");
+console.log("[paramSweep] drape (면각평균° / 면각최대° / 주름RMSmm / maxStrain / 몸이탈mm / 커프처짐cm / 물리ms):");
 for (const r of results) {
   const d = r.drape;
   console.log(
-    `  품${r.widthM * 100}cm/소매통${r.sleeveWidthM * 100}cm: ${d ? `${d.faceAngleMeanDeg} / ${d.faceAngleMaxDeg} / ${d.wrinkleRmsMm} / ${d.maxStrain}` : "발산"} / ${r.bodyGapMm ?? "-"} / ${r.physMsPerFrame}ms`,
+    `  품${r.widthM * 100}cm/소매통${r.sleeveWidthM * 100}cm: ${d ? `${d.faceAngleMeanDeg} / ${d.faceAngleMaxDeg} / ${d.wrinkleRmsMm} / ${d.maxStrain}` : "발산"} / ${r.bodyGapMm ?? "-"} / ${r.cuffDroopCm ?? "-"} / ${r.physMsPerFrame}ms`,
   );
 }
+
+// 긴팔(58cm) 대표 1콤보 — 커프 U자 커브 최소값 유지가 실제로 망토화를
+// 막는지 감시(46번 이력: 소매 중간~끝이 무방비면 평평한 망토로 퍼짐).
+// 12콤보 전부 x2 길이로 돌리면 런타임 두 배라 대표 1개만.
+const longSleeve = runCombo(0.55, 0.18, 0.58);
+const ld = longSleeve.drape;
+console.log(
+  `[paramSweep] 긴팔(58cm) 품55/소매통18: ${ld ? `${ld.faceAngleMeanDeg} / ${ld.faceAngleMaxDeg} / ${ld.wrinkleRmsMm} / ${ld.maxStrain}` : "발산"} / ${longSleeve.bodyGapMm ?? "-"} / 커프처짐 ${longSleeve.cuffDroopCm ?? "-"}cm / sleeve톱니 ${longSleeve.sleeveJaggednessDeg}° / 관통 ${longSleeve.maxPenetrationMm}mm / seamGap ${longSleeve.maxSeamGapCm}cm`,
+);
 
 const diverged = results.filter((r) => r.diverged);
 if (diverged.length > 0) {
