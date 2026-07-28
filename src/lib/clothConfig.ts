@@ -135,7 +135,12 @@ export const SEAM_REST_LENGTH = 0.006;
 // 불가능해 큰 평면 폴리곤이 각지게 굳는 원인이었다(A-① 조사).
 // 1 초과 금지 — docs/pattern-redesign.md 13번(stiffness>1 카오스적 불안정).
 export const STIFFNESS_STRUCTURAL = 1.0;
-export const STIFFNESS_SHEAR = 0.6; // A-③: 대각(전단) 완화 — 골판지 잠김의 남은 절반
+// A-③(0.6) 원복: 12콤보 전 지표 개선/불변이었는데 화면은 참사 — 네 각도
+// 모두 어깨 천이 몸에서 떨어져 등판 노출(두 조합 실측 동일). 전단 저항이
+// 약해지면 천이 어깨 곡면을 감싸는 형태를 유지 못 하고 미끄러진다.
+// 이 실패가 bodyGapMm 지표(drapeMetrics.ts) 신설 계기 — A-② 128mm대 vs
+// A-③ 124~160mm 대조 참고. 다시 낮추려면 bodyGapMm 회귀 확인 필수.
+export const STIFFNESS_SHEAR = 1.0;
 export const STIFFNESS_BEND = 0.1;
 export const STIFFNESS_SEAM = 1.0;
 // 겨드랑이 밑부터 밑단까지만 옆선을 잇고, 그 위(어깨~겨드랑이)는 트여 있는
