@@ -44,7 +44,7 @@ import type { Vec3Like } from "../src/lib/clothProtocol";
 import { armholeRingJaggedness, ringJaggedness } from "../src/lib/seamDiagnostics";
 import { bodyGapBands, computeBodyGapChannels, computeDrapeMetrics, computeOrderViolations, computeRippleMm, type DrapeMetrics, type GapStats } from "../src/lib/drapeMetrics";
 import { computeBodyCoverage } from "../src/lib/coverageMetric";
-import { bakeSdf, createSdfFrictionPass, createSdfIterationFrictionPass, createSdfPushResolver, makeRadialSignedSampler, type SdfField } from "../src/lib/sdfCollision";
+import { bakeSdf, createCachedSdfIterationFriction, createSdfFrictionPass, createSdfIterationFrictionPass, createSdfPushResolver, makeRadialSignedSampler, type SdfField } from "../src/lib/sdfCollision";
 
 // 대표 포즈 — checkSleeveSeam.ts와 같은 출처(이 세션 __fitDebug 실측), 반팔
 // 기본값(소매길이 22cm), 어깨너비 45cm 기준.
@@ -518,18 +518,22 @@ function runFixture(path: string): void {
     maxDisplacement: MAX_DISPLACEMENT_PER_SUBSTEP,
     columnRange: meshColumnRange,
     friction,
-    // M2-5: FRICITER=0으로 끄고 대조(기본은 마찰 켜짐과 동일 조건).
-    frictionIteration:
-      sdfField && process.env.FRICITER !== "0"
-        ? createSdfIterationFrictionPass(() => sdfField, {
+    // M2-5: FRICITER=0으로 끄고 대조. FRIC_LIVE=1이면 캐시 없는 원본
+    // 패스(동등성 대조용). MU_ITER=값 으로 반복 모드 μ override.
+    ...(sdfField && process.env.FRICITER !== "0"
+      ? (() => {
+          const fparams = {
             contactBand: FRICTION_CONTACT_BAND,
-            // MU_ITER=값 이면 반복 모드 전용 μ(정지/운동 동일) — 서브스텝
-            // 말미 속도 패스(위 friction)의 μ와 독립. 반복 안 운동 감쇠는
-            // 반복 수만큼 누적되므로 ~1/n 스케일이 출발점(M2-5 관찰).
             muStatic: process.env.MU_ITER ? Number(process.env.MU_ITER) : FRICTION_MU_ITER,
             muKinetic: process.env.MU_ITER ? Number(process.env.MU_ITER) : FRICTION_MU_ITER,
-          })
-        : undefined,
+          };
+          if (process.env.FRIC_LIVE === "1") {
+            return { frictionIteration: createSdfIterationFrictionPass(() => sdfField, fparams) };
+          }
+          const cached = createCachedSdfIterationFriction(() => sdfField, fparams);
+          return { frictionIteration: cached.apply, frictionIterationReset: cached.reset };
+        })()
+      : {}),
     // 핀 전환 원복 — 기본 1(하드 핀). PIN=0.5 등으로 재현만 가능.
     pinStrength: process.env.PIN ? Number(process.env.PIN) : 1,
   });

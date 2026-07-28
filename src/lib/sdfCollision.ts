@@ -287,3 +287,79 @@ export function createSdfIterationFrictionPass(
     }
   };
 }
+
+// M2-5 비용 최적화: 반복 안 마찰의 비용은 접촉 파티클 ~1300 × 반복 18 ×
+// 샘플 7회(법선 6+판정 1)였다(실측 52.9ms, 기준 23.3ms). 접촉 판정과
+// 법선·하중을 **서브스텝당 1회** 계산해 캐시하고, 반복 안에서는 캐시된
+// 법선으로 접선 투영만 한다(샘플 0회). 서브스텝 동안 파티클 이동은 변위
+// 클램프(5cm) 이하이고 SDF 법선장은 연속이라 캐시 오차는 작다 — 전후
+// 지표 동등성으로 검증한다. "N회마다 적용"은 실효 마찰을 바꾸므로
+// 쓰지 않는다(캐시만으로 목표 도달 시).
+export interface CachedIterationFriction {
+  // 서브스텝 시작(적분 직전) 위치로 접촉/법선/하중 캐시를 갱신.
+  reset(positions: Float32Array, pinned: Uint8Array, n: number): void;
+  apply(positions: Float32Array, prevPositions: Float32Array, pinned: Uint8Array, n: number): void;
+}
+
+export function createCachedSdfIterationFriction(
+  getField: () => SdfField | null,
+  params: FrictionParams,
+): CachedIterationFriction {
+  let normals = new Float32Array(0);
+  let loads = new Float32Array(0);
+  const normal = { x: 0, y: 0, z: 0 };
+  return {
+    reset(positions, pinned, n) {
+      const field = getField();
+      if (normals.length < n * 3) {
+        normals = new Float32Array(n * 3);
+        loads = new Float32Array(n);
+      }
+      loads.fill(0);
+      if (!field) return;
+      for (let i = 0; i < n; i++) {
+        if (pinned[i]) continue;
+        const ix = i * 3;
+        const sd = sampleSdf(field, positions[ix], positions[ix + 1], positions[ix + 2]);
+        if (sd > params.contactBand) continue;
+        const load = Math.min(1, Math.max(0, (params.contactBand - sd) / params.contactBand));
+        if (load <= 0) continue;
+        if (!sdfNormal(field, positions[ix], positions[ix + 1], positions[ix + 2], normal)) continue;
+        loads[i] = load;
+        normals[ix] = normal.x;
+        normals[ix + 1] = normal.y;
+        normals[ix + 2] = normal.z;
+      }
+    },
+    apply(positions, prevPositions, pinned, n) {
+      for (let i = 0; i < n; i++) {
+        const load = loads[i];
+        if (load <= 0 || pinned[i]) continue;
+        const ix = i * 3;
+        const nx = normals[ix];
+        const ny = normals[ix + 1];
+        const nz = normals[ix + 2];
+        const dx = positions[ix] - prevPositions[ix];
+        const dy = positions[ix + 1] - prevPositions[ix + 1];
+        const dz = positions[ix + 2] - prevPositions[ix + 2];
+        const dn = dx * nx + dy * ny + dz * nz;
+        const tx = dx - dn * nx;
+        const ty = dy - dn * ny;
+        const tz = dz - dn * nz;
+        const tLen = Math.hypot(tx, ty, tz);
+        if (tLen < 1e-9) continue;
+        const staticLimit = params.muStatic * load * params.contactBand;
+        let scale: number;
+        if (tLen <= staticLimit) {
+          scale = 0;
+        } else {
+          const drop = params.muKinetic * load * params.contactBand;
+          scale = Math.max(0, (tLen - drop) / tLen);
+        }
+        positions[ix] = prevPositions[ix] + dn * nx + tx * scale;
+        positions[ix + 1] = prevPositions[ix + 1] + dn * ny + ty * scale;
+        positions[ix + 2] = prevPositions[ix + 2] + dn * nz + tz * scale;
+      }
+    },
+  };
+}

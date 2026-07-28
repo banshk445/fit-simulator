@@ -5,7 +5,7 @@ import { ArrayBvhCollision } from "../lib/bvhFromArrays";
 import { SelfCollision } from "../lib/selfCollision";
 import { FABRIC_PRESETS } from "../lib/fabricPresets";
 import { buildUnifiedGarmentSim } from "../lib/buildUnifiedGarmentSim";
-import { bakeSdf, createSdfFrictionPass, createSdfIterationFrictionPass, createSdfPushResolver, makeRadialSignedSampler, type SdfField } from "../lib/sdfCollision";
+import { bakeSdf, createCachedSdfIterationFriction, createSdfFrictionPass, createSdfPushResolver, makeRadialSignedSampler, type SdfField } from "../lib/sdfCollision";
 // M0(파이프라인 일원화): 프레임 시퀀스·unifiedResolver·팔 캡슐 빌더는
 // garmentFrame.ts로 이사 — paramSweep(Node)과 이 워커가 같은 함수를 쓴다.
 import { buildArmCapsules, createGarmentSession, createPanelSplitResolver, createUnifiedResolver, PANEL_COUNTS } from "../lib/garmentFrame";
@@ -240,7 +240,7 @@ const sdfUnifiedResolver = createUnifiedResolver(sdfPushResolver, collisionState
 
 // M2-5 재개: 반복 모드 전용 μ(FRICTION_MU_ITER) — μ 스윕으로 양립 구간
 // 확인(위 clothConfig 주석). 서브스텝 말미 속도 패스는 기존 μ 유지.
-const iterationFrictionPass = createSdfIterationFrictionPass(() => sdfField, {
+const iterationFriction = createCachedSdfIterationFriction(() => sdfField, {
   contactBand: FRICTION_CONTACT_BAND,
   muStatic: FRICTION_MU_ITER,
   muKinetic: FRICTION_MU_ITER,
@@ -359,7 +359,8 @@ ctx.onmessage = (event) => {
         friction: sdfFrictionEnabled ? frictionPass : undefined,
         // M2-5(μ=FRICTION_MU_ITER, 화면 판정 대기): 반복 안 위치 마찰.
         // 주의 — 물리 ms가 아직 2.3배(비용 최적화는 화면 통과 후).
-        frictionIteration: sdfFrictionEnabled ? iterationFrictionPass : undefined,
+        frictionIteration: sdfFrictionEnabled ? iterationFriction.apply : undefined,
+        frictionIterationReset: sdfFrictionEnabled ? iterationFriction.reset : undefined,
       });
 
       // 범위 B 구현 1번(격자 생성) 검증용 — buildConstraints()/step() 이전

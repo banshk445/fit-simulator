@@ -219,6 +219,8 @@ export interface GarmentFrameEnv {
   // Gauss-Seidel 반복(everyIterationExtra 훅)에서 접선 이동을 죽인다.
   // 서브스텝 말미 속도 보정(friction)과 역할 분담(중복 감쇠 방지).
   frictionIteration?: (positions: Float32Array, prevPositions: Float32Array, pinned: Uint8Array, n: number) => void;
+  // 비용 최적화용 — 서브스텝 시작마다 접촉/법선/하중 캐시 갱신 훅.
+  frictionIterationReset?: (positions: Float32Array, pinned: Uint8Array, n: number) => void;
   // 핀 전환 3단계: 1=하드 핀(기존), 1미만=칼라 소프트 앵커, 0=앵커 없음.
   pinStrength?: number;
 }
@@ -278,6 +280,9 @@ export function createGarmentSession(sim: ClothSimulation, env: GarmentFrameEnv)
 
       accumulator = Math.min(accumulator + dt, SUBSTEP_DT * MAX_SUBSTEPS);
       while (accumulator >= SUBSTEP_DT) {
+        // 반복 안 마찰 캐시 — 적분 직전 위치 기준(적분 한 스텝 오차는
+        // 변위 클램프 이하, 법선장 연속이라 허용 — 동등성 실측으로 검증).
+        env.frictionIterationReset?.(sim.positions, sim.pinned, sim.positions.length / 3);
         sim.step(
           SUBSTEP_DT,
           gravity,
