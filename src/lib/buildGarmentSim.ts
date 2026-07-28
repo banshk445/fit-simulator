@@ -111,6 +111,16 @@ function halfWidthAtRow(y: number, widthM: number, pinLeft: Vec3Like, pinRight: 
 // 중력·구조 제약에만 맡긴다. frac 계산은 layoutTorsoPanels와 반드시
 // 같은 공식을 써야 한다(레이아웃 때 놓은 위치와 핀 목표가 어긋나면 큰
 // 초기 위반이 생긴다) — columnLayout()으로 공유한다.
+// strength: 1이면 기존 하드 핀(sim.pin — pinned=1, 위치 강제, 속도 소거).
+// 1 미만이면 **칼라 소프트 앵커**로 바뀐다: pinned를 세우지 않고 목표
+// 지점으로 그만큼만 당긴다. 0이면 앵커 없음.
+//
+// 왜 필요한가(M2-4 실패 분석): 하드 핀은 row0을 매 프레임 고정 좌표에
+// 못박아, 그 행이 몸에 **닿을 수가 없다**. 실측(fixture): 핀은 어깨
+// 표면보다 2.0cm 바깥·0.6cm 위에 떠 있다. 실제 옷은 중력이 천을 어깨에
+// 눌러 앉히고 그 접촉의 수직항력으로 마찰이 하중을 받는데, 그 첫 단계가
+// 하드 핀으로 봉쇄돼 있다 — 그래서 흡착을 끊자(M2-4) 천이 몸이 아니라
+// 핀에 매달린 커튼이 됐다. 핀을 풀어야 마찰이 일할 조건이 생긴다.
 export function pinCorners(
   sim: ClothSimulation,
   pinLeft: Vec3Like,
@@ -120,6 +130,7 @@ export function pinCorners(
   armLeft: ArmDir,
   armRight: ArmDir,
   necklineLift?: readonly number[],
+  strength = 1,
 ): void {
   const sideSign = Math.sign(pinLeft.x - pinRight.x) || 1;
   const thw0 = halfWidthAtRow(0, 0, pinLeft, pinRight); // widthM 무관(row0은 항상 shoulderHalfWidth)
@@ -140,7 +151,21 @@ export function pinCorners(
       const baseZ = pinLeft.z + (pinRight.z - pinLeft.z) * ((shoulderU + 0.5) / 1);
       const rise = necklineRise(isFront, shoulderU);
       const lift = necklineLift?.[x] ?? 0;
-      sim.pin(sim.index(panel, x, 0), baseX, baseY + rise + lift, baseZ);
+      const targetY = baseY + rise + lift;
+      const i = sim.index(panel, x, 0);
+      if (strength >= 1) {
+        sim.pin(i, baseX, targetY, baseZ);
+        continue;
+      }
+      // 소프트 앵커 — pinned를 세우지 않는다(충돌·마찰·제약이 이 행에도
+      // 작동해야 중력이 천을 어깨에 앉힐 수 있다). 속도(prevPositions)는
+      // 건드리지 않아 관성이 유지된다.
+      sim.pinned[i] = 0;
+      if (strength <= 0) continue;
+      const ix = i * 3;
+      sim.positions[ix] += (baseX - sim.positions[ix]) * strength;
+      sim.positions[ix + 1] += (targetY - sim.positions[ix + 1]) * strength;
+      sim.positions[ix + 2] += (baseZ - sim.positions[ix + 2]) * strength;
     }
   }
 }

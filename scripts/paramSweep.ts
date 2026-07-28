@@ -384,7 +384,8 @@ function runFixture(path: string): void {
   const meshColumnRange = { cols: COLS, min: 0, max: COLS - 1 };
   // M2-4: 신 코어면 흡착 완화(관통 시에만). ADHESION=1로 기존 흡착 복원.
   const penetrationAxis = {
-    enabled: newCore && process.env.ADHESION !== "1",
+    // M2-4 원복 — 흡착 기본 on(워커와 동일). ADHESION=0으로 끄고 재현만.
+    enabled: newCore && process.env.ADHESION === "0",
     x: fixture.collision.capsules[0]?.top.x ?? 0,
     z: fixture.collision.capsules[0]?.top.z ?? 0,
   };
@@ -516,6 +517,9 @@ function runFixture(path: string): void {
     maxDisplacement: MAX_DISPLACEMENT_PER_SUBSTEP,
     columnRange: meshColumnRange,
     friction,
+    // 핀 전환 3단계 — PIN=0.5 / PIN=0 등으로 단계별 게이트.
+    // 핀 전환 원복 — 기본 1(하드 핀). PIN=0.5 등으로 재현만 가능.
+    pinStrength: process.env.PIN ? Number(process.env.PIN) : 1,
   });
 
   const preset = FABRIC_PRESETS[pose.fabric];

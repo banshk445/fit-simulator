@@ -215,6 +215,8 @@ export interface GarmentFrameEnv {
   // 자체충돌 전에 1회. prevPositions를 고쳐야 해서 CollisionResolver와
   // 시그니처가 다르다. 없으면 스킵(기존과 비트 동일).
   friction?: (positions: Float32Array, prevPositions: Float32Array, pinned: Uint8Array, n: number) => void;
+  // 핀 전환 3단계: 1=하드 핀(기존), 1미만=칼라 소프트 앵커, 0=앵커 없음.
+  pinStrength?: number;
 }
 
 export interface GarmentSession {
@@ -234,7 +236,7 @@ export function createGarmentSession(sim: ClothSimulation, env: GarmentFrameEnv)
   return {
     step(dt, gravity, preset, layout, pose) {
       const { pinLeft, pinRight, armLeft, armRight } = pose;
-      pinCorners(sim, pinLeft, pinRight, PANEL_FRONT, PANEL_BACK, armLeft, armRight, pose.necklineLift);
+      pinCorners(sim, pinLeft, pinRight, PANEL_FRONT, PANEL_BACK, armLeft, armRight, pose.necklineLift, env.pinStrength ?? 1);
 
       if (env.columnRange) {
         const range = torsoColumnRange(COLS, pinLeft, pinRight, armLeft, armRight);
