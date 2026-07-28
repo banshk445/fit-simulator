@@ -237,6 +237,8 @@ const sdfPushResolver = createPanelSplitResolver(
 );
 const sdfUnifiedResolver = createUnifiedResolver(sdfPushResolver, collisionState);
 
+// M2-5 보류 중이라 지금은 미사용 — 재개 시 frictionIteration에 연결.
+// @ts-expect-error -- noUnusedLocals 예외(보류 상태 보존용)
 const iterationFrictionPass = createSdfIterationFrictionPass(() => sdfField, {
   contactBand: FRICTION_CONTACT_BAND,
   muStatic: FRICTION_MU_STATIC,
