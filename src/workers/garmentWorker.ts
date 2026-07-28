@@ -300,12 +300,15 @@ ctx.onmessage = (event) => {
         selfCollision: (positions, pinned, n) => selfCollisionResolver!(positions, pinned, n),
         orderPasses: true,
         clampInSubstep: true,
-        // M2 보정 제거 ②: 원복됨. 스무딩을 끄면 ripple mean이 3.22→5.95
-        // (+85%)로 튀었다 — B-1 실패값(5.03)보다도 나쁘다. 전제("SDF가
-        // 잔물결 발생원을 없앴다")가 아직 성립 안 하는 게 원인: 밀어내기는
-        // 여전히 BVH 면 법선을 쓰고 SDF는 마찰 접촉에만 쓰인다. 밀어내기를
-        // SDF로 교체한 뒤 재시도할 것.
-        smoothing: true,
+        // M2 제거 ② 재개(화면 판정 대기): 처음 원복했던 근거(ripple
+        // +85%)는 2차 차분 지표가 곡률 측정기라서 정상 폴드에도 반응한
+        // 것이었고, CLAUDE.md의 "애매 → 원복 말고 화면 확인" 규칙도
+        // 위반이었다. 4차 차분(jitter)으로 다시 재보니 실제 지그재그도
+        // 늘어난 건 맞다(3.20→11.56mm, 부호반전 0.189→0.379) — 그래서
+        // 통과가 아니라 **애매**로 두고 화면 판정을 받는다.
+        // 함께 얻는 것: coverage 27.6→20.5%(측정 이래 최저), 면각평균
+        // 15.88→17.05·주름RMS 4.081→4.403(최고), 교차 0, seamGap 0.
+        smoothing: !(msg.newCore ?? false),
         postOrder: true,
         armSoftPull: true,
         necklineHug: true,

@@ -194,6 +194,17 @@ export interface RippleStats {
   maxMm: number;
   meanMm: number;
   maxAt: { panel: number; x: number; y: number };
+  // 4차 중앙차분 |p(x-2)-4p(x-1)+6p(x)-4p(x+1)+p(x+2)| — 2차 차분은 임의의
+  // 2차식(=상수 곡률 = 정상 폴드)에 비례해 반응해서 "떨림 측정기"가 아니라
+  // 곡률 측정기였다(스무딩 off 5셀에서 면각평균과 완전 단조, 비율 ±8%
+  // 고정 — 전략가 실측). 4차 차분은 2차식을 정확히 소멸시켜 열 방향 교대
+  // 성분만 남기므로 정상 주름과 지그재그를 구분한다.
+  jitterMaxMm: number;
+  jitterMeanMm: number;
+  jitterMaxAt: { panel: number; x: number; y: number };
+  // 부호 반전 비율 — D²(x)와 D²(x+1)의 부호가 다른 열의 비율. 교대
+  // 패턴이면 1에 가깝고 매끄러운 폴드면 0에 가깝다(스케일 무관 보조 지표).
+  signFlipRatio: number;
 }
 
 export function computeRippleMm(
@@ -209,6 +220,19 @@ export function computeRippleMm(
   let sum = 0;
   let count = 0;
   let maxAt = { panel: -1, x: -1, y: -1 };
+  let jMax = 0;
+  let jSum = 0;
+  let jCount = 0;
+  let jMaxAt = { panel: -1, x: -1, y: -1 };
+  let flips = 0;
+  let flipCount = 0;
+  // 축별 2차 차분(부호 유지) — 4차 차분과 부호반전 계산에 재사용.
+  const d2 = (panel: number, x: number, y: number, k: number): number => {
+    const i = sim.index(panel, x, y) * 3 + k;
+    const l = sim.index(panel, x - 1, y) * 3 + k;
+    const r = sim.index(panel, x + 1, y) * 3 + k;
+    return p[l] + p[r] - 2 * p[i];
+  };
   for (const panel of panels) {
     const { cols, rows } = sim.panelDims[panel];
     const x0 = Math.max(1, colMin + 1);
@@ -216,18 +240,37 @@ export function computeRippleMm(
     const yEnd = Math.min(rows - 1, rowEndInclusive);
     for (let y = Math.max(0, rowStart); y <= yEnd; y++) {
       for (let x = x0; x <= x1; x++) {
-        const i = sim.index(panel, x, y) * 3;
-        const l = sim.index(panel, x - 1, y) * 3;
-        const r = sim.index(panel, x + 1, y) * 3;
-        const dx = p[l] + p[r] - 2 * p[i];
-        const dy = p[l + 1] + p[r + 1] - 2 * p[i + 1];
-        const dz = p[l + 2] + p[r + 2] - 2 * p[i + 2];
+        const dx = d2(panel, x, y, 0);
+        const dy = d2(panel, x, y, 1);
+        const dz = d2(panel, x, y, 2);
         const v = Math.hypot(dx, dy, dz);
         sum += v;
         count++;
         if (v > maxV) {
           maxV = v;
           maxAt = { panel, x, y };
+        }
+        // 부호 반전 — Y축(처짐 방향) 2차 차분 부호로 판정.
+        if (x + 1 <= x1) {
+          const next = d2(panel, x + 1, y, 1);
+          if (dy * next < 0) flips++;
+          flipCount++;
+        }
+        // 4차 차분 = 2차 차분의 2차 차분(같은 창 안쪽 한 칸씩 좁힘).
+        if (x - 1 >= x0 && x + 1 <= x1) {
+          let jx = 0;
+          let jy = 0;
+          let jz = 0;
+          jx = d2(panel, x - 1, y, 0) + d2(panel, x + 1, y, 0) - 2 * dx;
+          jy = d2(panel, x - 1, y, 1) + d2(panel, x + 1, y, 1) - 2 * dy;
+          jz = d2(panel, x - 1, y, 2) + d2(panel, x + 1, y, 2) - 2 * dz;
+          const jv = Math.hypot(jx, jy, jz);
+          jSum += jv;
+          jCount++;
+          if (jv > jMax) {
+            jMax = jv;
+            jMaxAt = { panel, x, y };
+          }
         }
       }
     }
@@ -236,6 +279,10 @@ export function computeRippleMm(
     maxMm: Number((maxV * 1000).toFixed(2)),
     meanMm: Number(((sum / (count || 1)) * 1000).toFixed(2)),
     maxAt,
+    jitterMaxMm: Number((jMax * 1000).toFixed(2)),
+    jitterMeanMm: Number(((jSum / (jCount || 1)) * 1000).toFixed(2)),
+    jitterMaxAt: jMaxAt,
+    signFlipRatio: Number((flips / (flipCount || 1)).toFixed(3)),
   };
 }
 

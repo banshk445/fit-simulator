@@ -566,7 +566,8 @@ function runFixture(path: string): void {
   }
   // 잔물결 — 어깨~겨드랑이(row1~asr) 몸통 열, B-1류(스무딩 완화) 실패 감시.
   const ripple = computeRippleMm(sim, [PANEL_FRONT, PANEL_BACK], 1, armholeStartRow, xMin, xMax);
-  console.log(`  ripple(2차차분): max ${ripple.maxMm}mm @ ${JSON.stringify(ripple.maxAt)} / mean ${ripple.meanMm}mm`);
+  console.log(`  ripple(2차차분=곡률): max ${ripple.maxMm}mm @ ${JSON.stringify(ripple.maxAt)} / mean ${ripple.meanMm}mm`);
+  console.log(`  jitter(4차차분=지그재그): max ${ripple.jitterMaxMm}mm @ ${JSON.stringify(ripple.jitterMaxAt)} / mean ${ripple.jitterMeanMm}mm / 부호반전 ${ripple.signFlipRatio}`);
   // M2 제거 ① 게이트: 앞뒤판 관통 — sidedness가 막던 바로 그것.
   // (a) 반평면 위반: 앞판이 centerZ보다 뒤, 뒤판이 앞. (b) 교차: 같은 (x,y)에서 front.z < back.z.
   {
