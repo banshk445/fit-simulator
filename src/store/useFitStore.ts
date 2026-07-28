@@ -170,3 +170,10 @@ export const useFitStore = create<FitState>((set) => ({
       return { sleeveType, garmentSize: { ...state.garmentSize, sleeveLength } };
     }),
 }));
+
+// DEV 전용: 콘솔 측정 워크플로우(__fitDebug 계열)에서 이미지 업로드 UI를
+// 거치지 않고 상태를 조작할 수 있게 스토어를 노출한다 — 예:
+// window.__fitStore.getState().setGarmentImage(dataUrl).
+if (import.meta.env.DEV) {
+  (window as unknown as { __fitStore?: typeof useFitStore }).__fitStore = useFitStore;
+}
