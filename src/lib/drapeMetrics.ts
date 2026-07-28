@@ -6,8 +6,18 @@
 //   RMS(mm) — 주름 에너지. 보정들이 주름을 죽이면 0에 가깝게 붙는다.
 // - maxStrain: 전체 제약의 현재길이/원래길이 최댓값 — 찢어짐 감시
 //   (clampOverstretchedConstraints의 1.2 상한과 같은 단위).
-import type { ClothSimulation } from "./clothPhysics";
+import type { ClothSimulation, PanelDims } from "./clothPhysics";
 import type { Capsule } from "./torsoCapsule";
+
+// 브라우저(Garment.tsx)는 ClothSimulation 인스턴스가 아니라 워커가 보내온
+// 위치 배열(front/backPositions)만 갖는다 — 같은 공식을 양쪽이 공유하려면
+// (armholeRingJaggedness 패턴) 계산에 실제로 필요한 최소 표면만 받는다.
+// ClothSimulation은 이 인터페이스를 구조적으로 만족한다.
+export interface GridView {
+  readonly panelDims: readonly PanelDims[];
+  positions: Float32Array;
+  index(panel: number, x: number, y: number): number;
+}
 
 export interface DrapeMetrics {
   faceAngleMeanDeg: number;
@@ -22,7 +32,7 @@ interface Vec {
   z: number;
 }
 
-function cellNormal(sim: ClothSimulation, panel: number, x: number, y: number, out: Vec): void {
+function cellNormal(sim: GridView, panel: number, x: number, y: number, out: Vec): void {
   // 셀 (x,y)의 법선 = (오른쪽 변) × (아래 변). quad가 비평면이어도 대표
   // 법선으로 충분하다 — 인접 셀과의 "각도 차이"만 보므로.
   const p = sim.positions;
@@ -59,7 +69,7 @@ const STRAIN_MIN_REST_M = 1e-4;
 // 180°로 포화되므로 범위를 좁혀야 지표가 개선에 반응한다. maxStrain만은
 // 패널/열 구분이 없는 제약 전체(시접 포함) 기준이다.
 export function computeDrapeMetrics(
-  sim: ClothSimulation,
+  sim: GridView & Pick<ClothSimulation, "constraintPairs">, // maxStrain은 제약 정보가 필요 — Node(실제 sim) 전용
   panels: readonly number[],
   colMin = 0,
   colMax = Infinity,
@@ -158,7 +168,7 @@ export interface GapStats {
 }
 
 export function computeBodyGapChannels(
-  sim: ClothSimulation,
+  sim: GridView,
   panels: readonly number[],
   capsules: readonly Capsule[],
   bands: readonly GapBand[],

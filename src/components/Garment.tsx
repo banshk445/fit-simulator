@@ -7,7 +7,8 @@ import { useFitStore } from "../store/useFitStore";
 import { MannequinCollisionMesh } from "../lib/meshCollision";
 import { ArrayBvhCollision } from "../lib/bvhFromArrays";
 import { mannequinRootRef } from "../lib/mannequinRef";
-import { buildTorsoProxyCapsules } from "../lib/torsoCapsule";
+import { buildTorsoProxyCapsules, type Capsule } from "../lib/torsoCapsule";
+import { computeBodyGapChannels, type GridView } from "../lib/drapeMetrics";
 import { findArmDirection, findShortSleeveDirection, findShoulderBones } from "../lib/boneUtils";
 import { computeShoulderPin } from "../lib/shoulderPin";
 import { compositeGarmentTexture } from "../lib/garmentTextureComposite";
@@ -616,6 +617,9 @@ export function Garment({ imageUrl }: Props) {
   // 매 프레임 바뀔 수 있어(useFrame 안에서 재계산), window.__fitDebug 함수가
   // React state가 아니라 이 ref로 최신 xMin/xMax를 동기적으로 읽는다.
   const torsoColumnRangeRef = useRef({ xMin: 0, xMax: COLS - 1 });
+  // bodyGapChannels 디버그용 — rebuildCollision effect가 워커로 보내는 것과
+  // 같은 토르소 캡슐의 최신본(같은 물체를 봐야 stale 함정이 없다).
+  const torsoCapsulesRef = useRef<Capsule[] | null>(null);
   // 범위 B 구현 1번(격자 생성) 검증용 — 워커가 "init"마다 한 번 보내는
   // gridDebug(물리 이전 순수 초기 배치)를 그대로 들고 있는다.
   const sleeveGridDebugRef = useRef<Extract<GarmentWorkerToMainMessage, { type: "gridDebug" }> | null>(null);
@@ -657,6 +661,56 @@ export function Garment({ imageUrl }: Props) {
       });
       const result = { armholeStartRow, col, points: pts, loopOrder: loop.map((p) => `${p.panel}${p.row}`), distances };
       console.log("[ARMHOLE-CHECK]", JSON.stringify(result));
+      return result;
+    };
+  }, [frontPositions, backPositions]);
+
+  // 천-몸 이탈 채널(어깨/몸통/밑단) — Node 하네스(paramSweep)와 완전히 같은
+  // 공식(drapeMetrics.ts computeBodyGapChannels 공유)을 워커 실좌표(BVH/
+  // 스무딩/자체충돌 포함 파이프라인 결과인 front/backPositions)에 대고
+  // 실행한다. C단계류(소프트 풀) 실패가 하네스에서 원리적으로 안 잡혀
+  // (실패 원인 물리가 하네스에 없음) 브라우저 측 게이트로 신설.
+  // 마운트 시 한 번만 등록(armholeCheck과 같은 이유) — 콘솔에서
+  // `window.__fitDebug.bodyGapChannels()` 직접 호출.
+  useEffect(() => {
+    const win = window as unknown as { __fitDebug?: Record<string, unknown> };
+    if (!win.__fitDebug) win.__fitDebug = {};
+    win.__fitDebug.bodyGapChannels = () => {
+      const capsules = torsoCapsulesRef.current;
+      if (!capsules) {
+        console.log("[BODY-GAP] 캡슐 아직 없음(초기화 대기) — 잠시 후 다시 호출");
+        return null;
+      }
+      // front/backPositions를 GridView로 감싼다 — 패널 0=앞판, 1=뒤판.
+      const n = PARTICLES_PER_PANEL;
+      const positions = new Float32Array(n * 2 * 3);
+      positions.set(frontPositions, 0);
+      positions.set(backPositions, n * 3);
+      const view: GridView = {
+        panelDims: [
+          { cols: COLS, rows: ROWS },
+          { cols: COLS, rows: ROWS },
+        ],
+        positions,
+        index: (panel, x, y) => panel * n + y * COLS + x,
+      };
+      const { xMin, xMax } = torsoColumnRangeRef.current;
+      const armholeStartRow = Math.round(ROWS * ARMHOLE_ROW_FRACTION);
+      // 대역 구분은 paramSweep.ts와 동일해야 한다(어깨=row0~asr, 몸통=~20, 밑단=21~).
+      const [shoulder, torso, hem] = computeBodyGapChannels(
+        view,
+        [0, 1],
+        capsules,
+        [
+          { rowStart: 0, rowEndInclusive: armholeStartRow },
+          { rowStart: armholeStartRow + 1, rowEndInclusive: 20 },
+          { rowStart: 21, rowEndInclusive: ROWS - 1 },
+        ],
+        xMin,
+        xMax,
+      );
+      const result = { xMin, xMax, shoulder, torso, hem };
+      console.log("[BODY-GAP]", JSON.stringify(result));
       return result;
     };
   }, [frontPositions, backPositions]);
@@ -1312,6 +1366,9 @@ export function Garment({ imageUrl }: Props) {
         bodySize.height / 100,
         bodySize.chest / 100,
       );
+
+      // bodyGapChannels 디버그가 워커와 같은 캡슐을 보도록 최신본을 ref에 보관.
+      torsoCapsulesRef.current = capsules;
 
       workerRef.current?.postMessage(
         { type: "rebuildCollision", position, frontIndex, backIndex, wholeBodyIndex, capsules, centerZ } satisfies MainToGarmentWorkerMessage,
