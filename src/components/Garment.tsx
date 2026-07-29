@@ -1580,7 +1580,7 @@ export function Garment({ imageUrl }: Props) {
     // 최신 클로저를 공유하기 위해서다.
     const win = window as unknown as { __fitDebug?: Record<string, unknown> };
     if (!win.__fitDebug) win.__fitDebug = {};
-    win.__fitDebug.exportCollision = () => {
+    win.__fitDebug.exportCollision = (fileName?: string) => {
       const layout = lastInitLayoutRef.current;
       const step = lastStepPoseRef.current;
       if (!layout || !step) {
@@ -1621,7 +1621,7 @@ export function Garment({ imageUrl }: Props) {
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
       a.href = url;
-      a.download = "collision-fixture.json";
+      a.download = fileName ?? "collision-fixture.json";
       a.click();
       setTimeout(() => URL.revokeObjectURL(url), 10_000);
       const summary = {
@@ -1635,6 +1635,19 @@ export function Garment({ imageUrl }: Props) {
       console.log("[EXPORT-COLLISION]", JSON.stringify(summary));
       return summary;
     };
+    // DEV: ?exportfixture=<파일명> 이면 정착 후 자동으로 fixture를 내려받는다.
+    // 브라우저 콘솔을 손으로 두드리지 않고 치수 조합별 fixture를 뽑기 위한
+    // 것 — 문턱 실측(garmentFitLimits)은 몸 치수가 바뀐 fixture가 있어야
+    // 하고, 마네킹은 본 스케일 + 어깨/목 역스케일이라 Node에서 정점만
+    // 곱해 흉내내면 그 역스케일 구간이 틀어져 측정 자체가 무효가 된다.
+    const exportName = new URLSearchParams(window.location.search).get("exportfixture");
+    if (exportName) {
+      const delay = Number(new URLSearchParams(window.location.search).get("exportafter") ?? 8000);
+      setTimeout(() => {
+        const fn = win.__fitDebug?.exportCollision as ((n?: string) => unknown) | undefined;
+        console.log("[EXPORT-COLLISION] 자동 내보내기", exportName, fn?.(exportName));
+      }, delay);
+    }
     const timer = setTimeout(() => {
       const { position, frontIndex, backIndex, wholeBodyIndex } = collisionMesh.bake(root);
       // 46번(프레임 드랍 수정): position/wholeBodyIndex는 메인 스레드
