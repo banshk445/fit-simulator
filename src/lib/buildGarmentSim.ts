@@ -148,6 +148,8 @@ export function pinCorners(
   // 형태로 흡수한다 — 해제 시점에 따로 prev를 맞추면 그 자체가 또 하나의
   // 불연속이 된다.
   continuous = false,
+  // continuous일 때 목표를 여기 채운다(위치 강제는 반복 안 앵커가 담당).
+  targetsOut?: { i: number; x: number; y: number; z: number }[],
 ): void {
   const sideSign = Math.sign(pinLeft.x - pinRight.x) || 1;
   const thw0 = halfWidthAtRow(0, 0, pinLeft, pinRight); // widthM 무관(row0은 항상 shoulderHalfWidth)
@@ -177,14 +179,16 @@ export function pinCorners(
       if (continuous) {
         sim.pinned[i] = 0;
         const s = Math.min(1, Math.max(0, strength));
-        if (s <= 0) continue;
-        const ix = i * 3;
-        sim.positions[ix] += (baseX - sim.positions[ix]) * s;
-        sim.positions[ix + 1] += (targetY - sim.positions[ix + 1]) * s;
-        sim.positions[ix + 2] += (baseZ - sim.positions[ix + 2]) * s;
-        // 속도도 같은 계수로 — s=1이면 prev=p(속도 0, sim.pin과 동일).
-        for (let k = 0; k < 3; k++) {
-          sim.prevPositions[ix + k] += (sim.positions[ix + k] - sim.prevPositions[ix + k]) * s;
+        // 위치 강제는 **반복 안 앵커**(ClothSimulation.applyAnchors)가
+        // 한다 — 여기서 프레임당 1회 옮기면 제약이 지워버린다(1차 시도
+        // 실패 원인). 여기서는 목표만 넘기고, 속도(prevPositions)만
+        // 프레임당 1회 같은 계수로 완화한다(반복마다 하면 과감쇠).
+        targetsOut?.push({ i, x: baseX, y: targetY, z: baseZ });
+        if (s > 0) {
+          const ix = i * 3;
+          for (let k = 0; k < 3; k++) {
+            sim.prevPositions[ix + k] += (sim.positions[ix + k] - sim.prevPositions[ix + k]) * s;
+          }
         }
         continue;
       }

@@ -248,7 +248,15 @@ export function createGarmentSession(sim: ClothSimulation, env: GarmentFrameEnv)
   return {
     step(dt, gravity, preset, layout, pose) {
       const { pinLeft, pinRight, armLeft, armRight } = pose;
-      pinCorners(sim, pinLeft, pinRight, PANEL_FRONT, PANEL_BACK, armLeft, armRight, pose.necklineLift, env.pinStrength ?? 1, env.pinContinuous ?? false);
+      const anchorTargets: { i: number; x: number; y: number; z: number }[] = [];
+      pinCorners(sim, pinLeft, pinRight, PANEL_FRONT, PANEL_BACK, armLeft, armRight, pose.necklineLift, env.pinStrength ?? 1, env.pinContinuous ?? false, anchorTargets);
+      sim.setAnchors(anchorTargets);
+      // 복리 보정 — 반복 n회 누적 유효 강성이 프레임당 1회 모드의
+      // strength와 일치하도록 k'=1-(1-k)^(1/n)(A-①과 같은 식). 보정 없이
+      // 넣으면 strength 0.1도 사실상 하드 핀이 되어 스윕이 또 2점 측정.
+      const anchorK = env.pinContinuous
+        ? 1 - Math.pow(1 - Math.min(1, Math.max(0, env.pinStrength ?? 1)), 1 / preset.iterations)
+        : 0;
 
       if (env.columnRange) {
         const range = torsoColumnRange(COLS, pinLeft, pinRight, armLeft, armRight);
@@ -277,10 +285,16 @@ export function createGarmentSession(sim: ClothSimulation, env: GarmentFrameEnv)
       const anyOrder = env.orderColumn || env.orderRow;
       // everyIterationExtra 훅 — order 패스 + (M2-5) 반복 안 마찰.
       const iterExtra: CollisionResolver | undefined =
-        anyOrder || env.frictionIteration
+        anyOrder || env.frictionIteration || anchorK > 0
           ? (positions, pinned, n) => {
               if (anyOrder) torsoOrderExtra(positions, pinned, n);
               env.frictionIteration?.(positions, sim.prevPositions, pinned, n);
+              // 앵커는 반복의 **마지막**(충돌·마찰·순서 이후). 하드 핀이
+              // pinned=1로 충돌에서 아예 제외됐던 것과 같은 위상을 준다 —
+              // 흡착이 row0을 표면으로 끌어당기므로 앵커가 그 뒤에 와야
+              // 목표가 살아남는다. 반대 순서면 흡착이 마지막 발언권을
+              // 가져 등가성이 깨진다.
+              if (anchorK > 0) sim.applyAnchors(anchorK);
             }
           : undefined;
 

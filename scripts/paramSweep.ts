@@ -581,6 +581,8 @@ function runFixture(path: string): void {
       : {}),
     // 핀 전환 원복 — 기본 1(하드 핀). PIN=0.5 등으로 재현만 가능.
     pinStrength: process.env.PIN ? Number(process.env.PIN) : 1,
+    // PINCONT=1: 반복 안 앵커(연속 핀) 모드. 램프는 자동으로 켠다.
+    pinContinuous: process.env.PINCONT === "1",
     // M2-6: COLLAR=0으로 끄고 대조(신 코어 기본 on).
     collarStrainLimit: newCore && process.env.COLLAR !== "0" ? COLLAR_STRAIN_LIMIT : undefined,
     onCollarFired: (n: number) => {

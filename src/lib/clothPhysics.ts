@@ -341,6 +341,27 @@ export class ClothSimulation {
     return fired;
   }
 
+  // 반복 안 앵커 — row0 목표 위치로 당긴다. pinned=0을 유지한 채
+  // **매 Gauss-Seidel 반복**에서 강제한다는 게 핵심: 프레임당 1회
+  // 보정은 18회 도는 제약에 지워진다(마찰 M2-5, 연속 핀 (a) 1차 시도
+  // 둘 다 같은 구조로 실패). 강성은 호출자가 복리 보정(k'=1-(1-k)^(1/n))
+  // 해서 넘긴다 — 안 하면 실효 강성이 폭증해 어떤 값이든 하드 핀이 된다.
+  private anchors: { i: number; x: number; y: number; z: number }[] = [];
+
+  setAnchors(list: { i: number; x: number; y: number; z: number }[]): void {
+    this.anchors = list;
+  }
+
+  applyAnchors(kPerIteration: number): void {
+    if (kPerIteration <= 0) return;
+    for (const a of this.anchors) {
+      const ix = a.i * 3;
+      this.positions[ix] += (a.x - this.positions[ix]) * kPerIteration;
+      this.positions[ix + 1] += (a.y - this.positions[ix + 1]) * kPerIteration;
+      this.positions[ix + 2] += (a.z - this.positions[ix + 2]) * kPerIteration;
+    }
+  }
+
   syncWeldedPositions(): void {
     for (let i = 0; i < this.weldAliases.length; i++) {
       const ai = this.weldAliases[i] * 3;
