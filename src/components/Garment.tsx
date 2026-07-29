@@ -29,6 +29,7 @@ import type { MainToGarmentWorkerMessage, GarmentWorkerToMainMessage, ArmShapeMs
 import { MODEL_URL } from "./Mannequin";
 import { armholeSeamStrip, buildSeamBridge, shoulderSeamStrip, sideSeamStrip, updateSeamBridge } from "./seamBridge";
 import { buildWeldedGarmentGeometry } from "./weldedGarmentGeometry";
+import { buildTrimBand, type TrimRing } from "./trimBands";
 
 interface Props {
   imageUrl: string;
@@ -573,6 +574,45 @@ export function Garment({ imageUrl }: Props) {
   // 낡은 seamBridge를 붙들 수 있다 — torsoColumnRangeRef와 같은 ref 패턴으로
   // 항상 현재 것을 보게 한다(지오메트리와 쌍 테이블이 같은 useMemo에서 나오므로
   // 둘이 어긋날 일도 없다).
+  // 넥밴드/커프 — 렌더 전용 트림(trimBands.ts). 물리 무관.
+  // 넥밴드: row0 링(앞판 xMin..xMax → 뒤판 역순). 커프: 소매 마지막 행 링.
+  const neckBand = useMemo(() => {
+    const cols = torsoSleeveMax - torsoSleeveMin + 1;
+    const ring: TrimRing = {
+      name: "neck",
+      count: cols * 2,
+      read: (out, i) => {
+        const front = i < cols;
+        const x = front ? torsoSleeveMin + i : torsoSleeveMax - (i - cols);
+        const src = front ? frontPositions : backPositions;
+        const o = x * 3;
+        out[0] = src[o];
+        out[1] = src[o + 1];
+        out[2] = src[o + 2];
+      },
+    };
+    return buildTrimBand([ring], 0.02);
+  }, [torsoSleeveMin, torsoSleeveMax, frontPositions, backPositions]);
+  const cuffBand = useMemo(() => {
+    const lastRow = SLEEVE_RING_ROWS - 1;
+    const mk = (src: Float32Array, name: string): TrimRing => ({
+      name,
+      count: SLEEVE_RING_COLS,
+      read: (out, i) => {
+        const o = (lastRow * SLEEVE_RING_COLS + i) * 3;
+        out[0] = src[o];
+        out[1] = src[o + 1];
+        out[2] = src[o + 2];
+      },
+    });
+    return buildTrimBand([mk(sleevePositionsLeft, "cuffL"), mk(sleevePositionsRight, "cuffR")], 0.025);
+  }, [sleevePositionsLeft, sleevePositionsRight]);
+  useEffect(() => () => { neckBand.dispose(); cuffBand.dispose(); }, [neckBand, cuffBand]);
+  const neckBandRef = useRef(neckBand);
+  neckBandRef.current = neckBand;
+  const cuffBandRef = useRef(cuffBand);
+  cuffBandRef.current = cuffBand;
+
   const seamBridgeRef = useRef(seamBridge);
   seamBridgeRef.current = seamBridge;
   const frontPosTex = useMemo(() => makeDataTexture(COLS, ROWS), []);
@@ -1327,6 +1367,8 @@ export function Garment({ imageUrl }: Props) {
       // 토글이니 그대로 둠).
       if (newCoreRef.current) {
         weldedGeometryRef.current.update(msg.front, msg.back, msg.sleeveLeft, msg.sleeveRight);
+        neckBandRef.current.update();
+        cuffBandRef.current.update();
         updateSeamBridge(seamBridgeRef.current, {
           front: frontPositions,
           back: backPositions,
@@ -1354,6 +1396,8 @@ export function Garment({ imageUrl }: Props) {
         sleeveLeft: sleevePositionsLeft,
         sleeveRight: sleevePositionsRight,
       });
+      neckBandRef.current.update();
+      cuffBandRef.current.update();
       frontGeometry.computeBoundingSphere();
       backGeometry.computeBoundingSphere();
 
@@ -1865,6 +1909,18 @@ export function Garment({ imageUrl }: Props) {
         <mesh geometry={seamBridge.geometry} frustumCulled={false}>
           <meshStandardMaterial key="seam-bridge" color={seamColor} side={THREE.DoubleSide} roughness={0.85} />
         </mesh>
+      )}
+      {/* 넥밴드(립)·커프 — 렌더 전용. 대표색보다 어둡게 해 실제 립처럼
+          보이게 한다. 물리에는 관여하지 않는다(trimBands.ts 주석). */}
+      {!showAllRegionsWireframe && (
+        <>
+          <mesh geometry={neckBand.geometry} frustumCulled={false}>
+            <meshStandardMaterial key="neck-band" color={seamColor} side={THREE.DoubleSide} roughness={0.75} polygonOffset polygonOffsetFactor={-6} polygonOffsetUnits={-6} />
+          </mesh>
+          <mesh geometry={cuffBand.geometry} frustumCulled={false}>
+            <meshStandardMaterial key="cuff-band" color={seamColor} side={THREE.DoubleSide} roughness={0.75} polygonOffset polygonOffsetFactor={-6} polygonOffsetUnits={-6} />
+          </mesh>
+        </>
       )}
       {/* 47번(디버그 전용): 영역별 와이어프레임 — showFrontWireframe(초록,
           전체 앞판)과 같은 방식(단색 머티리얼 교체)이지만, 기존 메시를
