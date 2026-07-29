@@ -131,6 +131,23 @@ export function pinCorners(
   armRight: ArmDir,
   necklineLift?: readonly number[],
   strength = 1,
+  // 연속 모드(램프 전용). false면 기존 동작(strength>=1은 sim.pin,
+  // 미만은 pinned=0 + 위치 lerp) — 그 경로는 **불연속**이다: 1.0에서
+  // 0.98로 넘어가는 순간 pinned 불리언이 뒤집혀 충돌·순서·자체충돌·중력이
+  // 한꺼번에 그 행에 작동하기 시작하고, sim.pin()이 죽여두던 속도가
+  // 갑자기 살아난다. 실측(램프 시계열): 핀 2% 해제 한 프레임에 tf hit
+  // 0.897→0.508, Δ20이 MAX_DISPLACEMENT_PER_SUBSTEP(50mm)에 4프레임
+  // 연속 포화. 스윕·램프는 파라미터가 실제로 연속일 때만 유효하다(함정 7).
+  //
+  // true면 strength 값과 무관하게 항상 pinned=0으로 두고, 위치와
+  // **속도(prevPositions)를 같은 계수로** 보간한다:
+  //   p   += (target - p) * s
+  //   prev = lerp(prev, p, s)
+  // s=1이면 위치=목표·속도=0으로 sim.pin()과 같은 효과가 되고, s가
+  // 내려갈수록 둘 다 매끄럽게 풀린다. 속도 동기화가 (b) 항목을 연속
+  // 형태로 흡수한다 — 해제 시점에 따로 prev를 맞추면 그 자체가 또 하나의
+  // 불연속이 된다.
+  continuous = false,
 ): void {
   const sideSign = Math.sign(pinLeft.x - pinRight.x) || 1;
   const thw0 = halfWidthAtRow(0, 0, pinLeft, pinRight); // widthM 무관(row0은 항상 shoulderHalfWidth)
@@ -153,8 +170,22 @@ export function pinCorners(
       const lift = necklineLift?.[x] ?? 0;
       const targetY = baseY + rise + lift;
       const i = sim.index(panel, x, 0);
-      if (strength >= 1) {
+      if (!continuous && strength >= 1) {
         sim.pin(i, baseX, targetY, baseZ);
+        continue;
+      }
+      if (continuous) {
+        sim.pinned[i] = 0;
+        const s = Math.min(1, Math.max(0, strength));
+        if (s <= 0) continue;
+        const ix = i * 3;
+        sim.positions[ix] += (baseX - sim.positions[ix]) * s;
+        sim.positions[ix + 1] += (targetY - sim.positions[ix + 1]) * s;
+        sim.positions[ix + 2] += (baseZ - sim.positions[ix + 2]) * s;
+        // 속도도 같은 계수로 — s=1이면 prev=p(속도 0, sim.pin과 동일).
+        for (let k = 0; k < 3; k++) {
+          sim.prevPositions[ix + k] += (sim.positions[ix + k] - sim.prevPositions[ix + k]) * s;
+        }
         continue;
       }
       // 소프트 앵커 — pinned를 세우지 않는다(충돌·마찰·제약이 이 행에도

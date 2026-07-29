@@ -590,6 +590,7 @@ function runFixture(path: string): void {
   const session = createGarmentSession(sim, env);
 
   let collarFired = 0;
+  let clampSaturated = 0;
   let contactShoulder = 0, contactShoulderN = 0, contactTorso = 0, contactTorsoN = 0, contactFrames = 0;
   const armholeStartRowConst = Math.round(ROWS * ARMHOLE_ROW_FRACTION);
   const preset = FABRIC_PRESETS[pose.fabric];
@@ -732,6 +733,9 @@ function runFixture(path: string): void {
     layout.topY = baseTopY + delta;
     const pin = t < 0.55 ? 1 : t < 0.85 ? 1 - (t - 0.55) / 0.3 : 0;
     (env as { pinStrength?: number }).pinStrength = pin;
+    // 램프 중에는 P1부터 연속 모드 — 중간에 모드가 바뀌면 그 지점이
+    // 새 불연속이 된다.
+    (env as { pinContinuous?: boolean }).pinContinuous = true;
   };
 
   const t0 = performance.now();
@@ -744,6 +748,7 @@ function runFixture(path: string): void {
       if (d > md) md = d;
     }
     deltaHist.push(md * 1000);
+    if (process.env.TIMESERIES === "1" && md * 1000 >= 49.9) clampSaturated++;
     prevFrame.set(sim.positions);
     // TIMESERIES=1: P3 시작(55%)~끝까지 5프레임 간격 — 크리프 vs 용량부족 판별.
     if (process.env.TIMESERIES === "1" && f >= Math.floor(FRAMES * 0.55) && f % 5 === 0) {
@@ -914,6 +919,7 @@ function runFixture(path: string): void {
     );
   }
   console.log(`  collar 발화 ${collarFired}회 (배선 검증 — 핀 고정 상태면 0이 정상)`);
+  if (process.env.TIMESERIES === "1") console.log(`  Δ 클램프(50mm) 포화 프레임 ${clampSaturated}개 — 0이어야 연속`);
   snapshot(ramp ? "P4끝" : "최종", maxDelta20());
   console.log(`  물리 ${physMs}ms/프레임 (BVH+자체충돌 포함)`);
   if (process.env.RECON === "1") {

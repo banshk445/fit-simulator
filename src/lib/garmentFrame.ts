@@ -223,6 +223,8 @@ export interface GarmentFrameEnv {
   frictionIterationReset?: (positions: Float32Array, pinned: Uint8Array, n: number) => void;
   // 핀 전환 3단계: 1=하드 핀(기존), 1미만=칼라 소프트 앵커, 0=앵커 없음.
   pinStrength?: number;
+  // 연속 핀 모드(램프 전용) — pinCorners 주석 참고.
+  pinContinuous?: boolean;
   // M2-6: row0 링 신장 상한(예: 1.02). 0/undefined면 미적용.
   collarStrainLimit?: number;
   // 발화 카운트 수집(배선 검증용) — 있으면 프레임마다 누적 호출.
@@ -246,7 +248,7 @@ export function createGarmentSession(sim: ClothSimulation, env: GarmentFrameEnv)
   return {
     step(dt, gravity, preset, layout, pose) {
       const { pinLeft, pinRight, armLeft, armRight } = pose;
-      pinCorners(sim, pinLeft, pinRight, PANEL_FRONT, PANEL_BACK, armLeft, armRight, pose.necklineLift, env.pinStrength ?? 1);
+      pinCorners(sim, pinLeft, pinRight, PANEL_FRONT, PANEL_BACK, armLeft, armRight, pose.necklineLift, env.pinStrength ?? 1, env.pinContinuous ?? false);
 
       if (env.columnRange) {
         const range = torsoColumnRange(COLS, pinLeft, pinRight, armLeft, armRight);
