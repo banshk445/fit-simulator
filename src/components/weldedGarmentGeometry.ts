@@ -30,6 +30,45 @@ const F = COLS * ROWS;
 const S = SLEEVE_RING_COLS * SLEEVE_RING_ROWS;
 export const WELDED_TOTAL_PARTICLES = F * 2 + S * 2;
 
+// E: 렌더 전용 세분화(물리 44x28 유지). 파티클 정점은 **앞에 그대로 두고**
+// 사이 표본을 뒤에 덧붙인다 — positions.set(front, 0) 같은 1:1 복사 경로와
+// setFit의 인덱스 계산이 그대로 유효해야 하기 때문이다.
+//
+// 경계는 세분화하지 않는다(선형 유지): 목선 행(y=0)과 몸통 경계 열
+// (torsoColMin/Max). 각각 넥밴드와 시임 브리지·암홀 용접이 파티클 좌표를
+// 그대로 읽어 붙는 자리라, 그 선이 휘면 밴드가 뜨고 이음매가 갈라진다.
+// 밑단·내부만 Catmull-Rom으로 부드럽게 한다.
+export const RENDER_SUBDIV = 2;
+const FX = (COLS - 1) * RENDER_SUBDIV + 1;
+const FY = (ROWS - 1) * RENDER_SUBDIV + 1;
+const EXTRA_PER_PANEL = FX * FY - COLS * ROWS;
+export const WELDED_TOTAL_VERTICES = WELDED_TOTAL_PARTICLES + EXTRA_PER_PANEL * 2;
+
+/**
+ * 세분화 격자 (i,j) -> 정점 인덱스. 원래 격자점이면 파티클 인덱스 그대로,
+ * 아니면 덧붙인 표본. 산식으로 세다 틀리기 쉬워 한 번 훑어 표로 만든다.
+ */
+const FINE_MAP: Int32Array[] = [0, 1].map((panel) => {
+  const map = new Int32Array(FX * FY);
+  let extra = WELDED_TOTAL_PARTICLES + panel * EXTRA_PER_PANEL;
+  for (let j = 0; j < FY; j++) {
+    for (let i = 0; i < FX; i++) {
+      map[j * FX + i] =
+        i % RENDER_SUBDIV === 0 && j % RENDER_SUBDIV === 0
+          ? panel * F + (j / RENDER_SUBDIV) * COLS + i / RENDER_SUBDIV
+          : extra++;
+    }
+  }
+  return map;
+});
+const fineVertex = (panel: number, i: number, j: number): number => FINE_MAP[panel][j * FX + i];
+
+function catmull(p0: number, p1: number, p2: number, p3: number, t: number): number {
+  const t2 = t * t;
+  const t3 = t2 * t;
+  return 0.5 * ((2 * p1) + (-p0 + p2) * t + (2 * p0 - 5 * p1 + 4 * p2 - p3) * t2 + (-p0 + 3 * p1 - 3 * p2 + p3) * t3);
+}
+
 // 실측 회귀(M1 화면 확인): 앞/뒤판 삼각형을 전체 44열로 만들었더니 몸통
 // 범위(xMin~xMax) 밖 "구 플랩" 열 — 물리로는 계속 돌지만 구 경로에선
 // 렌더 제외였던 — 이 화면에 되살아나 암홀 옆 각진 판처럼 돌출했다.
@@ -44,18 +83,18 @@ export interface WeldedGarmentGeometry {
 }
 
 export function buildWeldedGarmentGeometry(torsoColMin = 0, torsoColMax = COLS - 1): WeldedGarmentGeometry {
-  const positions = new Float32Array(WELDED_TOTAL_PARTICLES * 3);
-  const normals = new Float32Array(WELDED_TOTAL_PARTICLES * 3);
-  const uvs = new Float32Array(WELDED_TOTAL_PARTICLES * 2);
+  const positions = new Float32Array(WELDED_TOTAL_VERTICES * 3);
+  const normals = new Float32Array(WELDED_TOTAL_VERTICES * 3);
+  const uvs = new Float32Array(WELDED_TOTAL_VERTICES * 2);
 
   // UV — 앞/뒤판만(소매는 단색 머티리얼이라 미사용, 0으로 둠).
+  // 세분화 표본도 같은 공식(파티클 격자 좌표계)으로 찍어야 텍스처가 안 밀린다.
   for (let panel = 0; panel < 2; panel++) {
-    const base = panel * F;
-    for (let y = 0; y < ROWS; y++) {
-      for (let x = 0; x < COLS; x++) {
-        const i = base + y * COLS + x;
-        uvs[i * 2] = x / (COLS - 1);
-        uvs[i * 2 + 1] = y / (ROWS - 1);
+    for (let j = 0; j < FY; j++) {
+      for (let i = 0; i < FX; i++) {
+        const v = fineVertex(panel, i, j);
+        uvs[v * 2] = i / (FX - 1);
+        uvs[v * 2 + 1] = j / (FY - 1);
       }
     }
   }
@@ -74,10 +113,23 @@ export function buildWeldedGarmentGeometry(torsoColMin = 0, torsoColMax = COLS -
       }
     }
   };
+  const pushFineTorso = (panel: number) => {
+    const i0 = torsoColMin * RENDER_SUBDIV;
+    const i1 = torsoColMax * RENDER_SUBDIV;
+    for (let j = 0; j < FY - 1; j++) {
+      for (let i = i0; i < i1; i++) {
+        const a = fineVertex(panel, i, j);
+        const b = fineVertex(panel, i + 1, j);
+        const c = fineVertex(panel, i, j + 1);
+        const d = fineVertex(panel, i + 1, j + 1);
+        index.push(a, b, c, b, d, c);
+      }
+    }
+  };
   const frontStart = index.length;
-  pushGrid(0, COLS, ROWS, false, torsoColMin, torsoColMax);
+  pushFineTorso(0);
   const backStart = index.length;
-  pushGrid(F, COLS, ROWS, false, torsoColMin, torsoColMax);
+  pushFineTorso(1);
   const sleeveStart = index.length;
   pushGrid(F * 2, SLEEVE_RING_COLS, SLEEVE_RING_ROWS, true);
   pushGrid(F * 2 + S, SLEEVE_RING_COLS, SLEEVE_RING_ROWS, true);
@@ -96,7 +148,7 @@ export function buildWeldedGarmentGeometry(torsoColMin = 0, torsoColMax = COLS -
   // 없는 직결 경로라 그 방식을 못 쓴다. **속성은 항상 만들어 둔다** —
   // color attribute가 없는 채로 vertexColors를 켜면 전부 검게 나온다
   // (과거 사고, Garment.tsx 주석).
-  const colors = new Float32Array(WELDED_TOTAL_PARTICLES * 3).fill(1);
+  const colors = new Float32Array(WELDED_TOTAL_VERTICES * 3).fill(1);
   const colorAttr = new THREE.BufferAttribute(colors, 3);
   colorAttr.setUsage(THREE.DynamicDrawUsage);
   geometry.setAttribute("color", colorAttr);
@@ -105,8 +157,55 @@ export function buildWeldedGarmentGeometry(torsoColMin = 0, torsoColMax = COLS -
   geometry.addGroup(backStart, sleeveStart - backStart, 1);
   geometry.addGroup(sleeveStart, indexEnd - sleeveStart, 2);
 
+  // 세분화 표본 채우기. 열 방향으로 먼저(행마다), 그다음 행 방향으로.
+  // 경계 보존 규칙:
+  //  - 목선 행(j=0)은 열 방향 **선형** — 넥밴드가 이 선에 붙는다.
+  //  - 몸통 경계 열(x=torsoColMin/Max)은 행 방향 **선형** — 시임 브리지와
+  //    암홀 용접이 이 선에 붙는다.
+  // 나머지(밑단 포함 내부)만 Catmull-Rom.
+  const rowSamples = new Float32Array(FX * ROWS * 3);
+  const at = (panel: number, x: number, y: number, k: number) =>
+    positions[(panel * F + y * COLS + Math.min(COLS - 1, Math.max(0, x))) * 3 + k];
+  const fillFineTorso = (panel: number) => {
+    for (let y = 0; y < ROWS; y++) {
+      const linearRow = y === 0;
+      for (let i = 0; i < FX; i++) {
+        const x0 = Math.floor(i / RENDER_SUBDIV);
+        const t = (i % RENDER_SUBDIV) / RENDER_SUBDIV;
+        const o = (y * FX + i) * 3;
+        for (let k = 0; k < 3; k++) {
+          const p1 = at(panel, x0, y, k);
+          if (t === 0) { rowSamples[o + k] = p1; continue; }
+          const p2 = at(panel, x0 + 1, y, k);
+          rowSamples[o + k] = linearRow
+            ? p1 + (p2 - p1) * t
+            : catmull(at(panel, x0 - 1, y, k), p1, p2, at(panel, x0 + 2, y, k), t);
+        }
+      }
+    }
+    const rowAt = (y: number, i: number, k: number) => rowSamples[(Math.min(ROWS - 1, Math.max(0, y)) * FX + i) * 3 + k];
+    for (let j = 0; j < FY; j++) {
+      const y0 = Math.floor(j / RENDER_SUBDIV);
+      const t = (j % RENDER_SUBDIV) / RENDER_SUBDIV;
+      for (let i = 0; i < FX; i++) {
+        if (t === 0 && i % RENDER_SUBDIV === 0) continue; // 원래 파티클 — 건드리지 않는다
+        const onBoundaryCol = i % RENDER_SUBDIV === 0 &&
+          (i / RENDER_SUBDIV === torsoColMin || i / RENDER_SUBDIV === torsoColMax);
+        const v = fineVertex(panel, i, j) * 3;
+        for (let k = 0; k < 3; k++) {
+          const p1 = rowAt(y0, i, k);
+          if (t === 0) { positions[v + k] = p1; continue; }
+          const p2 = rowAt(y0 + 1, i, k);
+          positions[v + k] = onBoundaryCol
+            ? p1 + (p2 - p1) * t
+            : catmull(rowAt(y0 - 1, i, k), p1, p2, rowAt(y0 + 2, i, k), t);
+        }
+      }
+    }
+  };
+
   const indexArr = Uint32Array.from(index);
-  const normalAcc = new Float32Array(WELDED_TOTAL_PARTICLES * 3);
+  const normalAcc = new Float32Array(WELDED_TOTAL_VERTICES * 3);
 
   return {
     geometry,
@@ -137,7 +236,7 @@ export function buildWeldedGarmentGeometry(torsoColMin = 0, torsoColMax = COLS -
       write(frontFit, 0);
       write(backFit, F);
       // 소매는 워커가 여유를 안 보낸다 — 중립(적정=노랑)으로 둔다.
-      for (let i = F * 2; i < WELDED_TOTAL_PARTICLES; i++) {
+      for (let i = F * 2; i < WELDED_TOTAL_VERTICES; i++) {
         colors[i * 3] = 0.95;
         colors[i * 3 + 1] = 0.85;
         colors[i * 3 + 2] = 0.1;
@@ -149,6 +248,8 @@ export function buildWeldedGarmentGeometry(torsoColMin = 0, torsoColMax = COLS -
       positions.set(back, F * 3);
       positions.set(sleeveLeft, F * 2 * 3);
       positions.set(sleeveRight, (F * 2 + S) * 3);
+      fillFineTorso(0);
+      fillFineTorso(1);
 
       normalAcc.fill(0);
       for (let t = 0; t < indexArr.length; t += 3) {
@@ -171,7 +272,7 @@ export function buildWeldedGarmentGeometry(torsoColMin = 0, torsoColMax = COLS -
           normalAcc[vi + 2] += nz;
         }
       }
-      for (let i = 0; i < WELDED_TOTAL_PARTICLES; i++) {
+      for (let i = 0; i < WELDED_TOTAL_VERTICES; i++) {
         const ci = i * 3;
         const nx = normalAcc[ci];
         const ny = normalAcc[ci + 1];
