@@ -890,6 +890,42 @@ export function torsoColumnRange(
   return { xMin, xMax };
 }
 
+// 목 구멍 열 범위 — 넥밴드(렌더 트림)가 붙을 구간. necklineRise가 "구멍"
+// 으로 취급하는 조건(|shoulderU| <= NECKLINE_HOLE_WIDTH_FRACTION/2)을
+// 그대로 뒤집은 것이다: shoulderU = s * frac * 0.5 이므로
+//   |shoulderU| <= HOLE/2  ⟺  frac <= HOLE.
+// 하드코딩한 열 번호가 아니라 목선을 만드는 그 공식에서 도출하므로,
+// 어깨너비·팔 길이·COLS가 바뀌어도 따라온다.
+export function neckHoleColumnRange(
+  cols: number,
+  pinLeft: Vec3Like,
+  pinRight: Vec3Like,
+  armLeft: ArmDir,
+  armRight: ArmDir,
+): { xMin: number; xMax: number } {
+  const thw0 = halfWidthAtRow(0, 0, pinLeft, pinRight);
+  const armSpanHalf = thw0 + Math.max(armLeft.length, armRight.length);
+  const fracAt = (x: number) => {
+    const u = x / (cols - 1) - 0.5;
+    return thw0 > 0 ? (Math.abs(u) * 2 * armSpanHalf) / thw0 : 0;
+  };
+  let xMin = 0;
+  let xMax = cols - 1;
+  for (let x = 0; x < cols; x++) {
+    if (fracAt(x) <= NECKLINE_HOLE_WIDTH_FRACTION) {
+      xMin = x;
+      break;
+    }
+  }
+  for (let x = cols - 1; x >= 0; x--) {
+    if (fracAt(x) <= NECKLINE_HOLE_WIDTH_FRACTION) {
+      xMax = x;
+      break;
+    }
+  }
+  return { xMin, xMax };
+}
+
 // 46번(디테일 조각 1단계 — 넥라인/어깨 안착): 목~쇄골 중앙부(frac이 0에
 // 가까운 안쪽 열, y=1~2)는 레이아웃이 배치한 그대로 굳어 있어 마네킹
 // 피부에서 살짝 붕 떠 보였다 — pullShoulderCapToSurface는 rowT가 row1

@@ -12,7 +12,7 @@ import { capsuleGapBands, computeCapsuleGapChannels, type GridView } from "../li
 import { findArmDirection, findShortSleeveDirection, findShoulderBones } from "../lib/boneUtils";
 import { computeShoulderPin } from "../lib/shoulderPin";
 import { compositeGarmentTexture } from "../lib/garmentTextureComposite";
-import { torsoColumnRange } from "../lib/buildGarmentSim";
+import { neckHoleColumnRange, torsoColumnRange } from "../lib/buildGarmentSim";
 import { angleDegBetweenNormals, armholeRingJaggedness, ringJaggedness } from "../lib/seamDiagnostics";
 import {
   ARM_COLLISION_RADIUS,
@@ -438,6 +438,11 @@ export function Garment({ imageUrl }: Props) {
     const v = new URLSearchParams(window.location.search).get("pin");
     return v === null ? undefined : Number(v);
   }, []);
+  // DEV: ?trimdebug=1 이면 넥밴드=빨강 / 커프=초록으로 칠한다. 밴드가
+  // 화면에서 안 보일 때 "안 그려지는 것"인지 "가려진 것"인지를 가르는
+  // 유일하게 결정적인 검사였다(2026-07-29: 목은 마네킹 목 안으로 들어가
+  // 가려져 있었고, 커프는 정상이었다).
+  const trimDebug = useMemo(() => new URLSearchParams(window.location.search).get("trimdebug") === "1", []);
   const newCoreRef = useRef(newCore);
   newCoreRef.current = newCore;
   // 47번(디버그 전용): 영역별 와이어프레임 지오메트리를 나눌 몸통(xMin~xMax)
@@ -447,6 +452,10 @@ export function Garment({ imageUrl }: Props) {
   // 양쪽(x<torsoSleeveMin, x>torsoSleeveMax) 두 구간이다.
   const [torsoSleeveMin, setTorsoSleeveMin] = useState(0);
   const [torsoSleeveMax, setTorsoSleeveMax] = useState(COLS - 1);
+  // 넥밴드가 붙을 목 구멍 열 범위(neckHoleColumnRange에서 도출 — 위 어깨
+  // 경계와 같은 useEffect에서 채운다).
+  const [neckMin, setNeckMin] = useState(0);
+  const [neckMax, setNeckMax] = useState(COLS - 1);
   // 몸통 열 범위 밖 구 플랩 셀은 삼각형 생성에서 제외(실측 회귀: 암홀 옆
   // 각진 판 돌출 — weldedGarmentGeometry.ts 주석). 범위가 바뀌면 재생성.
   // onmessage 클로저는 이 memo를 deps에 안 가지므로 ref로 최신 것을 본다
@@ -577,22 +586,32 @@ export function Garment({ imageUrl }: Props) {
   // 넥밴드/커프 — 렌더 전용 트림(trimBands.ts). 물리 무관.
   // 넥밴드: row0 링(앞판 xMin..xMax → 뒤판 역순). 커프: 소매 마지막 행 링.
   const neckBand = useMemo(() => {
-    const cols = torsoSleeveMax - torsoSleeveMin + 1;
+    const cols = neckMax - neckMin + 1;
     const ring: TrimRing = {
       name: "neck",
       count: cols * 2,
       read: (out, i) => {
         const front = i < cols;
-        const x = front ? torsoSleeveMin + i : torsoSleeveMax - (i - cols);
+        const x = front ? neckMin + i : neckMax - (i - cols);
         const src = front ? frontPositions : backPositions;
         const o = x * 3;
         out[0] = src[o];
         out[1] = src[o + 1];
         out[2] = src[o + 2];
       },
+      // 안쪽 = row1(목선 바로 아래 행).
+      readInner: (out, i) => {
+        const front = i < cols;
+        const x = front ? neckMin + i : neckMax - (i - cols);
+        const src = front ? frontPositions : backPositions;
+        const o = (COLS + x) * 3;
+        out[0] = src[o];
+        out[1] = src[o + 1];
+        out[2] = src[o + 2];
+      },
     };
-    return buildTrimBand([ring], 0.02);
-  }, [torsoSleeveMin, torsoSleeveMax, frontPositions, backPositions]);
+    return buildTrimBand([ring], { surfaceInset: 0.8 });
+  }, [neckMin, neckMax, frontPositions, backPositions]);
   const cuffBand = useMemo(() => {
     const lastRow = SLEEVE_RING_ROWS - 1;
     const mk = (src: Float32Array, name: string): TrimRing => ({
@@ -604,8 +623,15 @@ export function Garment({ imageUrl }: Props) {
         out[1] = src[o + 1];
         out[2] = src[o + 2];
       },
+      // 안쪽 = 소매 끝에서 한 링 위.
+      readInner: (out, i) => {
+        const o = ((lastRow - 1) * SLEEVE_RING_COLS + i) * 3;
+        out[0] = src[o];
+        out[1] = src[o + 1];
+        out[2] = src[o + 2];
+      },
     });
-    return buildTrimBand([mk(sleevePositionsLeft, "cuffL"), mk(sleevePositionsRight, "cuffR")], 0.025);
+    return buildTrimBand([mk(sleevePositionsLeft, "cuffL"), mk(sleevePositionsRight, "cuffR")], { extrude: 0.025 });
   }, [sleevePositionsLeft, sleevePositionsRight]);
   useEffect(() => () => { neckBand.dispose(); cuffBand.dispose(); }, [neckBand, cuffBand]);
   const neckBandRef = useRef(neckBand);
@@ -1640,6 +1666,9 @@ export function Garment({ imageUrl }: Props) {
     // 47번(디버그 전용 와이어프레임) 영역 분할 경계.
     setTorsoSleeveMin(xMin);
     setTorsoSleeveMax(xMax);
+    const neckRange = neckHoleColumnRange(COLS, pins.left, pins.right, armShapes.left, armShapes.right);
+    setNeckMin(neckRange.xMin);
+    setNeckMax(neckRange.xMax);
 
     generationRef.current += 1;
     lastInitLayoutRef.current = { widthM, heightM, topY, centerZ, sleeveWidthM: garmentSize.sleeveWidth / 100 };
@@ -1915,10 +1944,10 @@ export function Garment({ imageUrl }: Props) {
       {!showAllRegionsWireframe && (
         <>
           <mesh geometry={neckBand.geometry} frustumCulled={false}>
-            <meshStandardMaterial key="neck-band" color={seamColor} side={THREE.DoubleSide} roughness={0.75} polygonOffset polygonOffsetFactor={-6} polygonOffsetUnits={-6} />
+            <meshStandardMaterial key="neck-band" color={trimDebug ? "#ff0000" : seamColor} side={THREE.DoubleSide} roughness={0.75} polygonOffset polygonOffsetFactor={-6} polygonOffsetUnits={-6} />
           </mesh>
           <mesh geometry={cuffBand.geometry} frustumCulled={false}>
-            <meshStandardMaterial key="cuff-band" color={seamColor} side={THREE.DoubleSide} roughness={0.75} polygonOffset polygonOffsetFactor={-6} polygonOffsetUnits={-6} />
+            <meshStandardMaterial key="cuff-band" color={trimDebug ? "#00ff00" : seamColor} side={THREE.DoubleSide} roughness={0.75} polygonOffset polygonOffsetFactor={-6} polygonOffsetUnits={-6} />
           </mesh>
         </>
       )}

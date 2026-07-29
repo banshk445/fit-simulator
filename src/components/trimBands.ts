@@ -15,6 +15,13 @@ export interface TrimRing {
   name: string;
   /** 링을 이루는 정점 인덱스(순서대로, 닫힌 고리). 배열 출처는 호출자. */
   read(out: Float32Array, i: number): void;
+  /**
+   * 링 바로 안쪽 행의 대응 정점(목이면 row1, 커프면 lastRow-1).
+   * 밀어낼 방향의 **부호**를 정하는 데만 쓴다 — 접선×방사는 링 감김
+   * 방향에 따라 부호가 임의라, 이게 없으면 밴드가 옷 안쪽으로 뻗어
+   * 본체에 가려진다(실제로 그랬다. metrics-log 2026-07-29 블록).
+   */
+  readInner(out: Float32Array, i: number): void;
   count: number;
 }
 
@@ -24,8 +31,18 @@ export interface TrimBand {
   dispose(): void;
 }
 
-// widthM: 밴드 폭(링 평면 안쪽으로). 실제 티셔츠 넥립 2cm, 커프 2.5cm 근방.
-export function buildTrimBand(rings: readonly TrimRing[], widthM: number): TrimBand {
+/**
+ * 밴드를 어디에 놓을지 두 가지 — 실측으로 갈렸다(2026-07-29 색 표시 검증).
+ *
+ * - `extrude`: 가장자리에서 링 평면 수직으로 폭만큼 **밖으로** 뻗는다.
+ *   커프는 이게 맞다(소매 끝 너머로 나가 초록 밴드가 또렷이 보였다).
+ * - `surfaceInset`: 가장자리와 안쪽 행 사이를 이 비율로 보간한 **옷 표면
+ *   위 스트립**. 목은 이거여야 한다 — extrude로 하면 밴드가 위로 뻗어
+ *   마네킹 목 안으로 들어가 어깨 부분만 삐져나왔다(빨강 표시로 확인).
+ */
+export type TrimBandShape = { extrude: number } | { surfaceInset: number };
+
+export function buildTrimBand(rings: readonly TrimRing[], shape: TrimBandShape): TrimBand {
   const total = rings.reduce((n, r) => n + r.count, 0);
   const positions = new Float32Array(total * 2 * 3);
   const indices: number[] = [];
@@ -50,12 +67,29 @@ export function buildTrimBand(rings: readonly TrimRing[], widthM: number): TrimB
   const p = new Float32Array(3);
   const prev = new Float32Array(3);
   const next = new Float32Array(3);
+  const inner = new Float32Array(3);
+  const n = new Float32Array(3);
 
   return {
     geometry,
     update() {
       let off = 0;
       for (const ring of rings) {
+        if ("surfaceInset" in shape) {
+          // 옷 표면 위 스트립 — 방향 계산이 필요 없다. 가장자리 정점과
+          // 안쪽 행 정점 사이를 비율만큼 보간한 두 줄.
+          for (let i = 0; i < ring.count; i++) {
+            ring.read(p, i);
+            ring.readInner(inner, i);
+            const o = (off + i * 2) * 3;
+            for (let k = 0; k < 3; k++) {
+              positions[o + k] = p[k];
+              positions[o + 3 + k] = p[k] + (inner[k] - p[k]) * shape.surfaceInset;
+            }
+          }
+          off += ring.count * 2;
+          continue;
+        }
         // 링 중심 — 밴드를 안쪽으로 밀 방향의 기준.
         let cx = 0, cy = 0, cz = 0;
         for (let i = 0; i < ring.count; i++) {
@@ -67,31 +101,50 @@ export function buildTrimBand(rings: readonly TrimRing[], widthM: number): TrimB
         cx /= ring.count;
         cy /= ring.count;
         cz /= ring.count;
-        for (let i = 0; i < ring.count; i++) {
+        // 접선(이웃 차) × (중심→정점) = 링 면에 수직. 부호는 링 감김
+        // 방향에 달려 임의이므로 아래에서 안쪽 행으로 한 번 결정한다.
+        const normalAt = (i: number) => {
           ring.read(p, i);
           ring.read(prev, (i - 1 + ring.count) % ring.count);
           ring.read(next, (i + 1) % ring.count);
-          // 접선(이웃 차) × (중심→정점)으로 링 면에 수직인 방향을 얻는다.
           const tx = next[0] - prev[0];
           const ty = next[1] - prev[1];
           const tz = next[2] - prev[2];
           const rx = p[0] - cx;
           const ry = p[1] - cy;
           const rz = p[2] - cz;
-          let nx = ty * rz - tz * ry;
-          let ny = tz * rx - tx * rz;
-          let nz = tx * ry - ty * rx;
-          const len = Math.hypot(nx, ny, nz) || 1e-9;
-          nx /= len;
-          ny /= len;
-          nz /= len;
+          n[0] = ty * rz - tz * ry;
+          n[1] = tz * rx - tx * rz;
+          n[2] = tx * ry - ty * rx;
+          const len = Math.hypot(n[0], n[1], n[2]) || 1e-9;
+          n[0] /= len;
+          n[1] /= len;
+          n[2] /= len;
+        };
+        // 링 전체에서 "정점→안쪽 행" 방향과의 내적 합. 양수면 밴드가 옷
+        // 안쪽을 향하고 있다는 뜻이라 뒤집는다(가장자리 바깥으로 나가야
+        // 립/커프처럼 보인다).
+        let towardInner = 0;
+        for (let i = 0; i < ring.count; i++) {
+          normalAt(i);
+          ring.readInner(inner, i);
+          towardInner +=
+            n[0] * (inner[0] - p[0]) + n[1] * (inner[1] - p[1]) + n[2] * (inner[2] - p[2]);
+        }
+        const sign = towardInner > 0 ? -1 : 1;
+        for (let i = 0; i < ring.count; i++) {
+          normalAt(i);
+          const w = shape.extrude;
+          const nx = n[0] * sign;
+          const ny = n[1] * sign;
+          const nz = n[2] * sign;
           const o = (off + i * 2) * 3;
           positions[o] = p[0];
           positions[o + 1] = p[1];
           positions[o + 2] = p[2];
-          positions[o + 3] = p[0] + nx * widthM;
-          positions[o + 4] = p[1] + ny * widthM;
-          positions[o + 5] = p[2] + nz * widthM;
+          positions[o + 3] = p[0] + nx * w;
+          positions[o + 4] = p[1] + ny * w;
+          positions[o + 5] = p[2] + nz * w;
         }
         off += ring.count * 2;
       }
