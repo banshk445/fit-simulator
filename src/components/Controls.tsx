@@ -3,6 +3,7 @@ import { useRef, useState } from "react";
 import { useFitStore } from "../store/useFitStore";
 import { FABRIC_PRESETS, type FabricType } from "../lib/fabricPresets";
 import { cropToGarmentRegion } from "../lib/garmentSegmentation";
+import { checkGarmentFit } from "../lib/garmentFitLimits";
 
 function Slider({
   label,
@@ -82,6 +83,7 @@ export function Controls() {
   const setNewCore = useFitStore((s) => s.setNewCore);
   const friction = useFitStore((s) => s.friction);
   const setFriction = useFitStore((s) => s.setFriction);
+  const fit = checkGarmentFit(bodySize.chest, garmentSize.width);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [isProcessingImage, setIsProcessingImage] = useState(false);
 
@@ -131,6 +133,15 @@ export function Controls() {
           <Shirt size={16} />
           <span>Garment Size</span>
         </div>
+        {fit.message && (
+          <div
+            className={`mb-3 rounded-md px-3 py-2 text-sm ${
+              fit.verdict === "impossible" ? "bg-red-950/70 text-red-200 ring-1 ring-red-800" : "bg-amber-950/60 text-amber-200 ring-1 ring-amber-800"
+            }`}
+          >
+            {fit.message}
+          </div>
+        )}
         <div className="mb-4">
           {/* Safari에서는 hidden input을 <label>로 감싸 클릭을 위임하는 방식이
               신뢰할 수 없어서, ref로 직접 참조해 버튼 클릭 시 .click()을

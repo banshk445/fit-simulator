@@ -3,6 +3,7 @@ import { OrbitControls } from "@react-three/drei";
 import { Suspense, useRef } from "react";
 import * as THREE from "three";
 import { useFitStore } from "../store/useFitStore";
+import { checkGarmentFit } from "../lib/garmentFitLimits";
 import { CHEST_HEIGHT_RATIO } from "../constants";
 import { Mannequin } from "./Mannequin";
 import { Garment } from "./Garment";
@@ -57,6 +58,12 @@ function GarmentMesh() {
 export function FitCanvas() {
   const garmentImage = useFitStore((s) => s.garmentImage);
   const showArmCapsules = useFitStore((s) => s.showArmCapsules);
+  // 착용 불가 조합에서는 시뮬 자체를 안 돌린다 — 발산은 안 하지만
+  // 천이 몸을 못 덮어 의미 없는 화면이 나온다(garmentFitLimits.ts 실측).
+  const chest = useFitStore((s) => s.bodySize.chest);
+  const width = useFitStore((s) => s.garmentSize.width);
+  const fit = checkGarmentFit(chest, width);
+  const wearable = fit.verdict !== "impossible";
 
   return (
     <Canvas camera={{ position: [0, 1.3, 3], fov: 45 }}>
@@ -65,8 +72,8 @@ export function FitCanvas() {
       <Suspense fallback={null}>
         <Mannequin />
       </Suspense>
-      {!garmentImage && <GarmentMesh />}
-      {garmentImage && (
+      {(!garmentImage || !wearable) && <GarmentMesh />}
+      {garmentImage && wearable && (
         <Suspense fallback={null}>
           <Garment imageUrl={garmentImage} />
         </Suspense>

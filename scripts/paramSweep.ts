@@ -382,6 +382,8 @@ function runFixture(path: string): void {
   // 처음엔 layout.topY를 그대로 대역 기준으로 썼다가 샘플 수가 셀마다
   // 달라지는(644→693/720) 배선 함정을 밟았다. 원본 topY를 따로 보관.
   const bandTopY: number = fixture0.layout.topY;
+  // WIDTH=cm 이면 품(garment width) override — 착용 가능 하한 실측용.
+  if (process.env.WIDTH) fixture0.layout.widthM = Number(process.env.WIDTH) / 100;
   if (process.env.PINLIFT) {
     const delta = Number(process.env.PINLIFT) / 100 - 0.055;
     fixture0.pose.pinLeft.y += delta;
@@ -943,6 +945,30 @@ function runFixture(path: string): void {
   console.log(`  정착: Δ20<=5.6mm 도달 프레임 ${settleFrame < 0 ? "미도달" : settleFrame} / 총 ${FRAMES}`);
   snapshot(ramp ? "P4끝" : "최종", maxDelta20());
   console.log(`  물리 ${physMs}ms/프레임 (BVH+자체충돌 포함)`);
+  if (process.env.FITLIMIT === "1") {
+    // 가슴 높이(어깨선 아래 18cm 근방)의 몸 단면 둘레 — 천이 감아야 할 길이.
+    const slicePerim = (yc: number): number => {
+      const pts: [number, number][] = [];
+      for (let i = 0; i < position.length; i += 3) {
+        if (Math.abs(position[i + 1] - yc) > 0.004) continue;
+        if (Math.abs(position[i]) > 0.22) continue;
+        pts.push([position[i], position[i + 2]]);
+      }
+      if (pts.length < 3) return 0;
+      pts.sort((a, b) => a[0] - b[0] || a[1] - b[1]);
+      const cr = (o: [number, number], a: [number, number], b: [number, number]) => (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0]);
+      const lo: [number, number][] = [], up: [number, number][] = [];
+      for (const pt of pts) { while (lo.length >= 2 && cr(lo[lo.length - 2], lo[lo.length - 1], pt) <= 0) lo.pop(); lo.push(pt); }
+      for (let i = pts.length - 1; i >= 0; i--) { const pt = pts[i]; while (up.length >= 2 && cr(up[up.length - 2], up[up.length - 1], pt) <= 0) up.pop(); up.push(pt); }
+      const hull = lo.slice(0, -1).concat(up.slice(0, -1));
+      let per = 0;
+      for (let i = 0; i < hull.length; i++) { const a = hull[i], b = hull[(i + 1) % hull.length]; per += Math.hypot(a[0] - b[0], a[1] - b[1]); }
+      return per;
+    };
+    let chestMax = 0;
+    for (let yc = bandTopY - 0.25; yc <= bandTopY - 0.10; yc += 0.01) chestMax = Math.max(chestMax, slicePerim(yc));
+    console.log(`  fitlimit: 품 ${(layout.widthM * 100).toFixed(1)}cm / 가슴 단면둘레 ${(chestMax * 100).toFixed(1)}cm / 비율 품÷(둘레/2) ${(layout.widthM / (chestMax / 2)).toFixed(3)} / maxStrain ${computeDrapeMetrics(sim, [PANEL_FRONT, PANEL_BACK], reconRange.xMin, reconRange.xMax).maxStrain}`);
+  }
   if (process.env.RECON === "1") {
     for (const row of [0, 1, 2]) {
       const rest = reconRest[row];
