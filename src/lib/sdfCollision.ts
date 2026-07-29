@@ -170,6 +170,11 @@ export function createSdfPushResolver(
 }
 
 export interface FrictionParams {
+  // M2-8: 접촉 법선 위쪽 성분 기반 μ 증폭 계수(0=무변화).
+  // 유효 μ = μ * (1 + localMuGain * max(0, n.y)) — 어깨 상면처럼 법선이
+  // 위를 보는 접촉에서만 커진다. 대역을 천 인덱스로 안 나누는 이유는
+  // clothConfig의 LOCAL_MU_GAIN 주석 참고(함정 7).
+  localMuGain?: number;
   // 접촉으로 볼 거리(표면에서 이 이내면 접촉) — COLLISION_MARGIN 근처.
   contactBand: number;
   // 정지/운동 마찰 계수(무차원). 정지: 접선 이동량이 muStatic*침투깊이보다
@@ -327,7 +332,9 @@ export function createCachedSdfIterationFriction(
         const load = Math.min(1, Math.max(0, (params.contactBand - sd) / params.contactBand));
         if (load <= 0) continue;
         if (!sdfNormal(field, positions[ix], positions[ix + 1], positions[ix + 2], normal)) continue;
-        loads[i] = load;
+        // 국소 μ — 법선 위쪽 성분만큼 하중을 증폭해 저장(별도 배열 없이
+        // load에 실어 보낸다. staticLimit/drop이 load에 비례하므로 동일 효과).
+        loads[i] = load * (1 + (params.localMuGain ?? 0) * Math.max(0, normal.y));
         normals[ix] = normal.x;
         normals[ix + 1] = normal.y;
         normals[ix + 2] = normal.z;

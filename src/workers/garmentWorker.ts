@@ -19,6 +19,7 @@ import {
   FRICTION_CONTACT_BAND,
   COLLAR_STRAIN_LIMIT,
   FRICTION_MU_ITER,
+  LOCAL_MU_GAIN,
   FRICTION_MU_KINETIC,
   PIN_STRENGTH,
   FRICTION_MU_STATIC,
@@ -246,6 +247,7 @@ const iterationFriction = createCachedSdfIterationFriction(() => sdfField, {
   contactBand: FRICTION_CONTACT_BAND,
   muStatic: FRICTION_MU_ITER,
   muKinetic: FRICTION_MU_ITER,
+  localMuGain: LOCAL_MU_GAIN,
 });
 const frictionPass = createSdfFrictionPass(() => sdfField, {
   contactBand: FRICTION_CONTACT_BAND,

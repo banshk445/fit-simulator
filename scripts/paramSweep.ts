@@ -20,6 +20,7 @@ import {
   COLLISION_EVERY,
   COLLAR_STRAIN_LIMIT,
   COLLISION_MARGIN,
+  LOCAL_MU_GAIN,
   COLS,
   GRAVITY_BASE,
   MAX_DISPLACEMENT_PER_SUBSTEP,
@@ -543,6 +544,8 @@ function runFixture(path: string): void {
             contactBand: FRICTION_CONTACT_BAND,
             muStatic: process.env.MU_ITER ? Number(process.env.MU_ITER) : FRICTION_MU_ITER,
             muKinetic: process.env.MU_ITER ? Number(process.env.MU_ITER) : FRICTION_MU_ITER,
+            // M2-8: LOCALMU=배수 (법선 위쪽 성분 기반 μ 증폭).
+            localMuGain: process.env.LOCALMU ? Number(process.env.LOCALMU) : LOCAL_MU_GAIN,
           };
           if (process.env.FRIC_LIVE === "1") {
             return { frictionIteration: createSdfIterationFrictionPass(() => sdfField, fparams) };
@@ -693,6 +696,22 @@ function runFixture(path: string): void {
     console.log(
       `  shoulderHover top-back : hit ${tb.hitRatio} / hover ${tb.hoverMean}|${tb.hoverMax}mm @ ${JSON.stringify(tb.hoverMaxAt)}`,
     );
+    // 접촉률·분포 — **shoulderHover가 히트한 그 샘플 집합 그대로**(몸 표면
+    // 좌표계 고정). 천 행 인덱스 대역은 쓰지 않는다.
+    const dist = (names: string[], label: string) => {
+      const hs = coverage.hits.filter((h) => names.includes(h.bucket)).map((h) => h.hoverMm).sort((a, b) => a - b);
+      if (hs.length === 0) {
+        console.log(`  contact ${label}: 히트 0`);
+        return;
+      }
+      const q = (f: number) => hs[Math.min(hs.length - 1, Math.floor(f * (hs.length - 1)))].toFixed(1);
+      const le = (v: number) => ((hs.filter((h) => h <= v).length / hs.length) * 100).toFixed(1);
+      console.log(
+        `  contact ${label}: 접촉률(<=20mm) ${le(20)}% / <=15mm ${le(15)}% | 분포 min ${q(0)} p10 ${q(0.1)} p25 ${q(0.25)} med ${q(0.5)} p75 ${q(0.75)} max ${q(1)} (n=${hs.length})`,
+      );
+    };
+    dist(["top-front-left", "top-front-right"], "tf");
+    dist(["top-back-left", "top-back-right"], "tb");
   }
   // 신구 대조에서 "새로 노출된 지점"을 집합 차로 특정하기 위한 전체 덤프.
   if (process.env.COVERAGE_DUMP) {

@@ -35,6 +35,11 @@ export interface CoverageResult {
   // 키: "top|mid|bot-front|back-left|right"
   buckets: Record<string, CoverageBucket>;
   exposedExamples: { x: number; y: number; z: number }[];
+  // 히트 샘플별 (버킷키, hover mm, 몸 샘플 좌표) — 분포·접촉률 계산용.
+  // 영역 정의를 **몸 표면 샘플 좌표계 하나로** 고정하기 위해 원자료를
+  // 그대로 노출한다(천 행 인덱스로 대역을 재정의하면 비교 불가 —
+  // 이번 세션 2회 재발한 함정).
+  hits: { bucket: string; hoverMm: number; x: number; y: number; z: number }[];
 }
 
 // 몸 메시(fixture의 position+index)에서 Y 대역 안 정점들을 샘플로 뽑고,
@@ -229,6 +234,7 @@ export function computeBodyCoverage(
 
   const buckets: Record<string, CoverageBucket> = {};
   const exposedExamples: { x: number; y: number; z: number }[] = [];
+  const hits: { bucket: string; hoverMm: number; x: number; y: number; z: number }[] = [];
   let exposed = 0;
   const bandH = (params.yMax - params.yMin) / 3;
   for (let i = 0; i < body.count; i++) {
@@ -247,6 +253,7 @@ export function computeBodyCoverage(
     const hit = hitT >= 0;
     if (hit) {
       const mm = hitT * 1000;
+      hits.push({ bucket: key, hoverMm: Number(mm.toFixed(2)), x: Number(x.toFixed(4)), y: Number(y.toFixed(4)), z: Number(z.toFixed(4)) });
       bucket.hoverSumMm += mm;
       if (mm > bucket.hoverMaxMm) {
         bucket.hoverMaxMm = mm;
@@ -267,5 +274,6 @@ export function computeBodyCoverage(
     exposedRatio: Number((exposed / (body.count || 1)).toFixed(4)),
     buckets,
     exposedExamples,
+    hits,
   };
 }
