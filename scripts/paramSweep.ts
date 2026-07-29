@@ -9,7 +9,7 @@ import { readFileSync, writeFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import * as THREE from "three";
 import { armholeRingVertices, neckHoleColumnRange, torsoColumnRange, type ArmDir } from "../src/lib/buildGarmentSim";
-import { buildArmCapsules as buildFrameArmCapsules, createGarmentSession, createPanelSplitResolver, createUnifiedResolver, PANEL_COUNTS } from "../src/lib/garmentFrame";
+import { buildArmCapsules as buildFrameArmCapsules, createGarmentSession, createPanelSplitResolver, createUnifiedResolver, defaultSmoothing, PANEL_COUNTS } from "../src/lib/garmentFrame";
 import { ArrayBvhCollision } from "../src/lib/bvhFromArrays";
 import { SelfCollision } from "../src/lib/selfCollision";
 import { buildUnifiedGarmentSim } from "../src/lib/buildUnifiedGarmentSim";
@@ -555,9 +555,10 @@ function runFixture(path: string): void {
     orderColumn: process.env.ORDER_COL !== "0",
     orderRow: process.env.ORDER_ROW !== "0",
     clampInSubstep: true,
-    // M2 제거 ②는 원복됨(워커와 동일하게 기본 on) — SMOOTHING=0으로 끄고,
-    // SMOOTH_BLEND=값으로 중간값을 재는 실험 손잡이만 남긴다.
-    smoothing: process.env.SMOOTHING !== "0",
+    // 계기 정정(함정 12): 기본값은 워커와 같은 식(defaultSmoothing)에서
+    // 도출 — 하드코딩 시 제품만 바뀌어도 계기가 침묵한다. SMOOTHING=0/1로
+    // 명시 override, SMOOTH_BLEND=값으로 중간값 실험.
+    smoothing: process.env.SMOOTHING != null ? process.env.SMOOTHING !== "0" : defaultSmoothing(newCore),
     smoothingBlend: process.env.SMOOTH_BLEND ? Number(process.env.SMOOTH_BLEND) : undefined,
     postOrder: true,
     armSoftPull: true,
@@ -846,7 +847,7 @@ function runFixture(path: string): void {
     },
   );
 
-  console.log(`[paramSweep:fixture] ${FRAMES}프레임(${SECONDS}s), fixture=${fixtureHash}, fabric=${pose.fabric}, 코어=${newCore ? "신(용접)" : "구"}, 워커 전체 파이프라인 재현`);
+  console.log(`[paramSweep:fixture] ${FRAMES}프레임(${SECONDS}s), fixture=${fixtureHash}, fabric=${pose.fabric}, 코어=${newCore ? "신(용접)" : "구"}, 스무딩=${env.smoothing ? "on" : "off"}${process.env.SMOOTHING != null ? "(env)" : "(도출)"}, 워커 전체 파이프라인 재현`);
   console.log(`  coverage: 노출 ${coverage.exposed}/${coverage.samples} (${(coverage.exposedRatio * 100).toFixed(1)}%)`);
   console.log(`  coverage 버킷(노출/샘플):`, JSON.stringify(Object.fromEntries(Object.entries(coverage.buckets).map(([k, v]) => [k, `${v.exposed}/${v.samples}`]))));
   console.log(`  coverage 노출 예시:`, JSON.stringify(coverage.exposedExamples.slice(0, 5)));

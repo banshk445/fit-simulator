@@ -179,6 +179,13 @@ export function createUnifiedResolver(meshResolver: CollisionResolver, state: Co
   };
 }
 
+// 스무딩 기본값의 단일 출처 — 워커(제품)와 paramSweep(하네스)이 이 식을
+// 같이 본다. 신 코어는 스무딩 off(M2 제거 ②), 구 코어는 on. 계기 쪽에서
+// 하드코딩하면 제품만 바뀌어도 침묵한다(함정 12).
+export function defaultSmoothing(newCore: boolean): boolean {
+  return !newCore;
+}
+
 export interface GarmentFrameEnv {
   // step() 내부에서 collisionEvery 주기로 도는 충돌 리졸버.
   collisionResolver: CollisionResolver;

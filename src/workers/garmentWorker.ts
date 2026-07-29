@@ -8,7 +8,7 @@ import { buildUnifiedGarmentSim } from "../lib/buildUnifiedGarmentSim";
 import { bakeSdf, createCachedSdfIterationFriction, createSdfFrictionPass, createSdfPushResolver, makeRadialSignedSampler, type SdfField } from "../lib/sdfCollision";
 // M0(파이프라인 일원화): 프레임 시퀀스·unifiedResolver·팔 캡슐 빌더는
 // garmentFrame.ts로 이사 — paramSweep(Node)과 이 워커가 같은 함수를 쓴다.
-import { buildArmCapsules, createGarmentSession, createPanelSplitResolver, createUnifiedResolver, PANEL_COUNTS } from "../lib/garmentFrame";
+import { buildArmCapsules, createGarmentSession, createPanelSplitResolver, createUnifiedResolver, defaultSmoothing, PANEL_COUNTS } from "../lib/garmentFrame";
 import type { CollisionState, GarmentSession } from "../lib/garmentFrame";
 import {
   ARMHOLE_ROW_FRACTION,
@@ -350,7 +350,7 @@ ctx.onmessage = (event) => {
         // 통과가 아니라 **애매**로 두고 화면 판정을 받는다.
         // 함께 얻는 것: coverage 27.6→20.5%(측정 이래 최저), 면각평균
         // 15.88→17.05·주름RMS 4.081→4.403(최고), 교차 0, seamGap 0.
-        smoothing: !(msg.newCore ?? false),
+        smoothing: defaultSmoothing(msg.newCore ?? false),
         postOrder: true,
         armSoftPull: true,
         necklineHug: true,
