@@ -212,31 +212,50 @@ export function buildWeldedGarmentGeometry(torsoColMin = 0, torsoColMax = COLS -
     setFit(frontFit, backFit) {
       // 색 경계·색상은 injectFitMapBinding의 프래그먼트 셰이더와 같은 값을
       // 쓴다(구/신 코어에서 같은 그림이 나와야 한다).
-      const write = (fit: ArrayLike<number>, base: number) => {
-        for (let i = 0; i < fit.length; i++) {
-          const cm = fit[i];
-          const tRed = smoothstep(-0.6, 0.0, cm);
-          const tYel = smoothstep(0.6, 1.4, cm);
-          const tBlue = smoothstep(2.4, 3.6, cm);
-          let r = 0.55 + (0.85 - 0.55) * tRed;
-          let g = 0.0 + (0.15 - 0.0) * tRed;
-          let b2 = 0.85 + (0.15 - 0.85) * tRed;
-          r += (0.95 - r) * tYel;
-          g += (0.85 - g) * tYel;
-          b2 += (0.1 - b2) * tYel;
-          r += (0.15 - r) * tBlue;
-          g += (0.45 - g) * tBlue;
-          b2 += (0.95 - b2) * tBlue;
-          const o = (base + i) * 3;
-          colors[o] = r;
-          colors[o + 1] = g;
-          colors[o + 2] = b2;
+      //
+      // 세분화 표본 정점에도 칠해야 한다 — 파티클만 칠하면 표본(정점의
+      // 72%)이 중립색으로 남아 화면이 점묘가 된다(가슴 110 핏 맵 실측).
+      // 여유 값은 파티클 격자의 쌍선형 보간으로 충분하다(색은 어차피
+      // smoothstep으로 뭉개진다).
+      const paint = (cm: number, o: number) => {
+        const tRed = smoothstep(-0.6, 0.0, cm);
+        const tYel = smoothstep(0.6, 1.4, cm);
+        const tBlue = smoothstep(2.4, 3.6, cm);
+        let r = 0.55 + (0.85 - 0.55) * tRed;
+        let g = 0.0 + (0.15 - 0.0) * tRed;
+        let b2 = 0.85 + (0.15 - 0.85) * tRed;
+        r += (0.95 - r) * tYel;
+        g += (0.85 - g) * tYel;
+        b2 += (0.1 - b2) * tYel;
+        r += (0.15 - r) * tBlue;
+        g += (0.45 - g) * tBlue;
+        b2 += (0.95 - b2) * tBlue;
+        colors[o] = r;
+        colors[o + 1] = g;
+        colors[o + 2] = b2;
+      };
+      const write = (fit: ArrayLike<number>, panel: number) => {
+        for (let j = 0; j < FY; j++) {
+          const y = j / RENDER_SUBDIV;
+          const y0 = Math.min(ROWS - 2, Math.floor(y));
+          const ty = y - y0;
+          for (let i = 0; i < FX; i++) {
+            const x = i / RENDER_SUBDIV;
+            const x0 = Math.min(COLS - 2, Math.floor(x));
+            const tx = x - x0;
+            const f00 = Number(fit[y0 * COLS + x0]);
+            const f10 = Number(fit[y0 * COLS + x0 + 1]);
+            const f01 = Number(fit[(y0 + 1) * COLS + x0]);
+            const f11 = Number(fit[(y0 + 1) * COLS + x0 + 1]);
+            const cm = f00 * (1 - tx) * (1 - ty) + f10 * tx * (1 - ty) + f01 * (1 - tx) * ty + f11 * tx * ty;
+            paint(cm, fineVertex(panel, i, j) * 3);
+          }
         }
       };
       write(frontFit, 0);
-      write(backFit, F);
+      write(backFit, 1);
       // 소매는 워커가 여유를 안 보낸다 — 중립(적정=노랑)으로 둔다.
-      for (let i = F * 2; i < WELDED_TOTAL_VERTICES; i++) {
+      for (let i = F * 2; i < WELDED_TOTAL_PARTICLES; i++) {
         colors[i * 3] = 0.95;
         colors[i * 3 + 1] = 0.85;
         colors[i * 3 + 2] = 0.1;

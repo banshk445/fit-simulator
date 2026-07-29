@@ -9,7 +9,7 @@
 // 모듈을 Node에서 직접 돌려 결과 버퍼를 검사하고, 화면 배선처럼 Node에서
 // 못 돌리는 부분은 **소스에서 구조적 불변식**을 확인한다.
 import { readFileSync, readdirSync } from "node:fs";
-import { buildWeldedGarmentGeometry } from "../src/components/weldedGarmentGeometry";
+import { buildWeldedGarmentGeometry, WELDED_TOTAL_PARTICLES } from "../src/components/weldedGarmentGeometry";
 import { buildTrimBand, type TrimRing } from "../src/components/trimBands";
 import * as THREE from "three";
 import { pointBoneTowardWorldDirection } from "../src/lib/boneUtils";
@@ -43,6 +43,19 @@ const check = (ok: boolean, label: string, detail = "") => {
   check(keys.size > 20, "핏 맵 정점색이 여유에 따라 변한다", `서로 다른 색 ${keys.size}종`);
   check(!allWhite, "핏 맵이 흰색으로 방치되지 않는다");
   check(!anyBlack, "핏 맵에 검은 정점이 없다(color 속성 누락 사고 재발 방지)");
+  // 세분화 표본도 칠해지는가 — 파티클만 칠하면 표본(정점의 72%)이 중립
+  // 노랑으로 남아 점묘가 된다(가슴 110 핏 맵 실측). 전부 5cm(파랑)를
+  // 주면 표본 정점도 파랑이어야 한다.
+  welded.setFit(new Float32Array(n).fill(5), new Float32Array(n).fill(5));
+  // 표본 구간만 정확히 겨눈다: [WELDED_TOTAL_PARTICLES, 전체 끝) — 소매
+  // 파티클(중립 노랑 유지)은 그 앞이라 안 걸린다.
+  const totalVerts = color.length / 3;
+  let nonBlue = 0;
+  for (let i = WELDED_TOTAL_PARTICLES; i < totalVerts; i++) {
+    if (Math.abs(color[i * 3] - 0.15) > 0.05) nonBlue++;
+  }
+  const sampleCount = totalVerts - WELDED_TOTAL_PARTICLES;
+  check(sampleCount > 0 && nonBlue === 0, "핏 맵이 세분화 표본 정점까지 칠한다", nonBlue ? `안 칠해진 표본 ${nonBlue}/${sampleCount}` : `표본 ${sampleCount}정점`);
   welded.dispose();
 }
 
