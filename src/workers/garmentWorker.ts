@@ -67,10 +67,9 @@ const backCollisionMesh = new ArrayBvhCollision();
 // 팔 제외 없는 몸 전체 충돌 메시 — frontCollisionMesh/backCollisionMesh와
 // 달리 팔 영역을 일부러 빼지 않은 원본이라야 어깨 곡면이 남아있다(자세한
 // 경위는 meshCollision.ts의 wholeBodyIndex 주석 참고). 원래 용도였던
-// pullShoulderCapToSurface는 47번에서 삭제됐고, 지금 소비자는 둘이다:
-// 아래 핏 맵 계측(computeFitCm)과 **소매 패널 충돌**(sleeveMeshResolver,
-// △3-3). 소매엔 이 인덱스여야 한다 — 앞/뒤판용 인덱스는 excludeArms가
-// 어깨·팔 삼각형을 빼버려서 소매가 부딪힐 면이 남아 있지 않다.
+// pullShoulderCapToSurface는 47번에서 삭제됐고, 지금은 아래 핏 맵
+// 계측(computeFitCm)이 유일한 소비자다 — 물리 리졸버에는 관여하지 않는
+// 순수 조회용으로만 쓰인다.
 const wholeBodyCollisionMesh = new ArrayBvhCollision();
 // 핏 맵 전용 상수 — 물리 충돌(COLLISION_DETECTION_RADIUS 등)과는 독립된
 // 별개 값이다. 실측이 아니라 "어지간히 헐렁한 옷도 놓치지 말자"는
@@ -142,29 +141,8 @@ const backMeshResolver = backCollisionMesh.createResolver(
   penetrationAxis,
 );
 
-// △3-3: 소매 패널 몸 메시 충돌. 예전엔 null 두 개라 소매를 막는 게 팔 캡슐
-// (r=ARM_COLLISION_RADIUS=45.6mm)뿐이었고, 그보다 굵은 삼각근이 천을 최대
-// 2.7cm 뚫고 나와 화면에 "소매캡 틈"으로 보였다(실측 진단, docs/metrics-log.md).
-// 두 가지가 몸판과 다르다:
-//  - 인덱스: wholeBodyIndex(팔 포함). excludeArms가 걸러낸 앞/뒤판 인덱스엔
-//    어깨 곡면이 아예 없다 — 붙여도 막을 면이 없다(excludeArms 자체는 안
-//    건드린다. 그건 **몸판**이 팔과 깜빡이는 걸 막는 장치고 여전히 유효하다).
-//  - 모드: 관통-only. 몸판이 쓰는 흡착 모드(탐지 반경 안이면 항상 표면+margin
-//    으로 당김)를 소매에 그대로 쓰면 겨드랑이 근처 입자가 팔이 아니라 몸통
-//    표면에 붙잡혀 되레 관통이 늘어난다(하네스 실측 18.1%→29.9%).
-//  - columnRange 없음: 소매 튜브는 전 둘레가 대상이다.
-const sleevePenetrationAxis = { enabled: true, x: 0, z: 0 };
-const sleeveMeshResolver = wholeBodyCollisionMesh.createResolver(
-  COLLISION_MARGIN,
-  COLLISION_DETECTION_RADIUS,
-  MESH_SKIP_START,
-  MESH_SKIP_END,
-  undefined,
-  sleevePenetrationAxis,
-);
-
 // createPanelSplitResolver/PANEL_COUNTS는 garmentFrame.ts로 이사(M0).
-const meshResolver = createPanelSplitResolver([frontMeshResolver, backMeshResolver, sleeveMeshResolver, sleeveMeshResolver], PANEL_COUNTS);
+const meshResolver = createPanelSplitResolver([frontMeshResolver, backMeshResolver, null, null], PANEL_COUNTS);
 
 
 // 37번/범위 B의 unifiedResolver 본체는 garmentFrame.ts의
@@ -440,9 +418,7 @@ ctx.onmessage = (event) => {
       collisionState.centerZ = msg.centerZ;
       if (msg.capsules.length > 0) {
         penetrationAxis.x = msg.capsules[0].top.x;
-        sleevePenetrationAxis.x = msg.capsules[0].top.x;
         penetrationAxis.z = msg.capsules[0].top.z;
-        sleevePenetrationAxis.z = msg.capsules[0].top.z;
       }
       // M2: 몸이 바뀌었으니 SDF 재굽기(다음 step에서 ensureSdf가 처리).
       bakedBody = { position: msg.position, wholeBodyIndex: msg.wholeBodyIndex, frontIndex: msg.frontIndex, backIndex: msg.backIndex };

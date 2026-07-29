@@ -407,9 +407,6 @@ function runFixture(path: string): void {
   const position = Float32Array.from(fixture.collision.position);
   frontMesh.rebuild(position, fixture.collision.frontIndex ? Uint32Array.from(fixture.collision.frontIndex) : null);
   backMesh.rebuild(position, fixture.collision.backIndex ? Uint32Array.from(fixture.collision.backIndex) : null);
-  // 팔 포함 몸 전체 메시 — SDF 굽기와 소매 충돌이 같이 쓴다.
-  const wholeMesh = new ArrayBvhCollision();
-  wholeMesh.rebuild(position, fixture.collision.wholeBodyIndex ? Uint32Array.from(fixture.collision.wholeBodyIndex) : null);
   const meshColumnRange = { cols: COLS, min: 0, max: COLS - 1 };
   // M2-4: 신 코어면 흡착 완화(관통 시에만). ADHESION=1로 기존 흡착 복원.
   const penetrationAxis = {
@@ -420,40 +417,12 @@ function runFixture(path: string): void {
   };
   // MARGIN=값(mm) 이면 COLLISION_MARGIN override — margin 스윕용.
   const collisionMargin = process.env.MARGIN ? Number(process.env.MARGIN) / 1000 : COLLISION_MARGIN;
-  // △3-3: 소매 패널에도 몸 메시 리졸버를 붙인다(예전엔 null 두 개 —
-  // 소매를 막는 건 팔 캡슐 r=45.6mm뿐이라 삼각근이 천을 최대 2.7cm 뚫었다).
-  // **모드가 배선만큼 중요하다**(실측, fixture 9e8b2bf13925 600프레임,
-  // 관통 정점 144개 중):
-  //   배선 없음(기존)            26 (18.1%)
-  //   whole + 기존 흡착 모드      43 (29.9%)  ← 악화
-  //   앞/뒤판 인덱스 + 흡착       48 (33.3%)  ← 참사(cov 23.9%, tb 0.341)
-  //   whole + 관통-only          22 (15.3%)  ← 채택
-  // 흡착 모드는 탐지 반경 15cm 안이면 "가장 가까운 표면 + margin"으로
-  // 끌어당긴다 — 겨드랑이 근처 소매 입자에겐 그 표면이 팔이 아니라 몸통일
-  // 수 있어 소매를 몸 쪽으로 당겨 넣는다. 소매에 필요한 건 "뚫렸을 때만
-  // 밀어내기"뿐이라 관통-only 축을 따로 준다(몸판 흡착은 안 건드린다 —
-  // 그건 천을 붙들던 유일한 힘이라 떼면 실패한 이력이 있다).
-  // 인덱스는 `wholeBodyIndex`(팔 포함) — `excludeArms`가 걸러낸 앞/뒤판용
-  // 인덱스에는 어깨·팔 삼각형이 아예 없어 붙여봐야 소매엔 막을 면이 없다.
-  // excludeArms 자체는 안 건드린다(그건 **몸판**이 팔 표면과 깜빡이는 걸
-  // 막는 장치고, 소매는 팔에 닿는 게 정상이다).
-  // columnRange 없음 — 소매 튜브는 전 둘레가 충돌 대상이다.
-  // 소매는 **관통-only** 모드다(몸판의 흡착 모드는 그대로). 실측 근거는
-  // buildSleeveMeshResolver 주석 — 흡착으로 붙이면 관통이 되레 늘어난다.
-  const sleeveMeshResolver =
-    process.env.SLEEVEMESH === "0"
-      ? null
-      : wholeMesh.createResolver(collisionMargin, COLLISION_DETECTION_RADIUS, 0, 0, undefined, {
-          enabled: true,
-          x: penetrationAxis.x,
-          z: penetrationAxis.z,
-        });
   const meshResolver = createPanelSplitResolver(
     [
       frontMesh.createResolver(collisionMargin, COLLISION_DETECTION_RADIUS, 0, 0, meshColumnRange, penetrationAxis),
       backMesh.createResolver(collisionMargin, COLLISION_DETECTION_RADIUS, 0, 0, meshColumnRange, penetrationAxis),
-      sleeveMeshResolver,
-      sleeveMeshResolver,
+      null,
+      null,
     ],
     PANEL_COUNTS,
   );
@@ -489,6 +458,8 @@ function runFixture(path: string): void {
 
   let sdfField: SdfField | null = null;
   if (process.env.FRICTION === "1") {
+    const wholeMesh = new ArrayBvhCollision();
+    wholeMesh.rebuild(position, fixture.collision.wholeBodyIndex ? Uint32Array.from(fixture.collision.wholeBodyIndex) : null);
     const t = performance.now();
     sdfField = bakeSdf(makeRadialSignedSampler(wholeMesh, sdfCx, sdfCz, SDF_FAR, SDF_FAR), sdfMin, sdfMax, SDF_VOXEL, SDF_FAR);
     console.log(
