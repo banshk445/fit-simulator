@@ -8,9 +8,11 @@
 // 브라우저를 띄우지 않는다(Playwright 금지). 대신 렌더가 실제로 쓰는
 // 모듈을 Node에서 직접 돌려 결과 버퍼를 검사하고, 화면 배선처럼 Node에서
 // 못 돌리는 부분은 **소스에서 구조적 불변식**을 확인한다.
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 import { buildWeldedGarmentGeometry } from "../src/components/weldedGarmentGeometry";
 import { buildTrimBand, type TrimRing } from "../src/components/trimBands";
+import * as THREE from "three";
+import { pointBoneTowardWorldDirection } from "../src/lib/boneUtils";
 import { COLS, ROWS } from "../src/lib/clothConfig";
 
 let failed = 0;
@@ -114,6 +116,58 @@ const check = (ok: boolean, label: string, detail = "") => {
     "몸 치수 의존성 목록이 서로 일치한다",
     missing.length ? `빠진 항목: ${[...new Set(missing)].join(", ")}` : `공통 ${[...union].join(", ")}`,
   );
+}
+
+// ── 4. 마네킹 본 회전 누적이 발산하지 않는가 ────────────────────────
+// 가슴둘레 슬라이더가 몸통 본에 비균등 스케일을 걸면 getWorldQuaternion이
+// 단위가 아닌 쿼터니언을 뽑고, 그게 매 프레임 누적 곱해져 지수로 발산했다
+// (가슴 101에서 25초 뒤 팔 정점 38.9%가 Float32 포화). 정규화가 빠지면
+// 이 검사가 바로 깨진다.
+{
+  // 비균등 스케일 **위에 회전이 섞여야** 분해가 순수 회전이 아니게 된다 —
+  // 축 정렬 스케일만으로는 getWorldQuaternion이 단위 쿼터니언을 돌려줘
+  // 발산이 재현되지 않는다(실제 본 체인은 스케일된 몸통 아래 회전된
+  // 어깨/팔이 달려 있다).
+  const root = new THREE.Object3D();
+  root.scale.set(1.2, 1.0, 1.35); // 가슴둘레 스케일이 만드는 상황
+  const parent = new THREE.Object3D();
+  parent.rotation.set(0.4, 0.5, 0.3);
+  const bone = new THREE.Object3D();
+  const child = new THREE.Object3D();
+  child.position.set(0, -0.3, 0);
+  bone.add(child);
+  parent.add(bone);
+  root.add(parent);
+  root.updateWorldMatrix(true, true);
+  const cur = new THREE.Vector3();
+  const target = new THREE.Vector3(0.6, -1, 0).normalize();
+  for (let i = 0; i < 300; i++) {
+    bone.updateWorldMatrix(true, false);
+    child.updateWorldMatrix(true, false);
+    const a = new THREE.Vector3();
+    const b = new THREE.Vector3();
+    bone.getWorldPosition(a);
+    child.getWorldPosition(b);
+    cur.copy(b).sub(a).normalize();
+    pointBoneTowardWorldDirection(bone, cur, target);
+  }
+  child.updateWorldMatrix(true, false);
+  const w = new THREE.Vector3();
+  child.getWorldPosition(w);
+  const q = bone.quaternion.length();
+  check(Math.abs(q - 1) < 1e-3, "본 쿼터니언이 단위로 유지된다(누적 발산 없음)", `|q| = ${q.toFixed(6)}`);
+  check(Number.isFinite(w.x) && w.length() < 10, "비균등 스케일 300프레임 뒤에도 팔 좌표가 유한", `|p| = ${w.length().toFixed(3)}`);
+}
+
+// ── 5. 커밋된 fixture에 손상값이 없는가 ─────────────────────────────
+{
+  const dir = "scripts/fixtures";
+  for (const name of readdirSync(dir).filter((f) => f.endsWith(".json"))) {
+    const pos: number[] = JSON.parse(readFileSync(`${dir}/${name}`, "utf8")).collision?.position ?? [];
+    let bad = 0;
+    for (const v of pos) if (!Number.isFinite(v) || Math.abs(v) > 1e6) bad++;
+    check(pos.length > 0 && bad === 0, `fixture ${name} 좌표 정상`, bad ? `비정상 ${bad}개` : `${pos.length / 3}정점`);
+  }
 }
 
 console.log(failed === 0 ? "[checkDemoSmoke] PASS" : `[checkDemoSmoke] FAIL ${failed}건`);
