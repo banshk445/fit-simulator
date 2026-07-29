@@ -15,6 +15,7 @@ import { SelfCollision } from "../src/lib/selfCollision";
 import { buildUnifiedGarmentSim } from "../src/lib/buildUnifiedGarmentSim";
 import { applyCapsuleCollision, buildTorsoProxyCapsules, type Capsule } from "../src/lib/torsoCapsule";
 import {
+  ARM_COLLISION_RADIUS,
   ARM_ROWS,
   ARMHOLE_ROW_FRACTION,
   COLLISION_DETECTION_RADIUS,
@@ -47,7 +48,7 @@ import type { Vec3Like } from "../src/lib/clothProtocol";
 import { armholeRingJaggedness, ringJaggedness } from "../src/lib/seamDiagnostics";
 import { capsuleGapBands, computeCapsuleGapChannels, computeDrapeMetrics, computeOrderViolations, computeRippleMm, type DrapeMetrics, type GapStats } from "../src/lib/drapeMetrics";
 import { computeBodyCoverage } from "../src/lib/coverageMetric";
-import { bakeSdf, createCachedSdfIterationFriction, createSdfFrictionPass, createSdfIterationFrictionPass, createSdfPushResolver, makeRadialSignedSampler, type SdfField } from "../src/lib/sdfCollision";
+import { bakeSdf, createCachedSdfIterationFriction, createSdfFrictionPass, createSdfIterationFrictionPass, createSdfPushResolver, makeRadialSignedSampler, sampleSdf, type SdfField } from "../src/lib/sdfCollision";
 
 // 대표 포즈 — checkSleeveSeam.ts와 같은 출처(이 세션 __fitDebug 실측), 반팔
 // 기본값(소매길이 22cm), 어깨너비 45cm 기준.
@@ -944,6 +945,71 @@ function runFixture(path: string): void {
     console.log(`  앞뒤판: 반평면위반 ${halfPlaneViol}/${total * 2} (max ${halfPlaneMaxMm.toFixed(1)}mm) / 교차 ${crossed}/${total} (max ${crossMaxMm.toFixed(1)}mm)`);
   }
   console.log(`  maxSeamGapCm: ${maxSeamGapCm.toFixed(2)} (브라우저 실측과 직접 대조용)`);
+  // CAP=1 (△3-3 소매캡 틈 진단): "틈이 천의 부재인가, 렌더의 미복인가"를
+  // 가르는 결정적 수치. 구조(용접 seamGap)와 몸-천 관계(SDF 부호거리)를
+  // 분리해 낸다 — 용접이 붙어 있는데 몸이 보인다면 천이 몸 **안으로**
+  // 들어간 것(관통)이지 천이 없는 것도, 안 그린 것도 아니다.
+  if (process.env.CAP === "1" && sdfField) {
+    const field = sdfField;
+    const sdMm = (i: number): number => sampleSdf(field, sim.positions[i * 3], sim.positions[i * 3 + 1], sim.positions[i * 3 + 2]) * 1000;
+    console.log(`  [CAP] seamGap 링 12쌍(cm) 좌 ${seamGapCm(xMin, PANEL_SLEEVE_LEFT).map((v) => v.toFixed(2)).join(" ")}`);
+    console.log(`  [CAP] seamGap 링 12쌍(cm) 우 ${seamGapCm(xMax, PANEL_SLEEVE_RIGHT).map((v) => v.toFixed(2)).join(" ")}`);
+    // 소매 패널: 몸 메시 충돌 대상이 **아니다**(리졸버 [front, back, null, null]) —
+    // 팔 캡슐(반지름 ARM_COLLISION_RADIUS)만 막는다. 삼각근이 그보다 굵으면
+    // 천이 캡슐 면에 앉은 채 몸에 파묻힌다. sd<0 = 몸 안.
+    for (const [name, panel] of [["소매좌", PANEL_SLEEVE_LEFT], ["소매우", PANEL_SLEEVE_RIGHT]] as [string, number][]) {
+      for (let r = 0; r <= 5; r++) {
+        const v: number[] = [];
+        for (let k = 0; k < SLEEVE_RING_COLS; k++) v.push(sdMm(sim.index(panel, k, r)));
+        const inside = v.filter((d) => d < 0).length;
+        console.log(`  [CAP] ${name} row${r} sd(mm) ${v.map((d) => d.toFixed(1)).join(" ")} | 몸안 ${inside}/${SLEEVE_RING_COLS} min ${Math.min(...v).toFixed(1)}`);
+      }
+    }
+    // 대조군 — 몸판 암홀 경계열은 메시 충돌을 받는다. 같은 행에서 sd 비교.
+    for (const [name, col] of [["몸판좌", xMin], ["몸판우", xMax]] as [string, number][]) {
+      for (const [pn, panel] of [["앞", PANEL_FRONT], ["뒤", PANEL_BACK]] as [string, number][]) {
+        const v: number[] = [];
+        for (let y = 0; y <= 5; y++) v.push(sdMm(sim.index(panel, col, y)));
+        console.log(`  [CAP] ${name}${pn} 열${col} row0~5 sd(mm) ${v.map((d) => d.toFixed(1)).join(" ")}`);
+      }
+    }
+    // 팔 캡슐이 실제 몸보다 가는가 — 캡슐 표면 위 점의 sd. 음수면 캡슐이
+    // 몸 안에 들어가 있다는 뜻 = 그 구간에서 캡슐은 몸을 대표하지 못한다.
+    for (const [name, arm] of [["좌팔", pose.armLeft], ["우팔", pose.armRight]] as [string, { dir: Vec3Like; trueShoulder: Vec3Like; length: number }][]) {
+      const top = arm.trueShoulder; // 캡슐 축 시작점(buildArmCapsules와 같은 값)
+      const v: number[] = [];
+      for (let t = 0; t <= 5; t++) {
+        const reach = arm.length * (t / 10);
+        const cx = top.x + arm.dir.x * reach, cy = top.y + arm.dir.y * reach, cz = top.z + arm.dir.z * reach;
+        // 팔축에 수직인 수평 방향(바깥쪽)으로 캡슐 반지름만큼 나간 점.
+        const hx = arm.dir.y, hy = -arm.dir.x, hz = 0;
+        const hl = Math.hypot(hx, hy, hz) || 1;
+        v.push(sampleSdf(field, cx + (hx / hl) * ARM_COLLISION_RADIUS, cy + (hy / hl) * ARM_COLLISION_RADIUS, cz + (hz / hl) * ARM_COLLISION_RADIUS) * 1000);
+      }
+      console.log(`  [CAP] ${name} 캡슐표면 sd(mm) 어깨→팔 0~50% ${v.map((d) => d.toFixed(1)).join(" ")} (음수=캡슐이 몸 안)`);
+    }
+    // 밀어내기 콜라이더가 이 자리에 **존재하는가**. frontIndex/backIndex는
+    // meshCollision.ts의 excludeArms가 팔 축 반경 ARM_EXCLUDE_RADIUS(9cm)
+    // 안 삼각형을 뺀 것이다 — 암홀 링이 그 안에 들어가면 몸판조차 밀어낼
+    // 면이 없다. 팔 축은 실제 스켈레톤 대신 팔 캡슐 축으로 근사한다.
+    {
+      const ARM_EXCLUDE_MM = 90;
+      const distToArmMm = (i: number, arm: { dir: Vec3Like; trueShoulder: Vec3Like; length: number }): number => {
+        const px = sim.positions[i * 3] - arm.trueShoulder.x;
+        const py = sim.positions[i * 3 + 1] - arm.trueShoulder.y;
+        const pz = sim.positions[i * 3 + 2] - arm.trueShoulder.z;
+        const t = Math.min(Math.max(px * arm.dir.x + py * arm.dir.y + pz * arm.dir.z, 0), arm.length * 1.25);
+        return Math.hypot(px - arm.dir.x * t, py - arm.dir.y * t, pz - arm.dir.z * t) * 1000;
+      };
+      for (const [name, col, arm] of [["좌", xMin, pose.armLeft], ["우", xMax, pose.armRight]] as [string, number, { dir: Vec3Like; trueShoulder: Vec3Like; length: number }][]) {
+        const d = armholeRingVertices(sim, PANEL_FRONT, PANEL_BACK, col, armholeStartRow).map((_, k) => {
+          const y = k <= armholeStartRow ? k : 2 * armholeStartRow + 1 - k;
+          return distToArmMm(sim.index(k <= armholeStartRow ? PANEL_FRONT : PANEL_BACK, col, y), arm);
+        });
+        console.log(`  [CAP] 암홀링${name} 팔축거리(mm) ${d.map((v) => v.toFixed(0)).join(" ")} | 9cm 제외구역 안 ${d.filter((v) => v < ARM_EXCLUDE_MM).length}/${d.length}`);
+      }
+    }
+  }
   console.log(`  drape: ${drape.faceAngleMeanDeg} / ${drape.faceAngleMaxDeg} / ${drape.wrinkleRmsMm} / ${drape.maxStrain}`);
   console.log(
     `  capsuleGap(mm): 어깨 ${shoulder.maxMm}|${shoulder.meanMm} / 어깨free ${shoulderFree.maxMm}|${shoulderFree.meanMm} / 몸통 ${torso.maxMm}|${torso.meanMm} / 밑단 ${hem.maxMm}|${hem.meanMm}`,
