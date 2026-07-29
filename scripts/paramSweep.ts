@@ -514,7 +514,7 @@ function runFixture(path: string): void {
   const armholeStartRow = Math.round(ROWS * ARMHOLE_ROW_FRACTION);
   const selfCollision = new SelfCollision(panelStarts, panelCols, armholeStartRow, seamSkipPairs).createResolver(SELF_COLLISION_MIN_DIST);
 
-  const session = createGarmentSession(sim, {
+  const env = {
     collisionResolver: unified,
     collisionEvery: COLLISION_EVERY,
     selfCollision,
@@ -583,10 +583,11 @@ function runFixture(path: string): void {
     pinStrength: process.env.PIN ? Number(process.env.PIN) : 1,
     // M2-6: COLLAR=0으로 끄고 대조(신 코어 기본 on).
     collarStrainLimit: newCore && process.env.COLLAR !== "0" ? COLLAR_STRAIN_LIMIT : undefined,
-    onCollarFired: (n) => {
+    onCollarFired: (n: number) => {
       collarFired += n;
     },
-  });
+  };
+  const session = createGarmentSession(sim, env);
 
   let collarFired = 0;
   let contactShoulder = 0, contactShoulderN = 0, contactTorso = 0, contactTorsoN = 0, contactFrames = 0;
@@ -615,9 +616,93 @@ function runFixture(path: string): void {
   const reconRest: number[] = process.env.RECON === "1" ? [0, 1, 2].map(ringCircumference) : [];
   const reconRestAlways: number[] = [0, 1, 2].map(ringCircumference);
 
+  // 구간 경계 스냅샷 — 램프의 어느 구간에서 깨지는지 특정용.
+  const snapshot = (label: string, delta20: number): void => {
+    const rh = layout.heightM / (ROWS - 1);
+    const cov = computeBodyCoverage(
+      position,
+      [fixture.collision.frontIndex, fixture.collision.backIndex],
+      sim,
+      [
+        { panel: PANEL_FRONT, colMin: reconRange.xMin, colMax: reconRange.xMax },
+        { panel: PANEL_BACK, colMin: reconRange.xMin, colMax: reconRange.xMax },
+        { panel: PANEL_SLEEVE_LEFT, wrapCols: true },
+        { panel: PANEL_SLEEVE_RIGHT, wrapCols: true },
+      ],
+      {
+        yMin: bandTopY - rh * (armholeStartRowConst + 0.5),
+        yMax: bandTopY + 0.03,
+        neckCenter: { x: (pose.pinLeft.x + pose.pinRight.x) / 2, y: 0, z: (pose.pinLeft.z + pose.pinRight.z) / 2 },
+        neckRadius: 0.09,
+        centerX: (pose.pinLeft.x + pose.pinRight.x) / 2,
+        centerZ: fixture.collision.centerZ,
+      },
+    );
+    const band = (names: string[]) => {
+      let sm = 0, ex = 0;
+      for (const nm of names) {
+        const b = cov.buckets[nm];
+        if (b) { sm += b.samples; ex += b.exposed; }
+      }
+      const hs = cov.hits.filter((h) => names.includes(h.bucket)).map((h) => h.hoverMm).sort((a, b) => a - b);
+      const q = (f: number) => (hs.length ? hs[Math.min(hs.length - 1, Math.floor(f * (hs.length - 1)))].toFixed(1) : "-");
+      const le20 = hs.length ? ((hs.filter((h) => h <= 20).length / hs.length) * 100).toFixed(1) : "-";
+      return { hit: sm ? ((sm - ex) / sm).toFixed(3) : "-", n: hs.length, le20, p25: q(0.25), med: q(0.5), p75: q(0.75) };
+    };
+    const tf = band(["top-front-left", "top-front-right"]);
+    const tb = band(["top-back-left", "top-back-right"]);
+    const dm = computeDrapeMetrics(sim, [PANEL_FRONT, PANEL_BACK], reconRange.xMin, reconRange.xMax);
+    let crossed = 0;
+    for (let y = 0; y < ROWS; y++) {
+      for (let x = reconRange.xMin; x <= reconRange.xMax; x++) {
+        if (sim.positions[sim.index(PANEL_FRONT, x, y) * 3 + 2] < sim.positions[sim.index(PANEL_BACK, x, y) * 3 + 2]) crossed++;
+      }
+    }
+    console.log(
+      `  [${label}] cov ${(cov.exposedRatio * 100).toFixed(1)}% | tf hit ${tf.hit} 접촉 ${tf.le20}% (n=${tf.n}) med ${tf.med} p25/75 ${tf.p25}/${tf.p75} | tb hit ${tb.hit} 접촉 ${tb.le20}% (n=${tb.n}) med ${tb.med} | strain ${dm.maxStrain} | 교차 ${crossed} | Δ20 ${delta20.toFixed(2)}mm`,
+    );
+  };
+
+  // 수렴 지표 — 프레임당 최대 파티클 변위(mm). 최근 20프레임 최댓값을
+  // 정착 판정에 쓴다(직전 PIN 스윕의 "수렴 미검증" 한계 대응).
+  const prevFrame = new Float32Array(sim.positions.length);
+  prevFrame.set(sim.positions);
+  const deltaHist: number[] = [];
+  const maxDelta20 = () => (deltaHist.length ? Math.max(...deltaHist.slice(-20)) : 0);
+
+  // M2-7 착의 램프 — 스케줄러만(새 물리 없음). RAMP=1일 때만.
+  // P1 하강 0~40%: LIFT 5.5→3.5 / P2 정착 40~55% / P3 해제 55~85%:
+  // PIN 1.0→0.0 / P4 정착 85~100%.
+  const ramp = process.env.RAMP === "1";
+  const rampLiftTo = process.env.RAMP_LIFT ? Number(process.env.RAMP_LIFT) : 3.5;
+  const basePinLY = framePose.pinLeft.y;
+  const basePinRY = framePose.pinRight.y;
+  const baseTopY = layout.topY;
+  const applyRamp = (t: number) => {
+    if (!ramp) return;
+    const liftCm = t < 0.4 ? 5.5 + (rampLiftTo - 5.5) * (t / 0.4) : rampLiftTo;
+    const delta = liftCm / 100 - 0.055;
+    framePose.pinLeft.y = basePinLY + delta;
+    framePose.pinRight.y = basePinRY + delta;
+    layout.topY = baseTopY + delta;
+    const pin = t < 0.55 ? 1 : t < 0.85 ? 1 - (t - 0.55) / 0.3 : 0;
+    (env as { pinStrength?: number }).pinStrength = pin;
+  };
+
   const t0 = performance.now();
   for (let f = 0; f < FRAMES; f++) {
+    applyRamp(f / FRAMES);
     session.step(SUBSTEP_DT, gravity, preset, layout, framePose);
+    let md = 0;
+    for (let i = 0; i < sim.positions.length; i += 3) {
+      const d = Math.hypot(sim.positions[i] - prevFrame[i], sim.positions[i + 1] - prevFrame[i + 1], sim.positions[i + 2] - prevFrame[i + 2]);
+      if (d > md) md = d;
+    }
+    deltaHist.push(md * 1000);
+    prevFrame.set(sim.positions);
+    if (ramp && (f === Math.floor(FRAMES * 0.4) - 1 || f === Math.floor(FRAMES * 0.55) - 1 || f === Math.floor(FRAMES * 0.85) - 1)) {
+      snapshot(f === Math.floor(FRAMES * 0.4) - 1 ? "P1끝" : f === Math.floor(FRAMES * 0.55) - 1 ? "P2끝" : "P3끝", maxDelta20());
+    }
   }
   const physMs = Number(((performance.now() - t0) / FRAMES).toFixed(3));
 
@@ -779,6 +864,7 @@ function runFixture(path: string): void {
     );
   }
   console.log(`  collar 발화 ${collarFired}회 (배선 검증 — 핀 고정 상태면 0이 정상)`);
+  snapshot(ramp ? "P4끝" : "최종", maxDelta20());
   console.log(`  물리 ${physMs}ms/프레임 (BVH+자체충돌 포함)`);
   if (process.env.RECON === "1") {
     for (const row of [0, 1, 2]) {
