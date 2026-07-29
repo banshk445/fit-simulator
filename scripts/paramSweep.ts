@@ -64,7 +64,7 @@ const centerZ = (pinLeft.z + pinRight.z) / 2;
 // 조합 그리드 — 오늘 조사(pattern-redesign.md)에서 다룬 두 축(품/소매통).
 const WIDTHS_M = [0.5, 0.55, 0.6, 0.65];
 const SLEEVE_WIDTHS_M = [0.14, 0.18, 0.22];
-const SECONDS = 3;
+const SECONDS = process.env.SECONDS ? Number(process.env.SECONDS) : 3;
 const FRAMES = Math.round(SECONDS / SUBSTEP_DT);
 
 function buildArmCapsules(trueShoulder: Vec3Like, dir: Vec3Like, length: number): Capsule[] {
@@ -593,6 +593,7 @@ function runFixture(path: string): void {
 
   let collarFired = 0;
   let clampSaturated = 0;
+  let settleFrame = -1;
   let contactShoulder = 0, contactShoulderN = 0, contactTorso = 0, contactTorsoN = 0, contactFrames = 0;
   const armholeStartRowConst = Math.round(ROWS * ARMHOLE_ROW_FRACTION);
   const preset = FABRIC_PRESETS[pose.fabric];
@@ -751,6 +752,10 @@ function runFixture(path: string): void {
     }
     deltaHist.push(md * 1000);
     if (process.env.TIMESERIES === "1" && md * 1000 >= 49.9) clampSaturated++;
+    if (settleFrame < 0 && deltaHist.length >= 20 && maxDelta20() <= 5.6) settleFrame = f;
+    if (process.env.DELTALOG === "1" && f % 50 === 0 && f > 0) {
+      console.log(`  dlog f=${f} Δ20 ${maxDelta20().toFixed(2)}mm / 어깨높이 ${shoulderClothY().toFixed(2)}cm`);
+    }
     prevFrame.set(sim.positions);
     // TIMESERIES=1: P3 시작(55%)~끝까지 5프레임 간격 — 크리프 vs 용량부족 판별.
     if (process.env.TIMESERIES === "1" && f >= Math.floor(FRAMES * 0.55) && f % 5 === 0) {
@@ -922,6 +927,7 @@ function runFixture(path: string): void {
   }
   console.log(`  collar 발화 ${collarFired}회 (배선 검증 — 핀 고정 상태면 0이 정상)`);
   if (process.env.TIMESERIES === "1") console.log(`  Δ 클램프(50mm) 포화 프레임 ${clampSaturated}개 — 0이어야 연속`);
+  console.log(`  정착: Δ20<=5.6mm 도달 프레임 ${settleFrame < 0 ? "미도달" : settleFrame} / 총 ${FRAMES}`);
   snapshot(ramp ? "P4끝" : "최종", maxDelta20());
   console.log(`  물리 ${physMs}ms/프레임 (BVH+자체충돌 포함)`);
   if (process.env.RECON === "1") {
