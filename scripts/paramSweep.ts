@@ -616,6 +616,37 @@ function runFixture(path: string): void {
   const reconRest: number[] = process.env.RECON === "1" ? [0, 1, 2].map(ringCircumference) : [];
   const reconRestAlways: number[] = [0, 1, 2].map(ringCircumference);
 
+  // 시계열용 경량 커버리지(tf/tb 히트율만).
+  const covParams = () => {
+    const rh = layout.heightM / (ROWS - 1);
+    return {
+      yMin: bandTopY - rh * (armholeStartRowConst + 0.5),
+      yMax: bandTopY + 0.03,
+      neckCenter: { x: (pose.pinLeft.x + pose.pinRight.x) / 2, y: 0, z: (pose.pinLeft.z + pose.pinRight.z) / 2 },
+      neckRadius: 0.09,
+      centerX: (pose.pinLeft.x + pose.pinRight.x) / 2,
+      centerZ: fixture.collision.centerZ,
+    };
+  };
+  const clothRanges = () => [
+    { panel: PANEL_FRONT, colMin: reconRange.xMin, colMax: reconRange.xMax },
+    { panel: PANEL_BACK, colMin: reconRange.xMin, colMax: reconRange.xMax },
+    { panel: PANEL_SLEEVE_LEFT, wrapCols: true },
+    { panel: PANEL_SLEEVE_RIGHT, wrapCols: true },
+  ];
+  const quickCoverage = () => {
+    const cov = computeBodyCoverage(position, [fixture.collision.frontIndex, fixture.collision.backIndex], sim, clothRanges(), covParams());
+    const hr = (names: string[]) => {
+      let sm = 0, ex = 0;
+      for (const nm of names) {
+        const b = cov.buckets[nm];
+        if (b) { sm += b.samples; ex += b.exposed; }
+      }
+      return sm ? ((sm - ex) / sm).toFixed(3) : "-";
+    };
+    return { tf: hr(["top-front-left", "top-front-right"]), tb: hr(["top-back-left", "top-back-right"]) };
+  };
+
   // 구간 경계 스냅샷 — 램프의 어느 구간에서 깨지는지 특정용.
   const snapshot = (label: string, delta20: number): void => {
     const rh = layout.heightM / (ROWS - 1);
@@ -663,6 +694,20 @@ function runFixture(path: string): void {
     );
   };
 
+  // 어깨 대역 천 평균 높이(row0~2) — 하강 궤적 추적.
+  const shoulderClothY = (): number => {
+    let sum = 0, n = 0;
+    for (const panel of [PANEL_FRONT, PANEL_BACK]) {
+      for (let y = 0; y <= 2; y++) {
+        for (let x = reconRange.xMin; x <= reconRange.xMax; x++) {
+          sum += sim.positions[sim.index(panel, x, y) * 3 + 1];
+          n++;
+        }
+      }
+    }
+    return (sum / n) * 100;
+  };
+
   // 수렴 지표 — 프레임당 최대 파티클 변위(mm). 최근 20프레임 최댓값을
   // 정착 판정에 쓴다(직전 PIN 스윕의 "수렴 미검증" 한계 대응).
   const prevFrame = new Float32Array(sim.positions.length);
@@ -700,6 +745,11 @@ function runFixture(path: string): void {
     }
     deltaHist.push(md * 1000);
     prevFrame.set(sim.positions);
+    // TIMESERIES=1: P3 시작(55%)~끝까지 5프레임 간격 — 크리프 vs 용량부족 판별.
+    if (process.env.TIMESERIES === "1" && f >= Math.floor(FRAMES * 0.55) && f % 5 === 0) {
+      const cov = quickCoverage();
+      console.log(`  ts f=${f} (${((f / FRAMES) * 100).toFixed(0)}%) 어깨높이 ${shoulderClothY().toFixed(2)}cm / tf hit ${cov.tf} / tb hit ${cov.tb} / Δ20 ${maxDelta20().toFixed(2)}mm`);
+    }
     if (ramp && (f === Math.floor(FRAMES * 0.4) - 1 || f === Math.floor(FRAMES * 0.55) - 1 || f === Math.floor(FRAMES * 0.85) - 1)) {
       snapshot(f === Math.floor(FRAMES * 0.4) - 1 ? "P1끝" : f === Math.floor(FRAMES * 0.55) - 1 ? "P2끝" : "P3끝", maxDelta20());
     }
