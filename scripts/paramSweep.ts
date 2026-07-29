@@ -583,6 +583,8 @@ function runFixture(path: string): void {
     pinStrength: process.env.PIN ? Number(process.env.PIN) : 1,
     // PINCONT=1: 반복 안 앵커(연속 핀) 모드. 램프는 자동으로 켠다.
     pinContinuous: process.env.PINCONT === "1",
+    // (i) SYNCPREV=0으로 끄고 대조 가능(기본 on).
+    anchorSyncPrev: process.env.SYNCPREV !== "0",
     // M2-6: COLLAR=0으로 끄고 대조(신 코어 기본 on).
     collarStrainLimit: newCore && process.env.COLLAR !== "0" ? COLLAR_STRAIN_LIMIT : undefined,
     onCollarFired: (n: number) => {
@@ -594,6 +596,7 @@ function runFixture(path: string): void {
   let collarFired = 0;
   let clampSaturated = 0;
   let settleFrame = -1;
+  let lastMaxDelta = 0, lastMaxIdx = -1;
   let contactShoulder = 0, contactShoulderN = 0, contactTorso = 0, contactTorsoN = 0, contactFrames = 0;
   const armholeStartRowConst = Math.round(ROWS * ARMHOLE_ROW_FRACTION);
   const preset = FABRIC_PRESETS[pose.fabric];
@@ -746,10 +749,12 @@ function runFixture(path: string): void {
     applyRamp(f / FRAMES);
     session.step(SUBSTEP_DT, gravity, preset, layout, framePose);
     let md = 0;
+    let mdIdx = -1;
     for (let i = 0; i < sim.positions.length; i += 3) {
       const d = Math.hypot(sim.positions[i] - prevFrame[i], sim.positions[i + 1] - prevFrame[i + 1], sim.positions[i + 2] - prevFrame[i + 2]);
-      if (d > md) md = d;
+      if (d > md) { md = d; mdIdx = i / 3; }
     }
+    if (f >= FRAMES - 20 && md * 1000 > lastMaxDelta) { lastMaxDelta = md * 1000; lastMaxIdx = mdIdx; }
     deltaHist.push(md * 1000);
     if (process.env.TIMESERIES === "1" && md * 1000 >= 49.9) clampSaturated++;
     if (settleFrame < 0 && deltaHist.length >= 20 && maxDelta20() <= 5.6) settleFrame = f;
@@ -927,6 +932,14 @@ function runFixture(path: string): void {
   }
   console.log(`  collar 발화 ${collarFired}회 (배선 검증 — 핀 고정 상태면 0이 정상)`);
   if (process.env.TIMESERIES === "1") console.log(`  Δ 클램프(50mm) 포화 프레임 ${clampSaturated}개 — 0이어야 연속`);
+  {
+    // Δ20 max 정점 위치 — max 인질 함정(6회) 때문에 위치 없이 판정 금지.
+    const F = COLS * ROWS;
+    const where = lastMaxIdx < 0 ? "?" : lastMaxIdx < F ? `앞판 x${lastMaxIdx % COLS} y${Math.floor(lastMaxIdx / COLS)}`
+      : lastMaxIdx < F * 2 ? `뒤판 x${(lastMaxIdx - F) % COLS} y${Math.floor((lastMaxIdx - F) / COLS)}`
+      : `소매 idx${lastMaxIdx - F * 2}`;
+    console.log(`  Δ20 max 위치(마지막 20프레임): ${lastMaxDelta.toFixed(2)}mm @ ${where}`);
+  }
   console.log(`  정착: Δ20<=5.6mm 도달 프레임 ${settleFrame < 0 ? "미도달" : settleFrame} / 총 ${FRAMES}`);
   snapshot(ramp ? "P4끝" : "최종", maxDelta20());
   console.log(`  물리 ${physMs}ms/프레임 (BVH+자체충돌 포함)`);

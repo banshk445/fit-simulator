@@ -225,6 +225,8 @@ export interface GarmentFrameEnv {
   pinStrength?: number;
   // 연속 핀 모드(램프 전용) — pinCorners 주석 참고.
   pinContinuous?: boolean;
+  // (i) 반복 내 앵커 prev 동기화 — 밀림→스냅 왕복의 속도 누적 차단.
+  anchorSyncPrev?: boolean;
   // M2-6: row0 링 신장 상한(예: 1.02). 0/undefined면 미적용.
   collarStrainLimit?: number;
   // 발화 카운트 수집(배선 검증용) — 있으면 프레임마다 누적 호출.
@@ -294,7 +296,7 @@ export function createGarmentSession(sim: ClothSimulation, env: GarmentFrameEnv)
               // 흡착이 row0을 표면으로 끌어당기므로 앵커가 그 뒤에 와야
               // 목표가 살아남는다. 반대 순서면 흡착이 마지막 발언권을
               // 가져 등가성이 깨진다.
-              if (anchorK > 0) sim.applyAnchors(anchorK);
+              if (anchorK > 0) sim.applyAnchors(anchorK, env.anchorSyncPrev ?? false);
             }
           : undefined;
 

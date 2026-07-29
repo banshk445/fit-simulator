@@ -352,13 +352,25 @@ export class ClothSimulation {
     this.anchors = list;
   }
 
-  applyAnchors(kPerIteration: number): void {
+  // (i) 반복 내 prev 동기화: 앵커로 되돌린 직후 그 정점의 prevPositions를
+  // 새 위치와 맞춘다. 이유 — pinned=0이라 row0이 매 반복 충돌·순서에
+  // 밀린 뒤 앵커가 스냅하는데, prev를 프레임당 1회만 완화하면 그 왕복이
+  // 속도로 누적돼 지속 진동이 된다(실측: Δ20이 하드 핀 2.57mm 대비
+  // 7.19mm에서 안 내려옴). 하드 핀도 pinned=1로 속도를 소거하므로 이건
+  // 그보다 강한 감쇠가 아니다 — row0의 **충돌 참여만** 유지하는 게 목적.
+  // 대상은 앵커 정점뿐, 다른 정점의 prev는 안 건드린다.
+  applyAnchors(kPerIteration: number, syncPrev = false): void {
     if (kPerIteration <= 0) return;
     for (const a of this.anchors) {
       const ix = a.i * 3;
       this.positions[ix] += (a.x - this.positions[ix]) * kPerIteration;
       this.positions[ix + 1] += (a.y - this.positions[ix + 1]) * kPerIteration;
       this.positions[ix + 2] += (a.z - this.positions[ix + 2]) * kPerIteration;
+      if (syncPrev) {
+        this.prevPositions[ix] = this.positions[ix];
+        this.prevPositions[ix + 1] = this.positions[ix + 1];
+        this.prevPositions[ix + 2] = this.positions[ix + 2];
+      }
     }
   }
 
