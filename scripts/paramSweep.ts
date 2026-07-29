@@ -8,7 +8,7 @@
 import { readFileSync, writeFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import * as THREE from "three";
-import { armholeRingVertices, torsoColumnRange, type ArmDir } from "../src/lib/buildGarmentSim";
+import { armholeRingVertices, neckHoleColumnRange, torsoColumnRange, type ArmDir } from "../src/lib/buildGarmentSim";
 import { buildArmCapsules as buildFrameArmCapsules, createGarmentSession, createPanelSplitResolver, createUnifiedResolver, PANEL_COUNTS } from "../src/lib/garmentFrame";
 import { ArrayBvhCollision } from "../src/lib/bvhFromArrays";
 import { SelfCollision } from "../src/lib/selfCollision";
@@ -510,7 +510,7 @@ function runFixture(path: string): void {
 
   const { sim, seamSkipPairs } = buildUnifiedGarmentSim(
     layout.widthM, layout.heightM, layout.topY, layout.centerZ,
-    pose.pinLeft, pose.pinRight, armLeft, armRight, layout.sleeveWidthM, pose.necklineLift, newCore,
+    pose.pinLeft, pose.pinRight, armLeft, armRight, layout.sleeveWidthM, (process.env.NOLIFT === "1" ? undefined : pose.necklineLift), newCore,
   );
   const panelStarts: number[] = [];
   const panelCols: number[] = [];
@@ -536,7 +536,8 @@ function runFixture(path: string): void {
     postOrder: true,
     armSoftPull: true,
     necklineHug: true,
-    sleeveArmPull: true,
+    // △3-2 진단: SLEEVE_PULL=0 으로 암홀 용접을 통해 들어오는 소매 하중을 뗀다.
+    sleeveArmPull: process.env.SLEEVE_PULL !== "0",
     yAlign: true,
     symmetry: process.env.SYMMETRY !== "0",
     clampAfterPost: false,
@@ -608,7 +609,7 @@ function runFixture(path: string): void {
   const armholeStartRowConst = Math.round(ROWS * ARMHOLE_ROW_FRACTION);
   const preset = FABRIC_PRESETS[pose.fabric];
   const gravity = new THREE.Vector3(...GRAVITY_BASE).multiplyScalar(preset.gravityScale);
-  const framePose = { pinLeft: pose.pinLeft, pinRight: pose.pinRight, armLeft, armRight, necklineLift: pose.necklineLift };
+  const framePose = { pinLeft: pose.pinLeft, pinRight: pose.pinRight, armLeft, armRight, necklineLift: process.env.NOLIFT === "1" ? undefined : pose.necklineLift };
   // RECON=1(목선 기하 정찰): row0~2 링 원주의 초기(=레스트, 제약이 초기
   // 배치에서 구워지므로) 값과 정착 후 실측값 — 신장률. 링 = 앞판 x
   // xMin..xMax + 뒤판 역순의 닫힌 고리.
@@ -881,6 +882,38 @@ function runFixture(path: string): void {
   const ripple = computeRippleMm(sim, [PANEL_FRONT, PANEL_BACK], 1, armholeStartRow, xMin, xMax);
   console.log(`  ripple(2차차분=곡률): max ${ripple.maxMm}mm @ ${JSON.stringify(ripple.maxAt)} / mean ${ripple.meanMm}mm`);
   console.log(`  jitter(4차차분=지그재그): max ${ripple.jitterMaxMm}mm @ ${JSON.stringify(ripple.jitterMaxAt)} / mean ${ripple.jitterMeanMm}mm / 부호반전 ${ripple.signFlipRatio}`);
+  // NECK=1 (△3-2 뒤 목선 국소 구김 진단): "어느 행·열인가"가 질문이므로
+  // 지표 하나(max)가 아니라 **프로파일**을 찍는다 — 목선 대역(row0~3)의
+  // 열별 곡률(열 방향 2차 차분)과 row0→row1 실거리. 목 구멍 열 범위도 같이
+  // 내서 구김이 구멍 가장자리인지 그 바깥인지 좌표로 가른다.
+  if (process.env.NECK === "1") {
+    const p = sim.positions;
+    const curvMm = (panel: number, x: number, y: number): number => {
+      const i = sim.index(panel, x, y) * 3;
+      const l = sim.index(panel, x - 1, y) * 3;
+      const r = sim.index(panel, x + 1, y) * 3;
+      return Math.hypot(p[l] + p[r] - 2 * p[i], p[l + 1] + p[r + 1] - 2 * p[i + 1], p[l + 2] + p[r + 2] - 2 * p[i + 2]) * 1000;
+    };
+    const segMm = (panel: number, x: number, y: number): number => {
+      const a = sim.index(panel, x, y) * 3;
+      const b = sim.index(panel, x, y + 1) * 3;
+      return Math.hypot(p[b] - p[a], p[b + 1] - p[a + 1], p[b + 2] - p[a + 2]) * 1000;
+    };
+    const nh = neckHoleColumnRange(COLS, pose.pinLeft, pose.pinRight, armLeft, armRight);
+    console.log(`  [NECK] 몸통 열 ${xMin}..${xMax} / 목 구멍 열 ${nh.xMin}..${nh.xMax}`);
+    for (const [name, panel] of [["앞판", PANEL_FRONT], ["뒤판", PANEL_BACK]] as [string, number][]) {
+      for (let y = 0; y <= 3; y++) {
+        const cur: string[] = [];
+        for (let x = xMin + 1; x <= xMax - 1; x++) cur.push(curvMm(panel, x, y).toFixed(1));
+        console.log(`  [NECK] ${name} y=${y} 곡률mm(열 ${xMin + 1}..${xMax - 1}) ${cur.join(" ")}`);
+      }
+      for (let y = 0; y <= 2; y++) {
+        const seg: string[] = [];
+        for (let x = xMin; x <= xMax; x++) seg.push(segMm(panel, x, y).toFixed(1));
+        console.log(`  [NECK] ${name} y${y}→y${y + 1} 행간거리mm(열 ${xMin}..${xMax}) ${seg.join(" ")}`);
+      }
+    }
+  }
   // ④ 게이트: order 도입 사유(어깨 열 역전 → 찢어짐) 자체를 잰다.
   {
     const dx = pose.pinRight.x - pose.pinLeft.x;
