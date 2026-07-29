@@ -11,6 +11,12 @@
 //
 // screencapture나 osascript가 실패하면 메시지를 그대로 뱉고 비정상 종료한다
 // — 조용히 넘어가면 "직전 캡처"를 새 결과로 착각한다.
+//
+// 2026-07-30 사고: 대상을 "front window"로 잡고 있어서, 사용자가 다른 Chrome
+// 창을 앞에 두고 있으면 **그 창을 앱 URL로 덮어쓰고 그 창을 찍었다**(실제로
+// 앱과 무관한 창을 촬영했다). 이제 활성 탭 URL이 대상 호스트인 창을 **찾아서**
+// 그것만 앞으로 올려 쓴다. 못 찾으면 아무 창도 건드리지 않고 종료한다 —
+// 남의 창을 하이재킹하느니 실패하는 게 낫다.
 import { execFileSync } from "node:child_process";
 import { mkdirSync } from "node:fs";
 import { resolve } from "node:path";
@@ -36,6 +42,37 @@ function osa(script: string): string {
   }
 }
 
+// 대상 창 = 활성 탭 URL에 이 호스트가 들어 있는 창. BASE에서 도출한다.
+const TARGET_HOST = new URL(BASE).host;
+
+// 대상 창을 찾아 맨 앞으로 올리고 그 창의 활성 탭을 주어진 URL로 보낸다.
+// 반환값이 "NOMATCH"면 열려 있는 Chrome 창 중 앱 창이 없다는 뜻이다.
+function focusAndNavigate(target: string): void {
+  const result = osa(`tell application "Google Chrome"
+    set winIndex to 0
+    repeat with i from 1 to (count of windows)
+      try
+        if (URL of active tab of window i) contains "${TARGET_HOST}" then
+          set winIndex to i
+          exit repeat
+        end if
+      end try
+    end repeat
+    if winIndex = 0 then return "NOMATCH"
+    set index of window winIndex to 1
+    activate
+    set URL of active tab of window 1 to "${target}"
+    return "OK"
+  end tell`);
+  if (result === "NOMATCH") {
+    console.error(`[capture] ${TARGET_HOST} 를 띄운 Chrome 창을 못 찾았다. 그 주소를 연 창을 하나 열어둘 것.`);
+    console.error("[capture] 다른 창을 임의로 가져다 쓰지 않는다 — 앱과 무관한 창을 덮어쓰고 촬영한 사고가 있었다(2026-07-30).");
+    process.exit(1);
+  }
+}
+
+// focusAndNavigate가 대상 창을 index 1로 올려둔 **직후에만** 유효하다 —
+// 여기서 말하는 front window는 그 대상 창이다.
 function chromeBounds(): { x: number; y: number; w: number; h: number } {
   const raw = osa('tell application "Google Chrome" to return bounds of front window');
   const [x1, y1, x2, y2] = raw.split(",").map((v) => Number(v.trim()));
@@ -56,10 +93,7 @@ const url = (view: string) => `${BASE}&view=${view}&cb=${process.pid}${Date.now(
 
 const shots: string[] = [];
 for (const view of VIEWS) {
-  osa(`tell application "Google Chrome"
-    activate
-    set URL of active tab of front window to "${url(view)}"
-  end tell`);
+  focusAndNavigate(url(view));
   sleep(SETTLE_MS);
   const b = chromeBounds();
   // 3D 뷰포트만 — 왼쪽 패널(272pt)과 탭·주소창·북마크바(120pt)를 뺀다.
