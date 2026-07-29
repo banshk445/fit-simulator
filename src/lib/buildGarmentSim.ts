@@ -79,13 +79,27 @@ function shoulderCapZBulge(y: number, shoulderU: number, armholeStartRow: number
 // 얼마나 "위로" 올라가는지 계산한다. isFrontPanel: 30번 병합 이후 패널
 // 번호가 더 이상 항상 0=앞/1=뒤가 아니므로 이 값으로 앞/뒤 깊이 차이를
 // 구분한다.
+// △3-2 후속(C¹ 연속화): 목 구멍 경계(absU = holeHalf)에서 두 가지가 이어져야
+// 한다 — 값과 1차 도함수. 값은 원래 이어졌지만(양쪽 다 rise) **기울기가
+// 끊겨 있었다**:
+//   안쪽 가지 (1 - DIP·(1-t²))의 t=1 기울기 = 2·rise·DIP/holeHalf
+//   바깥 가지 (1 - t²)      의 t=0 기울기 = 0
+// 안쪽 t² 를 smoothstep t²(3-2t)로 바꾸면 t=0/t=1 양끝 기울기가 0이 되어
+// 경계가 매끄러운 극대점이 된다. 값(중심 0.94·rise, 경계 rise)은 불변이다.
+//
+// **바깥 가지는 포물선을 유지할 것.** 격자에 찍힌 뒤의 이산 곡률(2차 차분)
+// 을 지수 m으로 스캔해봤는데(rise만, 앞판): m=1 7.03mm / 0.8 9.01 / 0.5 10.16
+// / 0.3 8.64 — 포물선이 최소다. 포물선은 1차 차분이 등차수열이라 곡률이
+// 전 구간 균일하게 퍼지고, smoothstep류는 양 끝에 3배로 몰린다.
+// 즉 이 자리에서 "더 매끄러운 함수"로 바꾸는 건 개악이다.
 function necklineRise(isFrontPanel: boolean, shoulderU: number): number {
   const rise = isFrontPanel ? NECKLINE_RISE_FRONT : NECKLINE_RISE_BACK;
   const holeHalf = NECKLINE_HOLE_WIDTH_FRACTION / 2;
   const absU = Math.abs(shoulderU);
   if (absU <= holeHalf) {
     const t = holeHalf > 0 ? absU / holeHalf : 1;
-    return rise * (1 - NECKLINE_CENTER_DIP_FRACTION * (1 - t * t));
+    const dip = t * t * (3 - 2 * t); // smoothstep — 양끝 기울기 0
+    return rise * (1 - NECKLINE_CENTER_DIP_FRACTION * (1 - dip));
   }
   const outerSpan = 0.5 - holeHalf;
   const t = outerSpan > 0 ? (absU - holeHalf) / outerSpan : 1;
