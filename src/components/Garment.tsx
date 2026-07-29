@@ -628,7 +628,7 @@ export function Garment({ imageUrl }: Props) {
         out[2] = src[o + 2];
       },
     };
-    return buildTrimBand([ring], { surfaceInset: 0.8 });
+    return buildTrimBand([ring], { surfaceInset: 0.9, lift: 0.0015 });
   }, [neckMin, neckMax, frontPositions, backPositions]);
   const cuffBand = useMemo(() => {
     const lastRow = SLEEVE_RING_ROWS - 1;

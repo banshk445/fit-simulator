@@ -40,7 +40,15 @@ export interface TrimBand {
  *   위 스트립**. 목은 이거여야 한다 — extrude로 하면 밴드가 위로 뻗어
  *   마네킹 목 안으로 들어가 어깨 부분만 삐져나왔다(빨강 표시로 확인).
  */
-export type TrimBandShape = { extrude: number } | { surfaceInset: number };
+export type TrimBandShape =
+  | { extrude: number }
+  /**
+   * lift: 스트립을 몸 바깥으로 살짝 띄우는 양(m). 색 차이(×0.8)만으로는
+   * 밴드가 "형태"로 안 읽혀서(2026-07-29 화면 판정) 실제 립처럼 표면 위로
+   * 솟게 한다. 방향은 링 중심에서 수평 방사 — 목 링에서는 그게 곧 몸
+   * 바깥이라 부호 문제가 없다(extrude의 접선×방사와 달리).
+   */
+  | { surfaceInset: number; lift?: number };
 
 export function buildTrimBand(rings: readonly TrimRing[], shape: TrimBandShape): TrimBand {
   const total = rings.reduce((n, r) => n + r.count, 0);
@@ -75,22 +83,7 @@ export function buildTrimBand(rings: readonly TrimRing[], shape: TrimBandShape):
     update() {
       let off = 0;
       for (const ring of rings) {
-        if ("surfaceInset" in shape) {
-          // 옷 표면 위 스트립 — 방향 계산이 필요 없다. 가장자리 정점과
-          // 안쪽 행 정점 사이를 비율만큼 보간한 두 줄.
-          for (let i = 0; i < ring.count; i++) {
-            ring.read(p, i);
-            ring.readInner(inner, i);
-            const o = (off + i * 2) * 3;
-            for (let k = 0; k < 3; k++) {
-              positions[o + k] = p[k];
-              positions[o + 3 + k] = p[k] + (inner[k] - p[k]) * shape.surfaceInset;
-            }
-          }
-          off += ring.count * 2;
-          continue;
-        }
-        // 링 중심 — 밴드를 안쪽으로 밀 방향의 기준.
+        // 링 중심 — 밀어낼 방향(수직 부호 판정 / 수평 방사 lift)의 기준.
         let cx = 0, cy = 0, cz = 0;
         for (let i = 0; i < ring.count; i++) {
           ring.read(p, i);
@@ -101,6 +94,31 @@ export function buildTrimBand(rings: readonly TrimRing[], shape: TrimBandShape):
         cx /= ring.count;
         cy /= ring.count;
         cz /= ring.count;
+        if ("surfaceInset" in shape) {
+          // 옷 표면 위 스트립 — 방향 계산이 필요 없다. 가장자리 정점과
+          // 안쪽 행 정점 사이를 비율만큼 보간한 두 줄.
+          const lift = shape.lift ?? 0;
+          for (let i = 0; i < ring.count; i++) {
+            ring.read(p, i);
+            ring.readInner(inner, i);
+            const dx = p[0] - cx;
+            const dz = p[2] - cz;
+            const dl = Math.hypot(dx, dz) || 1e-9;
+            const lx = (dx / dl) * lift;
+            const lz = (dz / dl) * lift;
+            const o = (off + i * 2) * 3;
+            for (let k = 0; k < 3; k++) {
+              positions[o + k] = p[k];
+              positions[o + 3 + k] = p[k] + (inner[k] - p[k]) * shape.surfaceInset;
+            }
+            positions[o] += lx;
+            positions[o + 2] += lz;
+            positions[o + 3] += lx;
+            positions[o + 5] += lz;
+          }
+          off += ring.count * 2;
+          continue;
+        }
         // 접선(이웃 차) × (중심→정점) = 링 면에 수직. 부호는 링 감김
         // 방향에 달려 임의이므로 아래에서 안쪽 행으로 한 번 결정한다.
         const normalAt = (i: number) => {
