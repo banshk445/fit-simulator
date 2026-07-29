@@ -15,7 +15,8 @@
     "check:sleeve": "tsx scripts/checkSleeveSeam.ts",
     "check:seambridge": "tsx scripts/checkSeamBridge.ts",
     "sweep:pattern": "tsx scripts/paramSweep.ts",
-    "check:weld": "tsx scripts/checkWeldTopology.ts"
+    "check:weld": "tsx scripts/checkWeldTopology.ts",
+    "capture": "tsx scripts/capture.ts"
   },
   "build": {
     "appId": "com.fitsimulator.app",

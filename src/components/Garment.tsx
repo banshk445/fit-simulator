@@ -31,6 +31,24 @@ import { armholeSeamStrip, buildSeamBridge, shoulderSeamStrip, sideSeamStrip, up
 import { buildWeldedGarmentGeometry } from "./weldedGarmentGeometry";
 import { buildTrimBand, type TrimRing } from "./trimBands";
 
+// 함정 1(HMR이 워커를 안 갱신) 가드. 워커는 페이지 로드 시점에 만들어지고
+// HMR 업데이트를 받지 않으므로, 로드 이후 갱신이 한 번이라도 오면 화면의
+// 물리는 디스크의 코드가 아니다. 판정·측정 전에 __fitDebug.buildStamp()로
+// 확인할 것 — 이걸 몰라 멀쩡한 수정을 원복한 사고가 있었다.
+const PAGE_LOADED_AT = new Date().toISOString();
+let hmrUpdateCount = 0;
+if (import.meta.hot) {
+  import.meta.hot.on("vite:afterUpdate", () => {
+    hmrUpdateCount += 1;
+    console.warn(
+      `[fit] HMR 갱신 ${hmrUpdateCount}회 — 워커 물리는 갱신되지 않았다. 화면 판정 전에 하드 리프레시(Cmd+Shift+R)할 것.`,
+    );
+  });
+}
+if (import.meta.env.DEV) {
+  console.log(`[fit] 페이지 로드 ${PAGE_LOADED_AT} — 워커 스탬프. __fitDebug.buildStamp()로 확인.`);
+}
+
 interface Props {
   imageUrl: string;
 }
@@ -735,6 +753,15 @@ export function Garment({ imageUrl }: Props) {
   useEffect(() => {
     const win = window as unknown as { __fitDebug?: Record<string, unknown> };
     if (!win.__fitDebug) win.__fitDebug = {};
+    // 함정 1 가드 — 워커는 HMR로 안 갱신된다. 페이지 로드 이후 HMR
+    // 업데이트가 한 번이라도 오면 화면의 물리는 **디스크의 코드가 아니다**.
+    // 이걸 모르고 판정하다가 멀쩡한 수정을 원복한 사고가 있었다.
+    // buildStamp()는 (로드 시각, HMR 갱신 횟수, stale 여부)를 낸다.
+    win.__fitDebug.buildStamp = () => ({
+      loadedAt: PAGE_LOADED_AT,
+      hmrUpdates: hmrUpdateCount,
+      stale: hmrUpdateCount > 0,
+    });
     win.__fitDebug.armholeCheck = () => {
       const { xMin } = torsoColumnRangeRef.current;
       const armholeStartRow = Math.round(ROWS * ARMHOLE_ROW_FRACTION);

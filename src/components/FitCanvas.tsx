@@ -55,6 +55,16 @@ function GarmentMesh() {
   );
 }
 
+// 판정용 고정 시점. 값은 기본 카메라(0,1.3,3 / fov45 / target 0,1,0)에서
+// 출발해 목·소매만 당긴 것이다.
+const CAPTURE_VIEWS: Record<string, { pos: [number, number, number]; target: [number, number, number]; fov?: number }> = {
+  front: { pos: [0, 1.3, 3], target: [0, 1, 0] },
+  back: { pos: [0, 1.3, -3], target: [0, 1, 0] },
+  neck: { pos: [0, 1.5, 1.0], target: [0, 1.38, 0], fov: 35 },
+  neckback: { pos: [0, 1.5, -1.0], target: [0, 1.38, 0], fov: 35 },
+  cuff: { pos: [0, 1.25, 1.6], target: [0, 1.15, 0], fov: 35 },
+};
+
 export function FitCanvas() {
   const garmentImage = useFitStore((s) => s.garmentImage);
   const showArmCapsules = useFitStore((s) => s.showArmCapsules);
@@ -65,8 +75,14 @@ export function FitCanvas() {
   const fit = checkGarmentFit(chest, width);
   const wearable = fit.verdict !== "impossible";
 
+  // DEV: ?view=front|back|neck|cuff 로 카메라를 고정 시점에 놓는다.
+  // 판정용 캡처(npm run capture)가 사람 손 없이 같은 구도를 다시 잡기
+  // 위한 것 — 눈대중으로 돌린 각도는 전후 대조가 안 된다.
+  const view = new URLSearchParams(window.location.search).get("view");
+  const shot = view ? CAPTURE_VIEWS[view] : undefined;
+
   return (
-    <Canvas camera={{ position: [0, 1.3, 3], fov: 45 }}>
+    <Canvas camera={{ position: shot?.pos ?? [0, 1.3, 3], fov: shot?.fov ?? 45 }}>
       <ambientLight intensity={0.5} />
       <directionalLight position={[3, 5, 2]} intensity={1} />
       <Suspense fallback={null}>
@@ -84,7 +100,7 @@ export function FitCanvas() {
         </Suspense>
       )}
       <gridHelper args={[6, 12]} />
-      <OrbitControls target={[0, 1, 0]} />
+      <OrbitControls target={shot?.target ?? [0, 1, 0]} />
     </Canvas>
   );
 }

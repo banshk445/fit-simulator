@@ -6,6 +6,7 @@
 // ponytail: 조합 그리드는 아래 WIDTHS_M/SLEEVE_WIDTHS_M 배열을 직접 고쳐라
 // (CLI 파싱 없음 — 필요해지면 추가).
 import { readFileSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
 import * as THREE from "three";
 import { armholeRingVertices, torsoColumnRange, type ArmDir } from "../src/lib/buildGarmentSim";
 import { buildArmCapsules as buildFrameArmCapsules, createGarmentSession, createPanelSplitResolver, createUnifiedResolver, PANEL_COUNTS } from "../src/lib/garmentFrame";
@@ -377,7 +378,11 @@ function runFixture(path: string): void {
   // PINLIFT=cm 이면 SHOULDER_PIN_LIFT 스윕 — fixture의 핀 좌표에는 브라우저
   // 기준값(5.5cm)이 이미 구워져 있으므로 차이만큼 핀 Y와 topY를 함께
   // 이동시킨다(topY = max(pin.y) 파생값). necklineLift는 불변(단일 변수).
-  const fixture0 = JSON.parse(readFileSync(path, "utf8"));
+  const fixtureRaw = readFileSync(path, "utf8");
+  // 함정 8: 측정 대상(fixture)이 바뀌면 같은 명령·같은 코드에서도 절대값이
+  // 옮겨 앉는다. 모든 보고에 프레임 수와 함께 이 해시를 병기한다.
+  const fixtureHash = createHash("sha256").update(fixtureRaw).digest("hex").slice(0, 12);
+  const fixture0 = JSON.parse(fixtureRaw);
   // 측정 대역(coverage/hover)은 몸 기준이라 핀과 무관하게 고정한다 —
   // 처음엔 layout.topY를 그대로 대역 기준으로 썼다가 샘플 수가 셀마다
   // 달라지는(644→693/720) 배선 함정을 밟았다. 원본 topY를 따로 보관.
@@ -814,7 +819,7 @@ function runFixture(path: string): void {
     },
   );
 
-  console.log(`[paramSweep:fixture] ${FRAMES}프레임(${SECONDS}s), fabric=${pose.fabric}, 코어=${newCore ? "신(용접)" : "구"}, 워커 전체 파이프라인 재현`);
+  console.log(`[paramSweep:fixture] ${FRAMES}프레임(${SECONDS}s), fixture=${fixtureHash}, fabric=${pose.fabric}, 코어=${newCore ? "신(용접)" : "구"}, 워커 전체 파이프라인 재현`);
   console.log(`  coverage: 노출 ${coverage.exposed}/${coverage.samples} (${(coverage.exposedRatio * 100).toFixed(1)}%)`);
   console.log(`  coverage 버킷(노출/샘플):`, JSON.stringify(Object.fromEntries(Object.entries(coverage.buckets).map(([k, v]) => [k, `${v.exposed}/${v.samples}`]))));
   console.log(`  coverage 노출 예시:`, JSON.stringify(coverage.exposedExamples.slice(0, 5)));
@@ -945,6 +950,7 @@ function runFixture(path: string): void {
   console.log(`  정착: Δ20<=5.6mm 도달 프레임 ${settleFrame < 0 ? "미도달" : settleFrame} / 총 ${FRAMES}`);
   snapshot(ramp ? "P4끝" : "최종", maxDelta20());
   console.log(`  물리 ${physMs}ms/프레임 (BVH+자체충돌 포함)`);
+  console.log(`  [기준] ${FRAMES}프레임 / fixture ${fixtureHash}`);
   if (process.env.FITLIMIT === "1") {
     // 가슴 높이(어깨선 아래 18cm 근방)의 몸 단면 둘레 — 천이 감아야 할 길이.
     const slicePerim = (yc: number): number => {
