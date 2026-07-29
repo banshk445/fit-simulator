@@ -214,6 +214,16 @@ if (import.meta.env.DEV) {
   // 시 드레이프가 실제로 달라지는가"를 전후 대조할 수 있다.
   const chest = q.get("chest");
   if (chest) useFitStore.getState().setBodyChest(Number(chest));
+  // 나머지 체형 슬라이더도 동일하게 — 발산 잔존 검사(함정 9)가 슬라이더
+  // 전수를 자동으로 돌 수 있어야 한다.
+  const bh = q.get("bodyheight");
+  if (bh) useFitStore.getState().setBodyHeight(Number(bh));
+  const al = q.get("armlen");
+  if (al) useFitStore.getState().setArmLength(Number(al));
+  const ll = q.get("leglen");
+  if (ll) useFitStore.getState().setLegLength(Number(ll));
+  const sw = q.get("bodyshoulder");
+  if (sw) useFitStore.getState().setShoulderWidth(Number(sw));
   // ?chestseq=100,120,100&chestseqms=4000 — 가슴 치수를 시간 간격으로
   // 바꾼다(리로드 없이). "바꿨다 되돌리면 원상 복귀되는가"(상태 누적)는
   // 페이지를 다시 여는 방식으로는 검증할 수 없어서 만든 것 — 스모크
