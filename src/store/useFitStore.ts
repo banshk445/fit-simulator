@@ -214,6 +214,20 @@ if (import.meta.env.DEV) {
   // 시 드레이프가 실제로 달라지는가"를 전후 대조할 수 있다.
   const chest = q.get("chest");
   if (chest) useFitStore.getState().setBodyChest(Number(chest));
+  // ?chestseq=100,120,100&chestseqms=4000 — 가슴 치수를 시간 간격으로
+  // 바꾼다(리로드 없이). "바꿨다 되돌리면 원상 복귀되는가"(상태 누적)는
+  // 페이지를 다시 여는 방식으로는 검증할 수 없어서 만든 것 — 스모크
+  // 테스트도 이 경로를 쓴다.
+  const seq = q.get("chestseq");
+  if (seq) {
+    const step = Number(q.get("chestseqms") ?? 4000);
+    seq.split(",").forEach((v, i) => {
+      setTimeout(() => {
+        console.log(`[fit] chestseq -> ${v}`);
+        useFitStore.getState().setBodyChest(Number(v));
+      }, step * (i + 1));
+    });
+  }
   const width = q.get("width");
   if (width) useFitStore.getState().setGarmentWidth(Number(width));
   const pinlift = q.get("pinlift");

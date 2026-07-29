@@ -2,6 +2,9 @@ import { useEffect, useMemo, useRef } from "react";
 import { useGLTF } from "@react-three/drei";
 import { useFrame } from "@react-three/fiber";
 import * as THREE from "three";
+
+// 임시 진단(가슴 스케일 시 몸 메시 폭발 원인 가르기): ?nocounter=1
+const NO_COUNTER = import.meta.env.DEV && new URLSearchParams(window.location.search).get("nocounter") === "1";
 import { DEFAULT_BODY_SIZE, useFitStore } from "../store/useFitStore";
 import { mannequinRootRef } from "../lib/mannequinRef";
 import { isBone, isDescendantOfAny } from "../lib/boneUtils";
@@ -313,7 +316,7 @@ export function Mannequin() {
     // 위 torsoGirthBones 스케일이 어깨/팔/목/머리 쪽으로 새어 들어가는 걸
     // 상쇄한다 — 자세한 이유는 shoulderGirthAxes/neckCounterScaleBones
     // 선언부 주석 참고.
-    const counterChestMultiplier = 1 / chestMultiplier;
+    const counterChestMultiplier = NO_COUNTER ? 1 : 1 / chestMultiplier;
     for (const { bone, axes } of shoulderGirthAxes) {
       for (const axis of axes) {
         bone.scale[axis] = THREE.MathUtils.lerp(bone.scale[axis], counterChestMultiplier, t);

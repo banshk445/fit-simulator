@@ -952,14 +952,42 @@ function runFixture(path: string): void {
   console.log(`  물리 ${physMs}ms/프레임 (BVH+자체충돌 포함)`);
   console.log(`  [기준] ${FRAMES}프레임 / fixture ${fixtureHash}`);
   if (process.env.FITLIMIT === "1") {
-    // 가슴 높이(어깨선 아래 18cm 근방)의 몸 단면 둘레 — 천이 감아야 할 길이.
+    // 가슴 단면 둘레 — 천이 감아야 할 길이.
+    //
+    // **함정 6(대역 기준 좌표) 재발 수정**: 예전엔 Y 대역을 layout.topY
+    // (옷 레이아웃)에 걸고, 팔을 빼려고 |x| > 0.22m를 잘랐다. 둘 다 몸이
+    // 바뀌면 무너진다 — 몸통이 굵어지면 0.22m 클램프가 **몸통 자체를**
+    // 잘라내 둘레가 오히려 줄었다(가슴 100 → 113.4cm, 120 → 104.7cm).
+    // 이제 둘 다 몸 메시에서 도출한다:
+    //   - Y 대역: 몸 bbox 높이의 66~80% 구간(선 자세 기준 가슴 높이).
+    //   - 팔 제외: 각 슬랩에서 x로 정렬해 가장 큰 빈틈을 찾아 중앙 덩어리
+    //     (몸통)만 남긴다. 팔은 몸통과 떨어져 있으므로 그 빈틈이 경계다.
+    let bodyMinY = Infinity;
+    let bodyMaxY = -Infinity;
+    for (let i = 1; i < position.length; i += 3) {
+      if (position[i] < bodyMinY) bodyMinY = position[i];
+      if (position[i] > bodyMaxY) bodyMaxY = position[i];
+    }
+    const bodyH = bodyMaxY - bodyMinY;
+    const centralCluster = (xs: [number, number][]): [number, number][] => {
+      if (xs.length < 3) return xs;
+      const sorted = [...xs].sort((a, b) => a[0] - b[0]);
+      // 중앙(x=0)을 품은 덩어리만 남긴다 — 인접 x 간격이 2cm를 넘으면 끊는다.
+      let lo = 0;
+      let hi = sorted.length - 1;
+      const mid = sorted.findIndex((p) => p[0] >= 0);
+      const m = mid < 0 ? sorted.length - 1 : mid;
+      for (let i = m; i > 0; i--) { if (sorted[i][0] - sorted[i - 1][0] > 0.02) { lo = i; break; } }
+      for (let i = m; i < sorted.length - 1; i++) { if (sorted[i + 1][0] - sorted[i][0] > 0.02) { hi = i; break; } }
+      return sorted.slice(lo, hi + 1);
+    };
     const slicePerim = (yc: number): number => {
-      const pts: [number, number][] = [];
+      let pts: [number, number][] = [];
       for (let i = 0; i < position.length; i += 3) {
         if (Math.abs(position[i + 1] - yc) > 0.004) continue;
-        if (Math.abs(position[i]) > 0.22) continue;
         pts.push([position[i], position[i + 2]]);
       }
+      pts = centralCluster(pts);
       if (pts.length < 3) return 0;
       pts.sort((a, b) => a[0] - b[0] || a[1] - b[1]);
       const cr = (o: [number, number], a: [number, number], b: [number, number]) => (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0]);
@@ -972,8 +1000,17 @@ function runFixture(path: string): void {
       return per;
     };
     let chestMax = 0;
-    for (let yc = bandTopY - 0.25; yc <= bandTopY - 0.10; yc += 0.01) chestMax = Math.max(chestMax, slicePerim(yc));
+    // 몸 메시 온전성 검사 — 손상된 fixture로 대역 루프를 돌면 1e20 규모의
+    // 반복이 되어 사실상 멈춘다(실제로 10분 넘게 잡아먹었다). 스케일된
+    // 마네킹 export가 실제로 그렇게 나온다(metrics-log 2026-07-29 블록).
+    if (!Number.isFinite(bodyH) || bodyH > 3 || bodyH < 0.5) {
+      console.log(`  fitlimit: **측정 불가** — 몸 메시가 손상됐다(bbox 높이 ${bodyH.toFixed(1)}m). fixture를 다시 뽑을 것.`);
+    } else {
+    const bandLo = bodyMinY + bodyH * 0.66;
+    const bandHi = bodyMinY + bodyH * 0.80;
+    for (let yc = bandLo; yc <= bandHi; yc += 0.01) chestMax = Math.max(chestMax, slicePerim(yc));
     console.log(`  fitlimit: 품 ${(layout.widthM * 100).toFixed(1)}cm / 가슴 단면둘레 ${(chestMax * 100).toFixed(1)}cm / 비율 품÷(둘레/2) ${(layout.widthM / (chestMax / 2)).toFixed(3)} / maxStrain ${computeDrapeMetrics(sim, [PANEL_FRONT, PANEL_BACK], reconRange.xMin, reconRange.xMax).maxStrain}`);
+    }
   }
   if (process.env.RECON === "1") {
     for (const row of [0, 1, 2]) {

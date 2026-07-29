@@ -1742,6 +1742,11 @@ export function Garment({ imageUrl }: Props) {
     bodySize.armLength,
     bodySize.shoulderWidth,
     bodySize.height,
+    // 몸통 둘레도 재구성 대상이다. 빠져 있어서 가슴 슬라이더를 올리면
+    // 충돌 메시만 커지고 옷의 재단·핀은 옛 몸에 맞춘 채로 남았다
+    // (가슴 115에서 maxStrain 10.85, 어깨 접촉률 0). 충돌 메시 useEffect
+    // 의존성과 같은 목록이 되도록 맞춘다.
+    bodySize.chest,
     garmentSize.shoulderWidth,
     sleeveType,
     garmentSize.sleeveLength,
