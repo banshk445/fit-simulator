@@ -48,6 +48,7 @@ import type { Vec3Like } from "../src/lib/clothProtocol";
 import { armholeRingJaggedness, ringJaggedness } from "../src/lib/seamDiagnostics";
 import { capsuleGapBands, computeCapsuleGapChannels, computeDrapeMetrics, computeOrderViolations, computeRippleMm, type DrapeMetrics, type GapStats } from "../src/lib/drapeMetrics";
 import { computeBodyCoverage } from "../src/lib/coverageMetric";
+import { computeNecklineLift } from "../src/lib/necklineLift";
 import { bakeSdf, createCachedSdfIterationFriction, createSdfFrictionPass, createSdfIterationFrictionPass, createSdfPushResolver, makeRadialSignedSampler, sampleSdf, type SdfField } from "../src/lib/sdfCollision";
 
 // 대표 포즈 — checkSleeveSeam.ts와 같은 출처(이 세션 __fitDebug 실측), 반팔
@@ -509,9 +510,33 @@ function runFixture(path: string): void {
       })
     : undefined;
 
+  // fixture의 `pose.necklineLift`는 **내보낸 시점의 코드로 계산된 값이 얼어붙은
+  // 것**이라, `computeNecklineLift`를 고쳐도 이 값은 안 바뀐다 — 그 변경을 재려면
+  // 같은 입력(fixture의 몸 메시 = 브라우저 neckSurfaceBvh와 동일)으로 다시
+  // 계산해야 한다. **기본이 재계산**인 이유: 얼어붙은 배열을 기본으로 두면
+  // 브라우저는 새 코드, 하네스는 옛 값을 보게 되어 측정 대상이 조용히
+  // 갈라진다(함정 8 그 자체). LIFT=frozen 으로 옛 배열을 강제해 과거 수치를
+  // 재현할 수 있다.
+  const liftRange = torsoColumnRange(COLS, pose.pinLeft, pose.pinRight, armLeft, armRight);
+  const liftHole = neckHoleColumnRange(COLS, pose.pinLeft, pose.pinRight, armLeft, armRight);
+  const recomputedLift =
+    process.env.LIFT !== "frozen"
+      ? (() => {
+          const neckBvh = new ArrayBvhCollision();
+          neckBvh.rebuild(position, fixture.collision.wholeBodyIndex ? Uint32Array.from(fixture.collision.wholeBodyIndex) : null);
+          const v = Array.from(
+            computeNecklineLift(neckBvh, pose.pinLeft, pose.pinRight, COLS, liftRange.xMin, liftRange.xMax, liftHole.xMin, liftHole.xMax),
+          );
+          console.log(`  [LIFT] fixture 저장분(mm) 열${liftRange.xMin}..${liftRange.xMax} ${pose.necklineLift.slice(liftRange.xMin, liftRange.xMax + 1).map((x) => (x * 1000).toFixed(1)).join(" ")}`);
+          console.log(`  [LIFT] 재계산(mm)        열${liftRange.xMin}..${liftRange.xMax} ${v.slice(liftRange.xMin, liftRange.xMax + 1).map((x) => (x * 1000).toFixed(1)).join(" ")}`);
+          return v;
+        })()
+      : null;
+  const necklineLift = process.env.NOLIFT === "1" ? undefined : (recomputedLift ?? pose.necklineLift);
+
   const { sim, seamSkipPairs } = buildUnifiedGarmentSim(
     layout.widthM, layout.heightM, layout.topY, layout.centerZ,
-    pose.pinLeft, pose.pinRight, armLeft, armRight, layout.sleeveWidthM, (process.env.NOLIFT === "1" ? undefined : pose.necklineLift), newCore,
+    pose.pinLeft, pose.pinRight, armLeft, armRight, layout.sleeveWidthM, necklineLift, newCore,
   );
   const panelStarts: number[] = [];
   const panelCols: number[] = [];
@@ -610,7 +635,7 @@ function runFixture(path: string): void {
   const armholeStartRowConst = Math.round(ROWS * ARMHOLE_ROW_FRACTION);
   const preset = FABRIC_PRESETS[pose.fabric];
   const gravity = new THREE.Vector3(...GRAVITY_BASE).multiplyScalar(preset.gravityScale);
-  const framePose = { pinLeft: pose.pinLeft, pinRight: pose.pinRight, armLeft, armRight, necklineLift: process.env.NOLIFT === "1" ? undefined : pose.necklineLift };
+  const framePose = { pinLeft: pose.pinLeft, pinRight: pose.pinRight, armLeft, armRight, necklineLift };
   // RECON=1(목선 기하 정찰): row0~2 링 원주의 초기(=레스트, 제약이 초기
   // 배치에서 구워지므로) 값과 정착 후 실측값 — 신장률. 링 = 앞판 x
   // xMin..xMax + 뒤판 역순의 닫힌 고리.

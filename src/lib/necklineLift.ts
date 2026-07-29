@@ -49,8 +49,17 @@ const NECK_SURFACE_CLEARANCE = 0.012; // 표면 위로 얹히는 옷감 두께 �
 //     0.0476)의 1.7배라, smoothstep이 연속함수여도 격자에 찍히면 사실상
 //     2점 계단이었다 — 실측 결과 이 안쪽 flank가 row0 곡률 첨두(-7.34mm
 //     @열15)의 발생원이었다. 램프가 최소 이 열 수만큼은 걸치게 한다.
-//     값(첨두 높이)은 안 건드린다 — LIFT 하향은 기각된 조작이다.
-const NECK_RAYCAST_BLEND_COLS = 3;
+const NECK_RAYCAST_BLEND_COLS = 4;
+// (3) 스무딩 1회 → 2회. 아래 [1,2,1]/4 패스는 원래 마네킹 폴리곤 노이즈용
+//     이지만, 이 봉우리를 완만하게 만드는 유일하게 실효 있는 손잡이이기도
+//     하다. 실측 스캔(블렌드 폭 1.7~8열 × 패스 1~3, fixture 9e8b2bf13925):
+//     **폭만 넓히면 첨두 곡률이 9.66mm에서 꿈쩍도 안 한다** — 봉우리의
+//     바깥 flank는 목 표면 자체가 떨어지는 모양이라 폭으로 못 건드린다.
+//     패스 2회에서야 8.35mm로 내려온다. 대가는 봉우리 높이 12.3→11.9mm
+//     (-3%)이고, 이건 "LIFT 하향"(진폭을 고쳐 무언가를 맞추는 조작)이
+//     아니라 평활화의 부수효과다. 3회는 8.37mm로 되레 정체하고 높이만
+//     10.6mm로 더 깎이므로 2회에서 멈춘다.
+const NECK_RAYCAST_SMOOTH_PASSES = 2;
 // 46번(전면 재설계): 몸판 열이 이제 소매 끝까지 뻗어 있으므로, 여기서
 // 쓰는 "열 위치 u"는 더 이상 pinLeft~pinRight 사이 어깨 폭 전체를
 // 나타내지 않는다 — u=±0.5는 이제 소매 끝이지 어깨점이 아니다. 목선
@@ -59,8 +68,10 @@ const NECK_RAYCAST_BLEND_COLS = 3;
 // 있다 — 그 바깥(소매 쪽, 핀 자체가 없는 열)은 raycasting 대상에서 뺀다.
 export function computeNecklineLift(
   bvh: ArrayBvhCollision,
-  pinLeft: THREE.Vector3,
-  pinRight: THREE.Vector3,
+  // Vec3Like로 충분하다(x/y/z만 읽는다) — Node 하네스가 fixture의 평범한
+  // 객체를 그대로 넘길 수 있어야 한다.
+  pinLeft: { x: number; y: number; z: number },
+  pinRight: { x: number; y: number; z: number },
   cols: number,
   xMin: number,
   xMax: number,
@@ -108,11 +119,15 @@ export function computeNecklineLift(
   // 폴리곤이라 이웃 열끼리도 맞은 면(삼각형)이 살짝씩 달라 리프트 값이
   // 계단식으로 들쭉날쭉해진다 — 목선 곡선에 톱니처럼 보이는 원인이었다.
   // 이웃과 평균 내는 가벼운 스무딩을 한 번 통과시켜 매끄럽게 잇는다.
-  const smoothed = new Float32Array(cols);
-  for (let x = 0; x < cols; x++) {
-    const prev = lift[Math.max(0, x - 1)];
-    const next = lift[Math.min(cols - 1, x + 1)];
-    smoothed[x] = (prev + lift[x] * 2 + next) / 4;
+  let cur = lift;
+  for (let pass = 0; pass < NECK_RAYCAST_SMOOTH_PASSES; pass++) {
+    const smoothed = new Float32Array(cols);
+    for (let x = 0; x < cols; x++) {
+      const prev = cur[Math.max(0, x - 1)];
+      const next = cur[Math.min(cols - 1, x + 1)];
+      smoothed[x] = (prev + cur[x] * 2 + next) / 4;
+    }
+    cur = smoothed;
   }
-  return smoothed;
+  return cur;
 }
