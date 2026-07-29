@@ -445,6 +445,9 @@ export function Garment({ imageUrl }: Props) {
   const showBackSleeveWireframe = useFitStore((s) => s.showBackSleeveWireframe);
   const showAllRegionsWireframe = useFitStore((s) => s.showAllRegionsWireframe);
   const showFitMap = useFitStore((s) => s.showFitMap);
+  // onmessage 클로저가 최신 값을 보게(seamBridgeRef와 같은 패턴).
+  const showFitMapRef = useRef(showFitMap);
+  showFitMapRef.current = showFitMap;
   const renderSmoothing = useFitStore((s) => s.renderSmoothing);
   const renderSubdiv = renderSmoothing ? RENDER_SUBDIV : RENDER_SUBDIV_OFF;
   // M1(신 코어): 워커 물리(암홀 용접) + 직결 렌더 경로 토글. onmessage
@@ -1420,6 +1423,7 @@ export function Garment({ imageUrl }: Props) {
       // 토글이니 그대로 둠).
       if (newCoreRef.current) {
         weldedGeometryRef.current.update(msg.front, msg.back, msg.sleeveLeft, msg.sleeveRight);
+        if (showFitMapRef.current) weldedGeometryRef.current.setFit(msg.frontFit, msg.backFit);
         neckBandRef.current.update();
         cuffBandRef.current.update();
         updateSeamBridge(seamBridgeRef.current, {
@@ -1849,9 +1853,12 @@ export function Garment({ imageUrl }: Props) {
           {/* polygonOffset은 구 경로 앞/뒤판과 같은 값 — 시임 브리지(오프셋
               없음)와 같은 깊이에 놓이면 어깨선을 따라 z-fighting이 생겨
               가장자리가 너덜너덜하게 갈라져 보인다(M1 화면 실측). */}
-          <meshStandardMaterial key="welded-front" attach="material-0" map={mirroredTexture} side={THREE.DoubleSide} roughness={0.85} polygonOffset polygonOffsetFactor={-4} polygonOffsetUnits={-4} />
-          <meshStandardMaterial key="welded-back" attach="material-1" map={compositedTexture} side={THREE.DoubleSide} roughness={0.85} polygonOffset polygonOffsetFactor={-4} polygonOffsetUnits={-4} />
-          <meshStandardMaterial key="welded-sleeve" attach="material-2" color={sleeveColor} side={THREE.DoubleSide} roughness={0.85} polygonOffset polygonOffsetFactor={-4} polygonOffsetUnits={-4} />
+          {/* 핏 맵일 때는 텍스처 대신 정점색(여유 cm) — 구 코어는 셰이더
+              주입으로 하지만 이 직결 경로엔 바인딩할 위치 텍스처가 없다.
+              key를 갈라 두 모드가 같은 프로그램을 재사용하지 않게 한다. */}
+          <meshStandardMaterial key={showFitMap ? "welded-front-fit" : "welded-front"} attach="material-0" map={showFitMap ? undefined : mirroredTexture} vertexColors={showFitMap} side={THREE.DoubleSide} roughness={0.85} polygonOffset polygonOffsetFactor={-4} polygonOffsetUnits={-4} />
+          <meshStandardMaterial key={showFitMap ? "welded-back-fit" : "welded-back"} attach="material-1" map={showFitMap ? undefined : compositedTexture} vertexColors={showFitMap} side={THREE.DoubleSide} roughness={0.85} polygonOffset polygonOffsetFactor={-4} polygonOffsetUnits={-4} />
+          <meshStandardMaterial key={showFitMap ? "welded-sleeve-fit" : "welded-sleeve"} attach="material-2" color={showFitMap ? "#ffffff" : sleeveColor} vertexColors={showFitMap} side={THREE.DoubleSide} roughness={0.85} polygonOffset polygonOffsetFactor={-4} polygonOffsetUnits={-4} />
         </mesh>
       )}
       {!newCore && !showAllRegionsWireframe && (

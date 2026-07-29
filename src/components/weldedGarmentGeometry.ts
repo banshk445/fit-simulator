@@ -19,6 +19,11 @@
 // gridUv와 머티리얼 map이 공유하던 유효 매핑과 동일 공식이라 텍스처가
 // 같은 자리에 찍힌다(mirroredTexture 좌우 반전 보정 포함, 머티리얼 재사용).
 import * as THREE from "three";
+
+function smoothstep(edge0: number, edge1: number, x: number): number {
+  const t = Math.min(1, Math.max(0, (x - edge0) / (edge1 - edge0)));
+  return t * t * (3 - 2 * t);
+}
 import { COLS, ROWS, SLEEVE_RING_COLS, SLEEVE_RING_ROWS } from "../lib/clothConfig";
 
 const F = COLS * ROWS;
@@ -33,6 +38,8 @@ export const WELDED_TOTAL_PARTICLES = F * 2 + S * 2;
 export interface WeldedGarmentGeometry {
   geometry: THREE.BufferGeometry;
   update(front: Float32Array, back: Float32Array, sleeveLeft: Float32Array, sleeveRight: Float32Array): void;
+  /** 핏 맵용 정점색 갱신(여유 cm). showFitMap일 때만 호출하면 된다. */
+  setFit(frontFit: ArrayLike<number>, backFit: ArrayLike<number>): void;
   dispose(): void;
 }
 
@@ -84,6 +91,15 @@ export function buildWeldedGarmentGeometry(torsoColMin = 0, torsoColMax = COLS -
   geometry.setAttribute("position", positionAttr);
   geometry.setAttribute("normal", normalAttr);
   geometry.setAttribute("uv", new THREE.BufferAttribute(uvs, 2));
+  // 핏 맵(신 코어) — 정점색으로 여유(cm)를 칠한다. 구 코어는 셰이더
+  // 주입(injectFitMapBinding)으로 하지만 여기는 위치 텍스처 바인딩이
+  // 없는 직결 경로라 그 방식을 못 쓴다. **속성은 항상 만들어 둔다** —
+  // color attribute가 없는 채로 vertexColors를 켜면 전부 검게 나온다
+  // (과거 사고, Garment.tsx 주석).
+  const colors = new Float32Array(WELDED_TOTAL_PARTICLES * 3).fill(1);
+  const colorAttr = new THREE.BufferAttribute(colors, 3);
+  colorAttr.setUsage(THREE.DynamicDrawUsage);
+  geometry.setAttribute("color", colorAttr);
   geometry.setIndex(index);
   geometry.addGroup(frontStart, backStart - frontStart, 0);
   geometry.addGroup(backStart, sleeveStart - backStart, 1);
@@ -94,6 +110,40 @@ export function buildWeldedGarmentGeometry(torsoColMin = 0, torsoColMax = COLS -
 
   return {
     geometry,
+    setFit(frontFit, backFit) {
+      // 색 경계·색상은 injectFitMapBinding의 프래그먼트 셰이더와 같은 값을
+      // 쓴다(구/신 코어에서 같은 그림이 나와야 한다).
+      const write = (fit: ArrayLike<number>, base: number) => {
+        for (let i = 0; i < fit.length; i++) {
+          const cm = fit[i];
+          const tRed = smoothstep(-0.6, 0.0, cm);
+          const tYel = smoothstep(0.6, 1.4, cm);
+          const tBlue = smoothstep(2.4, 3.6, cm);
+          let r = 0.55 + (0.85 - 0.55) * tRed;
+          let g = 0.0 + (0.15 - 0.0) * tRed;
+          let b2 = 0.85 + (0.15 - 0.85) * tRed;
+          r += (0.95 - r) * tYel;
+          g += (0.85 - g) * tYel;
+          b2 += (0.1 - b2) * tYel;
+          r += (0.15 - r) * tBlue;
+          g += (0.45 - g) * tBlue;
+          b2 += (0.95 - b2) * tBlue;
+          const o = (base + i) * 3;
+          colors[o] = r;
+          colors[o + 1] = g;
+          colors[o + 2] = b2;
+        }
+      };
+      write(frontFit, 0);
+      write(backFit, F);
+      // 소매는 워커가 여유를 안 보낸다 — 중립(적정=노랑)으로 둔다.
+      for (let i = F * 2; i < WELDED_TOTAL_PARTICLES; i++) {
+        colors[i * 3] = 0.95;
+        colors[i * 3 + 1] = 0.85;
+        colors[i * 3 + 2] = 0.1;
+      }
+      colorAttr.needsUpdate = true;
+    },
     update(front, back, sleeveLeft, sleeveRight) {
       positions.set(front, 0);
       positions.set(back, F * 3);

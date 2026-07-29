@@ -209,6 +209,13 @@ if (import.meta.env.DEV) {
   if (q.get("friction") === "0") useFitStore.getState().setFriction(false);
   if (q.get("smoothing") === "0") useFitStore.getState().setRenderSmoothing(false);
   if (q.get("fitmap") === "1") useFitStore.getState().setShowFitMap(true);
+  // 데모 경로 실주행·문턱 실측용: 치수를 쿼리로 넣는다. 슬라이더를
+  // 손으로 옮기지 않고도 같은 조합을 다시 재현할 수 있어야 "사이즈 변경
+  // 시 드레이프가 실제로 달라지는가"를 전후 대조할 수 있다.
+  const chest = q.get("chest");
+  if (chest) useFitStore.getState().setBodyChest(Number(chest));
+  const width = q.get("width");
+  if (width) useFitStore.getState().setGarmentWidth(Number(width));
   const pinlift = q.get("pinlift");
   if (pinlift) {
     void import("../lib/shoulderPin").then((m) => m.setShoulderPinLiftOverride(Number(pinlift) / 100));
