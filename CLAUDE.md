@@ -125,4 +125,4 @@ FRICTION=1 NEWCORE=1 FIXTURE=scripts/fixtures/collision-fixture.json npm run swe
 각 단계는 신 코어 플래그(`newCore`) 뒤에서만 바꿔 구 코어 비트 동일성을
 유지한다. 미해결 백로그는 `docs/metrics-log.md`의 M1 블록 참고
 (삼각근 능선 노출 = 소매산 volume 부재, 구 플랩 열이 물리로만 남아 있음,
-maxStrain 4.2대가 limiter 상한 1.2의 3.5배).
+maxStrain 3.35~3.38이 limiter 상한 1.2의 약 2.8배).
