@@ -19,7 +19,8 @@
     "capture": "tsx scripts/capture.ts",
     "check:demo": "tsx scripts/checkDemoSmoke.ts",
     "spike:dressing": "tsx scripts/spikeDressing.ts",
-    "check:pattern": "tsx scripts/checkPattern.ts"
+    "check:pattern": "tsx scripts/checkPattern.ts",
+    "dress:pattern": "tsx scripts/dressPattern.ts"
   },
   "build": {
     "appId": "com.fitsimulator.app",

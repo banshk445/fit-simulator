@@ -40,6 +40,9 @@ function makeCheckerTexture(): THREE.DataTexture {
 
 export function PatternPreview(): React.JSX.Element | null {
   const garmentSize = useFitStore((s) => s.garmentSize);
+  // `?patternstate=1` — 2b 하네스가 남긴 최종 상태(시뮬 결과)를 그린다.
+  // 없으면 2a 정적 배치를 그린다. 물리는 여전히 여기서 돌지 않는다.
+  const useDressState = new URLSearchParams(window.location.search).get("patternstate") === "1";
   const [geos, setGeos] = useState<THREE.BufferGeometry[] | null>(null);
   const texture = useMemo(() => makeCheckerTexture(), []);
 
@@ -92,6 +95,18 @@ export function PatternPreview(): React.JSX.Element | null {
       );
       if (!alive) return;
 
+      if (useDressState) {
+        const st = (await import("../../scripts/fixtures/dress-state.json")).default as unknown as {
+          positions: number[]; frames: number; state: string; patternHash: string;
+        };
+        if (st.positions.length === g.positions.length) {
+          g.positions.set(Float32Array.from(st.positions));
+          console.log(`[patternPreview] 착장 최종 상태 로드 — ${st.state} @ ${st.frames}프레임 · pattern ${st.patternHash}`);
+        } else {
+          console.warn(`[patternPreview] 덤프 정점 수 불일치(${st.positions.length / 3} vs ${g.positions.length / 3}) — 정적 배치를 그린다`);
+        }
+      }
+
       const out: THREE.BufferGeometry[] = [];
       for (let p = 0; p < 4; p++) {
         const start = g.panelStarts[p];
@@ -116,7 +131,7 @@ export function PatternPreview(): React.JSX.Element | null {
       );
     })();
     return () => { alive = false; };
-  }, [garmentSize]);
+  }, [garmentSize, useDressState]);
 
   if (!geos) return null;
   return (

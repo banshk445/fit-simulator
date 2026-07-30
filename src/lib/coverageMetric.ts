@@ -328,11 +328,15 @@ export function computeBodyCoverage(
   sim: GridView,
   clothPanels: readonly ClothPanelRange[],
   params: CoverageParams,
+  // v2(patternCore): 비정형 메시는 격자 셀에서 삼각형을 뽑을 수 없다 —
+  // 호출자가 실제 삼각형(평탄 xyz 3개×3)을 직접 넘긴다. 없으면 기존
+  // 격자 경로 그대로이므로 v1은 비트 동일.
+  clothTrisOverride?: Float32Array,
 ): CoverageResult {
   const rayMin = params.rayMin ?? 0.005;
   const rayMax = params.rayMax ?? 0.25;
   const body = collectBandSamples(bodyPosition, bodyIndexes, params.yMin, params.yMax, params.neckCenter, params.neckRadius, params.sampleMask);
-  const tris = clothTriangles(sim, clothPanels);
+  const tris = clothTrisOverride ?? clothTriangles(sim, clothPanels);
 
   const buckets: Record<string, CoverageBucket> = {};
   const exposedExamples: { x: number; y: number; z: number }[] = [];
