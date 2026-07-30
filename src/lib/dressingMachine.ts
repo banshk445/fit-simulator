@@ -171,7 +171,20 @@ export function runDressing(
     // 해소 자체는 sim.step의 매 반복이 한다.
     if (cur() === "S1") {
       setRest(sim, seams, startRest, smoothstep(stateFrame / rampFrames));
-      setAnchorStrength(1 - smoothstep(stateFrame / rampFrames));
+      // **앵커 강도는 시간이 아니라 봉합 진행에서 도출한다**(2b 3회차 확정).
+      // 시간 램프였을 때 앵커는 f=120에 소멸하는데 그 시점 seamGap이 45mm로
+      // 아직 열려 있었고, 옷은 그 뒤 57cm 내려앉아 두 목점이 승모근을 끼고
+      // 마주 서는 위치에서 굳었다(중점이 몸 안쪽 22.8mm = 시접이 파라미터로
+      // 닫을 수 없는 교착). RETRY가 램프를 2·3배로 늘렸을 때만 낙하가 멈춘
+      // 것이 그 인과의 대조군이었다.
+      //
+      // 문턱은 **상태기계가 이미 쓰는 "봉합됨" 정의**를 그대로 쓴다
+      // (S1→S2 전이 조건 = target + seamSlack) — 새 상수를 만들지 않는다.
+      // 강도는 그 창 안에서 연속으로 빠진다(§4 "램프는 연속 함수로만").
+      const closeThresh = maxTarget(seams) + cfg.seamSlackM;
+      const span = Math.max(1e-9, closeThresh - maxTarget(seams));
+      const closure = Math.min(1, Math.max(0, (closeThresh - hooks.maxSeamGapM()) / span));
+      setAnchorStrength(1 - smoothstep(closure));
     } else {
       setRest(sim, seams, startRest, 1);
       setAnchorStrength(0);

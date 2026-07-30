@@ -19,7 +19,7 @@ import type { GarmentFrameEnv } from "../src/lib/garmentFrame";
 import { applyCapsuleCollision } from "../src/lib/torsoCapsule";
 import type { Capsule } from "../src/lib/torsoCapsule";
 import { runDressing } from "../src/lib/dressingMachine";
-import { deriveBodySkeleton } from "../src/lib/bodySkeleton";
+import { deriveBodySkeleton, nearestOnSegments } from "../src/lib/bodySkeleton";
 import { measureBody } from "../src/lib/bodyMeasure";
 import { buildPatternGarment, PANEL_PAT_BACK, PANEL_PAT_FRONT } from "../src/lib/patternGarment";
 import { buildPatternSim } from "../src/lib/buildPatternSim";
@@ -282,6 +282,12 @@ const cachedFric = createCachedSdfIterationFriction(() => sdfField, {
 let anchorStrength = 0;
 let collarFired = 0;
 
+// 목점(어깨 시접의 첫 쌍) 전역 인덱스 — 닫힘 시점 기록용.
+const neckPointPairs = g.seams.filter((x) => x.kind === "shoulder")
+  .map((x) => ({ ...x, d2: Math.hypot(g.pos2[x.a * 2] - 0, g.pos2[x.a * 2 + 1] - 0) }))
+  .sort((x, y) => x.d2 - y.d2)
+  .slice(0, 2);
+let closureLog: string | null = null;
 const anchorList = g.seams
   .filter((s) => s.kind === "shoulder")
   .map((s) => ({ i: s.a, x: g.positions[s.a * 3], y: g.positions[s.a * 3 + 1], z: g.positions[s.a * 3 + 2] }));
@@ -422,7 +428,11 @@ const result = runDressing(
       if (ringFullyEngagedAt < 0 && Math.abs(ringLimitNow - COLLAR_STRAIN_LIMIT) < 1e-9) ringFullyEngagedAt = _frame;
       (env as { collarStrainLimit?: number }).collarStrainLimit = ringLimitNow;
     },
-    stateNote: () => `링상한 ${ringLimitNow.toFixed(4)}${Math.abs(ringLimitNow - COLLAR_STRAIN_LIMIT) < 1e-9 ? "(완전 발동)" : "(완화)"}`,
+    stateNote: () => {
+      const target = Math.max(...g.seams.map((x) => x.targetM));
+      const thresh = target + 0.01;
+      return `링상한 ${ringLimitNow.toFixed(4)}${Math.abs(ringLimitNow - COLLAR_STRAIN_LIMIT) < 1e-9 ? "(완전 발동)" : "(완화)"} · 앵커강도 ${anchorStrength.toFixed(3)}(게이트: seamGap ${(maxSeamGapM() * 1000).toFixed(1)}mm vs 해제창 ${(target * 1000).toFixed(1)}~${(thresh * 1000).toFixed(1)}mm)`;
+    },
     onFrame: (frame, state) => {
       if (DIAG && frame % 60 === 0) {
         const st = maxStrain();
@@ -436,8 +446,19 @@ const result = runDressing(
           `  [diag·y] f=${String(frame).padStart(4)} 어깨시접 ${(meanY(shoulderIdx) * 100).toFixed(1)}cm(배치 ${(g.draft.dims.ridgeAnchorY * 100).toFixed(1)}) · 밑단 ${(meanY(hemIdx) * 100).toFixed(1)}cm · 소매 ${(meanY(sleeveIdx) * 100).toFixed(1)}cm`,
         );
         console.log(
-          `  [diag] f=${String(frame).padStart(4)} ${state} 링상한 ${ringLimitNow.toFixed(3)} seamGap ${(maxSeamGapM() * 1000).toFixed(1)}mm Δ20 ${maxDelta20Mm().toFixed(2)}mm strain ${st.v.toFixed(2)}@${PANEL_NAME[panelOfIdx(st.at)]} prox ${proximityPairs()} 관통 ${countInside(sim.positions, total, insideParity)} 칼라발화 ${collarFired}`,
+          `  [diag] f=${String(frame).padStart(4)} ${state} 앵커 ${anchorStrength.toFixed(3)} 링상한 ${ringLimitNow.toFixed(3)} seamGap ${(maxSeamGapM() * 1000).toFixed(1)}mm Δ20 ${maxDelta20Mm().toFixed(2)}mm strain ${st.v.toFixed(2)}@${PANEL_NAME[panelOfIdx(st.at)]} prox ${proximityPairs()} 관통 ${countInside(sim.positions, total, insideParity)} 칼라발화 ${collarFired}`,
         );
+      }
+      // 봉합 "닫힘" 순간을 한 번만 기록 — 목점 y vs 승모근 상단 y.
+      if (closureLog === null && maxSeamGapM() <= Math.max(...g.seams.map((x) => x.targetM)) + 0.01) {
+        const parts = neckPointPairs.map((np) => {
+          const ay = sim.positions[np.a * 3 + 1], ax = sim.positions[np.a * 3];
+          const by = sim.positions[np.b * 3 + 1];
+          const ridgeY = body.ridgeTopYAt(Math.abs(ax - centerX));
+          return `앞목점 y${cm(ay)} / 뒤목점 y${cm(by)} · 같은 x(${cm(Math.abs(ax - centerX))})의 승모근 상단 y${cm(ridgeY)} → ${ay > ridgeY ? "**위(자유공간)**" : "아래(교착 위험)"}`;
+        });
+        closureLog = `f=${frame} seamGap ${(maxSeamGapM() * 1000).toFixed(1)}mm · ${parts.join(" | ")}`;
+        console.log(`[dress] **봉합 닫힘** ${closureLog}`);
       }
       let md = 0;
       for (let i = 0; i < sim.positions.length; i += 3) {
@@ -479,6 +500,23 @@ const neckCenter = { x: centerX, y: body.neckY, z: collision.centerZ };
 // 정의 변경이므로 두 값을 같은 실행에서 병기한다(함정 8 계열).
 const hemWorldY = g.draft.dims.ridgeAnchorY - g.draft.dims.lengthM;
 const covBand = { yMax: body.shoulderJointY, neckCenter, neckRadius: 0.12, centerX, centerZ: collision.centerZ };
+// 다리 표면 제외 — **최근접 골격 선분 분류**(1a 은행 자산 재사용, 상수 0).
+// 몸통 축 폴리라인은 골반 하단에서 끝나므로, 최근접점이 그 **하단 끝점**인
+// 정점은 축 아래로 접힌 것 = 다리다(bodySkeleton이 기록한 "끝점 밖은 끝점으로
+// 접힌다"의 아래쪽 판본 — 어깨 캡이 위쪽 성분을 얻는 것과 같은 기전).
+const legMask = (() => {
+  const n = position.length / 3;
+  const mask = new Uint8Array(n).fill(1);
+  const bottom = skeleton.torso[0].a.y < skeleton.torso[0].b.y ? skeleton.torso[0].a : skeleton.torso[skeleton.torso.length - 1].b;
+  let excluded = 0;
+  for (let v = 0; v < n; v++) {
+    const near = nearestOnSegments(position[v * 3], position[v * 3 + 1], position[v * 3 + 2], skeleton.torso);
+    if (Math.hypot(near.x - bottom.x, near.y - bottom.y, near.z - bottom.z) < 1e-9) { mask[v] = 0; excluded++; }
+  }
+  console.log(`[dress] cov 대역 다리 제외: 최근접점이 몸통 축 하단 끝점(y${cm(bottom.y)}cm)인 정점 ${excluded}/${n} 제외`);
+  return mask;
+})();
+const covLegless = computeBodyCoverage(position, [frontIdx, backIdx], gridView, [], { ...covBand, yMin: hemWorldY, sampleMask: legMask }, clothTris);
 const covOld = computeBodyCoverage(position, [frontIdx, backIdx], gridView, [], { ...covBand, yMin: hemY }, clothTris);
 const cov = computeBodyCoverage(position, [frontIdx, backIdx], gridView, [], { ...covBand, yMin: hemWorldY }, clothTris);
 const band = deriveShoulderBand(position, wholeIndex, [pose.armLeft, pose.armRight], centerX);
@@ -522,6 +560,9 @@ console.log(
 );
 console.log(
   `  cov 몸통(구 정의 yMin = hemY ${cm(hemY)}cm · 병기): 노출 ${covOld.exposed}/${covOld.samples} (${(covOld.exposedRatio * 100).toFixed(1)}%)`,
+);
+console.log(
+  `  cov 몸통(신 정의 + 다리 제외 · 병기): 노출 ${covLegless.exposed}/${covLegless.samples} (${(covLegless.exposedRatio * 100).toFixed(1)}%)`,
 );
 {
   // 노출 샘플의 높이 분포 — 대역 결함을 눈으로 확인할 채널.
