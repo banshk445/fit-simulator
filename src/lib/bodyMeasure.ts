@@ -77,6 +77,10 @@ export interface BodyMeasure {
   // 목선의 앞/뒤 배분이 몸과 맞는지 재는 데 쓴다(제도의 뒤목 깊이 고정 상수가
   // 몸과 어긋나는지가 여기서 드러난다).
   neckBaseFrontM: number; neckBaseBackM: number;
+  // 임의 높이의 몸 폐곡선(표면 + 오프셋)을 **볼록껍질 정점 순서대로** 준다.
+  // 목밑둘레를 재는 것과 같은 기계이고, 목선 경계를 이 곡선 위에 직접 얹는
+  // 소비자(배치)가 쓴다. 표본이 모자라면 빈 배열.
+  loopAt: (h: number, marginM: number) => [number, number][];
   chestGirthM: number; chestY: number;
   neckGirthM: number; neckY: number;
   // 밑단~어깨 관절 구간의 최대 앞뒤 두께.
@@ -337,6 +341,17 @@ export function measureBody(
     return { girthM, frontM: aIsFront ? aSide : bSide, backM: aIsFront ? bSide : aSide };
   })();
 
+  const loopAt = (h: number, marginM: number): [number, number][] => {
+    const [cx, cz] = axisAt(h);
+    const pts: [number, number][] = [];
+    for (const v of torsoVerts) {
+      if (Math.abs(position[v * 3 + 1] - h) > SLICE_THICKNESS_M / 2) continue;
+      pts.push([position[v * 3], position[v * 3 + 2]]);
+    }
+    if (pts.length < 3) return [];
+    return convexHull(girthOfSlice(pts, cx, cz, marginM).points);
+  };
+
   const ridgeTopYAt = (xM: number): number => {
     if (xM <= ridge[0].xM) return ridge[0].topY;
     if (xM >= ridge[ridge.length - 1].xM) return ridge[ridge.length - 1].topY;
@@ -361,6 +376,6 @@ export function measureBody(
     frontExtentM: slices.reduce((m, s) => (s.y <= shoulderJointY && s.zMax - centerZ > m ? s.zMax - centerZ : m), 0),
     backExtentM: slices.reduce((m, s) => (s.y <= shoulderJointY && centerZ - s.zMin > m ? centerZ - s.zMin : m), 0),
     shoulderPassGirthM,
-    ridge, ridgePoints, ridgeTopYAt,
+    ridge, ridgePoints, ridgeTopYAt, loopAt,
   };
 }

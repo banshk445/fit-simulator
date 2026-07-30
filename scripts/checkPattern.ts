@@ -462,19 +462,16 @@ if (after.n > 0) fails.push("배치 관통 0");
   }
   const discCm = (D.necklineGirthM - poly2dM) * 100;
   const errCm = (ringM - poly2dM) * 100;
-  const okRing = Math.abs(errCm) < 0.01;
-  // 포화 표시 — 이분법이 대역 끝에 붙었으면 내부해가 아니다.
-  const SAT = ["(아래 포화)", "", "(위 포화)"];
+  // 링은 몸 폐곡선 위에 얹히므로 잔차의 출처는 **이산화 두 곳**뿐이다:
+  //   (i) 폐곡선이 24 각도 bin의 볼록껍질이라 안착 높이 이분법이 계단이다
+  //   (ii) 목선 표본이 껍질 정점 사이에 떨어져 현이 모서리를 자른다
+  // 둘 다 껍질의 해상도에 묶여 있으므로 문턱을 그 규모(패턴 목선의 1%)로 둔다.
+  const loopCm = g.meta.neckLoopGirthM * 100;
+  const okRing = Math.abs(errCm) <= 0.01 * D.necklineGirthM * 100;
   console.log(
-    `  ${okRing ? "PASS" : "FAIL"}  링 길이 = 패턴 목선(이산화분만) — 배치 ${(ringM * 100).toFixed(3)}cm vs 표본 폴리라인 ${(poly2dM * 100).toFixed(3)}cm (잔차 ${errCm.toFixed(4)}cm) · 해석 목선 ${(D.necklineGirthM * 100).toFixed(3)}cm(이산화 손실 ${discCm.toFixed(3)}cm) · 정점 높이 앞 y${(g.meta.neckApexY[0] * 100).toFixed(2)}${SAT[g.meta.neckApexSat[0] + 1]} / 뒤 y${(g.meta.neckApexY[1] * 100).toFixed(2)}${SAT[g.meta.neckApexSat[1] + 1]}cm · 반곡선 앞 ${(g.meta.neckArcM[0] * 100).toFixed(3)}/${(g.meta.neckArcTargetM[0] * 100).toFixed(3)}cm 뒤 ${(g.meta.neckArcM[1] * 100).toFixed(3)}/${(g.meta.neckArcTargetM[1] * 100).toFixed(3)}cm`,
+    `  ${okRing ? "PASS" : "FAIL"}  링 길이 = 패턴 목선(이산화분만) — 배치 ${(ringM * 100).toFixed(3)}cm vs 표본 폴리라인 ${(poly2dM * 100).toFixed(3)}cm (잔차 ${errCm.toFixed(4)}cm) · 해석 목선 ${(D.necklineGirthM * 100).toFixed(3)}cm(이산화 손실 ${discCm.toFixed(3)}cm) · 안착 높이 y${(g.meta.neckLoopY * 100).toFixed(2)}cm · 이산화 분해: 폐곡선 ${loopCm.toFixed(3)}cm(이분법 계단 ${(loopCm - poly2dM * 100).toFixed(3)}) → 배치 링(모서리 컷 ${(ringM * 100 - loopCm).toFixed(3)}) · 반곡선 앞 ${(g.meta.neckArcM[0] * 100).toFixed(3)}/${(g.meta.neckArcTargetM[0] * 100).toFixed(3)}cm 뒤 ${(g.meta.neckArcM[1] * 100).toFixed(3)}/${(g.meta.neckArcTargetM[1] * 100).toFixed(3)}cm`,
   );
   if (!okRing) fails.push("배치 링 길이(이산화분만)");
-  for (const pi of [0, 1]) {
-    console.log(
-      `    ${pi === 0 ? "앞" : "뒤"} 정점높이 대역 스캔(높이cm→반곡선cm, 목표 ${(g.meta.neckArcTargetM[pi] * 100).toFixed(2)}): ` +
-      g.meta.neckArcScan[pi].map((q) => `y${(q.apexY * 100).toFixed(1)}→${(q.arcM * 100).toFixed(2)}`).join(" · "),
-    );
-  }
 
   // (c) 삼각형 뒤집힘 — 내부 깊이 매개화가 패널 중앙부에서 모호해지면 여기서
   //     드러난다. 다른 채널(관통·자기교차)은 겹치기만 한 접힘을 못 잡는다.
