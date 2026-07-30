@@ -60,18 +60,28 @@ export class SelfCollision {
   // 두 예외 규칙 어디에도 안 걸려 자체충돌과 힘겨루기를 했다. 근사(UV
   // 거리) 대신 실제로 addConstraint()가 이은 쌍을 그대로 받아 정확히
   // 그 쌍만 제외한다 — buildUnifiedGarmentSim.ts가 넘기는 seamSkipPairs.
+  // v2(patternCore): UV 거리 기반 스킵을 끌 수 있어야 한다. 비정형 메시에는
+  // (cols, rows) 격자가 없으므로 `panelAndUV`가 내는 x/y가 아무 의미도 없고,
+  // 그대로 두면 **무관한 쌍을 조용히 스킵**해 오발화 계수가 과소 보고된다.
+  // 0을 주면 UV 스킵이 자기 자신만 걸러(같은 정점은 j<=i로 이미 제외) 실질
+  // 무효가 되고, 인접 스킵은 호출자가 넘기는 `seamSkipPairs`(메시 엣지 +
+  // 시접)가 **정확히** 담당한다. 기본값은 기존 상수 그대로 = 구 경로 비트 동일.
+  private readonly uvSkipRadius: number;
+
   constructor(
     panelStarts: number[],
     panelCols: number[],
     seamRowExclusive = 0,
     seamSkipPairs: ReadonlyArray<{ a: number; b: number }> = [],
     cellSize = SELF_COLLISION_MIN_DIST,
+    uvSkipRadius = SKIP_UV_RADIUS,
   ) {
     this.panelStarts = panelStarts;
     this.panelCols = panelCols;
     this.seamRowExclusive = seamRowExclusive;
     this.cellSize = cellSize;
     this.seamSkipPairKeys = new Set(seamSkipPairs.map(({ a, b }) => this.pairKey(a, b)));
+    this.uvSkipRadius = uvSkipRadius;
   }
 
   private pairKey(a: number, b: number): number {
@@ -138,8 +148,8 @@ export class SelfCollision {
                 const uvB = this.panelAndUV(j);
                 if (
                   uvA.panel === uvB.panel &&
-                  Math.abs(uvA.x - uvB.x) <= SKIP_UV_RADIUS &&
-                  Math.abs(uvA.y - uvB.y) <= SKIP_UV_RADIUS
+                  Math.abs(uvA.x - uvB.x) <= this.uvSkipRadius &&
+                  Math.abs(uvA.y - uvB.y) <= this.uvSkipRadius
                 ) {
                   continue;
                 }

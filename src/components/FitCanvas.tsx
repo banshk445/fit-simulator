@@ -8,6 +8,11 @@ import { CHEST_HEIGHT_RATIO } from "../constants";
 import { Mannequin } from "./Mannequin";
 import { Garment } from "./Garment";
 import { ArmCapsuleDebug } from "./ArmCapsuleDebug";
+import { lazy } from "react";
+
+// v2 Stage 2a — `?patterncore=1`에서만 로드되는 정적 배치 미리보기(DEV).
+// lazy로 두어야 patternCore off 실행의 번들에 패턴 코드·fixture가 안 들어간다.
+const PatternPreview = lazy(async () => ({ default: (await import("./PatternPreview")).PatternPreview }));
 
 // 단위 원기둥(반지름 1, 높이 1)을 scale로 늘려 부드럽게 보간(lerp)한다.
 function useLerpedScale(targetScale: THREE.Vector3Tuple, targetPositionY: number) {
@@ -78,8 +83,11 @@ export function FitCanvas() {
   // DEV: ?view=front|back|neck|cuff 로 카메라를 고정 시점에 놓는다.
   // 판정용 캡처(npm run capture)가 사람 손 없이 같은 구도를 다시 잡기
   // 위한 것 — 눈대중으로 돌린 각도는 전후 대조가 안 된다.
-  const view = new URLSearchParams(window.location.search).get("view");
+  const query = new URLSearchParams(window.location.search);
+  const view = query.get("view");
   const shot = view ? CAPTURE_VIEWS[view] : undefined;
+  // v2 patternCore — 켜면 v1 옷 대신 패턴 정적 배치만 그린다(물리 없음).
+  const patternCore = import.meta.env.DEV && query.get("patterncore") === "1";
 
   return (
     <Canvas camera={{ position: shot?.pos ?? [0, 1.3, 3], fov: shot?.fov ?? 45 }}>
@@ -88,8 +96,13 @@ export function FitCanvas() {
       <Suspense fallback={null}>
         <Mannequin />
       </Suspense>
-      {(!garmentImage || !wearable) && <GarmentMesh />}
-      {garmentImage && wearable && (
+      {patternCore && (
+        <Suspense fallback={null}>
+          <PatternPreview />
+        </Suspense>
+      )}
+      {!patternCore && (!garmentImage || !wearable) && <GarmentMesh />}
+      {!patternCore && garmentImage && wearable && (
         <Suspense fallback={null}>
           <Garment imageUrl={garmentImage} />
         </Suspense>

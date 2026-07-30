@@ -18,7 +18,8 @@
     "check:weld": "tsx scripts/checkWeldTopology.ts",
     "capture": "tsx scripts/capture.ts",
     "check:demo": "tsx scripts/checkDemoSmoke.ts",
-    "spike:dressing": "tsx scripts/spikeDressing.ts"
+    "spike:dressing": "tsx scripts/spikeDressing.ts",
+    "check:pattern": "tsx scripts/checkPattern.ts"
   },
   "build": {
     "appId": "com.fitsimulator.app",
