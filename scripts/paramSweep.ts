@@ -52,7 +52,7 @@ import { capsuleGapBands, computeCapsuleGapChannels, computeDrapeMetrics, comput
 import { computeBodyCoverage, deriveShoulderBand } from "../src/lib/coverageMetric";
 import { ARM_AXIS_RADIUS, deriveBodySkeleton, nearestOnSegments } from "../src/lib/bodySkeleton";
 import { computeNecklineLift } from "../src/lib/necklineLift";
-import { bakeSdf, createCachedSdfIterationFriction, createSdfFrictionPass, createSdfIterationFrictionPass, createSdfPushResolver, makeRadialSignedSampler, makeSkeletonSignedSampler, sampleSdf, type SdfField } from "../src/lib/sdfCollision";
+import { bakeSdf, createCachedSdfIterationFriction, createSdfFrictionPass, createSdfIterationFrictionPass, createSdfPushResolver, makeRadialSignedSampler, makeSkeletonSignedSampler, sampleSdf, sdfNormal, type SdfField } from "../src/lib/sdfCollision";
 
 // 대표 포즈 — checkSleeveSeam.ts와 같은 출처(이 세션 __fitDebug 실측), 반팔
 // 기본값(소매길이 22cm), 어깨너비 45cm 기준.
@@ -583,6 +583,7 @@ function runFixture(path: string): void {
     {
       const stride = 2 * SDF_PUSH_VOXEL;
       const stat = new Map<string, { n: number; radialBad: number; skelBad: number }>();
+      const skelBadPts: { x: number; y: number; z: number }[] = [];
       for (let z = sdfMin.z; z <= sdfMax.z; z += stride) {
         for (let y = sdfMin.y; y <= sdfMax.y; y += stride) {
           for (let x = sdfMin.x; x <= sdfMax.x; x += stride) {
@@ -597,7 +598,7 @@ function runFixture(path: string): void {
             const e = stat.get(key) ?? { n: 0, radialBad: 0, skelBad: 0 };
             e.n++;
             if (signRadial(x, y, z, c) > 0) e.radialBad++;
-            if (signSkel(x, y, z, c) > 0) e.skelBad++;
+            if (signSkel(x, y, z, c) > 0) { e.skelBad++; skelBadPts.push({ x, y, z }); }
             stat.set(key, e);
           }
         }
@@ -607,6 +608,18 @@ function runFixture(path: string): void {
           `[SIGNMAP] 오라클(확정 내부) ${key.padEnd(14)} 표본 ${String(e.n).padStart(6)} · radial 오분류 ${e.radialBad} (${((e.radialBad / (e.n || 1)) * 100).toFixed(1)}%) · 골격 오분류 ${e.skelBad} (${((e.skelBad / (e.n || 1)) * 100).toFixed(1)}%)`,
         );
       }
+      // (3) 잔여 오분류의 **위치 정체** — 오목부(겨드랑이·가랑이)에 모이면
+      // "최근접 골격 모호" 가설을 지지한다. 판정용 좌표를 그대로 낸다.
+      const ys = skelBadPts.map((p2) => p2.y).sort((a, b) => a - b);
+      const arm = skelBadPts.map((p2) => Math.sqrt(nearestOnSegments(p2.x, p2.y, p2.z, skeleton.arms).d2) * 100).sort((a, b) => a - b);
+      const qq = (a: number[], f: number) => (a.length ? a[Math.floor(f * (a.length - 1))].toFixed(2) : "-");
+      const shoulderY2 = skeleton.torso[skeleton.torso.length - 1].b.y;
+      // 겨드랑이 = 어깨 관절 아래 + 팔 축 근방. 가랑이 = 몸통 축 하단 근방.
+      const axilla = skelBadPts.filter((p2) => p2.y < shoulderY2 && p2.y > shoulderY2 - 0.20 && Math.sqrt(nearestOnSegments(p2.x, p2.y, p2.z, skeleton.arms).d2) < 0.15).length;
+      const crotch = skelBadPts.filter((p2) => p2.y < skeleton.torso[0].a.y + 0.10).length;
+      console.log(
+        `[SIGNMAP] 골격 잔여 오분류 ${skelBadPts.length}점 위치: y p10/med/p90 ${qq(ys, 0.1)}/${qq(ys, 0.5)}/${qq(ys, 0.9)} · 팔축거리 p10/med/p90 ${qq(arm, 0.1)}/${qq(arm, 0.5)}/${qq(arm, 0.9)}cm · 겨드랑이대역 ${axilla} · 가랑이대역 ${crotch}`,
+      );
     }
     console.log(`[SIGNMAP] 물리 미실행(측정 전용). 경과 ${((performance.now() - tProcess) / 1000).toFixed(1)}s`);
     return;
@@ -789,6 +802,53 @@ function runFixture(path: string): void {
           stat.set(key, e);
         }
       }
+    }
+    // (2) A↔B 사슬 검정 — 부호 모순 복셀 집합 A와 |∇d|>3 이상치 집합 B의
+    // 인접(±1복셀) 중첩률. 높으면 A→B 사슬(부호 잔여가 기울기를 망친다),
+    // 낮으면 B는 독립 현상이다. 부호 모순 복셀의 **대역 분포**도 병기 —
+    // 표적(top-front)에 유의하게 있는지가 이번 국소화의 핵심.
+    {
+      const A = new Set<string>();
+      const B = new Set<string>();
+      const bandCount = new Map<string, number>();
+      // rowH는 아래(coverage 블록)에서 선언되므로 여기서 지역 계산 —
+      // 같은 식이라야 대역이 coverage와 일치한다.
+      const rowH2 = layout.heightM / (ROWS - 1);
+      const asr2 = Math.round(ROWS * ARMHOLE_ROW_FRACTION);
+      const bMin2 = bandTopY - rowH2 * (asr2 + 0.5);
+      const bMax2 = bandTopY + 0.03;
+      const bh = (bMax2 - bMin2) / 3;
+      const vk = (x: number, y: number, z: number) => `${Math.round(x / v)},${Math.round(y / v)},${Math.round(z / v)}`;
+      for (let z = sdfMin.z + v; z <= sdfMax.z - v; z += v) {
+        for (let y = sdfMin.y + v; y <= sdfMax.y - v; y += v) {
+          for (let x = sdfMin.x + v; x <= sdfMax.x - v; x += v) {
+            const d = sampleSdf(field, x, y, z);
+            if (Math.abs(d) > 0.05) continue;
+            if (gradAt(x, y, z) > 3) B.add(vk(x, y, z));
+            const d2 = sampleSdf(field, x + v, y, z);
+            if (Math.abs(d2) <= 0.05 && d * d2 < 0 && Math.min(Math.abs(d), Math.abs(d2)) > v) {
+              A.add(vk(x, y, z));
+              A.add(vk(x + v, y, z));
+              const key = (y > bMax2 - bh ? "top" : y > bMax2 - 2 * bh ? "mid" : "bot")
+                + "-" + (z >= fixture.collision.centerZ ? "front" : "back")
+                + (y < bMin2 || y > bMax2 ? "(대역밖)" : "");
+              bandCount.set(key, (bandCount.get(key) ?? 0) + 1);
+            }
+          }
+        }
+      }
+      let hitAdj = 0;
+      for (const k of A) {
+        const [ax, ay, az] = k.split(",").map(Number);
+        let found = false;
+        for (let i = -1; i <= 1 && !found; i++) for (let j = -1; j <= 1 && !found; j++) for (let l = -1; l <= 1 && !found; l++) {
+          if (B.has(`${ax + i},${ay + j},${az + l}`)) found = true;
+        }
+        if (found) hitAdj++;
+      }
+      console.log(`[CUTMAP] A↔B: 부호모순 복셀 |A|=${A.size} · |∇d|>3 복셀 |B|=${B.size} · A 중 B와 인접(±1복셀) ${hitAdj} (${((hitAdj / (A.size || 1)) * 100).toFixed(1)}%)`);
+      const rows = [...bandCount.entries()].sort((a, b) => b[1] - a[1]);
+      console.log(`[CUTMAP] 부호모순 대역 분포: ${rows.map(([k, n]) => `${k} ${n}`).join(" / ")}`);
     }
     for (const key of ["절단테두리 ±3복셀", "완충(3~6복셀)", "내부 대조군"]) {
       const e = stat.get(key);
@@ -1271,6 +1331,82 @@ function runFixture(path: string): void {
     // 오분류 radial 36.3% vs 골격 1.8%). 게이트 승격은 하지 않는다 —
     // 부호오판후보 29%에 관통 성분이 섞여 있어 화면 대조가 남았다.
   }
+  // XFER=1 — **전달 오차** 측정기(3회차 표적 국소화, 주 계기). 물리는 이미
+  // 기준선(BVH) 그대로 돌았고, 여기서는 그 정착 상태의 **천 입자 위치**에서
+  // 두 기계가 "밖"이라고 말하는 방향이 얼마나 어긋나는지만 잰다.
+  //
+  // 무엇을 재는가: SDF 밀어내기는 ∇d를 밀어내는 방향으로 쓰고(sdfNormal),
+  // BVH 리졸버는 최근접 삼각형의 면 법선으로 목표를 잡는다. 두 방향의 각도
+  // 차가 곧 "기존 채택 기계 대비 전달 오차"다.
+  //
+  // **해석 주의**: 면 법선은 와인딩 의존이고 이 메시는 일부 영역 와인딩이
+  // 뒤집혀 있다(M2-3 3연속 실패의 원인). 따라서 각도 차는 "SDF가 틀렸다"가
+  // 아니라 "채택된 기계와 어긋난다"를 뜻한다. 어느 쪽이 기하적으로 옳은지
+  // 가르려고 와인딩 무관 채널을 하나 더 병기한다: (p − 최근접점) 방향.
+  // ∇d가 (p−c)와는 맞고 면 법선과만 어긋나면 그 어긋남은 BVH 와인딩 쪽이다.
+  if (process.env.XFER === "1") {
+    const xt = performance.now();
+    const toU32 = (a: number[] | null) => (a ? Uint32Array.from(a) : null);
+    const bakeFor = (idx: number[] | null): SdfField => {
+      const m = new ArrayBvhCollision();
+      m.rebuild(position, toU32(idx));
+      return bakeSdf(makeSkeletonSignedSampler(m, skeleton.segments, SDF_FAR, SDF_FAR), sdfMin, sdfMax, SDF_PUSH_VOXEL, SDF_FAR);
+    };
+    const fFront = bakeFor(fixture.collision.frontIndex);
+    const fBack = bakeFor(fixture.collision.backIndex);
+    console.log(`[XFER] 필드 2개 굽기 ${((performance.now() - xt) / 1000).toFixed(1)}s (부호=골격, 복셀 ${(SDF_PUSH_VOXEL * 1000).toFixed(0)}mm)`);
+    // 대역 정의는 coverage와 **같은 몸 기준**을 천 입자 좌표에 그대로 적용한다.
+    const bMin = bandTopY - rowH * (armholeStartRow + 0.5);
+    const bMax = bandTopY + 0.03;
+    const bandH3 = (bMax - bMin) / 3;
+    const yBandOf = (y: number) => (y > bMax - bandH3 ? "top" : y > bMax - 2 * bandH3 ? "mid" : "bot");
+    const nrm = { x: 0, y: 0, z: 0 };
+    const stat = new Map<string, { face: number[]; geo: number[]; maxFace: number; maxAt: unknown }>();
+    for (const [panel, mesh, field] of [[PANEL_FRONT, frontMesh, fFront], [PANEL_BACK, backMesh, fBack]] as const) {
+      for (let y = 0; y < ROWS; y++) {
+        for (let x = xMin; x <= xMax; x++) {
+          const i = sim.index(panel, x, y);
+          const px = sim.positions[i * 3], py = sim.positions[i * 3 + 1], pz = sim.positions[i * 3 + 2];
+          if (py < bMin || py > bMax) continue;
+          const key = `${yBandOf(py)}-${pz >= fixture.collision.centerZ ? "front" : "back"}`;
+          // 두 기계가 **둘 다 작동하는** 입자만 — 한쪽만 걸리면 각도가 정의되지 않는다.
+          const d = sampleSdf(field, px, py, pz);
+          if (d > COLLISION_DETECTION_RADIUS) continue;
+          if (!sdfNormal(field, px, py, pz, nrm)) continue;
+          const c = mesh.closestPointUnsigned(px, py, pz, COLLISION_DETECTION_RADIUS);
+          if (!c) continue;
+          const s1 = mesh.closestSurfacePoint(px, py, pz, 1, COLLISION_DETECTION_RADIUS);
+          if (!s1) continue;
+          const fn = { x: s1.x - c.x, y: s1.y - c.y, z: s1.z - c.z }; // 단위 면 법선
+          const ang = (ax: number, ay: number, az: number) => {
+            const l = Math.hypot(ax, ay, az) || 1e-9;
+            const dot = Math.max(-1, Math.min(1, (nrm.x * ax + nrm.y * ay + nrm.z * az) / l));
+            return (Math.acos(dot) * 180) / Math.PI;
+          };
+          const aFace = ang(fn.x, fn.y, fn.z);
+          const aGeo = ang(px - c.x, py - c.y, pz - c.z);
+          const e = stat.get(key) ?? { face: [], geo: [], maxFace: -1, maxAt: null };
+          e.face.push(aFace);
+          e.geo.push(aGeo);
+          if (aFace > e.maxFace) {
+            e.maxFace = aFace;
+            e.maxAt = { panel: panel === PANEL_FRONT ? "F" : "B", x, y, p: [Number(px.toFixed(3)), Number(py.toFixed(3)), Number(pz.toFixed(3))] };
+          }
+          stat.set(key, e);
+        }
+      }
+    }
+    const qv = (a: number[], f: number) => (a.length ? a[Math.floor(f * (a.length - 1))].toFixed(1) : "-");
+    for (const [key, e] of [...stat.entries()].sort()) {
+      e.face.sort((a, b) => a - b);
+      e.geo.sort((a, b) => a - b);
+      console.log(
+        `[XFER] ${key.padEnd(10)} n=${String(e.face.length).padStart(4)} · ∠(∇d, BVH면법선) med ${qv(e.face, 0.5)}° p95 ${qv(e.face, 0.95)}° max ${qv(e.face, 1)}° @ ${JSON.stringify(e.maxAt)} · ∠(∇d, p−c) med ${qv(e.geo, 0.5)}° p95 ${qv(e.geo, 0.95)}°`,
+      );
+    }
+    console.log(`[XFER] 경과 ${((performance.now() - tProcess) / 1000).toFixed(1)}s`);
+  }
+
   // 어깨 hover — top 버킷(어깨 상면)의 히트율 + 히트 거리(몸→천).
   {
     const band = (names: string[]) => {
