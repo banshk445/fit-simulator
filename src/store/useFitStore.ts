@@ -149,7 +149,9 @@ export const useFitStore = create<FitState>((set) => ({
   setShowFitMap: (show) => set({ showFitMap: show }),
   renderSmoothing: true,
   setRenderSmoothing: (show) => set({ renderSmoothing: show }),
-  newCore: false,
+  // 2026-07-30 기본 전환 — 구 코어는 ?newcore=0(웹)·NEWCORE=0(하네스)으로
+  // 진입 가능(대조 손잡이).
+  newCore: true,
   setNewCore: (on) => set({ newCore: on }),
   friction: true,
   setFriction: (on) => set({ friction: on }),
@@ -187,12 +189,16 @@ export const useFitStore = create<FitState>((set) => ({
 // window.__fitStore.getState().setGarmentImage(dataUrl).
 if (import.meta.env.DEV) {
   (window as unknown as { __fitStore?: typeof useFitStore }).__fitStore = useFitStore;
+}
 
-  // 화면 판정 자립 워크플로우: 쿼리 파라미터로 페이지 로드 시 상태를
-  // 자동 복원한다 — vite 재시작(라이브 리로드) 후에도 콘솔 조작 없이
-  // 항상 같은 판정 상태로 돌아오게. 예:
-  //   localhost:5173/?autofit=1&newcore=1        (신 코어 판정 상태)
-  //   localhost:5173/?autofit=1&newcore=1&friction=0  (마찰 A/B)
+// 화면 판정 자립 워크플로우: 쿼리 파라미터로 페이지 로드 시 상태를
+// 자동 복원한다 — 리로드 후에도 콘솔 조작 없이 항상 같은 판정 상태로
+// 돌아오게. prod에서도 동작한다(2026-07-30) — ?pin/?view/?trimdebug와
+// 같은 이유로, 프로덕션 빌드의 화면 판정(캡처 게이트)이 같은 구도를
+// 재현할 수 있어야 한다. 예:
+//   localhost:5173/?autofit=1&newcore=1        (신 코어 판정 상태)
+//   localhost:5173/?autofit=1&newcore=1&friction=0  (마찰 A/B)
+{
   const q = new URLSearchParams(window.location.search);
   if (q.get("autofit") === "1") {
     const canvas = document.createElement("canvas");
@@ -205,7 +211,10 @@ if (import.meta.env.DEV) {
       useFitStore.getState().setGarmentImage(canvas.toDataURL());
     }
   }
-  if (q.get("newcore") === "1") useFitStore.getState().setNewCore(true);
+  {
+    const nc = q.get("newcore");
+    if (nc != null) useFitStore.getState().setNewCore(nc !== "0");
+  }
   if (q.get("friction") === "0") useFitStore.getState().setFriction(false);
   if (q.get("smoothing") === "0") useFitStore.getState().setRenderSmoothing(false);
   if (q.get("fitmap") === "1") useFitStore.getState().setShowFitMap(true);
