@@ -47,7 +47,7 @@ import {
 import { FABRIC_PRESETS } from "../src/lib/fabricPresets";
 import type { Vec3Like } from "../src/lib/clothProtocol";
 import { armholeRingJaggedness, ringJaggedness } from "../src/lib/seamDiagnostics";
-import { capsuleGapBands, computeCapsuleGapChannels, computeDrapeMetrics, computeOrderViolations, computeRippleMm, type DrapeMetrics, type GapStats } from "../src/lib/drapeMetrics";
+import { capsuleGapBands, computeCapsuleGapChannels, computeDrapeMetrics, computeOrderViolations, computeRippleMm, jitterPerVertex, type DrapeMetrics, type GapStats } from "../src/lib/drapeMetrics";
 import { computeBodyCoverage } from "../src/lib/coverageMetric";
 import { computeNecklineLift } from "../src/lib/necklineLift";
 import { bakeSdf, createCachedSdfIterationFriction, createSdfFrictionPass, createSdfIterationFrictionPass, createSdfPushResolver, makeRadialSignedSampler, sampleSdf, type SdfField } from "../src/lib/sdfCollision";
@@ -911,6 +911,52 @@ function runFixture(path: string): void {
   const ripple = computeRippleMm(sim, [PANEL_FRONT, PANEL_BACK], 1, armholeStartRow, xMin, xMax);
   console.log(`  ripple(2차차분=곡률): max ${ripple.maxMm}mm @ ${JSON.stringify(ripple.maxAt)} / mean ${ripple.meanMm}mm`);
   console.log(`  jitter(4차차분=지그재그): max ${ripple.jitterMaxMm}mm @ ${JSON.stringify(ripple.jitterMaxAt)} / mean ${ripple.jitterMeanMm}mm / 부호반전 ${ripple.signFlipRatio}`);
+  // JITTER_DUMP=1 — jitter 지표의 분해(계기 검증 + 공간 국소화). 물리 무변경,
+  // 최종 프레임 위치만 읽는다. jitter는 **시간 차분이 아니라 열 방향 공간
+  // 4차 차분**이므로 이 덤프는 "어느 정점이 그 합을 만드는가"만 답한다.
+  if (process.env.JITTER_DUMP === "1") {
+    const per = jitterPerVertex(sim, [PANEL_FRONT, PANEL_BACK], 1, armholeStartRow, xMin, xMax);
+    const mean = per.reduce((a, b) => a + b.mm, 0) / (per.length || 1);
+    // 계기 동일성 — 이 덤프의 평균이 게이트 지표와 같은 수인지(0.01mm 이내).
+    const drift = Math.abs(mean - ripple.jitterMeanMm);
+    console.log(`  [JDUMP] 창: 패널 앞/뒤 · row1..${armholeStartRow} · 열 ${xMin + 2}..${xMax - 2} / 표본 ${per.length} · 평균 ${mean.toFixed(2)}mm (게이트값과 차 ${drift.toFixed(3)}mm ${drift <= 0.01 ? "OK" : "불일치!"})`);
+    const sorted = [...per].sort((a, b) => a.mm - b.mm);
+    const q = (f: number) => sorted[Math.min(sorted.length - 1, Math.floor(f * (sorted.length - 1)))].mm.toFixed(2);
+    console.log(`  [JDUMP] 분포(mm): min ${q(0)} p25 ${q(0.25)} med ${q(0.5)} p75 ${q(0.75)} p90 ${q(0.9)} p95 ${q(0.95)} max ${q(1)}`);
+    // 상위 5% 집합 J — 합 기여도와 위치.
+    const cut = sorted[Math.floor(0.95 * (sorted.length - 1))].mm;
+    const J = per.filter((v) => v.mm >= cut);
+    const share = (J.reduce((a, b) => a + b.mm, 0) / (mean * per.length)) * 100;
+    console.log(`  [JDUMP] J(상위5%, >=${cut.toFixed(2)}mm): n=${J.length} / 총합기여 ${share.toFixed(1)}%`);
+    console.log(`  [JDUMP] J 목록: ${J.sort((a, b) => b.mm - a.mm).map((v) => `${v.panel === PANEL_FRONT ? "F" : "B"}${v.x},${v.y}=${v.mm.toFixed(1)}`).join(" ")}`);
+    // 행·열·패널 집계.
+    const agg = (key: (v: { panel: number; x: number; y: number }) => string) => {
+      const m = new Map<string, { n: number; sum: number; max: number }>();
+      for (const v of per) {
+        const k = key(v);
+        const e = m.get(k) ?? { n: 0, sum: 0, max: 0 };
+        e.n++; e.sum += v.mm; e.max = Math.max(e.max, v.mm);
+        m.set(k, e);
+      }
+      return [...m.entries()].map(([k, e]) => `${k}:${(e.sum / e.n).toFixed(1)}(max${e.max.toFixed(0)})`).join(" ");
+    };
+    console.log(`  [JDUMP] 패널별 평균: ${agg((v) => (v.panel === PANEL_FRONT ? "앞" : "뒤"))}`);
+    console.log(`  [JDUMP] 행별 평균:   ${agg((v) => `row${v.y}`)}`);
+    console.log(`  [JDUMP] 열별 평균:   ${agg((v) => `x${v.x}`)}`);
+    // 스케일 해석용 — 창 안 평균 열간격. 4차차분은 정규화가 없어 순수
+    // 교대(파장 2열) 성분에 이득 16, 파장 4열 4, 파장 6열 1.0이다.
+    let sp = 0, spN = 0;
+    for (const panel of [PANEL_FRONT, PANEL_BACK]) {
+      for (let y = 1; y <= armholeStartRow; y++) {
+        for (let x = xMin; x < xMax; x++) {
+          const a = sim.index(panel, x, y) * 3, b = sim.index(panel, x + 1, y) * 3;
+          sp += Math.hypot(sim.positions[a] - sim.positions[b], sim.positions[a + 1] - sim.positions[b + 1], sim.positions[a + 2] - sim.positions[b + 2]);
+          spN++;
+        }
+      }
+    }
+    console.log(`  [JDUMP] 창 평균 열간격 ${((sp / spN) * 1000).toFixed(2)}mm / 순수교대 환산진폭 = 평균jitter/16 = ${(mean / 16).toFixed(3)}mm`);
+  }
   // NECK=1 (△3-2 뒤 목선 국소 구김 진단): "어느 행·열인가"가 질문이므로
   // 지표 하나(max)가 아니라 **프로파일**을 찍는다 — 목선 대역(row0~3)의
   // 열별 곡률(열 방향 2차 차분)과 row0→row1 실거리. 목 구멍 열 범위도 같이

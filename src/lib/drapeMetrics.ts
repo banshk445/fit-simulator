@@ -290,6 +290,44 @@ export function computeRippleMm(
   };
 }
 
+// jitter 정점별 분해 — computeRippleMm이 내는 jitterMeanMm의 피가산항을
+// 그대로 정점 단위로 내보낸다(집계 전 값). 창·인덱스 범위는 위 함수와
+// 동일해야 하므로 kernel을 같은 식으로 유지할 것. 호출부에서 평균이
+// jitterMeanMm과 일치하는지 자체 검사한다(계기 동일성 증명).
+export function jitterPerVertex(
+  sim: GridView,
+  panels: readonly number[],
+  rowStart: number,
+  rowEndInclusive: number,
+  colMin = 0,
+  colMax = Infinity,
+): { panel: number; x: number; y: number; mm: number }[] {
+  const p = sim.positions;
+  const out: { panel: number; x: number; y: number; mm: number }[] = [];
+  const d2 = (panel: number, x: number, y: number, k: number): number => {
+    const i = sim.index(panel, x, y) * 3 + k;
+    const l = sim.index(panel, x - 1, y) * 3 + k;
+    const r = sim.index(panel, x + 1, y) * 3 + k;
+    return p[l] + p[r] - 2 * p[i];
+  };
+  for (const panel of panels) {
+    const { cols, rows } = sim.panelDims[panel];
+    const x0 = Math.max(1, colMin + 1);
+    const x1 = Math.min(cols - 2, colMax - 1);
+    const yEnd = Math.min(rows - 1, rowEndInclusive);
+    for (let y = Math.max(0, rowStart); y <= yEnd; y++) {
+      for (let x = x0; x <= x1; x++) {
+        if (x - 1 < x0 || x + 1 > x1) continue;
+        const jx = d2(panel, x - 1, y, 0) + d2(panel, x + 1, y, 0) - 2 * d2(panel, x, y, 0);
+        const jy = d2(panel, x - 1, y, 1) + d2(panel, x + 1, y, 1) - 2 * d2(panel, x, y, 1);
+        const jz = d2(panel, x - 1, y, 2) + d2(panel, x + 1, y, 2) - 2 * d2(panel, x, y, 2);
+        out.push({ panel, x, y, mm: Math.hypot(jx, jy, jz) * 1000 });
+      }
+    }
+  }
+  return out;
+}
+
 export function computeCapsuleGapChannels(
   sim: GridView,
   panels: readonly number[],
