@@ -50,6 +50,9 @@ if (!patternCore) {
   process.exit(0);
 }
 
+// 착장 앵커는 **기본 off**(§4 개정: 앵커 층위 4연속 실패로 소진). 롤백 수단
+// 으로만 보존한다 — `PINDRESS=1`.
+const PINDRESS = process.env.PINDRESS === "1";
 const FIXTURE = process.env.FIXTURE ?? "scripts/fixtures/collision-fixture.json";
 const META_PATH = process.env.PATTERN_META ?? "scripts/fixtures/pattern-meta.json";
 const raw = readFileSync(FIXTURE, "utf8");
@@ -155,6 +158,46 @@ const corrected = correctPlacementPenetration(
 );
 const penAfterPlace = countInside(g.positions, total, insideParity);
 console.log(`[dress] S0 배치 관통: ${penBefore} → 교정 ${corrected}정점 → ${penAfterPlace} (패리티 근사)`);
+// ── t=0 게이트 (§4 S0 개정 — 목 스레딩 배치가 성립했는가)
+const t0Fails: string[] = [];
+{
+  const xs0 = countSelfIntersections(g.positions, g.tris, g.edgePairs, 0.03);
+  const ok1 = xs0.count <= 3;
+  console.log(`[dress] t=0 자기교차(엣지-삼각형): ${xs0.count}건 (기준선 3 이하 ${ok1 ? "OK" : "**초과**"})`);
+  if (!ok1) t0Fails.push("t=0 자기교차 ≤3");
+  if (penAfterPlace !== 0) t0Fails.push("t=0 배치 관통 0");
+
+  // 링 원주 + "링 안에 목이 있는가"
+  let ringM = 0;
+  for (const e of g.necklineRing) {
+    ringM += Math.hypot(
+      g.positions[e.b * 3] - g.positions[e.a * 3],
+      g.positions[e.b * 3 + 1] - g.positions[e.a * 3 + 1],
+      g.positions[e.b * 3 + 2] - g.positions[e.a * 3 + 2],
+    );
+  }
+  const okRing = Math.abs(ringM - g.draft.dims.necklineGirthM) < 0.005;
+  console.log(`[dress] t=0 링 원주 ${cm(ringM)}cm vs 패턴 목선 ${cm(g.draft.dims.necklineGirthM)}cm ${okRing ? "OK" : "**불일치**"}`);
+  if (!okRing) t0Fails.push("t=0 링 원주");
+
+  // 링 정점들의 목축 거리 vs 그 높이 목 반경 → 링 안에 목 기둥이 들어갔나.
+  const ringIdx = [...new Set(g.necklineRing.flatMap((e) => [e.a, e.b]))];
+  const ringY = ringIdx.reduce((a, i) => a + g.positions[i * 3 + 1], 0) / ringIdx.length;
+  const slice = body.slices.reduce((best, sl) => (Math.abs(sl.y - ringY) < Math.abs(best.y - ringY) ? sl : best), body.slices[0]);
+  const neckHalfExtent = Math.max(slice.widthM, slice.depthM) / 2;
+  let minD = Infinity, maxD = 0;
+  for (const i of ringIdx) {
+    const d = Math.hypot(g.positions[i * 3] - slice.axisX, g.positions[i * 3 + 2] - slice.axisZ);
+    if (d < minD) minD = d;
+    if (d > maxD) maxD = d;
+  }
+  const okThread = minD > neckHalfExtent;
+  console.log(
+    `[dress] t=0 목 스레딩 검사: 링 정점 ${ringIdx.length}개 · 링 높이 y${cm(ringY)}cm · 목축 거리 ${cm(minD)}~${cm(maxD)}cm vs 그 높이 몸 반경 ${cm(neckHalfExtent)}cm → ${okThread ? "**링 안에 목이 있다**" : "**링이 목을 감싸지 못했다**"}`,
+  );
+  if (!okThread) t0Fails.push("t=0 목 스레딩");
+  console.log(`[dress] t=0 게이트: ${t0Fails.length === 0 ? "통과" : `실패 ${t0Fails.join(", ")}`}`);
+}
 
 // ── 물리 조립
 const preset = FABRIC_PRESETS[pose.fabric];
@@ -171,6 +214,9 @@ const panelOfIdx = (i: number): number => { for (let p = 3; p >= 0; p--) if (i >
 const PANEL_NAME = ["앞판", "뒤판", "소매L", "소매R"];
 console.log(
   `[dress] 제약: structural ${ps.structuralPairs} · bend ${ps.bendPairs}(반복 보정 배율 ${ps.bendStiffnessPerIteration.toFixed(5)} @ ${ps.iterations}회 = 유효 ${(1 - Math.pow(1 - ps.bendStiffnessPerIteration, ps.iterations)).toFixed(3)}) · seam ${ps.seamPairs} · shear 0(소멸) · 총 ${sim.constraintPairs.length}`,
+);
+console.log(
+  `[dress] 어깨 사전 봉제: 용접 ${ps.weldedShoulderPairs}쌍(alias=뒤판 → canon=앞판) · S1 램프 대상에서 제외 → 런타임 램프는 옆선·암홀·wrap만 · 착장 앵커 ${PINDRESS ? "**on**(PINDRESS=1)" : "off(기본)"}`,
 );
 console.log("[dress] 알려진 이탈: 질량 균일(§3.3은 Voronoi 면적 비례 요구 — ClothSimulation에 질량 개념 없음, clothPhysics 무수정 원칙으로 미도입)");
 
@@ -397,7 +443,7 @@ const env: GarmentFrameEnv = {
   collarStrainLimit: ringLimitNow,
   onCollarFired: (n) => { collarFired += n; },
   pinCorners: false,
-  anchors: () => anchorList,
+  anchors: () => (PINDRESS ? anchorList : []),
   pinContinuous: true,
   pinStrength: anchorStrength,
   anchorSyncPrev: true,
@@ -412,6 +458,7 @@ const maxDelta20Mm = (): number => (deltaHist.length ? Math.max(...deltaHist.sli
 const maxSeamGapM = (): number => {
   let m = 0;
   for (const s of g.seams) {
+    if (s.kind === "shoulder") continue; // 용접됨 — 램프·정체 판정 대상 아님
     const d = Math.hypot(
       sim.positions[s.b * 3] - sim.positions[s.a * 3],
       sim.positions[s.b * 3 + 1] - sim.positions[s.a * 3 + 1],
@@ -508,8 +555,10 @@ const frameLayout = { widthM: layout.widthM, heightM: garmentDims.lengthM, topY:
 const framePose = { pinLeft: pose.pinLeft, pinRight: pose.pinRight, armLeft: pose.armLeft, armRight: pose.armRight };
 const FRAMES = Math.round((process.env.SECONDS ? Number(process.env.SECONDS) : 25) * 60);
 
+// S1 램프 대상 = **어깨 제외** 잔여 시접(옆선·암홀·소매 wrap).
+const rampSeams = g.seams.filter((sm) => sm.kind !== "shoulder");
 const result = runDressing(
-  sim, session, g.seams.map((s) => ({ a: s.a, b: s.b, target: s.targetM, kind: s.kind })),
+  sim, session, rampSeams.map((s) => ({ a: s.a, b: s.b, target: s.targetM, kind: s.kind })),
   {
     rampFrames: 120,
     stallFrames: 60,
@@ -668,6 +717,10 @@ const armMask = (() => {
   console.log(`[dress] cov 대역 팔 제외: 최근접 골격 선분이 팔인 정점 ${excluded}/${n} 제외(팔 선분 ${skeleton.arms.length}개)`);
   return mask;
 })();
+// **cov 몸통 정식 정의(2026-07-30 확정)**: 팔·손 제외. 6회차 관측에서 오염의
+// 정체가 다리가 아니라 **손**(x 54cm, 팔 59° 하향)임이 특정됐고, 스파이크가
+// 확정한 "최근접 골격 선분이 팔이면 팔" 규칙(상수 0)을 그대로 쓴다.
+// 구 정의(팔 포함)는 **폐기**하되 이력 대조를 위해 같은 실행에 병기한다.
 const covLegless = computeBodyCoverage(position, [frontIdx, backIdx], gridView, [], { ...covBand, yMin: hemWorldY, sampleMask: legMask }, clothTris);
 const covArmless = computeBodyCoverage(position, [frontIdx, backIdx], gridView, [], { ...covBand, yMin: hemWorldY, sampleMask: armMask }, clothTris);
 const covOld = computeBodyCoverage(position, [frontIdx, backIdx], gridView, [], { ...covBand, yMin: hemY }, clothTris);
@@ -709,7 +762,10 @@ const settleFrame = (() => {
 
 console.log(`\n[dress] 지표 (프레임 ${result.frames} · fixture ${fixtureHash} · pattern ${patternHash} · 경과 ${elapsedS.toFixed(1)}s · v1 기준선과 비교 금지)`);
 console.log(
-  `  cov 몸통(신 정의 yMin = 밑단 월드 ${cm(hemWorldY)}cm = 능선앵커 ${cm(g.draft.dims.ridgeAnchorY)} − 총장 ${cm(g.draft.dims.lengthM)}): 노출 ${cov.exposed}/${cov.samples} (${(cov.exposedRatio * 100).toFixed(1)}%)`,
+  `  **cov 몸통(정식 · 팔 제외)**: 노출 ${covArmless.exposed}/${covArmless.samples} (${(covArmless.exposedRatio * 100).toFixed(1)}%)`,
+);
+console.log(
+  `  cov 팔포함(폐기 · 이력 병기) yMin = 밑단 월드 ${cm(hemWorldY)}cm = 능선앵커 ${cm(g.draft.dims.ridgeAnchorY)} − 총장 ${cm(g.draft.dims.lengthM)}): 노출 ${cov.exposed}/${cov.samples} (${(cov.exposedRatio * 100).toFixed(1)}%)`,
 );
 console.log(
   `  cov 몸통(구 정의 yMin = hemY ${cm(hemY)}cm · 병기): 노출 ${covOld.exposed}/${covOld.samples} (${(covOld.exposedRatio * 100).toFixed(1)}%)`,

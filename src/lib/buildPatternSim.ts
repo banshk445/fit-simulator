@@ -38,6 +38,7 @@ import { STIFFNESS_BEND, STIFFNESS_SEAM, STIFFNESS_STRUCTURAL } from "./clothCon
 
 export interface PatternSim {
   sim: ClothSimulation;
+  weldedShoulderPairs: number;
   structuralPairs: number;
   bendPairs: number;
   seamPairs: number;
@@ -71,7 +72,12 @@ function bendPairsOf(tris: Uint32Array): { a: number; b: number }[] {
   return out;
 }
 
-export function buildPatternSim(g: PatternGarment, iterations: number): PatternSim {
+// `weldShoulder`: 어깨 시접 46쌍을 **구성 시점에 결합**한다(§4 개정 · 제조
+// 순서 복원). 선택 근거: 중앙 미러축과 같은 "연속 메시"를 우선 검토했고,
+// clothPhysics의 `applyWelds`(alias/canon)가 M1 암홀 용접에서 화면 검증된
+// 기존 기계이며 **수정 0줄**이라 그것을 채택했다 — 인덱스 병합(진짜 정점
+// 병합)은 패널 오프셋·UV·미러 장부를 전부 다시 짜야 해서 기각.
+export function buildPatternSim(g: PatternGarment, iterations: number, weldShoulder = true): PatternSim {
   // 패널당 (cols = 정점 수, rows = 1) — `panelParticleStart`가 g.panelStarts와
   // 정확히 같아진다. `buildConstraints()`는 **부르지 않는다**(격자 제약이
   // 생겨 버린다). 생성자는 제약을 비운 상태로 시작한다.
@@ -121,8 +127,16 @@ export function buildPatternSim(g: PatternGarment, iterations: number): PatternS
   // kind는 전부 SEAM이므로 kind 목표는 seam만 의미가 있다(1.0 = 보정 후 1).
   sim.setKindTargetStiffness(STIFFNESS_STRUCTURAL, 1, 1, STIFFNESS_SEAM);
 
+  // 어깨 사전 봉제 — 제약·강성 설정이 **끝난 뒤** 한 번(applyWelds 규약).
+  let welded = 0;
+  if (weldShoulder) {
+    sim.applyWelds(g.shoulderPairs.map((e) => ({ alias: e.b, canon: e.a })));
+    welded = g.shoulderPairs.length;
+  }
+
   return {
     sim,
+    weldedShoulderPairs: welded,
     structuralPairs: g.edgePairs.length,
     bendPairs: bend.length,
     seamPairs: g.seams.length,
