@@ -684,22 +684,6 @@ const neckCenter = { x: centerX, y: body.neckY, z: collision.centerZ };
 // 정의 변경이므로 두 값을 같은 실행에서 병기한다(함정 8 계열).
 const hemWorldY = g.draft.dims.ridgeAnchorY - g.draft.dims.lengthM;
 const covBand = { yMax: body.shoulderJointY, neckCenter, neckRadius: 0.12, centerX, centerZ: collision.centerZ };
-// 다리 표면 제외 — **최근접 골격 선분 분류**(1a 은행 자산 재사용, 상수 0).
-// 몸통 축 폴리라인은 골반 하단에서 끝나므로, 최근접점이 그 **하단 끝점**인
-// 정점은 축 아래로 접힌 것 = 다리다(bodySkeleton이 기록한 "끝점 밖은 끝점으로
-// 접힌다"의 아래쪽 판본 — 어깨 캡이 위쪽 성분을 얻는 것과 같은 기전).
-const legMask = (() => {
-  const n = position.length / 3;
-  const mask = new Uint8Array(n).fill(1);
-  const bottom = skeleton.torso[0].a.y < skeleton.torso[0].b.y ? skeleton.torso[0].a : skeleton.torso[skeleton.torso.length - 1].b;
-  let excluded = 0;
-  for (let v = 0; v < n; v++) {
-    const near = nearestOnSegments(position[v * 3], position[v * 3 + 1], position[v * 3 + 2], skeleton.torso);
-    if (Math.hypot(near.x - bottom.x, near.y - bottom.y, near.z - bottom.z) < 1e-9) { mask[v] = 0; excluded++; }
-  }
-  console.log(`[dress] cov 대역 다리 제외: 최근접점이 몸통 축 하단 끝점(y${cm(bottom.y)}cm)인 정점 ${excluded}/${n} 제외`);
-  return mask;
-})();
 // 팔·손 제외 — **최근접 골격 선분이 팔이면 팔**(2a-thin 스파이크 계기 결함 3번이
 // 확정한 규칙, 상수 0). 6회차 관측이 지목한 오염이다: 이 마네킹은 팔이 59° 하향이라
 // 손이 골반 높이(y80~90)에 오고, cov 몸통 대역의 뒤쪽 노출 샘플이 x 54cm에 찍혔다
@@ -717,11 +701,12 @@ const armMask = (() => {
   console.log(`[dress] cov 대역 팔 제외: 최근접 골격 선분이 팔인 정점 ${excluded}/${n} 제외(팔 선분 ${skeleton.arms.length}개)`);
   return mask;
 })();
-// **cov 몸통 정식 정의(2026-07-30 확정)**: 팔·손 제외. 6회차 관측에서 오염의
-// 정체가 다리가 아니라 **손**(x 54cm, 팔 59° 하향)임이 특정됐고, 스파이크가
-// 확정한 "최근접 골격 선분이 팔이면 팔" 규칙(상수 0)을 그대로 쓴다.
-// 구 정의(팔 포함)는 **폐기**하되 이력 대조를 위해 같은 실행에 병기한다.
-const covLegless = computeBodyCoverage(position, [frontIdx, backIdx], gridView, [], { ...covBand, yMin: hemWorldY, sampleMask: legMask }, clothTris);
+// **cov 몸통 정식 정의(2026-07-30 확정)**: 위 팔 제외 규칙 한 벌만 쓴다.
+// 중복 정리 근거: 이 규칙(`armMask`)은 병행 세션 커밋 `6e3caa8`이 먼저 넣은
+// 것이고 2a-thin 계기 결함 3번의 확정 규칙과 문구까지 같으므로 **그쪽을 남겼다**.
+// 다리 제외본(`legMask`)은 삭제 — 4·5·6회차에서 값을 못 바꿔 세 번 기각됐고
+// (분모 −32, 0.1pp) 오염의 정체가 손으로 특정된 뒤에는 채널 유지 근거가 없다.
+// 구 정의(팔 포함)만 이력 대조로 병기한다.
 const covArmless = computeBodyCoverage(position, [frontIdx, backIdx], gridView, [], { ...covBand, yMin: hemWorldY, sampleMask: armMask }, clothTris);
 const covOld = computeBodyCoverage(position, [frontIdx, backIdx], gridView, [], { ...covBand, yMin: hemY }, clothTris);
 const cov = computeBodyCoverage(position, [frontIdx, backIdx], gridView, [], { ...covBand, yMin: hemWorldY }, clothTris);
@@ -770,12 +755,7 @@ console.log(
 console.log(
   `  cov 몸통(구 정의 yMin = hemY ${cm(hemY)}cm · 병기): 노출 ${covOld.exposed}/${covOld.samples} (${(covOld.exposedRatio * 100).toFixed(1)}%)`,
 );
-console.log(
-  `  cov 몸통(신 정의 + 다리 제외 · 병기): 노출 ${covLegless.exposed}/${covLegless.samples} (${(covLegless.exposedRatio * 100).toFixed(1)}%)`,
-);
-console.log(
-  `  cov 몸통(신 정의 + **팔 제외** · 재도출): 노출 ${covArmless.exposed}/${covArmless.samples} (${(covArmless.exposedRatio * 100).toFixed(1)}%) — 제외 전 ${cov.exposed}/${cov.samples} (${(cov.exposedRatio * 100).toFixed(1)}%)`,
-);
+
 {
   // ── cov 65%의 정체를 **관측으로** 특정한다(가설 금지 — 2b에서 대역 가설이
   // 세 번 기각됐다). `exposedExamples`는 노출 좌표 전수를 담는다.
