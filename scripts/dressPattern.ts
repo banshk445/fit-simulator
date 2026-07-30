@@ -21,7 +21,8 @@ import type { Capsule } from "../src/lib/torsoCapsule";
 import { runDressing } from "../src/lib/dressingMachine";
 import { deriveBodySkeleton, nearestOnSegments } from "../src/lib/bodySkeleton";
 import { measureBody } from "../src/lib/bodyMeasure";
-import { buildPatternGarment, PANEL_PAT_BACK, PANEL_PAT_FRONT } from "../src/lib/patternGarment";
+import { buildPatternGarment, PANEL_PAT_BACK, PANEL_PAT_FRONT, PATTERN_EDGE_INTERIOR_M } from "../src/lib/patternGarment";
+import { makeOutlineProvider } from "../src/lib/bodyOutline";
 import { buildPatternSim } from "../src/lib/buildPatternSim";
 import { correctPlacementPenetration, countInside, countOpenEdges, countSelfIntersections, makeParityInside } from "../src/lib/patternPlacement";
 import { computeBodyCoverage, deriveShoulderBand } from "../src/lib/coverageMetric";
@@ -95,7 +96,16 @@ const garmentDims = {
   sleeveLengthM: Math.max(pose.armLeft.length, pose.armRight.length),
   sleeveWidthM: layout.sleeveWidthM,
 };
-const g = buildPatternGarment(body, garmentDims, arms);
+const outlineTorso = new ArrayBvhCollision();
+outlineTorso.rebuild(position, torsoIndex);
+const outlineWhole = new ArrayBvhCollision();
+outlineWhole.rebuild(position, wholeIndex ?? torsoIndex);
+const outlineAt = makeOutlineProvider(
+  outlineTorso, outlineWhole,
+  (h) => { const sl = body.slices.reduce((b, s2) => (Math.abs(s2.y - h) < Math.abs(b.y - h) ? s2 : b), body.slices[0]); return [sl.axisX, sl.axisZ]; },
+  PATTERN_EDGE_INTERIOR_M,
+);
+const g = buildPatternGarment(body, garmentDims, arms, outlineAt);
 const total = g.panelCounts.reduce((a, b) => a + b, 0);
 const cm = (v: number): string => (v * 100).toFixed(2);
 
@@ -257,7 +267,7 @@ console.log(
   `[dress] 제약: structural ${ps.structuralPairs} · bend ${ps.bendPairs}(반복 보정 배율 ${ps.bendStiffnessPerIteration.toFixed(5)} @ ${ps.iterations}회 = 유효 ${(1 - Math.pow(1 - ps.bendStiffnessPerIteration, ps.iterations)).toFixed(3)}) · seam ${ps.seamPairs} · shear 0(소멸) · 총 ${sim.constraintPairs.length}`,
 );
 console.log(
-  `[dress] 어깨 사전 봉제: 용접 ${ps.weldedShoulderPairs}쌍(alias=뒤판 → canon=앞판) · S1 램프 대상에서 제외 → 런타임 램프는 옆선·암홀·wrap만 · 착장 앵커 ${PINDRESS ? "**on**(PINDRESS=1)" : "off(기본)"}`,
+  `[dress] 어깨 봉합: 용접 ${ps.weldedShoulderPairs}쌍(19회차부터 **반납** — 평면 배치와 배타적) · 어깨를 포함한 전 시접이 S1 램프 대상 · 착장 앵커 ${PINDRESS ? "**on**(PINDRESS=1)" : "off(기본)"}`,
 );
 console.log("[dress] 알려진 이탈: 질량 균일(§3.3은 Voronoi 면적 비례 요구 — ClothSimulation에 질량 개념 없음, clothPhysics 무수정 원칙으로 미도입)");
 
@@ -499,7 +509,6 @@ const maxDelta20Mm = (): number => (deltaHist.length ? Math.max(...deltaHist.sli
 const maxSeamGapM = (): number => {
   let m = 0;
   for (const s of g.seams) {
-    if (s.kind === "shoulder") continue; // 용접됨 — 램프·정체 판정 대상 아님
     const d = Math.hypot(
       sim.positions[s.b * 3] - sim.positions[s.a * 3],
       sim.positions[s.b * 3 + 1] - sim.positions[s.a * 3 + 1],
@@ -597,7 +606,8 @@ const framePose = { pinLeft: pose.pinLeft, pinRight: pose.pinRight, armLeft: pos
 const FRAMES = Math.round((process.env.SECONDS ? Number(process.env.SECONDS) : 25) * 60);
 
 // S1 램프 대상 = **어깨 제외** 잔여 시접(옆선·암홀·소매 wrap).
-const rampSeams = g.seams.filter((sm) => sm.kind !== "shoulder");
+// 19회차: 어깨 용접 반납 → **전 시접**이 램프 대상이다(2a-thin 구성 복귀).
+const rampSeams = g.seams;
 const result = runDressing(
   sim, session, rampSeams.map((s) => ({ a: s.a, b: s.b, target: s.targetM, kind: s.kind })),
   {

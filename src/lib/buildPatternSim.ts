@@ -72,12 +72,15 @@ function bendPairsOf(tris: Uint32Array): { a: number; b: number }[] {
   return out;
 }
 
-// `weldShoulder`: 어깨 시접 46쌍을 **구성 시점에 결합**한다(§4 개정 · 제조
-// 순서 복원). 선택 근거: 중앙 미러축과 같은 "연속 메시"를 우선 검토했고,
-// clothPhysics의 `applyWelds`(alias/canon)가 M1 암홀 용접에서 화면 검증된
-// 기존 기계이며 **수정 0줄**이라 그것을 채택했다 — 인덱스 병합(진짜 정점
-// 병합)은 패널 오프셋·UV·미러 장부를 전부 다시 짜야 해서 기각.
-export function buildPatternSim(g: PatternGarment, iterations: number, weldShoulder = true): PatternSim {
+// `weldShoulder`: 어깨 시접을 구성 시점에 결합한다(8회차 §4 "제조 순서 복원").
+// **19회차부터 기본 off로 반납했다.** 사유: 그 조치는 몸 위 배치에서 앞뒤 목점이
+// 승모근 아래에 놓여 생기던 교착을 피하려던 것인데, 19회차의 평면 배치는 앞뒤판이
+// 몸 **밖**에서 만나므로 그 교착이 원리적으로 없다. 반대로 용접은 평면 배치와
+// 배타적이다 — 앞뒤판이 어깨선에서 한 점이어야 하는데 평면 두 장은 거기서
+// 앞뒤 오프셋 합(31.0cm)만큼 벌어져 있어 t=0에 그것을 한 번에 접는다.
+// 18회차가 "몸 밖 · 길이 보존 · 어깨 용접"의 3자 배타를 확정했고, 2a-thin이
+// 958프레임 수렴시킨 구성에는 용접이 없었다. 스위치는 롤백 수단으로 남긴다.
+export function buildPatternSim(g: PatternGarment, iterations: number, weldShoulder = false): PatternSim {
   // 패널당 (cols = 정점 수, rows = 1) — `panelParticleStart`가 g.panelStarts와
   // 정확히 같아진다. `buildConstraints()`는 **부르지 않는다**(격자 제약이
   // 생겨 버린다). 생성자는 제약을 비운 상태로 시작한다.

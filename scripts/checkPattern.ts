@@ -13,7 +13,8 @@ import { SelfCollision } from "../src/lib/selfCollision";
 import { deriveBodySkeleton } from "../src/lib/bodySkeleton";
 import { measureBody } from "../src/lib/bodyMeasure";
 import { checkDraft } from "../src/lib/patternDraft";
-import { buildPatternGarment, checkPatternGarment, PANEL_PAT_BACK, PANEL_PAT_FRONT } from "../src/lib/patternGarment";
+import { buildPatternGarment, checkPatternGarment, PANEL_PAT_BACK, PANEL_PAT_FRONT, PATTERN_EDGE_INTERIOR_M } from "../src/lib/patternGarment";
+import { makeOutlineProvider } from "../src/lib/bodyOutline";
 import { makeSkeletonSignedSampler } from "../src/lib/sdfCollision";
 import { countPlacementFolds, countSelfIntersections } from "../src/lib/patternPlacement";
 import type { Capsule } from "../src/lib/torsoCapsule";
@@ -78,7 +79,16 @@ console.log(
 );
 
 const tBuild = performance.now();
-const g = buildPatternGarment(body, garmentDims, arms as unknown as readonly [typeof pose.armLeft, typeof pose.armRight]);
+const outlineTorso = new ArrayBvhCollision();
+outlineTorso.rebuild(position, torsoIndex);
+const outlineWhole = new ArrayBvhCollision();
+outlineWhole.rebuild(position, wholeIndex ?? torsoIndex);
+const outlineAt = makeOutlineProvider(
+  outlineTorso, outlineWhole,
+  (h) => { const sl = body.slices.reduce((b, s2) => (Math.abs(s2.y - h) < Math.abs(b.y - h) ? s2 : b), body.slices[0]); return [sl.axisX, sl.axisZ]; },
+  PATTERN_EDGE_INTERIOR_M,
+);
+const g = buildPatternGarment(body, garmentDims, arms as unknown as readonly [typeof pose.armLeft, typeof pose.armRight], outlineAt);
 const buildMs = Math.round(performance.now() - tBuild);
 const d = g.draft.dims;
 console.log(
@@ -426,12 +436,17 @@ if (after.n > 0) fails.push("배치 관통 0");
     return best;
   };
   const D = g.draft.dims;
+  // 기대 z 분리는 **배치에서 도출**한다(하드코딩 금지·함정 12). 평면 배치에서는
+  // 앞뒤판이 각자의 평면에 있으므로 모든 코너가 앞 오프셋 + 뒤 오프셋만큼 떨어진다.
+  // 검사의 취지는 "짝지어야 할 코너가 x·y에서 일치하는가"이고, z 분리는 배치
+  // 규약이 정하는 값이다.
+  const expectDz = g.meta.torsoOffsetFrontM + g.meta.torsoOffsetBackM;
   const corners: { name: string; x: number; y: number; expectDzM: number }[] = [];
   for (const s of [1, -1]) {
-    corners.push({ name: `목점(${s > 0 ? "x+" : "x-"})`, x: s * D.neckHalfWidthM, y: 0, expectDzM: 0 });
-    corners.push({ name: `어깨끝(${s > 0 ? "x+" : "x-"})`, x: s * D.shoulderHalfM, y: D.shoulderDropM, expectDzM: 0 });
-    corners.push({ name: `겨드랑이(${s > 0 ? "x+" : "x-"})`, x: s * D.halfWidthM, y: D.armholeDepthM, expectDzM: 2 * COLLISION_MARGIN });
-    corners.push({ name: `밑단(${s > 0 ? "x+" : "x-"})`, x: s * D.halfWidthM, y: D.lengthM, expectDzM: 2 * COLLISION_MARGIN });
+    corners.push({ name: `목점(${s > 0 ? "x+" : "x-"})`, x: s * D.neckHalfWidthM, y: 0, expectDzM: expectDz });
+    corners.push({ name: `어깨끝(${s > 0 ? "x+" : "x-"})`, x: s * D.shoulderHalfM, y: D.shoulderDropM, expectDzM: expectDz });
+    corners.push({ name: `겨드랑이(${s > 0 ? "x+" : "x-"})`, x: s * D.halfWidthM, y: D.armholeDepthM, expectDzM: expectDz });
+    corners.push({ name: `밑단(${s > 0 ? "x+" : "x-"})`, x: s * D.halfWidthM, y: D.lengthM, expectDzM: expectDz });
   }
   let worstCornerMm = 0, worstCornerName = "";
   for (const c of corners) {
@@ -444,7 +459,7 @@ if (after.n > 0) fails.push("배치 관통 0");
   const okCorner = worstCornerMm < 0.01;
   console.log(`\n[pattern] 배치 사상 전단사 검증`);
   console.log(
-    `  ${okCorner ? "PASS" : "FAIL"}  코너 8개 앞뒤판 일치 — 최대 잔차 ${worstCornerMm.toFixed(4)}mm @${worstCornerName} (겨드랑이·밑단은 z 분리 ${(2 * COLLISION_MARGIN * 1000).toFixed(1)}mm 제외)`,
+    `  ${okCorner ? "PASS" : "FAIL"}  코너 8개 앞뒤판 일치 — 최대 잔차 ${worstCornerMm.toFixed(4)}mm @${worstCornerName} (앞뒤 평면 z 분리 ${(expectDz * 1000).toFixed(1)}mm 제외 — 배치에서 도출)`,
   );
   if (!okCorner) fails.push("배치 코너 일치");
 

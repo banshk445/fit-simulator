@@ -16,6 +16,9 @@ import { useEffect, useMemo, useState } from "react";
 import * as THREE from "three";
 import { useFitStore } from "../store/useFitStore";
 import { buildSeamBridge, updateSeamBridge, type SeamStrip } from "./seamBridge";
+import { ArrayBvhCollision } from "../lib/bvhFromArrays";
+import { makeOutlineProvider } from "../lib/bodyOutline";
+import { PATTERN_EDGE_INTERIOR_M } from "../lib/patternGarment";
 
 const CHECKER_TEXELS = 32;
 
@@ -84,6 +87,10 @@ export function PatternPreview(): React.JSX.Element | null {
       const arms = [f.pose.armLeft, f.pose.armRight] as const;
       const skeleton = deriveBodySkeleton(position, torsoIndex, [f.pose.armLeft, f.pose.armRight], centerX, f.collision.centerZ, hemY);
       const body = measureBody(position, torsoIndex, wholeIndex, arms, skeleton, hemY, centerX, f.collision.centerZ);
+      const outlineTorso = new ArrayBvhCollision();
+      outlineTorso.rebuild(position, torsoIndex);
+      const outlineWhole = new ArrayBvhCollision();
+      outlineWhole.rebuild(position, wholeIndex ?? torsoIndex);
       const g = buildPatternGarment(
         body,
         {
@@ -94,6 +101,11 @@ export function PatternPreview(): React.JSX.Element | null {
           sleeveWidthM: garmentSize.sleeveWidth / 100,
         },
         arms,
+        makeOutlineProvider(
+          outlineTorso, outlineWhole,
+          (h) => { const sl = body.slices.reduce((b, s2) => (Math.abs(s2.y - h) < Math.abs(b.y - h) ? s2 : b), body.slices[0]); return [sl.axisX, sl.axisZ]; },
+          PATTERN_EDGE_INTERIOR_M,
+        ),
       );
       if (!alive) return;
 
