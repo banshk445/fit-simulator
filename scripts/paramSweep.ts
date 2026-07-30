@@ -612,6 +612,197 @@ function runFixture(path: string): void {
     return;
   }
 
+  // CUTMAP=1 — 절단 경계 병리 측정기(Stage 1a 3회차 계기 선행). 물리 미실행.
+  // 가설: 밀어내기 필드는 `excludeArms`로 **잘린 열린 표면**에서 구워지는데,
+  // 열린 절단 테두리에서는 부호가 정의되지 않는다 — 닫힌 표면이면 "안/밖"이
+  // 위상으로 결정되지만, 잘린 표면에는 테두리를 돌아 감는 부호 불연속면이
+  // 공중으로 뻗는다. 그 면을 가로지르면 d가 +x에서 −x로 한 복셀 만에 뛰므로
+  // (i) 중앙차분 기울기 크기가 1을 크게 넘고 (ii) 표면에서 멀리 떨어진
+  // 이웃 복셀끼리 부호가 반대가 된다.
+  //
+  // 판정 채널 (ii)가 주 채널이다 — 문턱이 복셀 크기에서 나온다: 정당한
+  // 부호 변화는 두 복셀 사이를 표면이 지날 때만 생기고, 그러면
+  // min(|d_a|,|d_b|) ≤ 복셀이어야 한다. 둘 다 복셀보다 멀면서 부호가
+  // 반대면 그 자리의 필드는 모순이다.
+  if (process.env.CUTMAP === "1") {
+    const toU32 = (a: number[] | null) => (a ? Uint32Array.from(a) : null);
+    // 앞뒤 분할 평면 — meshCollision.splitFrontBack과 같은 도출(전 정점 z 중점).
+    let zLo = Infinity, zHi = -Infinity;
+    for (let i = 2; i < position.length; i += 3) {
+      if (position[i] < zLo) zLo = position[i];
+      if (position[i] > zHi) zHi = position[i];
+    }
+    const splitZ = (zLo + zHi) / 2;
+    // 변이(역검증): 팔이 아니라 **수평 띠**를 잘라 절단 테두리를 다른 자리로
+    // 옮긴다. 병리가 그 띠로 따라가면 측정기가 "절단"을 보고 있는 것이다.
+    const mutate = process.env.CUTMAP_MUTATE === "1";
+    const bandY = skeleton.torso[Math.floor(skeleton.torso.length / 2)].a.y;
+    const baseIdx = fixture.collision.frontIndex ?? [];
+    const cutIdx: number[] = [];
+    for (let t = 0; t < baseIdx.length; t += 3) {
+      const a = baseIdx[t], b = baseIdx[t + 1], c = baseIdx[t + 2];
+      if (mutate) {
+        const cy = (position[a * 3 + 1] + position[b * 3 + 1] + position[c * 3 + 1]) / 3;
+        if (Math.abs(cy - bandY) < 0.02) continue; // 이 띠를 도려낸다
+      }
+      cutIdx.push(a, b, c);
+    }
+    const idx = mutate ? cutIdx : Array.from(baseIdx);
+    // 열린 테두리를 **정확히** 분류한다. 첫 구현은 "|z − splitZ| ≤ 2복셀이면
+    // 앞뒤분할"로 걸렀는데, 분할이 삼각형 **중심 z**로 이뤄져 경계선이
+    // 들쭉날쭉하기 때문에 몸통 옆·다리·머리의 분할 엣지가 그 문턱을 빠져
+    // "팔절단"으로 집계됐다(팔 축 거리 중앙값 37.6cm가 그 증거였다).
+    // 정확한 정의: 앞면 패치의 테두리 엣지에 대해, 몸 전체 메시에서 그 엣지를
+    // 공유하는 다른 삼각형이
+    //   - backIndex에 있으면 → 앞뒤분할 경계
+    //   - front∪back 어디에도 없으면(=excludeArms가 지운 팔 삼각형) → **팔절단**
+    // 문턱이 없다.
+    const triKey = (a: number, b: number, c: number) => [a, b, c].sort((p2, q2) => p2 - q2).join("_");
+    const inFront = new Set<string>();
+    const inBack = new Set<string>();
+    for (let t = 0; t < idx.length; t += 3) inFront.add(triKey(idx[t], idx[t + 1], idx[t + 2]));
+    const bIdx = fixture.collision.backIndex ?? [];
+    for (let t = 0; t < bIdx.length; t += 3) inBack.add(triKey(bIdx[t], bIdx[t + 1], bIdx[t + 2]));
+    // 몸 전체 메시의 엣지 → 인접 삼각형 목록.
+    const whole = fixture.collision.wholeBodyIndex ?? [];
+    const edgeTris = new Map<string, string[]>();
+    const ek = (p2: number, q2: number) => (p2 < q2 ? `${p2}_${q2}` : `${q2}_${p2}`);
+    for (let t = 0; t < whole.length; t += 3) {
+      const tri = [whole[t], whole[t + 1], whole[t + 2]];
+      const k = triKey(tri[0], tri[1], tri[2]);
+      for (let e = 0; e < 3; e++) {
+        const key = ek(tri[e], tri[(e + 1) % 3]);
+        const list = edgeTris.get(key);
+        if (list) list.push(k); else edgeTris.set(key, [k]);
+      }
+    }
+    // 앞면 패치의 열린 테두리(삼각형 1개만 공유) 추출 + 분류.
+    const frontEdge = new Map<string, number>();
+    const edgeMid = new Map<string, { x: number; y: number; z: number }>();
+    for (let t = 0; t < idx.length; t += 3) {
+      const tri = [idx[t], idx[t + 1], idx[t + 2]];
+      for (let e = 0; e < 3; e++) {
+        const p2 = tri[e], q2 = tri[(e + 1) % 3];
+        const key = ek(p2, q2);
+        frontEdge.set(key, (frontEdge.get(key) ?? 0) + 1);
+        if (!edgeMid.has(key)) {
+          edgeMid.set(key, {
+            x: (position[p2 * 3] + position[q2 * 3]) / 2,
+            y: (position[p2 * 3 + 1] + position[q2 * 3 + 1]) / 2,
+            z: (position[p2 * 3 + 2] + position[q2 * 3 + 2]) / 2,
+          });
+        }
+      }
+    }
+    const cutPts: { x: number; y: number; z: number }[] = [];
+    const otherArm: number[] = [];
+    const otherY: number[] = [];
+    let splitEdges = 0;
+    let otherEdges = 0;
+    const armDistCm: number[] = [];
+    for (const [key, cnt] of frontEdge) {
+      if (cnt !== 1) continue;
+      const mid = edgeMid.get(key)!;
+      const neighbours = (edgeTris.get(key) ?? []).filter((k) => !inFront.has(k));
+      if (neighbours.some((k) => inBack.has(k))) { splitEdges++; continue; }
+      if (neighbours.length === 0) {
+        // 정점 중복(UV 접합) 때문에 인접이 끊긴 엣지 — 놓친 팔절단이 섞여
+        // 있으면 가설을 부당하게 기각할 수 있으므로 따로 통계를 낸다.
+        otherEdges++;
+        otherArm.push(Math.sqrt(nearestOnSegments(mid.x, mid.y, mid.z, skeleton.arms).d2) * 100);
+        otherY.push(mid.y);
+        continue;
+      }
+      cutPts.push(mid);
+      armDistCm.push(Math.sqrt(nearestOnSegments(mid.x, mid.y, mid.z, skeleton.arms).d2) * 100);
+    }
+    // 표적(top-front)과 같은 자리인지 판정하려면 절단 테두리의 **위치**가
+    // 필요하다 — 거리만으로는 못 가른다(함정 1 계열: 위치 없는 집계 금지).
+    {
+      const ys = cutPts.map((c) => c.y).sort((a, b) => a - b);
+      const yq = (f: number) => (ys.length ? ys[Math.floor(f * (ys.length - 1))].toFixed(3) : "-");
+      const frontSide = cutPts.filter((c) => c.z >= splitZ).length;
+      console.log(
+        `[CUTMAP] 절단 테두리 위치: y p10/med/p90 ${yq(0.1)}/${yq(0.5)}/${yq(0.9)} (어깨관절 y=${skeleton.torso[skeleton.torso.length - 1].b.y.toFixed(3)}) · z≥분할면 ${frontSide}/${cutPts.length}`,
+      );
+    }
+    {
+      // 놓친 팔절단 후보 = 팔 축 거리가 절단 문턱(위 p10~p90 대역) 안이고
+      // 높이가 표적(top-front) 대역인 엣지.
+      const cand = otherArm.map((d, i) => ({ d, y: otherY[i] })).filter((o) => o.d <= 10);
+      const hi = cand.filter((o) => o.y >= 1.30);
+      const ys = otherY.slice().sort((a, b) => a - b);
+      const yq2 = (f: number) => (ys.length ? ys[Math.floor(f * (ys.length - 1))].toFixed(3) : "-");
+      console.log(
+        `[CUTMAP] 미분류(정점중복) ${otherEdges}개: y p10/med/p90 ${yq2(0.1)}/${yq2(0.5)}/${yq2(0.9)} · 팔축≤10cm ${cand.length} 그중 y≥1.30 ${hi.length}`,
+      );
+    }
+    armDistCm.sort((a, b) => a - b);
+    const q = (f: number) => (armDistCm.length ? armDistCm[Math.floor(f * (armDistCm.length - 1))].toFixed(1) : "-");
+    console.log(
+      `[CUTMAP] ${mutate ? "**변이(수평 띠 절단, y" + bandY.toFixed(2) + ") 역검증**" : "정상(팔 절단)"} · 절단 테두리 엣지 ${cutPts.length} (앞뒤분할 ${splitEdges} / 기타 ${otherEdges} 제외) · 팔 축 거리 p10/med/p90 ${q(0.1)}/${q(0.5)}/${q(0.9)}cm`,
+    );
+    const m = new ArrayBvhCollision();
+    m.rebuild(position, toU32(idx));
+    const tb = performance.now();
+    const field = bakeSdf(makeSkeletonSignedSampler(m, skeleton.segments, SDF_FAR, SDF_FAR), sdfMin, sdfMax, SDF_PUSH_VOXEL, SDF_FAR);
+    console.log(`[CUTMAP] 필드 굽기 ${Math.round(performance.now() - tb)}ms (부호=골격, 복셀 ${(SDF_PUSH_VOXEL * 1000).toFixed(0)}mm)`);
+    // 절단 테두리 근방 판정용 공간 해시(3cm 셀).
+    const CELL = 0.03;
+    const hash = new Map<string, { x: number; y: number; z: number }[]>();
+    const hk = (x: number, y: number, z: number) => `${Math.floor(x / CELL)},${Math.floor(y / CELL)},${Math.floor(z / CELL)}`;
+    for (const p of cutPts) (hash.get(hk(p.x, p.y, p.z)) ?? hash.set(hk(p.x, p.y, p.z), []).get(hk(p.x, p.y, p.z))!).push(p);
+    const nearCut = (x: number, y: number, z: number, r: number): boolean => {
+      const r2 = r * r;
+      const bx = Math.floor(x / CELL), by = Math.floor(y / CELL), bz = Math.floor(z / CELL);
+      const span = Math.ceil(r / CELL);
+      for (let i = -span; i <= span; i++) for (let j = -span; j <= span; j++) for (let k = -span; k <= span; k++) {
+        for (const p of hash.get(`${bx + i},${by + j},${bz + k}`) ?? []) {
+          if ((x - p.x) ** 2 + (y - p.y) ** 2 + (z - p.z) ** 2 < r2) return true;
+        }
+      }
+      return false;
+    };
+    const v = SDF_PUSH_VOXEL;
+    const stat = new Map<string, { n: number; grad: number[]; pairs: number; bad: number }>();
+    const gradAt = (x: number, y: number, z: number) =>
+      Math.hypot(
+        (sampleSdf(field, x + v, y, z) - sampleSdf(field, x - v, y, z)) / (2 * v),
+        (sampleSdf(field, x, y + v, z) - sampleSdf(field, x, y - v, z)) / (2 * v),
+        (sampleSdf(field, x, y, z + v) - sampleSdf(field, x, y, z - v)) / (2 * v),
+      );
+    for (let z = sdfMin.z + v; z <= sdfMax.z - v; z += v) {
+      for (let y = sdfMin.y + v; y <= sdfMax.y - v; y += v) {
+        for (let x = sdfMin.x + v; x <= sdfMax.x - v; x += v) {
+          const d = sampleSdf(field, x, y, z);
+          if (Math.abs(d) > 0.05) continue; // 부호가 물리에 닿는 구간만
+          const key = nearCut(x, y, z, 3 * v) ? "절단테두리 ±3복셀" : nearCut(x, y, z, 6 * v) ? "완충(3~6복셀)" : "내부 대조군";
+          const e = stat.get(key) ?? { n: 0, grad: [], pairs: 0, bad: 0 };
+          e.n++;
+          e.grad.push(gradAt(x, y, z));
+          // 부호 공간 정합성 — +x 이웃과의 쌍만(중복 없이).
+          const d2 = sampleSdf(field, x + v, y, z);
+          if (Math.abs(d2) <= 0.05) {
+            e.pairs++;
+            if (d * d2 < 0 && Math.min(Math.abs(d), Math.abs(d2)) > v) e.bad++;
+          }
+          stat.set(key, e);
+        }
+      }
+    }
+    for (const key of ["절단테두리 ±3복셀", "완충(3~6복셀)", "내부 대조군"]) {
+      const e = stat.get(key);
+      if (!e) continue;
+      e.grad.sort((a, b) => a - b);
+      const gq = (f: number) => e.grad[Math.floor(f * (e.grad.length - 1))].toFixed(2);
+      console.log(
+        `[CUTMAP] ${key.padEnd(16)} 표본 ${String(e.n).padStart(6)} · |∇d| med ${gq(0.5)} p95 ${gq(0.95)} max ${gq(1)} · 부호모순쌍 ${e.bad}/${e.pairs} (${((e.bad / (e.pairs || 1)) * 100).toFixed(2)}%)`,
+      );
+    }
+    console.log(`[CUTMAP] 물리 미실행(측정 전용). 경과 ${((performance.now() - tProcess) / 1000).toFixed(1)}s`);
+    return;
+  }
+
   let sdfField: SdfField | null = null;
   if (process.env.FRICTION === "1") {
     const wholeMesh = new ArrayBvhCollision();
