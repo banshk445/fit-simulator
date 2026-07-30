@@ -174,6 +174,23 @@ console.log(
 );
 console.log("[dress] 알려진 이탈: 질량 균일(§3.3은 Voronoi 면적 비례 요구 — ClothSimulation에 질량 개념 없음, clothPhysics 무수정 원칙으로 미도입)");
 
+// ── 링 상한 상태 스케줄 (3회차 단일 물리 변경)
+// 원칙: **봉제 후 착용**. 시접이 아직 열려 있는 동안 링이 상한에 걸려 있으면
+// 목점 시접(2회차: 6mm 목표에 54mm 벌어짐)을 당기려면 링이 늘어나야 하고
+// 한계기가 그것을 되돌린다 — 넥밴드와 어깨 시접이 서로를 봉쇄했다.
+//
+// 완화 폭을 **시간이 아니라 seamGap에서 도출**한다:
+//   여유(slack) = max(0, maxSeamGap − target)
+//   완화 상한   = max(1.02, 1 + slack / 링 rest 원주)
+// 근거: 목점 쌍을 target까지 당기려면 두 점이 합쳐 slack만큼 이동해야 하고
+// 그 이동은 링을 따라 일어난다 — 링이 그만큼 길어질 여지를 주면 봉쇄가
+// 풀린다. slack이 0으로 가면 상한이 1.02로 **연속적으로** 수렴하므로
+// (§4 "램프는 연속 함수로만") 별도의 전이 시점이 필요 없다.
+// S3 이후는 상태로 고정한다 — 정착 중 갭이 튀어도 다시 완화되지 않게.
+let ringRestM = 0;
+let ringLimitNow = COLLAR_STRAIN_LIMIT;
+let ringFullyEngagedAt = -1;
+
 // ── 넥밴드 원주 제약 (2회차 단일 변경) — v1 칼라 기계를 패턴 목선 링에 배선.
 // 실물 부품(리브)이고 보조 힘이 아니다. clothPhysics는 이 기계를 이미 갖고
 // 있어 수정 0줄.
@@ -187,6 +204,7 @@ console.log("[dress] 알려진 이탈: 질량 균일(§3.3은 Voronoi 면적 비
       sim.positions[e.b * 3 + 2] - sim.positions[e.a * 3 + 2],
     );
   }
+  ringRestM = ringM;
   const targetM = g.draft.dims.necklineGirthM;
   const errCm = (ringM - targetM) * 100;
   console.log(
@@ -263,6 +281,7 @@ const cachedFric = createCachedSdfIterationFriction(() => sdfField, {
 
 let anchorStrength = 0;
 let collarFired = 0;
+
 const anchorList = g.seams
   .filter((s) => s.kind === "shoulder")
   .map((s) => ({ i: s.a, x: g.positions[s.a * 3], y: g.positions[s.a * 3 + 1], z: g.positions[s.a * 3 + 2] }));
@@ -284,7 +303,7 @@ const env: GarmentFrameEnv = {
   }),
   frictionIteration: cachedFric.apply,
   frictionIterationReset: cachedFric.reset,
-  collarStrainLimit: COLLAR_STRAIN_LIMIT,
+  collarStrainLimit: ringLimitNow,
   onCollarFired: (n) => { collarFired += n; },
   pinCorners: false,
   anchors: () => anchorList,
@@ -392,6 +411,18 @@ const result = runDressing(
     diverged,
     maxSeamGapM,
     maxDelta20Mm,
+    beforeStep: (_frame, state) => {
+      const target = Math.max(...g.seams.map((s) => s.targetM));
+      const slack = Math.max(0, maxSeamGapM() - target);
+      const relaxed = 1 + slack / Math.max(1e-6, ringRestM);
+      // S3·DONE에서는 완전 발동으로 고정(상태 기반 클램프).
+      ringLimitNow = state === "S3" || state === "DONE"
+        ? COLLAR_STRAIN_LIMIT
+        : Math.max(COLLAR_STRAIN_LIMIT, relaxed);
+      if (ringFullyEngagedAt < 0 && Math.abs(ringLimitNow - COLLAR_STRAIN_LIMIT) < 1e-9) ringFullyEngagedAt = _frame;
+      (env as { collarStrainLimit?: number }).collarStrainLimit = ringLimitNow;
+    },
+    stateNote: () => `링상한 ${ringLimitNow.toFixed(4)}${Math.abs(ringLimitNow - COLLAR_STRAIN_LIMIT) < 1e-9 ? "(완전 발동)" : "(완화)"}`,
     onFrame: (frame, state) => {
       if (DIAG && frame % 60 === 0) {
         const st = maxStrain();
@@ -405,7 +436,7 @@ const result = runDressing(
           `  [diag·y] f=${String(frame).padStart(4)} 어깨시접 ${(meanY(shoulderIdx) * 100).toFixed(1)}cm(배치 ${(g.draft.dims.ridgeAnchorY * 100).toFixed(1)}) · 밑단 ${(meanY(hemIdx) * 100).toFixed(1)}cm · 소매 ${(meanY(sleeveIdx) * 100).toFixed(1)}cm`,
         );
         console.log(
-          `  [diag] f=${String(frame).padStart(4)} ${state} seamGap ${(maxSeamGapM() * 1000).toFixed(1)}mm Δ20 ${maxDelta20Mm().toFixed(2)}mm strain ${st.v.toFixed(2)}@${PANEL_NAME[panelOfIdx(st.at)]} prox ${proximityPairs()} 관통 ${countInside(sim.positions, total, insideParity)} 칼라발화 ${collarFired}`,
+          `  [diag] f=${String(frame).padStart(4)} ${state} 링상한 ${ringLimitNow.toFixed(3)} seamGap ${(maxSeamGapM() * 1000).toFixed(1)}mm Δ20 ${maxDelta20Mm().toFixed(2)}mm strain ${st.v.toFixed(2)}@${PANEL_NAME[panelOfIdx(st.at)]} prox ${proximityPairs()} 관통 ${countInside(sim.positions, total, insideParity)} 칼라발화 ${collarFired}`,
         );
       }
       let md = 0;
@@ -441,15 +472,15 @@ const clothTris = (() => {
 })();
 const gridView = { positions: sim.positions, panelDims: sim.panelDims, index: (p: number, x: number, y: number) => sim.index(p, x, y) };
 const neckCenter = { x: centerX, y: body.neckY, z: collision.centerZ };
-const cov = computeBodyCoverage(
-  position, [frontIdx, backIdx], gridView, [],
-  {
-    yMin: hemY, yMax: body.shoulderJointY,
-    neckCenter, neckRadius: 0.12,
-    centerX, centerZ: collision.centerZ,
-  },
-  clothTris,
-);
+// cov 몸통 대역 — **범위를 옷 명세에서 도출**한다(대역 자체는 몸 표면 기준
+// 유지 = 규범 1). 구 정의는 yMin을 v1 `hemY`(토르소 캡슐 골반 하단)로 박아
+// 두어 옷이 덮을 의무가 없는 구간까지 분모에 넣었다(2회차: bot-front
+// 3,341/4,042가 그 구간). 신 정의는 패턴 총장에서 나온 **밑단 월드 높이**다.
+// 정의 변경이므로 두 값을 같은 실행에서 병기한다(함정 8 계열).
+const hemWorldY = g.draft.dims.ridgeAnchorY - g.draft.dims.lengthM;
+const covBand = { yMax: body.shoulderJointY, neckCenter, neckRadius: 0.12, centerX, centerZ: collision.centerZ };
+const covOld = computeBodyCoverage(position, [frontIdx, backIdx], gridView, [], { ...covBand, yMin: hemY }, clothTris);
+const cov = computeBodyCoverage(position, [frontIdx, backIdx], gridView, [], { ...covBand, yMin: hemWorldY }, clothTris);
 const band = deriveShoulderBand(position, wholeIndex, [pose.armLeft, pose.armRight], centerX);
 const covSh = computeBodyCoverage(
   position, [wholeIndex], gridView, [],
@@ -486,7 +517,19 @@ const settleFrame = (() => {
 })();
 
 console.log(`\n[dress] 지표 (프레임 ${result.frames} · fixture ${fixtureHash} · pattern ${patternHash} · 경과 ${elapsedS.toFixed(1)}s · v1 기준선과 비교 금지)`);
-console.log(`  cov 몸통: 노출 ${cov.exposed}/${cov.samples} (${(cov.exposedRatio * 100).toFixed(1)}%)`);
+console.log(
+  `  cov 몸통(신 정의 yMin = 밑단 월드 ${cm(hemWorldY)}cm = 능선앵커 ${cm(g.draft.dims.ridgeAnchorY)} − 총장 ${cm(g.draft.dims.lengthM)}): 노출 ${cov.exposed}/${cov.samples} (${(cov.exposedRatio * 100).toFixed(1)}%)`,
+);
+console.log(
+  `  cov 몸통(구 정의 yMin = hemY ${cm(hemY)}cm · 병기): 노출 ${covOld.exposed}/${covOld.samples} (${(covOld.exposedRatio * 100).toFixed(1)}%)`,
+);
+{
+  // 노출 샘플의 높이 분포 — 대역 결함을 눈으로 확인할 채널.
+  const hist: Record<string, number> = {};
+  for (const p of cov.exposedExamples) void p;
+  for (const [k, b] of Object.entries(cov.buckets)) hist[k] = b.exposed;
+  void hist;
+}
 console.log(`  cov 몸통 버킷: ${JSON.stringify(Object.fromEntries(Object.entries(cov.buckets).map(([k, b]) => [k, `${b.exposed}/${b.samples}`])))}`);
 console.log(`  covShoulder: 노출 ${covSh.exposed}/${covSh.samples} (${(covSh.exposedRatio * 100).toFixed(1)}%)`);
 console.log(`  covShoulder 버킷: ${JSON.stringify(Object.fromEntries(Object.entries(covSh.buckets).map(([k, b]) => [k, `${b.exposed}/${b.samples}`])))}`);
@@ -520,6 +563,31 @@ if (DIAG) {
     console.log(
       `  ${r.ratio.toFixed(2)}배 ${kindOf(r.c.a, r.c.b).padEnd(10)} ${PANEL_NAME[panelOfIdx(r.c.a)]}→${PANEL_NAME[panelOfIdx(r.c.b)]} · rest ${(r.c.restLength * 1000).toFixed(2)}mm → ${(r.d * 1000).toFixed(2)}mm · 패턴 a=(${cm(g.pos2[r.c.a * 2])},${cm(g.pos2[r.c.a * 2 + 1])})cm`,
     );
+  }
+  // 닫히지 않은 시접 쌍 사이에 **무엇이 있나** — 봉쇄의 정체를 직접 잰다.
+  {
+    const worst = g.seams
+      .map((sm) => ({
+        sm,
+        d: Math.hypot(
+          sim.positions[sm.b * 3] - sim.positions[sm.a * 3],
+          sim.positions[sm.b * 3 + 1] - sim.positions[sm.a * 3 + 1],
+          sim.positions[sm.b * 3 + 2] - sim.positions[sm.a * 3 + 2],
+        ),
+      }))
+      .sort((x, y) => y.d - x.d)
+      .slice(0, 4);
+    console.log("[dress·diag] 최대 시접 갭 쌍 — 두 점 사이에 몸이 있는가");
+    for (const w of worst) {
+      const mx = (sim.positions[w.sm.a * 3] + sim.positions[w.sm.b * 3]) / 2;
+      const my = (sim.positions[w.sm.a * 3 + 1] + sim.positions[w.sm.b * 3 + 1]) / 2;
+      const mz = (sim.positions[w.sm.a * 3 + 2] + sim.positions[w.sm.b * 3 + 2]) / 2;
+      const insideMid = insideParity(mx, my, mz);
+      const near = wholeMesh.closestPointUnsigned(mx, my, mz, SDF_FAR);
+      console.log(
+        `  ${w.sm.kind} 갭 ${(w.d * 1000).toFixed(1)}mm · a y${cm(sim.positions[w.sm.a * 3 + 1])} x${cm(sim.positions[w.sm.a * 3])} z${cm(sim.positions[w.sm.a * 3 + 2])} / b y${cm(sim.positions[w.sm.b * 3 + 1])} x${cm(sim.positions[w.sm.b * 3])} z${cm(sim.positions[w.sm.b * 3 + 2])} · 중점 ${insideMid ? "**몸 안쪽**" : "몸 밖"} · 중점→표면 ${near ? (near.distance * 1000).toFixed(1) : "?"}mm`,
+      );
+    }
   }
   // 관통 정점의 패널·대역 분포.
   {

@@ -68,6 +68,11 @@ export interface DressingHooks {
   maxSeamGapM: () => number;
   maxDelta20Mm: () => number;
   onFrame?: (frame: number, state: DressingState) => void;
+  // 스텝 **직전** 훅 — 상태·프레임에 의존하는 파라미터를 프레임마다 갱신하는
+  // 자리다(예: 링 상한 스케줄). onFrame은 스텝 뒤라 한 프레임 늦는다.
+  beforeStep?: (frame: number, state: DressingState) => void;
+  // 상태 전이 로그에 병기할 한 줄 — 스케줄 상태를 전이와 같은 줄에서 읽게 한다.
+  stateNote?: () => string;
 }
 
 // smoothstep — §4 S1 "램프는 연속 함수로만"(함정 7: 불리언 전환이 M2-7
@@ -115,7 +120,8 @@ export function runDressing(
   const cur = (): DressingState => state;
 
   const transition = (to: DressingState, reason: string): void => {
-    log.push({ frame, elapsedMs: Math.round(performance.now() - t0), from: cur(), to, reason, retry });
+    const note = hooks.stateNote?.();
+    log.push({ frame, elapsedMs: Math.round(performance.now() - t0), from: cur(), to, reason: note ? `${reason} · ${note}` : reason, retry });
     state = to;
     stateFrame = 0;
   };
@@ -153,7 +159,7 @@ export function runDressing(
     startRest = snapshotRest(sim, seams);
     log.push({
       frame, elapsedMs: Math.round(performance.now() - t0), from: "S0", to: "S0",
-      reason: `배치 관통 정점 ${pen} (오프셋 배수 ${scale.toFixed(2)})`, retry,
+      reason: `배치 관통 정점 ${pen} (오프셋 배수 ${scale.toFixed(2)})${hooks.stateNote ? ` · ${hooks.stateNote()}` : ""}`, retry,
     });
     transition("S1", pen === 0 ? "배치 관통 0" : `관통 ${pen} 잔여 — 교정 소진, 그대로 진행`);
   };
@@ -171,6 +177,7 @@ export function runDressing(
       setAnchorStrength(0);
     }
 
+    hooks.beforeStep?.(frame, state);
     const { dt, gravity, preset, layout, pose } = stepArgs();
     session.step(dt, gravity, { ...preset, iterations: preset.iterations + iterationBoost }, layout, pose);
     frame++;
