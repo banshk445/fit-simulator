@@ -198,14 +198,23 @@ export interface RippleStats {
   maxMm: number;
   meanMm: number;
   maxAt: { panel: number; x: number; y: number };
-  // 4차 중앙차분 |p(x-2)-4p(x-1)+6p(x)-4p(x+1)+p(x+2)| — 2차 차분은 임의의
-  // 2차식(=상수 곡률 = 정상 폴드)에 비례해 반응해서 "떨림 측정기"가 아니라
-  // 곡률 측정기였다(스무딩 off 5셀에서 면각평균과 완전 단조, 비율 ±8%
-  // 고정 — 전략가 실측). 4차 차분은 2차식을 정확히 소멸시켜 열 방향 교대
-  // 성분만 남기므로 정상 주름과 지그재그를 구분한다.
-  jitterMaxMm: number;
-  jitterMeanMm: number;
-  jitterMaxAt: { panel: number; x: number; y: number };
+  // columnRipple — **열(x) 방향 공간 4차 중앙차분**
+  // |p(x-2)-4p(x-1)+6p(x)-4p(x+1)+p(x+2)|을 호출 시점의 위치 1장에서 낸다
+  // (호출부 paramSweep은 프레임 루프가 끝난 뒤 = 최종 프레임 1장).
+  // 2차 차분은 임의의 2차식(=상수 곡률 = 정상 폴드)에 비례해 반응해서
+  // 곡률 측정기였고(스무딩 off 5셀에서 면각평균과 완전 단조, 비율 ±8%
+  // 고정), 4차 차분은 3차 이하를 정확히 소멸시켜 열 방향 교대 성분만
+  // 남긴다.
+  //
+  // **개명 이력(2026-07-30): jitter → columnRipple.** 옛 이름은 시간
+  // 떨림을 주장했으나 이 식에는 시간 축도 dt도 없다 — 축(열)과 시점
+  // (호출 시점 1장)을 이름에 박아 오독을 구조적으로 막는다(README 함정 13).
+  // 정규화가 없어 절대값은 변위가 아니다: 공간 파수 k 이득 (4sin²(k/2))²
+  // = 순수 교대(파장 2열) 16 / 파장 4열 4 / 파장 6열 1.0. 파장 대역을
+  // 구분하지 못하므로 **채택 시점에 식을 재도출**하고 쓸 것.
+  columnRippleMaxMm: number;
+  columnRippleMeanMm: number;
+  columnRippleMaxAt: { panel: number; x: number; y: number };
   // 부호 반전 비율 — D²(x)와 D²(x+1)의 부호가 다른 열의 비율. 교대
   // 패턴이면 1에 가깝고 매끄러운 폴드면 0에 가깝다(스케일 무관 보조 지표).
   signFlipRatio: number;
@@ -283,11 +292,49 @@ export function computeRippleMm(
     maxMm: Number((maxV * 1000).toFixed(2)),
     meanMm: Number(((sum / (count || 1)) * 1000).toFixed(2)),
     maxAt,
-    jitterMaxMm: Number((jMax * 1000).toFixed(2)),
-    jitterMeanMm: Number(((jSum / (jCount || 1)) * 1000).toFixed(2)),
-    jitterMaxAt: jMaxAt,
+    columnRippleMaxMm: Number((jMax * 1000).toFixed(2)),
+    columnRippleMeanMm: Number(((jSum / (jCount || 1)) * 1000).toFixed(2)),
+    columnRippleMaxAt: jMaxAt,
     signFlipRatio: Number((flips / (flipCount || 1)).toFixed(3)),
   };
+}
+
+// columnRipple 정점별 분해 — computeRippleMm이 내는 columnRippleMeanMm의 피가산항을
+// 그대로 정점 단위로 내보낸다(집계 전 값). 창·인덱스 범위는 위 함수와
+// 동일해야 하므로 kernel을 같은 식으로 유지할 것. 호출부에서 평균이
+// columnRippleMeanMm과 일치하는지 자체 검사한다(계기 동일성 증명).
+export function columnRipplePerVertex(
+  sim: GridView,
+  panels: readonly number[],
+  rowStart: number,
+  rowEndInclusive: number,
+  colMin = 0,
+  colMax = Infinity,
+): { panel: number; x: number; y: number; mm: number }[] {
+  const p = sim.positions;
+  const out: { panel: number; x: number; y: number; mm: number }[] = [];
+  const d2 = (panel: number, x: number, y: number, k: number): number => {
+    const i = sim.index(panel, x, y) * 3 + k;
+    const l = sim.index(panel, x - 1, y) * 3 + k;
+    const r = sim.index(panel, x + 1, y) * 3 + k;
+    return p[l] + p[r] - 2 * p[i];
+  };
+  for (const panel of panels) {
+    const { cols, rows } = sim.panelDims[panel];
+    const x0 = Math.max(1, colMin + 1);
+    const x1 = Math.min(cols - 2, colMax - 1);
+    const yEnd = Math.min(rows - 1, rowEndInclusive);
+    for (let y = Math.max(0, rowStart); y <= yEnd; y++) {
+      for (let x = x0; x <= x1; x++) {
+        if (x - 1 < x0 || x + 1 > x1) continue;
+        const jx = d2(panel, x - 1, y, 0) + d2(panel, x + 1, y, 0) - 2 * d2(panel, x, y, 0);
+        const jy = d2(panel, x - 1, y, 1) + d2(panel, x + 1, y, 1) - 2 * d2(panel, x, y, 1);
+        const jz = d2(panel, x - 1, y, 2) + d2(panel, x + 1, y, 2) - 2 * d2(panel, x, y, 2);
+        out.push({ panel, x, y, mm: Math.hypot(jx, jy, jz) * 1000 });
+      }
+    }
+  }
+  return out;
 }
 
 export function computeCapsuleGapChannels(
