@@ -152,12 +152,16 @@ for (const e of [...g.edgePairs, ...g.seams.map((s) => ({ a: s.a, b: s.b }))]) {
   const wt = countOpenEdges(wholeIndex ?? torsoIndex);
   console.log(`[dress] 패리티 전제(수밀성): 삼각형 ${wt.triangles} · 엣지 ${wt.edges} · 비-2회 ${wt.open}${wt.open === 0 ? " → 수밀" : " → **비수밀·패리티 근사**(v2-design §5 등재)"}`);
 }
+// S0 투영 교정은 **하네스가 덧붙인 것**이지 §4 S0의 명세 기제가 아니다(명세는
+// 오프셋 확대). 배치 원본 자기교차가 0인데 교정 후가 수백 건이면 교정이 순손해
+// 이므로, 무력화 변이를 상시 스위치로 둔다: `S0FIX=0`.
+const S0FIX = process.env.S0FIX !== "0";
 const penBefore = countInside(g.positions, total, insideParity);
-const corrected = correctPlacementPenetration(
+const corrected = S0FIX ? correctPlacementPenetration(
   g.positions, total, wholeMesh, insideParity, COLLISION_MARGIN, g.selfCollisionMinDistM, skipKeys, SDF_FAR,
-);
+) : 0;
 const penAfterPlace = countInside(g.positions, total, insideParity);
-console.log(`[dress] S0 배치 관통: ${penBefore} → 교정 ${corrected}정점 → ${penAfterPlace} (패리티 근사)`);
+console.log(`[dress] S0 배치 관통: ${penBefore} → 교정 ${corrected}정점 → ${penAfterPlace} (패리티 근사)${S0FIX ? "" : " · **교정 off(S0FIX=0)**"}`);
 // ── t=0 게이트 (§4 S0 개정 — 목 스레딩 배치가 성립했는가)
 const t0Fails: string[] = [];
 {
