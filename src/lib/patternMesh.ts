@@ -53,6 +53,13 @@ export interface MeshQuality {
   sizeDeviationP50: number;
   sizeDeviationP90: number;
   sizeDeviationP99: number;
+  // **이탈 상위(>30%) 엣지의 위치 지도** — 2b 실패 귀속용 사전 등록
+  // (v2-design §3.2 처분: 이 채널은 게이트가 아니라 기록 채널이고, 2b에서
+  // strain·정착이 실패하면 그 maxAt·상위 셀이 여기 등재된 대역과 겹치는지로
+  // "메시 투자" 여부를 가른다).
+  sizeOutlierCount: number;
+  sizeOutlierByRegion: Record<string, number>;
+  sizeOutlierExamples: { x: number; y: number; devPct: number; lenMm: number; hMm: number; region: string }[];
   boundaryEdges: number;
   nonManifoldEdges: number;
   duplicateVertices: number;
@@ -91,6 +98,26 @@ export function buildSizeField(segments: readonly PatternSegment[], o: SizeField
     }
     const t = smoothstep(Math.sqrt(d2) / o.bandM);
     return o.hBoundaryM + (o.hInteriorM - o.hBoundaryM) * t;
+  };
+}
+
+// 이탈 지도용 — 어느 refined 세그먼트에 얼마나 가까운가(대역 귀속).
+function buildRegionLabeler(
+  segments: readonly PatternSegment[],
+  o: SizeFieldOpts,
+): (x: number, y: number) => string {
+  const refined: { name: string; p: Vec2 }[] = [];
+  for (const s of segments) if (s.refined) for (const p of s.samples) refined.push({ name: s.name, p });
+  return (x, y) => {
+    let best = Infinity, name = "-";
+    for (const r of refined) {
+      const dd = (r.p.x - x) ** 2 + (r.p.y - y) ** 2;
+      if (dd < best) { best = dd; name = r.name; }
+    }
+    const d = Math.sqrt(best);
+    if (d <= o.bandM * 0.34) return `${name}:경계`;
+    if (d <= o.bandM) return `${name}:전이`;
+    return "내부";
   };
 }
 
@@ -319,7 +346,7 @@ export function triangulatePanel(segments: readonly PatternSegment[], o: SizeFie
   }
 
   // 7) 품질·위상
-  const quality = measureQuality(verts, tris, boundaryLoop, boundaryCount, poly, sizeAt);
+  const quality = measureQuality(verts, tris, boundaryLoop, boundaryCount, poly, sizeAt, buildRegionLabeler(segments, o));
 
   const pos2 = new Float64Array(verts.length * 2);
   for (let i = 0; i < verts.length; i++) { pos2[i * 2] = verts[i].x; pos2[i * 2 + 1] = verts[i].y; }
@@ -336,12 +363,17 @@ function measureQuality(
   boundaryCount: number,
   poly: readonly Vec2[],
   sizeAt: (x: number, y: number) => number,
+  regionAt: (x: number, y: number) => string,
 ): MeshQuality {
   let minAngleDeg = 180, minAngleAt = { x: 0, y: 0 };
   let aspectMax = 0, aspectMaxAt = { x: 0, y: 0 };
   let edgeMin = Infinity, edgeMax = 0, edgeSum = 0, edgeCount = 0;
   let sizeDevMax = 0, sizeDevAt = { x: 0, y: 0 }, sizeDevLen = 0, sizeDevH = 0;
   const sizeDevs: number[] = [];
+  const OUTLIER = 0.30;
+  const outlierByRegion: Record<string, number> = {};
+  const outlierExamples: { x: number; y: number; devPct: number; lenMm: number; hMm: number; region: string }[] = [];
+  let outlierCount = 0;
   const edgeUse = new Map<number, number>();
   const ekey = (a: number, b: number): number => Math.min(a, b) * 1_000_000 + Math.max(a, b);
 
@@ -380,6 +412,14 @@ function measureQuality(
     const hTarget = (sizeAt(verts[a].x, verts[a].y) + sizeAt(verts[b].x, verts[b].y)) / 2;
     const dev = Math.abs(len / hTarget - 1);
     sizeDevs.push(dev);
+    if (dev > OUTLIER) {
+      outlierCount++;
+      const region = regionAt(mx, my);
+      outlierByRegion[region] = (outlierByRegion[region] ?? 0) + 1;
+      if (outlierExamples.length < 6) {
+        outlierExamples.push({ x: mx, y: my, devPct: dev * 100, lenMm: len * 1000, hMm: hTarget * 1000, region });
+      }
+    }
     if (dev > sizeDevMax) { sizeDevMax = dev; sizeDevAt = { x: mx, y: my }; sizeDevLen = len; sizeDevH = hTarget; }
   }
   sizeDevs.sort((a, b) => a - b);
@@ -423,6 +463,7 @@ function measureQuality(
     edgeMinM: edgeMin, edgeMaxM: edgeMax, edgeMeanM: edgeSum / Math.max(1, edgeCount),
     sizeDeviationMax: sizeDevMax, sizeDeviationAt: sizeDevAt, sizeDeviationLenM: sizeDevLen, sizeDeviationHM: sizeDevH,
     sizeDeviationP50: pct(0.5), sizeDeviationP90: pct(0.9), sizeDeviationP99: pct(0.99),
+    sizeOutlierCount: outlierCount, sizeOutlierByRegion: outlierByRegion, sizeOutlierExamples: outlierExamples,
     boundaryEdges, nonManifoldEdges, duplicateVertices,
     boundaryOffCurveMaxM, missingBoundaryEdges,
   };

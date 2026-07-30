@@ -97,17 +97,22 @@ const report = (rows: { name: string; ok: boolean; detail: string }[], head: str
 report(checkDraft(g.draft, g.meta.armGirthM), "패턴 수치 자기검사");
 
 // ── 2. 삼각화 품질
-console.log("\n[pattern] 삼각화 품질 (게이트: 최소각 ≥25° · 크기장 이탈 p99 ≤30% · 비매니폴드 0 · 중복정점 0 · 경계 이탈 ≤0.01mm · 경계엣지 누락 0)");
+console.log("\n[pattern] 삼각화 품질 (게이트: 최소각 ≥25° · 비매니폴드 0 · 중복정점 0 · 경계 이탈 ≤0.01mm · 경계엣지 누락 0)");
+console.log("  ※ 크기장 이탈은 **기록 채널**이다(게이트 아님) — v2-design §3.2 처분: 소비자 미실증, 확정은 2b 실측 후.");
 const MIN_ANGLE_DEG = 25;
-const SIZE_DEV_MAX = 0.30;
 const BOUNDARY_OFF_MAX_M = 1e-5;
 for (const { panel, q } of g.quality) {
   console.log(
     `  ${panel}: 정점 ${q.vertices} 삼각형 ${q.triangles} · 최소각 ${q.minAngleDeg.toFixed(1)}° @(${cm(q.minAngleAt.x)},${cm(q.minAngleAt.y)})cm · 종횡비max ${q.aspectMax.toFixed(2)} @(${cm(q.aspectMaxAt.x)},${cm(q.aspectMaxAt.y)})cm · 엣지 ${(q.edgeMinM * 1000).toFixed(2)}~${(q.edgeMaxM * 1000).toFixed(2)}mm 평균 ${(q.edgeMeanM * 1000).toFixed(2)}mm · 크기장 이탈 p50/p90/p99 ${(q.sizeDeviationP50 * 100).toFixed(1)}/${(q.sizeDeviationP90 * 100).toFixed(1)}/${(q.sizeDeviationP99 * 100).toFixed(1)}% · max ${(q.sizeDeviationMax * 100).toFixed(1)}%(엣지 ${(q.sizeDeviationLenM * 1000).toFixed(2)}mm vs h ${(q.sizeDeviationHM * 1000).toFixed(2)}mm) @(${cm(q.sizeDeviationAt.x)},${cm(q.sizeDeviationAt.y)})cm · 경계엣지 ${q.boundaryEdges} 비매니폴드 ${q.nonManifoldEdges} 중복 ${q.duplicateVertices} · 경계이탈 ${(q.boundaryOffCurveMaxM * 1000).toFixed(6)}mm · 경계엣지누락 ${q.missingBoundaryEdges}`,
   );
+  console.log(
+    `    이탈>30% 엣지 ${q.sizeOutlierCount}/${q.triangles * 3 / 2 | 0}개 · 대역별 ${JSON.stringify(q.sizeOutlierByRegion)}`,
+  );
+  for (const e of q.sizeOutlierExamples) {
+    console.log(`      예: (${cm(e.x)},${cm(e.y)})cm ${e.region} · 엣지 ${e.lenMm.toFixed(2)}mm vs h ${e.hMm.toFixed(2)}mm = ${e.devPct.toFixed(1)}%`);
+  }
   const rows = [
     { name: `최소각(${panel})`, ok: q.minAngleDeg >= MIN_ANGLE_DEG, detail: `${q.minAngleDeg.toFixed(2)}° ≥ ${MIN_ANGLE_DEG}°` },
-    { name: `크기장 이탈 p99(${panel})`, ok: q.sizeDeviationP99 <= SIZE_DEV_MAX, detail: `p99 ${(q.sizeDeviationP99 * 100).toFixed(1)}% ≤ 30% (max ${(q.sizeDeviationMax * 100).toFixed(1)}%는 전이 구간 이상치 — 병기)` },
     { name: `매니폴드(${panel})`, ok: q.nonManifoldEdges === 0, detail: `비매니폴드 엣지 ${q.nonManifoldEdges}` },
     { name: `중복 정점(${panel})`, ok: q.duplicateVertices === 0, detail: `${q.duplicateVertices}` },
     { name: `경계 정점이 곡선 위(${panel})`, ok: q.boundaryOffCurveMaxM <= BOUNDARY_OFF_MAX_M, detail: `최대 이탈 ${(q.boundaryOffCurveMaxM * 1000).toFixed(6)}mm ≤ 0.01mm` },
