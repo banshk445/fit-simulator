@@ -1071,6 +1071,14 @@ function runFixture(path: string): void {
     );
     console.log(`  covShoulder 버킷(노출/샘플):`, JSON.stringify(Object.fromEntries(Object.entries(shCov.buckets).map(([k, v]) => [k, `${v.exposed}/${v.samples}`]))));
     console.log(`  covShoulder 노출 예시:`, JSON.stringify(shCov.exposedExamples.slice(0, 5)));
+    // 2회차 부수 확인(실측 완료, 코드 잔존 불필요): **골격 선분 전체**를
+    // 이 대역의 바깥 방향 참조로 써도 결과가 **비트 동일**하다(602/1431,
+    // 42.1%, 부호오판후보 177). 이 대역이 정의상 팔 축 영역이라 최근접
+    // 골격 요소가 거의 항상 그 팔 선분이기 때문이다. 따라서 3자 분열
+    // (팔축 42.1 / 원와인딩 27.6 / 몸통축 11.0%)은 **SIGNMAP 오라클이
+    // 독립적으로 팔축·골격 분기를 지지**하는 것으로 해소된다(어깨 대역
+    // 오분류 radial 36.3% vs 골격 1.8%). 게이트 승격은 하지 않는다 —
+    // 부호오판후보 29%에 관통 성분이 섞여 있어 화면 대조가 남았다.
   }
   // 어깨 hover — top 버킷(어깨 상면)의 히트율 + 히트 거리(몸→천).
   {
