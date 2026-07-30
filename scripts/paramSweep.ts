@@ -52,7 +52,7 @@ import { capsuleGapBands, computeCapsuleGapChannels, computeDrapeMetrics, comput
 import { computeBodyCoverage, deriveShoulderBand } from "../src/lib/coverageMetric";
 import { ARM_AXIS_RADIUS, deriveBodySkeleton, nearestOnSegments } from "../src/lib/bodySkeleton";
 import { computeNecklineLift } from "../src/lib/necklineLift";
-import { bakeSdf, createCachedSdfIterationFriction, createSdfFrictionPass, createSdfIterationFrictionPass, createSdfPushResolver, makeRadialSignedSampler, makeSkeletonSignedSampler, sampleSdf, sdfNormal, type SdfField } from "../src/lib/sdfCollision";
+import { bakeSdf, createCachedSdfIterationFriction, createSdfFrictionPass, createSdfIterationFrictionPass, createSdfPushResolver, makeRadialSignedSampler, makeSkeletonSignedSampler, repairSdfSign, sampleSdf, sdfNormal, type SdfField } from "../src/lib/sdfCollision";
 
 // 대표 포즈 — checkSleeveSeam.ts와 같은 출처(이 세션 __fitDebug 실측), 반팔
 // 기본값(소매길이 22cm), 어깨너비 45cm 기준.
@@ -250,7 +250,11 @@ function runCombo(widthM: number, sleeveWidthM: number, sleeveLengthM = SLEEVE_L
         armholeArmpitDeg: NaN,
         sleeveJaggednessDeg: NaN,
         // 원래 빠져 있어 발산 조합에서 undefined가 나갔다(아래 행별 출력이
-        // 그대로 터짐) — scripts/는 tsc -b 대상이 아니라 여태 안 잡혔다.
+        // 그대로 터짐). **정정(2026-07-30)**: scripts/는 tsconfig.scripts.json의
+        // include에 들어 있어 `npx tsc -b`가 실제로 검사한다(미임포트 식별자를
+        // 잡는 것으로 실증). 안 잡히는 건 `npx tsc --noEmit`인데, 루트
+        // tsconfig가 files:[]+references라 그 명령은 **아무것도** 검사하지
+        // 않는다. 검사 명령은 `npx tsc -b`(= npm run build의 앞단)를 쓸 것.
         sleeveRowsMaxDeg: [],
         drape: null,
         capsuleGap: null,
@@ -462,6 +466,29 @@ function runFixture(path: string): void {
   const sdfCx = (sdfMin.x + sdfMax.x) / 2;
   const sdfCz = (sdfMin.z + sdfMax.z) / 2;
 
+  // 3회차: 굽기 후 부호 모순 수리(원인 층위). SIGNFIX=0으로 끄면 2회차 재현.
+  // clearanceAt은 **팔 포함 몸 전체** 메시로 재야 골격 공이 실제 내부를 담는다.
+  // **기본 off**(SIGNFIX=1로만) — 이 패스는 전제(수밀 표면)가 제품 필드에서
+  // 성립하지 않아 1a 동결과 함께 실험 자산으로만 남긴다. 기본 on으로 두면
+  // 굽기마다 아무 일도 안 하는 100ms 패스가 조용히 붙는다.
+  const signFixEnabled = process.env.SIGNFIX === "1";
+  // 여유(clearance)는 **그 필드가 구워진 바로 그 표면**으로 재야 한다. 다른
+  // 메시로 재면 그 메시에 없는 구멍(예: wholeBodyIndex의 머리 제외) 쪽으로
+  // 공이 새어 나가 "확실한 내부"가 실제로는 외부가 된다 — 이 저장소가
+  // 반복해 밟은 계기 결함(대역·기준을 서로 다른 몸에서 가져오기, 함정 6).
+  const applySignFix = (f: SdfField, label: string, surface: ArrayBvhCollision): void => {
+    if (!signFixEnabled) return;
+    const mesh = surface;
+    const t = performance.now();
+    const st = repairSdfSign(f, skeleton.segments, (x, y, z) => {
+      const c = mesh.closestPointUnsigned(x, y, z, SDF_FAR);
+      return c ? c.distance : null;
+    });
+    console.log(
+      `[SIGNFIX] ${label}: 모순쌍 ${st.contradictionsBefore} → ${st.contradictionsAfter} · 뒤집은 복셀 ${st.flipped} · 성분 ${st.components}(밖씨앗 ${st.seededOutside} / 안씨앗 ${st.seededInside} / 무씨앗 ${st.unseeded} / 충돌 ${st.conflicts}) · far복셀 ${st.farVoxels} · 안씨앗복셀 ${st.insideSeedVoxels} · away복셀 ${st.awayVoxels} · 최대성분 ${st.largestComponent} · ${Math.round(performance.now() - t)}ms`,
+    );
+  };
+
   // 골격(부호 기준·대역 공통) — 몸 메시 + 뼈대에서 도출(bodySkeleton.ts).
   const torsoIndexAll = (() => {
     const fi = fixture.collision.frontIndex ?? [];
@@ -625,6 +652,83 @@ function runFixture(path: string): void {
     return;
   }
 
+  // SIGNFIX_DIAG=1 — 수리 패스의 **전제 진단**. 물리 미실행.
+  // 영역 성장 수리는 "표면 띠가 안과 밖을 가른다"를 전제로 한다. 그 전제가
+  // 필드의 **표면이 닫혀 있는지**에 달려 있으므로, 열린 정도가 다른 두 필드로
+  // 같은 수리를 돌려 전제가 어디서 깨지는지 가른다.
+  //   (a) 앞면만 = 몸통의 **절반 시트**(앞뒤 분할) — 제품이 실제로 쓰는 필드
+  //   (b) 앞+뒤 병합 = 몸통 전체(팔 구멍 2개만 열림)
+  // PLANT=1이면 수리 전에 한 블록의 부호를 일부러 뒤집어 수리 패스 자체를
+  // 역검증한다.
+  if (process.env.SIGNFIX_DIAG === "1") {
+    const toU32 = (a: number[] | null) => (a ? Uint32Array.from(a) : null);
+    const merged = (() => {
+      const fi = fixture.collision.frontIndex ?? [];
+      const bi = fixture.collision.backIndex ?? [];
+      const out = new Uint32Array(fi.length + bi.length);
+      out.set(fi, 0);
+      out.set(bi, fi.length);
+      return out;
+    })();
+    // (c) 전 삼각형 합집합 = **수밀(watertight)** 몸 — full = (front∪back) ∪ whole
+    // (front∪back은 팔만 뺀 것, whole은 머리만 뺀 것이므로 합집합이 전체다).
+    // 전제가 여기서만 성립하면 요구 조건은 "수밀"이라는 뜻이다.
+    const watertight = (() => {
+      const seen = new Set<string>();
+      const out: number[] = [];
+      const add = (arr: ArrayLike<number>) => {
+        for (let t = 0; t < arr.length; t += 3) {
+          const k = [arr[t], arr[t + 1], arr[t + 2]].slice().sort((a, b) => a - b).join("_");
+          if (seen.has(k)) continue;
+          seen.add(k);
+          out.push(arr[t], arr[t + 1], arr[t + 2]);
+        }
+      };
+      add(merged);
+      add(fixture.collision.wholeBodyIndex ?? []);
+      return Uint32Array.from(out);
+    })();
+    // 수밀성을 **기하로** 검사한다 — 인덱스로 엣지를 맞추면 UV 접합의 정점
+    // 중복 때문에 닫힌 메시도 열린 것으로 나온다(CUTMAP에서 미분류 997개가
+    // 그 사례였다). 좌표를 0.1mm로 양자화해 용접한 뒤 엣지 인접을 센다.
+    {
+      const qz = (v2: number) => Math.round(v2 * 10000);
+      const vk = (i: number) => `${qz(position[i * 3])},${qz(position[i * 3 + 1])},${qz(position[i * 3 + 2])}`;
+      const cache = new Map<number, string>();
+      const key = (i: number) => { let k = cache.get(i); if (k === undefined) { k = vk(i); cache.set(i, k); } return k; };
+      for (const [label, index] of [["앞면만", toU32(fixture.collision.frontIndex) ?? new Uint32Array()], ["앞+뒤 병합", merged], ["전 삼각형 합집합", watertight]] as const) {
+        const cnt = new Map<string, number>();
+        for (let t = 0; t < index.length; t += 3) {
+          const a = key(index[t]), b = key(index[t + 1]), c = key(index[t + 2]);
+          for (const [p2, q2] of [[a, b], [b, c], [c, a]]) {
+            const ek2 = p2 < q2 ? `${p2}|${q2}` : `${q2}|${p2}`;
+            cnt.set(ek2, (cnt.get(ek2) ?? 0) + 1);
+          }
+        }
+        let open = 0, over = 0;
+        for (const c of cnt.values()) { if (c === 1) open++; else if (c > 2) over++; }
+        console.log(`[SIGNFIX_DIAG] 수밀 검사(좌표 용접) ${label}: 삼각형 ${index.length / 3} · 엣지 ${cnt.size} · **열린 엣지 ${open}** · 3개이상 공유 ${over}`);
+      }
+    }
+    for (const [label, index] of [["(a) 앞면만(절반 시트)", toU32(fixture.collision.frontIndex)], ["(b) 앞+뒤 병합(팔 구멍만)", merged], ["(c) 수밀(전 삼각형 합집합)", watertight]] as const) {
+      const m = new ArrayBvhCollision();
+      m.rebuild(position, index);
+      const f = bakeSdf(makeSkeletonSignedSampler(m, skeleton.segments, SDF_FAR, SDF_FAR), sdfMin, sdfMax, SDF_PUSH_VOXEL, SDF_FAR);
+      if (process.env.PLANT === "1") {
+        let planted = 0;
+        const c0 = [Math.floor(f.nx / 2), Math.floor(f.ny / 2), Math.floor(f.nz / 2)];
+        for (let iz = c0[2]; iz < c0[2] + 6; iz++) for (let iy = c0[1]; iy < c0[1] + 6; iy++) for (let ix = c0[0]; ix < c0[0] + 6; ix++) {
+          const i = ix + iy * f.nx + iz * f.nx * f.ny;
+          if (Math.abs(f.data[i]) > f.voxel) { f.data[i] = -f.data[i]; planted++; }
+        }
+        console.log(`[SIGNFIX_DIAG] ${label} **심은 모순** ${planted}복셀 반전`);
+      }
+      applySignFix(f, label, m);
+    }
+    console.log(`[SIGNFIX_DIAG] 경과 ${((performance.now() - tProcess) / 1000).toFixed(1)}s`);
+    return;
+  }
+
   // CUTMAP=1 — 절단 경계 병리 측정기(Stage 1a 3회차 계기 선행). 물리 미실행.
   // 가설: 밀어내기 필드는 `excludeArms`로 **잘린 열린 표면**에서 구워지는데,
   // 열린 절단 테두리에서는 부호가 정의되지 않는다 — 닫힌 표면이면 "안/밖"이
@@ -759,6 +863,17 @@ function runFixture(path: string): void {
     m.rebuild(position, toU32(idx));
     const tb = performance.now();
     const field = bakeSdf(makeSkeletonSignedSampler(m, skeleton.segments, SDF_FAR, SDF_FAR), sdfMin, sdfMax, SDF_PUSH_VOXEL, SDF_FAR);
+    // 심은 모순 역검증: CUTMAP_PLANT=1이면 수리 전에 한 블록의 부호를 뒤집는다.
+    if (process.env.CUTMAP_PLANT === "1") {
+      let planted = 0;
+      const cxp = Math.floor(field.nx / 2), cyp = Math.floor(field.ny / 2), czp = Math.floor(field.nz / 2);
+      for (let iz = czp; iz < czp + 6; iz++) for (let iy = cyp; iy < cyp + 6; iy++) for (let ix = cxp; ix < cxp + 6; ix++) {
+        const i = ix + iy * field.nx + iz * field.nx * field.ny;
+        if (Math.abs(field.data[i]) > field.voxel) { field.data[i] = -field.data[i]; planted++; }
+      }
+      console.log(`[CUTMAP] **심은 모순 역검증**: 중앙 6^3 블록에서 ${planted}복셀 부호 반전`);
+    }
+    applySignFix(field, "CUTMAP/앞면", m);
     console.log(`[CUTMAP] 필드 굽기 ${Math.round(performance.now() - tb)}ms (부호=골격, 복셀 ${(SDF_PUSH_VOXEL * 1000).toFixed(0)}mm)`);
     // 절단 테두리 근방 판정용 공간 해시(3cm 셀).
     const CELL = 0.03;
@@ -904,6 +1019,7 @@ function runFixture(path: string): void {
         ? makeRadialSignedSampler(m, sdfCx, sdfCz, SDF_FAR, SDF_FAR)
         : makeSkeletonSignedSampler(m, skeleton.segments, SDF_FAR, SDF_FAR);
       const f = bakeSdf(sampler, sdfMin, sdfMax, SDF_PUSH_VOXEL, SDF_FAR);
+      applySignFix(f, label, m);
       // 규범 4: 굽기 보고에 elapsedMs와 **누적 경과 시간**을 병기한다.
       // §1.1의 ~12.5s/필드는 추정이므로 이 줄이 확정 근거가 된다.
       const ms = performance.now() - t;
@@ -1350,7 +1466,9 @@ function runFixture(path: string): void {
     const bakeFor = (idx: number[] | null): SdfField => {
       const m = new ArrayBvhCollision();
       m.rebuild(position, toU32(idx));
-      return bakeSdf(makeSkeletonSignedSampler(m, skeleton.segments, SDF_FAR, SDF_FAR), sdfMin, sdfMax, SDF_PUSH_VOXEL, SDF_FAR);
+      const f = bakeSdf(makeSkeletonSignedSampler(m, skeleton.segments, SDF_FAR, SDF_FAR), sdfMin, sdfMax, SDF_PUSH_VOXEL, SDF_FAR);
+      applySignFix(f, "XFER", m);
+      return f;
     };
     const fFront = bakeFor(fixture.collision.frontIndex);
     const fBack = bakeFor(fixture.collision.backIndex);
