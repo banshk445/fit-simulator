@@ -297,17 +297,58 @@ let closureLog: string | null = null;
 // 그 표면점으로 바꾼다. 능선 집합은 2a 계기의 능선 전용 집합
 // (`bodyMeasure.ridgePoints`, 팔 제외 없음·목 최소 높이 상한)을 그대로
 // 재사용하고 새 상수는 없다.
-const anchorList = g.seams
-  .filter((s) => s.kind === "shoulder")
-  .map((s) => {
-    const px = g.positions[s.a * 3], py = g.positions[s.a * 3 + 1], pz = g.positions[s.a * 3 + 2];
-    let best = Infinity, bx = px, by = py, bz = pz;
-    for (const r of body.ridgePoints) {
-      const d = (r.x - px) ** 2 + (r.y - py) ** 2 + (r.z - pz) ** 2;
-      if (d < best) { best = d; bx = r.x; by = r.y; bz = r.z; }
+// 목표는 **호장 비율 매핑**이다(6회차 단일 변경). 5회차는 정점마다 독립적으로
+// 최근접 능선점을 골랐고, 그 결과 46개 앵커가 42개 표본(1cm 간격)에 몰려
+// 어깨선의 순서·간격이 보존되지 않았다 — 목점이 패턴 x 5.90cm에서 관측
+// x 9.0cm로 3.1cm 밀렸다. 여기서는 어깨 이음선의 호장 비율 s∈[0,1]을
+// 능선 곡선의 같은 호장 비율에 대응시킨다:
+//   s=0 → 능선의 **목 쪽 끝**(|x| = 목너비)   s=1 → 능선의 바깥 끝
+// 능선 표본은 1cm 간격이라 선형 보간으로 충분하다.
+const anchorList = (() => {
+  const nwHalf = g.draft.dims.neckHalfWidthM;
+  // 능선 곡선을 좌·우로 나눠 |x| 오름차순 폴리라인으로 만들고, 목너비 밖만 쓴다.
+  const sideCurve = (sign: number): { p: { x: number; y: number; z: number }; cum: number }[] => {
+    const pts = body.ridgePoints
+      .filter((r) => Math.sign(r.x - body.centerX) === sign && Math.abs(r.x - body.centerX) >= nwHalf)
+      .sort((a, b) => Math.abs(a.x - body.centerX) - Math.abs(b.x - body.centerX));
+    const out: { p: { x: number; y: number; z: number }; cum: number }[] = [];
+    let cum = 0;
+    for (let i = 0; i < pts.length; i++) {
+      if (i > 0) cum += Math.hypot(pts[i].x - pts[i - 1].x, pts[i].y - pts[i - 1].y, pts[i].z - pts[i - 1].z);
+      out.push({ p: { x: pts[i].x, y: pts[i].y, z: pts[i].z }, cum });
     }
-    return { i: s.a, x: bx, y: by, z: bz };
-  });
+    return out;
+  };
+  const curves = new Map<number, { p: { x: number; y: number; z: number }; cum: number }[]>([
+    [1, sideCurve(1)], [-1, sideCurve(-1)],
+  ]);
+  const at = (sign: number, s: number): { x: number; y: number; z: number } => {
+    const c = curves.get(sign)!;
+    const total = c[c.length - 1].cum;
+    const target = total * Math.min(1, Math.max(0, s));
+    for (let i = 1; i < c.length; i++) {
+      if (c[i].cum >= target) {
+        const t = (target - c[i - 1].cum) / Math.max(1e-9, c[i].cum - c[i - 1].cum);
+        return {
+          x: c[i - 1].p.x + (c[i].p.x - c[i - 1].p.x) * t,
+          y: c[i - 1].p.y + (c[i].p.y - c[i - 1].p.y) * t,
+          z: c[i - 1].p.z + (c[i].p.z - c[i - 1].p.z) * t,
+        };
+      }
+    }
+    return c[c.length - 1].p;
+  };
+  // 어깨 이음선의 호장 비율 — 패턴 좌표에서 목점→어깨점 거리 비.
+  const shoulderSeamM = g.draft.dims.shoulderSeamM;
+  return g.seams
+    .filter((sm) => sm.kind === "shoulder")
+    .map((sm) => {
+      const px = g.pos2[sm.a * 2], py = g.pos2[sm.a * 2 + 1];
+      const s = Math.hypot(Math.abs(px) - nwHalf, py) / Math.max(1e-9, shoulderSeamM);
+      const t = at(Math.sign(px) || 1, s);
+      return { i: sm.a, x: t.x, y: t.y, z: t.z, s, sign: Math.sign(px) || 1 };
+    });
+})();
 {
   // 배선 검증 — 목표가 배치 평면(z ≈ +11.9cm)과 구분되는지 + 전부 몸 표면 위인지.
   const ys = anchorList.map((a) => a.y), zs = anchorList.map((a) => a.z);
@@ -318,8 +359,22 @@ const anchorList = g.seams
   }
   const placedZ = g.positions[anchorList[0].i * 3 + 2];
   console.log(
-    `[dress] 앵커 목표 = 능선 표면점 ${anchorList.length}개 · y ${cm(Math.min(...ys))}~${cm(Math.max(...ys))}cm · z ${cm(Math.min(...zs))}~${cm(Math.max(...zs))}cm (배치 평면 z ${cm(placedZ)}cm과 구분됨) · 표면 이탈 최대 ${worstOffSurfaceMm.toFixed(2)}mm · 능선 표본 ${body.ridgePoints.length}개(1cm 간격)`,
+    `[dress] 앵커 목표 = 능선 호장 매핑 ${anchorList.length}개 · y ${cm(Math.min(...ys))}~${cm(Math.max(...ys))}cm · z ${cm(Math.min(...zs))}~${cm(Math.max(...zs))}cm (배치 평면 z ${cm(placedZ)}cm과 구분됨) · 표면 이탈 최대 ${worstOffSurfaceMm.toFixed(2)}mm · 능선 표본 ${body.ridgePoints.length}개(1cm 간격)`,
   );
+  // 목점(s≈0) 목표 x가 패턴 목너비로 돌아왔는지 + 순서·간격 단조성.
+  for (const sign of [1, -1]) {
+    const side = anchorList.filter((a) => a.sign === sign).sort((a, b) => a.s - b.s);
+    const neck = side[0];
+    const gaps: number[] = [];
+    for (let i = 1; i < side.length; i++) {
+      gaps.push(Math.hypot(side[i].x - side[i - 1].x, side[i].y - side[i - 1].y, side[i].z - side[i - 1].z));
+    }
+    const dup = gaps.filter((gp) => gp < 1e-6).length;
+    const mono = side.every((a, i) => i === 0 || Math.abs(a.x - body.centerX) >= Math.abs(side[i - 1].x - body.centerX) - 1e-9);
+    console.log(
+      `  ${sign > 0 ? "x+" : "x−"}쪽 ${side.length}개 · 목점(s=${neck.s.toFixed(3)}) 목표 |x−center| ${cm(Math.abs(neck.x - body.centerX))}cm vs 패턴 목너비 ${cm(g.draft.dims.neckHalfWidthM)}cm · 인접 간격 ${(Math.min(...gaps) * 1000).toFixed(2)}~${(Math.max(...gaps) * 1000).toFixed(2)}mm · 중복(0mm) ${dup} · |x| 단조 ${mono ? "OK" : "**깨짐**"}`,
+    );
+  }
 }
 const selfCollision = new SelfCollision(
   [...g.panelStarts], [...g.panelCounts], 0,
@@ -479,6 +534,21 @@ const result = runDressing(
           `  [diag] f=${String(frame).padStart(4)} ${state} 앵커 ${anchorStrength.toFixed(3)} 링상한 ${ringLimitNow.toFixed(3)} seamGap ${(maxSeamGapM() * 1000).toFixed(1)}mm Δ20 ${maxDelta20Mm().toFixed(2)}mm strain ${st.v.toFixed(2)}@${PANEL_NAME[panelOfIdx(st.at)]} prox ${proximityPairs()} 관통 ${countInside(sim.positions, total, insideParity)} 칼라발화 ${collarFired}`,
         );
       }
+      // 관측(손잡이 금지·기록만) — 뒤판 상단 들림. 뒤판의 목선·어깨 대역
+      // (패턴 y ≤ 3cm) 정점이 몸 표면에서 얼마나 떨어졌나.
+      if (DIAG && frame % 120 === 0) {
+        let worst = 0, wi = -1, over = 0;
+        for (let i = g.panelStarts[1]; i < g.panelStarts[2]; i++) {
+          if (g.pos2[i * 2 + 1] > 0.03) continue;
+          const c = wholeMesh.closestPointUnsigned(sim.positions[i * 3], sim.positions[i * 3 + 1], sim.positions[i * 3 + 2], SDF_FAR);
+          if (!c) continue;
+          if (c.distance > 0.05) over++;
+          if (c.distance > worst) { worst = c.distance; wi = i; }
+        }
+        console.log(
+          `  [obs·뒤판상단] f=${frame} 몸에서 최대 ${(worst * 1000).toFixed(1)}mm @패턴(${cm(g.pos2[wi * 2])},${cm(g.pos2[wi * 2 + 1])})cm 월드 y${cm(sim.positions[wi * 3 + 1])} z${cm(sim.positions[wi * 3 + 2])} · 5cm 초과 정점 ${over}`,
+        );
+      }
       // 봉합 "닫힘" 순간을 한 번만 기록 — 목점 y vs 승모근 상단 y.
       if (closureLog === null && maxSeamGapM() <= Math.max(...g.seams.map((x) => x.targetM)) + 0.01) {
         const parts = neckPointPairs.map((np) => {
@@ -620,6 +690,24 @@ console.log(
     }).join(" ")}`,
   );
   console.log(`    앞/뒤 분포: ${JSON.stringify(Object.fromEntries(zHist))}`);
+  // 관측: y80~90 앞면 노출 샘플 10개의 **최근접 옷 거리** — 진짜 노출(옷이
+  // 멀다)인지 판정 아티팩트(옷이 가까운데 레이가 못 맞힘)인지 특정만 한다.
+  {
+    const picks = cov.exposedExamples.filter((p) => p.y >= 0.80 && p.y <= 0.90 && p.z >= collision.centerZ).slice(0, 10);
+    const nearestCloth = (x: number, y: number, z: number): { d: number; panel: number } => {
+      let best = Infinity, bi = 0;
+      for (let i = 0; i < total; i++) {
+        const d = (sim.positions[i * 3] - x) ** 2 + (sim.positions[i * 3 + 1] - y) ** 2 + (sim.positions[i * 3 + 2] - z) ** 2;
+        if (d < best) { best = d; bi = i; }
+      }
+      return { d: Math.sqrt(best), panel: panelOfIdx(bi) };
+    };
+    console.log("    y80~90 앞면 노출 샘플 10개의 최근접 옷 정점 거리(관측만):");
+    for (const p of picks) {
+      const nc = nearestCloth(p.x, p.y, p.z);
+      console.log(`      샘플 y${cm(p.y)} x${cm(p.x)} z${cm(p.z)} → 최근접 옷 ${(nc.d * 1000).toFixed(1)}mm (${PANEL_NAME[nc.panel]})`);
+    }
+  }
 }
 console.log(`  cov 몸통 버킷: ${JSON.stringify(Object.fromEntries(Object.entries(cov.buckets).map(([k, b]) => [k, `${b.exposed}/${b.samples}`])))}`);
 console.log(`  covShoulder: 노출 ${covSh.exposed}/${covSh.samples} (${(covSh.exposedRatio * 100).toFixed(1)}%)`);
@@ -712,6 +800,27 @@ if (DIAG) {
     }
     console.log(`[dress·diag] 문턱 위반 쌍의 패널 조합: ${JSON.stringify(pairKind)}`);
   }
+}
+
+// ── 관측(구조 사실만): 앞판 중앙 접합부와 옆선 시접의 정체
+{
+  let axisShared = 0;
+  for (let i = g.panelStarts[0]; i < g.panelStarts[1]; i++) {
+    if (Math.abs(g.pos2[i * 2]) < 1e-9 && g.mirrorOf[i] === i) axisShared++;
+  }
+  const centerSeams = g.seams.filter((sm) =>
+    Math.abs(g.pos2[sm.a * 2]) < 1e-9 || Math.abs(g.pos2[sm.b * 2]) < 1e-9).length;
+  const sideGaps = g.seams.filter((sm) => sm.kind === "side").map((sm) => Math.hypot(
+    sim.positions[sm.b * 3] - sim.positions[sm.a * 3],
+    sim.positions[sm.b * 3 + 1] - sim.positions[sm.a * 3 + 1],
+    sim.positions[sm.b * 3 + 2] - sim.positions[sm.a * 3 + 2],
+  ));
+  console.log(
+    `[dress·obs] 앞판 중앙선: 미러축 공유 정점 ${axisShared}개(mirrorOf[i]=i) · 중앙선에 걸린 시접 ${centerSeams}쌍 → **용접도 시접도 아니고 연속 메시**다(미러 복제가 축 정점을 하나로 유지한다)`,
+  );
+  console.log(
+    `[dress·obs] 옆선 시접 ${sideGaps.length}쌍: 갭 ${(Math.min(...sideGaps) * 1000).toFixed(1)}~${(Math.max(...sideGaps) * 1000).toFixed(1)}mm (target ${(g.seams[0].targetM * 1000).toFixed(1)}mm) → 닫혀 있다. 화면의 세로 틈은 **렌더 사실**이다: 패널 4매를 별개 지오메트리로 그리고 §3.4의 SeamStrip 브리지를 아직 배선하지 않았으므로 시접 rest 간격이 그대로 보인다`,
+  );
 }
 
 // ── 화면 판정용 최종 상태 덤프 (1급 게이트는 화면이다 — §2)
