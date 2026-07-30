@@ -15,6 +15,7 @@
 import { useEffect, useMemo, useState } from "react";
 import * as THREE from "three";
 import { useFitStore } from "../store/useFitStore";
+import { buildSeamBridge, updateSeamBridge, type SeamStrip } from "./seamBridge";
 
 const CHECKER_TEXELS = 32;
 
@@ -44,6 +45,7 @@ export function PatternPreview(): React.JSX.Element | null {
   // 없으면 2a 정적 배치를 그린다. 물리는 여전히 여기서 돌지 않는다.
   const useDressState = new URLSearchParams(window.location.search).get("patternstate") === "1";
   const [geos, setGeos] = useState<THREE.BufferGeometry[] | null>(null);
+  const [bridgeGeo, setBridgeGeo] = useState<THREE.BufferGeometry | null>(null);
   const texture = useMemo(() => makeCheckerTexture(), []);
 
   useEffect(() => {
@@ -130,9 +132,40 @@ export function PatternPreview(): React.JSX.Element | null {
         geo.computeVertexNormals();
         out.push(geo);
       }
+      // ── 시접 브리지 (§3.4) — v1 기계(`seamBridge.ts`)를 **무수정**으로 재사용한다.
+      // 패널 4매를 별개 지오메트리로 그리므로 시접 rest 6mm 간격이 화면에 그대로
+      // 세로 틈으로 보인다(2b 6·7회차 관측: 물리적으로는 4.9~9.1mm로 닫혀 있다).
+      // v1은 격자 인덱스로 쌍을 만들었지만 패턴 코어는 **시접 테이블이 이미
+      // 경계 순서대로** 쌍을 들고 있다(`seamGroups.a/b` = 세그먼트 정점 목록을
+      // 같은 순서로 짝지은 것) — 그대로 스트립이 된다. 순서가 곧 사각형 연결
+      // 순서라 정렬 로직이 필요 없다.
+      //
+      // SeamSource 4종은 v1이 패널마다 배열이 따로였기 때문인데, 패턴 코어는
+      // 전 패널이 한 배열(전역 인덱스)이다 — 네 소스에 같은 배열을 넘기고
+      // 전역 인덱스를 그대로 쓴다. 기계는 손대지 않는다.
+      const strips: SeamStrip[] = g.seamGroups.map((grp) => ({
+        name: grp.label,
+        pairs: grp.a.map((ai, k) => ({
+          a: { source: "front" as const, index: ai },
+          b: { source: "front" as const, index: grp.b[k] },
+        })),
+        closed: false,
+      }));
+      const bridge = buildSeamBridge(strips);
+      const one = g.positions;
+      updateSeamBridge(bridge, { front: one, back: one, sleeveLeft: one, sleeveRight: one });
+      setBridgeGeo(bridge.geometry);
+
       setGeos(out);
+      const byKind = g.seamGroups.reduce<Record<string, number>>((acc, grp) => {
+        acc[grp.kind] = (acc[grp.kind] ?? 0) + grp.a.length;
+        return acc;
+      }, {});
       console.log(
         `[patternPreview] 정적 배치 렌더 — 정점 ${g.panelCounts.reduce((a, b) => a + b, 0)} · 삼각형 ${g.tris.length / 3} · 시접 ${g.seams.length}쌍 · 자기충돌 문턱 ${(g.selfCollisionMinDistM * 1000).toFixed(2)}mm`,
+      );
+      console.log(
+        `[patternPreview] 시접 브리지 — 스트립 ${strips.length}개 · 쌍 ${strips.reduce((a, s) => a + s.pairs.length, 0)} · 삼각형 ${strips.reduce((a, s) => a + Math.max(0, s.pairs.length - 1) * 2, 0)} · 종류별 쌍 ${JSON.stringify(byKind)}`,
       );
     })();
     return () => { alive = false; };
@@ -146,6 +179,13 @@ export function PatternPreview(): React.JSX.Element | null {
           <meshStandardMaterial map={texture} side={THREE.DoubleSide} roughness={0.85} />
         </mesh>
       ))}
+      {/* 브리지는 체커 텍스처를 안 쓴다 — UV가 없고(띠는 패널 UV 밖이다), 시접이
+          어디를 메웠는지 눈으로 구분되는 게 이 단계의 목적이다. */}
+      {bridgeGeo && (
+        <mesh geometry={bridgeGeo} frustumCulled={false}>
+          <meshStandardMaterial key="pattern-seam-bridge" color="#c8641e" side={THREE.DoubleSide} roughness={0.85} />
+        </mesh>
+      )}
     </group>
   );
 }

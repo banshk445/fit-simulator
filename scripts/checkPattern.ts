@@ -376,6 +376,38 @@ if (after.n > 0) fails.push("배치 관통 0");
   console.log(`\n[pattern] 배치 시접 갭(S1 램프 입력): ${parts.join(" · ")}`);
 }
 
+// ── 9. 시접 그룹이 **경계 순서**인가 — 렌더 브리지(§3.4)가 기대는 유일한 가정.
+// `PatternPreview`는 seamGroups.a/b를 그대로 스트립 쌍 순서로 쓰고 이웃 쌍끼리
+// 사각형을 만든다. 순서가 깨지면 띠가 패널을 가로질러 접히는데, 그건 화면에서만
+// 보이고 물리 채널은 전부 통과한다 — 그래서 여기서 수치로 잡는다.
+// 판정: 연속 정점 간격이 메시 엣지 상한을 넘지 않을 것(넘으면 목록이 건너뛴 것).
+{
+  const P = g.positions;
+  const dist = (i: number, j: number): number =>
+    Math.hypot(P[i * 3] - P[j * 3], P[i * 3 + 1] - P[j * 3 + 1], P[i * 3 + 2] - P[j * 3 + 2]);
+  // 상한 = **메시 엣지 최대**. 경계 순서라면 연속 두 정점은 실제 메시 엣지이므로
+  // 그 길이를 넘을 수 없다 — 상수를 새로 만들지 않고 메시에서 직접 뽑는다.
+  let limit = 0;
+  for (const e of g.edgePairs) {
+    const d = dist(e.a, e.b);
+    if (d > limit) limit = d;
+  }
+  let worst = 0, worstLabel = "", n = 0;
+  for (const grp of g.seamGroups) {
+    for (let k = 1; k < grp.a.length; k++) {
+      for (const step of [dist(grp.a[k - 1], grp.a[k]), dist(grp.b[k - 1], grp.b[k])]) {
+        n++;
+        if (step > worst) { worst = step; worstLabel = grp.label; }
+      }
+    }
+  }
+  const ok = worst <= limit;
+  console.log(
+    `  ${ok ? "PASS" : "FAIL"}  시접 그룹 경계 순서(브리지 전제) — 연속 정점 최대 간격 ${(worst * 1000).toFixed(2)}mm ≤ 상한 ${(limit * 1000).toFixed(2)}mm @${worstLabel} (표본 ${n})`,
+  );
+  if (!ok) fails.push("시접 그룹 경계 순서(브리지 전제)");
+}
+
 console.log(
   `\n[pattern] 게이트: ${fails.length === 0 ? "통과" : `실패 ${fails.length}건 — ${fails.join(", ")}`} · 경과 ${((performance.now() - t0) / 1000).toFixed(1)}s`,
 );
