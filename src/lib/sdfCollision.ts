@@ -10,6 +10,8 @@
 //
 // 굽기 비용은 rebuildCollision(200ms 디바운스, 워커) 때 한 번뿐이고,
 // 조회는 트라이리니어 보간이라 O(1) — BVH 트리 탐색보다 훨씬 싸다.
+import { nearestOnSegments, type Segment } from "./bodySkeleton";
+
 export interface SdfField {
   originX: number;
   originY: number;
@@ -53,6 +55,31 @@ export function makeRadialSignedSampler(
     const refY = 0.25;
     const refZ = rz / rLen;
     const dot = (x - c.x) * refX + (y - c.y) * refY + (z - c.z) * refZ;
+    return dot >= 0 ? c.distance : -c.distance;
+  };
+}
+
+// v2 Stage 1a 2회차 — **골격 선분 기준 부호 샘플러**.
+// 위 radial 샘플러의 구조적 한계(세로축 단일 star-shaped 전제 + 위쪽 25%
+// 특례)를 기준 자체를 올려 없앤다: 최근접 **골격점**에서 밖으로 나가는
+// 방향을 참조로 쓴다. 도출·기전·"몸통 축을 어깨 관절에서 끊는 이유"는
+// bodySkeleton.ts 상단 주석. 파라미터 재시도가 아니라 기준의 교체다.
+//
+// refY 특례는 **제거**했다 — 어깨 캡의 위쪽 성분은 축 끝점 접힘에서
+// 기하적으로 나온다(특례가 흉내던 것을 원리로 대체).
+export function makeSkeletonSignedSampler(
+  mesh: { closestPointUnsigned(px: number, py: number, pz: number, r: number): { x: number; y: number; z: number; distance: number } | null },
+  skeleton: readonly Segment[],
+  detectionRadius: number,
+  farValue: number,
+): (x: number, y: number, z: number) => number {
+  return (x, y, z) => {
+    const c = mesh.closestPointUnsigned(x, y, z, detectionRadius);
+    if (!c) return farValue;
+    const k = nearestOnSegments(x, y, z, skeleton);
+    const rx = x - k.x, ry = y - k.y, rz = z - k.z;
+    const rLen = Math.hypot(rx, ry, rz) || 1e-9;
+    const dot = ((x - c.x) * rx + (y - c.y) * ry + (z - c.z) * rz) / rLen;
     return dot >= 0 ? c.distance : -c.distance;
   };
 }
@@ -374,4 +401,174 @@ export function createCachedSdfIterationFriction(
       }
     },
   };
+}
+
+// v2 Stage 1a 3회차 — **부호 모순 수리 패스**(굽기 후처리, 원인 층위).
+//
+// 왜 성립하는가: 표면은 안과 밖을 가른다. 굽기 격자에서 표면이 지나는 곳은
+// |d| ≤ 복셀인 띠 안에 반드시 들어가므로, 그 띠를 제외한 집합
+// {|d| > 복셀}의 **연결 성분 하나는 전부 안이거나 전부 밖**이다. 따라서
+// 성분마다 부호가 하나로 정해지고, 확실한 씨앗만 있으면 나머지는 영역
+// 성장으로 재배정된다 — 국소 패치가 아니라 확산성 모순 전체(2.95%)가 대상.
+//
+// 씨앗 두 종:
+//   · 밖 = far 대역(탐지 반경 밖이라 farValue가 그대로 박힌 복셀). 정의상 밖.
+//   · 안 = 골격 공 판정. 골격점 a는 몸 내부이고, |p−a| < clearance(a)면
+//     열린 공 B(a, clearance(a))가 표면을 물지 않으므로 p도 내부다
+//     (SIGNMAP 오라클과 **같은 판정** — 레이 패리티 없음, 상수 없음).
+//
+// 띠 안(|d| ≤ 복셀) 복셀은 건드리지 않는다 — 표면이 그 안을 지나므로 두
+// 부호가 정상적으로 공존한다. 그 자리의 부호 오류는 크기가 ≤복셀로 묶이고,
+// 기울기는 주변 일관 필드가 지배한다.
+export interface SdfSignRepairStats {
+  components: number;
+  seededOutside: number;
+  seededInside: number;
+  conflicts: number;
+  unseeded: number;
+  flipped: number;
+  contradictionsBefore: number;
+  contradictionsAfter: number;
+  // 전제 진단 — 수리가 왜 되고/안 되는지 사실로 남긴다(함정 3: 진단에
+  // 사실을 적지 말고 도출).
+  farVoxels: number;
+  insideSeedVoxels: number;
+  largestComponent: number;
+  awayVoxels: number;
+}
+
+function countContradictions(f: SdfField): number {
+  const { nx, ny, nz, voxel, data } = f;
+  let bad = 0;
+  for (let iz = 0; iz < nz; iz++) {
+    for (let iy = 0; iy < ny; iy++) {
+      for (let ix = 0; ix < nx; ix++) {
+        const i = ix + iy * nx + iz * nx * ny;
+        const di = data[i];
+        if (Math.abs(di) <= voxel) continue;
+        if (ix + 1 < nx) {
+          const j = i + 1;
+          if (Math.abs(data[j]) > voxel && di * data[j] < 0) bad++;
+        }
+        if (iy + 1 < ny) {
+          const j = i + nx;
+          if (Math.abs(data[j]) > voxel && di * data[j] < 0) bad++;
+        }
+        if (iz + 1 < nz) {
+          const j = i + nx * ny;
+          if (Math.abs(data[j]) > voxel && di * data[j] < 0) bad++;
+        }
+      }
+    }
+  }
+  return bad;
+}
+
+export function repairSdfSign(
+  field: SdfField,
+  skeleton: readonly Segment[],
+  // 골격점에서 표면까지의 거리(부호 없음). null이면 그 점은 씨앗에서 제외.
+  clearanceAt: (x: number, y: number, z: number) => number | null,
+): SdfSignRepairStats {
+  const { nx, ny, nz, voxel, data, farValue, originX, originY, originZ } = field;
+  const n = nx * ny * nz;
+  const contradictionsBefore = countContradictions(field);
+  const away = new Uint8Array(n);
+  for (let i = 0; i < n; i++) away[i] = Math.abs(data[i]) > voxel ? 1 : 0;
+
+  // 안 씨앗 — 골격을 복셀 간격으로 표본화해 공을 복셀에 찍는다.
+  const seedIn = new Uint8Array(n);
+  for (const seg of skeleton) {
+    const len = Math.hypot(seg.b.x - seg.a.x, seg.b.y - seg.a.y, seg.b.z - seg.a.z);
+    const steps = Math.max(1, Math.ceil(len / voxel));
+    for (let s = 0; s <= steps; s++) {
+      const t = s / steps;
+      const ax = seg.a.x + (seg.b.x - seg.a.x) * t;
+      const ay = seg.a.y + (seg.b.y - seg.a.y) * t;
+      const az = seg.a.z + (seg.b.z - seg.a.z) * t;
+      const r = clearanceAt(ax, ay, az);
+      if (r === null || r <= voxel) continue;
+      const span = Math.floor(r / voxel);
+      const cx = Math.round((ax - originX) / voxel);
+      const cy = Math.round((ay - originY) / voxel);
+      const cz = Math.round((az - originZ) / voxel);
+      const r2 = r * r;
+      for (let dz = -span; dz <= span; dz++) {
+        const iz = cz + dz;
+        if (iz < 0 || iz >= nz) continue;
+        for (let dy = -span; dy <= span; dy++) {
+          const iy = cy + dy;
+          if (iy < 0 || iy >= ny) continue;
+          for (let dx = -span; dx <= span; dx++) {
+            const ix = cx + dx;
+            if (ix < 0 || ix >= nx) continue;
+            const wx = originX + ix * voxel - ax;
+            const wy = originY + iy * voxel - ay;
+            const wz = originZ + iz * voxel - az;
+            if (wx * wx + wy * wy + wz * wz >= r2) continue;
+            const i = ix + iy * nx + iz * nx * ny;
+            if (away[i]) seedIn[i] = 1;
+          }
+        }
+      }
+    }
+  }
+
+  // 연결 성분(6-이웃) + 성분별 씨앗 집계 → 부호 재배정.
+  const label = new Int32Array(n).fill(-1);
+  const queue = new Int32Array(n);
+  let farVoxels = 0;
+  let insideSeedVoxels = 0;
+  let awayVoxels = 0;
+  for (let i = 0; i < n; i++) {
+    if (away[i]) awayVoxels++;
+    if (data[i] >= farValue - 1e-6) farVoxels++;
+    if (seedIn[i]) insideSeedVoxels++;
+  }
+  const stats: SdfSignRepairStats = {
+    components: 0, seededOutside: 0, seededInside: 0, conflicts: 0, unseeded: 0,
+    flipped: 0, contradictionsBefore, contradictionsAfter: 0,
+    farVoxels, insideSeedVoxels, largestComponent: 0, awayVoxels,
+  };
+  const members: number[] = [];
+  for (let start = 0; start < n; start++) {
+    if (!away[start] || label[start] !== -1) continue;
+    const comp = stats.components++;
+    let head = 0, tail = 0;
+    queue[tail++] = start;
+    label[start] = comp;
+    members.length = 0;
+    let hasOut = false;
+    let hasIn = false;
+    while (head < tail) {
+      const i = queue[head++];
+      members.push(i);
+      if (data[i] >= farValue - 1e-6) hasOut = true;
+      if (seedIn[i]) hasIn = true;
+      const ix = i % nx;
+      const iy = ((i - ix) / nx) % ny;
+      const iz = (i - ix - iy * nx) / (nx * ny);
+      if (ix + 1 < nx) { const j = i + 1; if (away[j] && label[j] === -1) { label[j] = comp; queue[tail++] = j; } }
+      if (ix > 0) { const j = i - 1; if (away[j] && label[j] === -1) { label[j] = comp; queue[tail++] = j; } }
+      if (iy + 1 < ny) { const j = i + nx; if (away[j] && label[j] === -1) { label[j] = comp; queue[tail++] = j; } }
+      if (iy > 0) { const j = i - nx; if (away[j] && label[j] === -1) { label[j] = comp; queue[tail++] = j; } }
+      if (iz + 1 < nz) { const j = i + nx * ny; if (away[j] && label[j] === -1) { label[j] = comp; queue[tail++] = j; } }
+      if (iz > 0) { const j = i - nx * ny; if (away[j] && label[j] === -1) { label[j] = comp; queue[tail++] = j; } }
+    }
+    if (members.length > stats.largestComponent) stats.largestComponent = members.length;
+    if (hasOut && hasIn) {
+      // 띠가 안/밖을 못 갈랐다는 뜻 — 수리하지 않고 보고한다(전제 위반).
+      stats.conflicts++;
+      continue;
+    }
+    if (!hasOut && !hasIn) { stats.unseeded++; continue; }
+    const wantPositive = hasOut;
+    if (wantPositive) stats.seededOutside++; else stats.seededInside++;
+    for (const i of members) {
+      const d = data[i];
+      if (wantPositive ? d < 0 : d > 0) { data[i] = -d; stats.flipped++; }
+    }
+  }
+  stats.contradictionsAfter = countContradictions(field);
+  return stats;
 }
