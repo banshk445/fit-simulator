@@ -65,11 +65,15 @@ SECONDS=10 FRICTION=1 FIXTURE=scripts/fixtures/collision-fixture.json npm run sw
 교정 계기의 숫자와 비교할 수 없다(함정 12).
 
 ```
-기준선: cov 6.4% / ripple mean 6.43mm / jitter mean 14.99mm·부호반전 0.411
+기준선: cov 6.4% / ripple mean 6.43mm / columnRipple mean 14.99mm·부호반전 0.411
         strain 3.38 / bowtie 어깨 2 / 정착 65프레임 / 교차 0
 계기:   신 코어 · 스무딩 off(도출) · 600프레임 · fixture 9e8b2bf13925
 출처:   7cc3885 (docs/metrics-log.md 2026-07-30 09:50 블록)
 ```
+
+**당분간 게이트에 쓰는 채널은 cov(총비율·버킷) · strain · 교차 · bowtie ·
+check:demo/weld/sleeve/seambridge 뿐이다.** ripple과 columnRipple은
+**계기-stale·판정 제외**(아래).
 
 **즉시 실패(하드)** — 하나라도 걸리면 원복:
 
@@ -82,10 +86,18 @@ SECONDS=10 FRICTION=1 FIXTURE=scripts/fixtures/collision-fixture.json npm run sw
 
 **지표 실패** (기준선 = 위 블록):
 
-- **jitter mean**이 기준선(14.99mm) 대비 +25% 초과, 또는 **부호반전**이
-  기준선(0.411) 대비 +0.1 초과 — 지그재그 판정의 **주 채널**이다.
-  ripple(2차 차분)은 곡률 측정기라 정상 폴드에도 반응한다(68327b7에서 규명).
-- ripple mean이 기준선(6.43mm) 대비 +25% 초과 — 보조 채널.
+- ~~**jitter mean** +25% / 부호반전 +0.1 — 지그재그 판정의 주 채널~~
+  → **폐기(2026-07-30). `jitter`는 `columnRipple`로 개명되고 판정에서
+  빠졌다.** 이 지표는 시간 떨림이 아니라 **열 방향 공간 4차차분을 최종
+  프레임 1장에서** 낸 값이고(식에 시간 축·dt 없음), 정규화가 없어
+  파장 대역을 구분하지 못한다(순수 교대 이득 16 / 파장 4열 4 / 6열 1.0 —
+  같은 14.99를 0.94mm 교대와 3.7mm 매끈한 폴드가 똑같이 낸다).
+  **ripple(2차차분=곡률계)과 같은 계열이며 차수만 다르다** — 곡률계를
+  버린 근거가 이 채널에도 그대로 적용된다.
+  **둘 다 계기-stale·판정 제외**: 참고로 찍되 통과/실패를 가르지 말 것.
+  주 채널 복구는 파장 대역이 분리된 지표를 **채택 시점에 식부터 재도출**한
+  뒤에만(README 함정 13).
+- ~~ripple mean +25%~~ → 위와 같이 판정 제외(참고 출력만).
 - coverage 총비율이 기준선(6.4%) 대비 +2pp 초과 악화
 - 임의 버킷의 노출률이 +15pp 초과 악화(A-③의 bot-back은 +59pp였다)
 - bowtie(접힌 쿼드) 어깨가 **2 초과**(기준선 2에서 동결 — 화면 승인 상태에
