@@ -82,6 +82,12 @@ export interface PatternGarment {
   seamGroups: SeamGroup[];
   // 메시 엣지 전체(2b의 structural 제약 입력 + 자기충돌 스킵 집합)
   edgePairs: { a: number; b: number }[];
+  // 목선 링 — v1 칼라 원주 제약(`setCollarRing`/`limitCollarStrain`)의 대상.
+  // 패널 경계(앞목·뒤목 곡선)의 인접 표본 쌍 + 그 미러 상대. **패널을 넘는
+  // 접합(앞목점↔뒤목점)은 넣지 않는다** — 그 두 쌍의 배치 거리는 앞뒤판
+  // 오프셋(31cm)이라 rest로 굳히면 링이 그만큼 늘어날 수 있게 된다. 그
+  // 구간은 어깨 시접(target 6mm)이 이미 잡는다.
+  necklineRing: { a: number; b: number }[];
   mirrorOf: Int32Array;
   selfCollisionMinDistM: number;
   quality: { panel: string; q: MeshQuality }[];
@@ -242,6 +248,20 @@ export function buildPatternGarment(
     mirrorOf[panelStarts[3] + i] = panelStarts[2] + i;
   }
 
+  // ── 목선 링(전역) — 미러 상대까지.
+  const necklineRing: { a: number; b: number }[] = [];
+  for (const [panel, mesh] of [[PANEL_PAT_FRONT, half.front], [PANEL_PAT_BACK, half.back]] as const) {
+    const chain = mesh.segmentVerts.get("neck");
+    if (!chain) throw new Error("목선 세그먼트 정점 목록 없음");
+    const start = panelStarts[panel];
+    for (let i = 0; i + 1 < chain.length; i++) {
+      const a = start + chain[i], b = start + chain[i + 1];
+      necklineRing.push({ a, b });
+      const ma = mirrorOf[a], mb = mirrorOf[b];
+      if (ma !== a || mb !== b) necklineRing.push({ a: ma, b: mb });
+    }
+  }
+
   // ── 엣지(전역)
   const edgePairs: { a: number; b: number }[] = [];
   for (let p = 0; p < 4; p++) {
@@ -390,7 +410,7 @@ export function buildPatternGarment(
     draft,
     panelStarts, panelCounts,
     positions, pos2, uv, tris, panelTriRanges,
-    seams, seamGroups, edgePairs, mirrorOf,
+    seams, seamGroups, edgePairs, necklineRing, mirrorOf,
     selfCollisionMinDistM,
     quality: [
       { panel: "front(절반)", q: half.front.quality },

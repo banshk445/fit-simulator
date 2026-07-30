@@ -23,7 +23,7 @@ import { deriveBodySkeleton } from "../src/lib/bodySkeleton";
 import { measureBody } from "../src/lib/bodyMeasure";
 import { buildPatternGarment, PANEL_PAT_BACK, PANEL_PAT_FRONT } from "../src/lib/patternGarment";
 import { buildPatternSim } from "../src/lib/buildPatternSim";
-import { correctPlacementPenetration, countInside, countOpenEdges, makeParityInside } from "../src/lib/patternPlacement";
+import { correctPlacementPenetration, countInside, countOpenEdges, countSelfIntersections, makeParityInside } from "../src/lib/patternPlacement";
 import { computeBodyCoverage, deriveShoulderBand } from "../src/lib/coverageMetric";
 import { bakeSdf, createCachedSdfIterationFriction, createSdfFrictionPass, makeRadialSignedSampler } from "../src/lib/sdfCollision";
 import {
@@ -40,6 +40,7 @@ import {
   SDF_FAR,
   SDF_VOXEL,
   SUBSTEP_DT,
+  COLLAR_STRAIN_LIMIT,
 } from "../src/lib/clothConfig";
 
 const t0 = performance.now();
@@ -173,6 +174,30 @@ console.log(
 );
 console.log("[dress] 알려진 이탈: 질량 균일(§3.3은 Voronoi 면적 비례 요구 — ClothSimulation에 질량 개념 없음, clothPhysics 무수정 원칙으로 미도입)");
 
+// ── 넥밴드 원주 제약 (2회차 단일 변경) — v1 칼라 기계를 패턴 목선 링에 배선.
+// 실물 부품(리브)이고 보조 힘이 아니다. clothPhysics는 이 기계를 이미 갖고
+// 있어 수정 0줄.
+{
+  sim.setCollarRing(g.necklineRing);
+  let ringM = 0;
+  for (const e of g.necklineRing) {
+    ringM += Math.hypot(
+      sim.positions[e.b * 3] - sim.positions[e.a * 3],
+      sim.positions[e.b * 3 + 1] - sim.positions[e.a * 3 + 1],
+      sim.positions[e.b * 3 + 2] - sim.positions[e.a * 3 + 2],
+    );
+  }
+  const targetM = g.draft.dims.necklineGirthM;
+  const errCm = (ringM - targetM) * 100;
+  console.log(
+    `[dress] 넥밴드 원주 제약: 링 엣지 ${g.necklineRing.length}쌍 · 배치 실측 원주 ${cm(ringM)}cm vs 패턴 목선 ${cm(targetM)}cm (오차 ${errCm.toFixed(3)}cm) · 신장 상한 ${COLLAR_STRAIN_LIMIT}(v1 승계·추정)`,
+  );
+  if (g.necklineRing.length === 0) throw new Error("넥밴드 링 제약 0쌍 — 배선 실패");
+  if (Math.abs(errCm) > 0.05) {
+    console.log(`[dress] **경고** 링 원주가 패턴 목선과 ${errCm.toFixed(3)}cm 어긋난다 — rest가 패턴이 아닌 것을 굳혔을 수 있다`);
+  }
+}
+
 // ── 핀 상태 명시 (2c 무핀의 전 단계 기록)
 console.log(
   "[dress] 핀 상태: v1 하드 핀(`pinCorners`)은 **한 정점에도 안 걸린다** — 그 함수는 COLS/ROWS 격자 인덱스와 목선 코너 규약으로 대상을 찾고(PANEL_FRONT/BACK 고정), 패턴 패널에는 그 인덱스 자체가 없다. env.pinCorners=false로 배선상 차단.",
@@ -237,6 +262,7 @@ const cachedFric = createCachedSdfIterationFriction(() => sdfField, {
 });
 
 let anchorStrength = 0;
+let collarFired = 0;
 const anchorList = g.seams
   .filter((s) => s.kind === "shoulder")
   .map((s) => ({ i: s.a, x: g.positions[s.a * 3], y: g.positions[s.a * 3 + 1], z: g.positions[s.a * 3 + 2] }));
@@ -258,6 +284,8 @@ const env: GarmentFrameEnv = {
   }),
   frictionIteration: cachedFric.apply,
   frictionIterationReset: cachedFric.reset,
+  collarStrainLimit: COLLAR_STRAIN_LIMIT,
+  onCollarFired: (n) => { collarFired += n; },
   pinCorners: false,
   anchors: () => anchorList,
   pinContinuous: true,
@@ -303,8 +331,11 @@ const maxStrain = (): { v: number; at: number } => {
   }
   return { v: m, at };
 };
-// 자기교차 — 신규 문턱의 첫 실전. 시접·메시 엣지 쌍은 제외.
-const selfIntersections = (): number => {
+// **개명**: 이 채널은 "비인접 정점 쌍의 문턱 위반 수"이고 삼각형 교차 판정이
+// 아니다 — 뭉친 천의 정상 폴드 접촉이 그대로 잡히므로 게이트 부적격이고
+// **기록 채널**로만 쓴다(함정 13 계열). 게이트는 countSelfIntersections
+// (엣지-삼각형)가 맡는다.
+const proximityPairs = (): number => {
   const cell = g.selfCollisionMinDistM;
   const buckets = new Map<number, number[]>();
   const key = (x: number, y: number, z: number): number =>
@@ -374,7 +405,7 @@ const result = runDressing(
           `  [diag·y] f=${String(frame).padStart(4)} 어깨시접 ${(meanY(shoulderIdx) * 100).toFixed(1)}cm(배치 ${(g.draft.dims.ridgeAnchorY * 100).toFixed(1)}) · 밑단 ${(meanY(hemIdx) * 100).toFixed(1)}cm · 소매 ${(meanY(sleeveIdx) * 100).toFixed(1)}cm`,
         );
         console.log(
-          `  [diag] f=${String(frame).padStart(4)} ${state} seamGap ${(maxSeamGapM() * 1000).toFixed(1)}mm Δ20 ${maxDelta20Mm().toFixed(2)}mm strain ${st.v.toFixed(2)}@${PANEL_NAME[panelOfIdx(st.at)]} 교차 ${selfIntersections()} 관통 ${countInside(sim.positions, total, insideParity)}`,
+          `  [diag] f=${String(frame).padStart(4)} ${state} seamGap ${(maxSeamGapM() * 1000).toFixed(1)}mm Δ20 ${maxDelta20Mm().toFixed(2)}mm strain ${st.v.toFixed(2)}@${PANEL_NAME[panelOfIdx(st.at)]} prox ${proximityPairs()} 관통 ${countInside(sim.positions, total, insideParity)} 칼라발화 ${collarFired}`,
         );
       }
       let md = 0;
@@ -447,7 +478,8 @@ const tf = hoverOf(covSh, ["top-front-left", "top-front-right"]);
 const tb = hoverOf(covSh, ["top-back-left", "top-back-right"]);
 const strain = maxStrain();
 const penEnd = countInside(sim.positions, total, insideParity);
-const cross = selfIntersections();
+const prox = proximityPairs();
+const xsec = countSelfIntersections(sim.positions, g.tris, g.edgePairs, 0.03);
 const settleFrame = (() => {
   for (const e of result.log) if (e.to === "DONE") return e.frame;
   return -1;
@@ -461,7 +493,11 @@ console.log(`  covShoulder 버킷: ${JSON.stringify(Object.fromEntries(Object.en
 console.log(`  shoulderHover top-front: hit ${tf.hit.toFixed(3)} / hover ${tf.mean.toFixed(2)}|${tf.max.toFixed(2)}mm`);
 console.log(`  shoulderHover top-back : hit ${tb.hit.toFixed(3)} / hover ${tb.mean.toFixed(2)}|${tb.max.toFixed(2)}mm`);
 console.log(`  maxStrain ${strain.v.toFixed(3)} (정점 ${strain.at}) · maxSeamGap ${(maxSeamGapM() * 1000).toFixed(2)}mm · Δ20 ${maxDelta20Mm().toFixed(2)}mm`);
-console.log(`  자기교차(문턱 ${(g.selfCollisionMinDistM * 1000).toFixed(2)}mm 첫 실전): ${cross}쌍`);
+console.log(
+  `  proximityPairs(기록 채널 · 문턱 ${(g.selfCollisionMinDistM * 1000).toFixed(2)}mm · 게이트 아님 — 뭉친 폴드의 정상 접촉을 센다): ${prox}쌍`,
+);
+console.log(`  자기교차(엣지-삼각형 · 게이트): ${xsec.count}건 (배치 t=0 기준선 3건 = S0 투영 교정 산출물)`);
+console.log(`  넥밴드 원주 제약 발화 누적: ${collarFired}회 = ${(collarFired / Math.max(1, result.frames)).toFixed(1)}/프레임 (링 42쌍 — 전 엣지가 매 프레임 상한에 걸림 = 상시 하중 지지)`);
 console.log(`  관통(레이 패리티·비수밀 근사): 배치 후 ${penAfterPlace} → 정착 후 ${penEnd} / ${total}`);
 console.log(`  정착 프레임 ${settleFrame} · 물리 ${(elapsedS * 1000 / Math.max(1, result.frames)).toFixed(1)}ms/프레임`);
 if (result.failure) console.log(`  발산/중단: 상태 ${result.failure.state} · 프레임 ${result.failure.frame} · ${result.failure.reason}`);
@@ -535,7 +571,7 @@ const hard: { name: string; ok: boolean; detail: string }[] = [
   { name: "DONE 도달", ok: result.converged, detail: `종료 상태 ${result.state}` },
   { name: "RETRY ≤ 2", ok: result.retries <= 2, detail: `${result.retries}회` },
   { name: "발산 0", ok: !diverged(), detail: diverged() ? "NaN/Inf 또는 좌표 폭주" : "없음" },
-  { name: "자기교차 0", ok: cross === 0, detail: `${cross}쌍 (문턱 ${(g.selfCollisionMinDistM * 1000).toFixed(2)}mm)` },
+  { name: "자기교차 0(엣지-삼각형)", ok: xsec.count === 0, detail: `${xsec.count}건 · [기록] proximityPairs ${prox}쌍` },
   { name: "정착 예산(S3 ≤720f)", ok: settleFrame >= 0, detail: settleFrame >= 0 ? `정착 f=${settleFrame}` : "미정착 — 연장 금지 규약대로 실패" },
 ];
 console.log("\n[dress] 하드 게이트");

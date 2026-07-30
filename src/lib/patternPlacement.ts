@@ -118,3 +118,100 @@ export function correctPlacementPenetration(
   }
   return corrected;
 }
+
+// ── 자기교차 판정 (엣지-삼각형) ─────────────────────────────────────────
+// 왜 새로 만드나: 2b 1회차의 `자기교차` 게이트는 실제로 "비인접 정점 쌍의
+// 문턱 위반 수"를 셌다 — 뭉친 천의 **정상적인 폴드 접촉**이 그대로 잡히므로
+// 게이트로 쓸 수 없는 채널이었다(함정 13 계열: 지표 이름이 계산되지 않은
+// 물리량을 주장한다). 그 채널은 `proximityPairs`로 개명해 기록만 하고,
+// 게이트는 여기 있는 **실제 교차**가 맡는다.
+//
+// 판정: 메시 엣지 선분이 자기 자신과 인접하지 않은 삼각형을 관통하는가
+// (Möller–Trumbore). 삼각형을 균일 격자에 버킷팅해 엣지 AABB가 걸치는
+// 셀만 본다 — 전수 비교는 15k엣지 × 9.8k삼각형 = 1.5억 회로 프레임 밖이다.
+// 무게중심·선분 파라미터의 경계 허용오차 — 모서리·정점을 스치는 접촉을
+// 교차로 세지 않는다.
+const PARAM_EPS = 1e-6;
+
+export function countSelfIntersections(
+  positions: Float32Array,
+  tris: Uint32Array,
+  edges: readonly { a: number; b: number }[],
+  cellM: number,
+): { count: number; examples: { edge: [number, number]; tri: number }[] } {
+  const triCount = tris.length / 3;
+  const grid = new Map<number, number[]>();
+  const key = (cx: number, cy: number, cz: number): number =>
+    (cx + 4096) * 16_777_216 + (cy + 4096) * 4096 + (cz + 4096);
+  const cellOf = (v: number): number => Math.floor(v / cellM);
+  for (let t = 0; t < triCount; t++) {
+    let xMin = Infinity, xMax = -Infinity, yMin = Infinity, yMax = -Infinity, zMin = Infinity, zMax = -Infinity;
+    for (let k = 0; k < 3; k++) {
+      const v = tris[t * 3 + k];
+      const x = positions[v * 3], y = positions[v * 3 + 1], z = positions[v * 3 + 2];
+      if (x < xMin) xMin = x; if (x > xMax) xMax = x;
+      if (y < yMin) yMin = y; if (y > yMax) yMax = y;
+      if (z < zMin) zMin = z; if (z > zMax) zMax = z;
+    }
+    for (let cx = cellOf(xMin); cx <= cellOf(xMax); cx++) {
+      for (let cy = cellOf(yMin); cy <= cellOf(yMax); cy++) {
+        for (let cz = cellOf(zMin); cz <= cellOf(zMax); cz++) {
+          const k = key(cx, cy, cz);
+          const b = grid.get(k);
+          if (b) b.push(t); else grid.set(k, [t]);
+        }
+      }
+    }
+  }
+
+  let count = 0;
+  const examples: { edge: [number, number]; tri: number }[] = [];
+  const seen = new Set<number>();
+  for (const e of edges) {
+    const ax = positions[e.a * 3], ay = positions[e.a * 3 + 1], az = positions[e.a * 3 + 2];
+    const bx = positions[e.b * 3], by = positions[e.b * 3 + 1], bz = positions[e.b * 3 + 2];
+    const dx = bx - ax, dy = by - ay, dz = bz - az;
+    seen.clear();
+    for (let cx = cellOf(Math.min(ax, bx)); cx <= cellOf(Math.max(ax, bx)); cx++) {
+      for (let cy = cellOf(Math.min(ay, by)); cy <= cellOf(Math.max(ay, by)); cy++) {
+        for (let cz = cellOf(Math.min(az, bz)); cz <= cellOf(Math.max(az, bz)); cz++) {
+          const bucket = grid.get(key(cx, cy, cz));
+          if (!bucket) continue;
+          for (const t of bucket) {
+            if (seen.has(t)) continue;
+            seen.add(t);
+            const i0 = tris[t * 3], i1 = tris[t * 3 + 1], i2 = tris[t * 3 + 2];
+            // 엣지 끝점을 공유하는 삼각형은 인접 — 교차가 아니다.
+            if (i0 === e.a || i1 === e.a || i2 === e.a || i0 === e.b || i1 === e.b || i2 === e.b) continue;
+            const e1x = positions[i1 * 3] - positions[i0 * 3];
+            const e1y = positions[i1 * 3 + 1] - positions[i0 * 3 + 1];
+            const e1z = positions[i1 * 3 + 2] - positions[i0 * 3 + 2];
+            const e2x = positions[i2 * 3] - positions[i0 * 3];
+            const e2y = positions[i2 * 3 + 1] - positions[i0 * 3 + 1];
+            const e2z = positions[i2 * 3 + 2] - positions[i0 * 3 + 2];
+            const px = dy * e2z - dz * e2y, py = dz * e2x - dx * e2z, pz = dx * e2y - dy * e2x;
+            const det = e1x * px + e1y * py + e1z * pz;
+            // 상대 허용오차 — 미터 단위 좌표에서 det의 정상 크기는 (1e-2)^3 =
+            // 1e-6 규모다. 1e-16 같은 절대 하한은 **거의 평행한** 경우를
+            // 통과시켜 곡면 위 이웃 삼각형을 스치는 것을 "교차"로 세게 된다
+            // (정적 배치 소매에서 3건이 그렇게 잡혔다 — 원통 위 (θ,t) 사상은
+            // 단사라 원리적으로 교차가 불가능한데도).
+            if (Math.abs(det) < 1e-12) continue;
+            const inv = 1 / det;
+            const tx = ax - positions[i0 * 3], ty = ay - positions[i0 * 3 + 1], tz = az - positions[i0 * 3 + 2];
+            const u = (tx * px + ty * py + tz * pz) * inv;
+            if (u < PARAM_EPS || u > 1 - PARAM_EPS) continue;
+            const qx = ty * e1z - tz * e1y, qy = tz * e1x - tx * e1z, qz = tx * e1y - ty * e1x;
+            const v = (dx * qx + dy * qy + dz * qz) * inv;
+            if (v < PARAM_EPS || u + v > 1 - PARAM_EPS) continue;
+            const s = (e2x * qx + e2y * qy + e2z * qz) * inv;
+            if (s < PARAM_EPS || s > 1 - PARAM_EPS) continue;
+            count++;
+            if (examples.length < 5) examples.push({ edge: [e.a, e.b], tri: t });
+          }
+        }
+      }
+    }
+  }
+  return { count, examples };
+}

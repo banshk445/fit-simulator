@@ -15,6 +15,7 @@ import { measureBody } from "../src/lib/bodyMeasure";
 import { checkDraft } from "../src/lib/patternDraft";
 import { buildPatternGarment, checkPatternGarment } from "../src/lib/patternGarment";
 import { makeSkeletonSignedSampler } from "../src/lib/sdfCollision";
+import { countSelfIntersections } from "../src/lib/patternPlacement";
 import type { Capsule } from "../src/lib/torsoCapsule";
 import { COLLISION_MARGIN, DEFAULT_PATTERN_CORE, SDF_FAR, SEAM_REST_LENGTH } from "../src/lib/clothConfig";
 
@@ -202,6 +203,9 @@ const countPenetrating = (): { n: number; skel: number } => {
 };
 const panelOfIdx = (i: number): number => { for (let p = 3; p >= 0; p--) if (i >= g.panelStarts[p]) return p; return 0; };
 const placedRaw = Float32Array.from(g.positions);
+// 교정 전 자기교차 — 아래 7-2가 교정 **후**를 재므로, 배치 자체가 깨끗한지를
+// 먼저 분리해 둔다(오발화 검사와 같은 방식: 배치 원본 vs S0 교정 후).
+const xsecRaw = countSelfIntersections(placedRaw, g.tris, g.edgePairs, 0.03);
 const before = countPenetrating();
 {
   const per = [0, 0, 0, 0];
@@ -302,6 +306,60 @@ if (after.n > 0) fails.push("배치 관통 0");
   );
   if (raw.same !== 0) fails.push("자기충돌 오발화(배치 원본·같은 패널) 0");
   if (cor.same !== 0) fails.push("자기충돌 오발화(S0 교정 후·같은 패널) 0");
+}
+
+// ── 7-2. 자기교차(엣지-삼각형) + **심은 교차 1건 역검증**
+// 판정기를 새로 만들 때 "0이 나왔다"는 그 판정기가 아무것도 못 잡는다는
+// 뜻일 수도 있다 — 변이를 심어 반응하는지 먼저 본다(check:seambridge와 같은
+// 방식).
+{
+  const clean = countSelfIntersections(g.positions, g.tris, g.edgePairs, 0.03);
+  const backup = Float32Array.from(g.positions);
+  // 앞판 첫 삼각형의 무게중심·법선을 구해, 뒤판 엣지 하나를 그 면을 꿰뚫도록 옮긴다.
+  const t0i = g.panelTriRanges[0].start * 3;
+  const A = g.tris[t0i], B = g.tris[t0i + 1], C = g.tris[t0i + 2];
+  const cx = (g.positions[A * 3] + g.positions[B * 3] + g.positions[C * 3]) / 3;
+  const cy = (g.positions[A * 3 + 1] + g.positions[B * 3 + 1] + g.positions[C * 3 + 1]) / 3;
+  const cz = (g.positions[A * 3 + 2] + g.positions[B * 3 + 2] + g.positions[C * 3 + 2]) / 3;
+  const ux = g.positions[B * 3] - g.positions[A * 3], uy = g.positions[B * 3 + 1] - g.positions[A * 3 + 1], uz = g.positions[B * 3 + 2] - g.positions[A * 3 + 2];
+  const vx = g.positions[C * 3] - g.positions[A * 3], vy = g.positions[C * 3 + 1] - g.positions[A * 3 + 1], vz = g.positions[C * 3 + 2] - g.positions[A * 3 + 2];
+  let nx = uy * vz - uz * vy, ny = uz * vx - ux * vz, nz = ux * vy - uy * vx;
+  const nl = Math.hypot(nx, ny, nz) || 1;
+  nx /= nl; ny /= nl; nz /= nl;
+  const victim = g.edgePairs.find((e) => e.a >= g.panelStarts[1] && e.b >= g.panelStarts[1] && e.b < g.panelStarts[2]);
+  if (!victim) throw new Error("변이 대상 뒤판 엣지를 못 찾았다");
+  const put = (i: number, sgn: number): void => {
+    g.positions[i * 3] = cx + nx * 0.01 * sgn;
+    g.positions[i * 3 + 1] = cy + ny * 0.01 * sgn;
+    g.positions[i * 3 + 2] = cz + nz * 0.01 * sgn;
+  };
+  put(victim.a, 1);
+  put(victim.b, -1);
+  const mutated = countSelfIntersections(g.positions, g.tris, g.edgePairs, 0.03);
+  g.positions.set(backup);
+  const pName = ["앞판", "뒤판", "소매L", "소매R"];
+  const pOf = (i: number): number => { for (let p = 3; p >= 0; p--) if (i >= g.panelStarts[p]) return p; return 0; };
+  console.log(
+    `\n[pattern] 자기교차(엣지-삼각형): 정적 배치 ${clean.count}건 · 변이(뒤판 엣지 1개를 앞판 삼각형에 꿰뚫음) ${mutated.count}건`,
+  );
+  for (const e of clean.examples) {
+    const t = e.tri * 3;
+    console.log(
+      `    위치: 엣지 ${pName[pOf(e.edge[0])]}(${cm(g.pos2[e.edge[0] * 2])},${cm(g.pos2[e.edge[0] * 2 + 1])})cm↔(${cm(g.pos2[e.edge[1] * 2])},${cm(g.pos2[e.edge[1] * 2 + 1])})cm · 삼각형 ${pName[pOf(g.tris[t])]}(${cm(g.pos2[g.tris[t] * 2])},${cm(g.pos2[g.tris[t] * 2 + 1])})cm`,
+    );
+  }
+  console.log(
+    `    배치 원본 ${xsecRaw.count}건 / S0 교정 후 ${clean.count}건 — 차이는 **교정이 만든 것**이다(표면 투영이 이웃 정점을 서로 다른 표면점으로 보내 국소 접힘을 만든다). §4 S0의 명세 기제는 오프셋 확대이고 투영 교정은 이 하네스가 추가한 것 — 다음 단일 변경 후보.`,
+  );
+  const rows = [
+    { name: "자기교차 0(배치 원본)", ok: xsecRaw.count === 0, detail: `${xsecRaw.count}건` },
+    { name: "자기교차 0(S0 교정 후)", ok: clean.count === 0, detail: `${clean.count}건 (배치 원본 ${xsecRaw.count})` },
+    { name: "자기교차 판정기 변이 역검증", ok: mutated.count > clean.count, detail: `심은 뒤 ${mutated.count} > 심기 전 ${clean.count}` },
+  ];
+  for (const r of rows) {
+    console.log(`  ${r.ok ? "PASS" : "FAIL"}  ${r.name} — ${r.detail}`);
+    if (!r.ok) fails.push(r.name);
+  }
 }
 
 // ── 8. 시접 배치 갭 — S1 램프가 좁혀야 할 거리(2b 예산의 입력)
