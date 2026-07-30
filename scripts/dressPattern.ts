@@ -651,7 +651,25 @@ const legMask = (() => {
   console.log(`[dress] cov 대역 다리 제외: 최근접점이 몸통 축 하단 끝점(y${cm(bottom.y)}cm)인 정점 ${excluded}/${n} 제외`);
   return mask;
 })();
+// 팔·손 제외 — **최근접 골격 선분이 팔이면 팔**(2a-thin 스파이크 계기 결함 3번이
+// 확정한 규칙, 상수 0). 6회차 관측이 지목한 오염이다: 이 마네킹은 팔이 59° 하향이라
+// 손이 골반 높이(y80~90)에 오고, cov 몸통 대역의 뒤쪽 노출 샘플이 x 54cm에 찍혔다
+// — 티셔츠가 덮을 대상이 아닌 **손 표면**이 분모·분자에 들어가 있었다. 4·5회차의
+// 다리 가설이 값을 못 바꾼 이유이기도 하다(제외 대상이 다리가 아니었다).
+const armMask = (() => {
+  const n = position.length / 3;
+  const mask = new Uint8Array(n).fill(1);
+  const armSet = new Set(skeleton.arms);
+  let excluded = 0;
+  for (let v = 0; v < n; v++) {
+    const near = nearestOnSegments(position[v * 3], position[v * 3 + 1], position[v * 3 + 2], skeleton.segments);
+    if (armSet.has(near.segment)) { mask[v] = 0; excluded++; }
+  }
+  console.log(`[dress] cov 대역 팔 제외: 최근접 골격 선분이 팔인 정점 ${excluded}/${n} 제외(팔 선분 ${skeleton.arms.length}개)`);
+  return mask;
+})();
 const covLegless = computeBodyCoverage(position, [frontIdx, backIdx], gridView, [], { ...covBand, yMin: hemWorldY, sampleMask: legMask }, clothTris);
+const covArmless = computeBodyCoverage(position, [frontIdx, backIdx], gridView, [], { ...covBand, yMin: hemWorldY, sampleMask: armMask }, clothTris);
 const covOld = computeBodyCoverage(position, [frontIdx, backIdx], gridView, [], { ...covBand, yMin: hemY }, clothTris);
 const cov = computeBodyCoverage(position, [frontIdx, backIdx], gridView, [], { ...covBand, yMin: hemWorldY }, clothTris);
 const band = deriveShoulderBand(position, wholeIndex, [pose.armLeft, pose.armRight], centerX);
@@ -698,6 +716,9 @@ console.log(
 );
 console.log(
   `  cov 몸통(신 정의 + 다리 제외 · 병기): 노출 ${covLegless.exposed}/${covLegless.samples} (${(covLegless.exposedRatio * 100).toFixed(1)}%)`,
+);
+console.log(
+  `  cov 몸통(신 정의 + **팔 제외** · 재도출): 노출 ${covArmless.exposed}/${covArmless.samples} (${(covArmless.exposedRatio * 100).toFixed(1)}%) — 제외 전 ${cov.exposed}/${cov.samples} (${(cov.exposedRatio * 100).toFixed(1)}%)`,
 );
 {
   // ── cov 65%의 정체를 **관측으로** 특정한다(가설 금지 — 2b에서 대역 가설이
