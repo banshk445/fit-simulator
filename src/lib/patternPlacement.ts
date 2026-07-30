@@ -119,6 +119,48 @@ export function correctPlacementPenetration(
   return corrected;
 }
 
+// ── 배치 삼각형 뒤집힘 (사상 전단사성의 직접 검사) ──────────────────────
+// 왜 필요한가: 배치 사상이 (경계 위치, 안쪽 깊이)류의 매개화면 패널 중앙부에서
+// 모호해질 수 있고, 그때 생기는 접힘은 관통·자기교차 채널에 **안 잡히는**
+// 경우가 있다(접힌 두 면이 서로를 뚫지 않고 겹치기만 하면 교차가 0이다).
+// 판정: 엣지를 공유하는 두 삼각형의 법선 내적이 음수면 그 엣지에서 면이 접혔다.
+// 메시 엣지가 8~16mm이고 몸 곡률 반경이 수 cm이므로 정상 곡면에서 인접 면각이
+// 90°를 넘을 수 없다 — 음의 내적은 곡률이 아니라 접힘이다.
+export function countPlacementFolds(
+  positions: Float32Array,
+  tris: Uint32Array,
+): { folds: number; worstDot: number; examples: number[] } {
+  const triCount = tris.length / 3;
+  const nx = new Float64Array(triCount), ny = new Float64Array(triCount), nz = new Float64Array(triCount);
+  for (let t = 0; t < triCount; t++) {
+    const a = tris[t * 3], b = tris[t * 3 + 1], c = tris[t * 3 + 2];
+    const ux = positions[b * 3] - positions[a * 3];
+    const uy = positions[b * 3 + 1] - positions[a * 3 + 1];
+    const uz = positions[b * 3 + 2] - positions[a * 3 + 2];
+    const vx = positions[c * 3] - positions[a * 3];
+    const vy = positions[c * 3 + 1] - positions[a * 3 + 1];
+    const vz = positions[c * 3 + 2] - positions[a * 3 + 2];
+    const x = uy * vz - uz * vy, y = uz * vx - ux * vz, z = ux * vy - uy * vx;
+    const l = Math.hypot(x, y, z) || 1;
+    nx[t] = x / l; ny[t] = y / l; nz[t] = z / l;
+  }
+  const owner = new Map<number, number>();
+  let folds = 0, worstDot = 1;
+  const examples: number[] = [];
+  for (let t = 0; t < triCount; t++) {
+    const v = [tris[t * 3], tris[t * 3 + 1], tris[t * 3 + 2]];
+    for (const [i, j] of [[0, 1], [1, 2], [2, 0]]) {
+      const k = Math.min(v[i], v[j]) * 1_000_000 + Math.max(v[i], v[j]);
+      const other = owner.get(k);
+      if (other === undefined) { owner.set(k, t); continue; }
+      const dot = nx[t] * nx[other] + ny[t] * ny[other] + nz[t] * nz[other];
+      if (dot < worstDot) worstDot = dot;
+      if (dot < 0) { folds++; if (examples.length < 5) examples.push(t); }
+    }
+  }
+  return { folds, worstDot, examples };
+}
+
 // ── 자기교차 판정 (엣지-삼각형) ─────────────────────────────────────────
 // 왜 새로 만드나: 2b 1회차의 `자기교차` 게이트는 실제로 "비인접 정점 쌍의
 // 문턱 위반 수"를 셌다 — 뭉친 천의 **정상적인 폴드 접촉**이 그대로 잡히므로

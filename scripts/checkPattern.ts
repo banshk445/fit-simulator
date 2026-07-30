@@ -13,9 +13,9 @@ import { SelfCollision } from "../src/lib/selfCollision";
 import { deriveBodySkeleton } from "../src/lib/bodySkeleton";
 import { measureBody } from "../src/lib/bodyMeasure";
 import { checkDraft } from "../src/lib/patternDraft";
-import { buildPatternGarment, checkPatternGarment } from "../src/lib/patternGarment";
+import { buildPatternGarment, checkPatternGarment, PANEL_PAT_BACK, PANEL_PAT_FRONT } from "../src/lib/patternGarment";
 import { makeSkeletonSignedSampler } from "../src/lib/sdfCollision";
-import { countSelfIntersections } from "../src/lib/patternPlacement";
+import { countPlacementFolds, countSelfIntersections } from "../src/lib/patternPlacement";
 import type { Capsule } from "../src/lib/torsoCapsule";
 import { COLLISION_MARGIN, DEFAULT_PATTERN_CORE, SDF_FAR, SEAM_REST_LENGTH } from "../src/lib/clothConfig";
 
@@ -406,6 +406,82 @@ if (after.n > 0) fails.push("배치 관통 0");
     `  ${ok ? "PASS" : "FAIL"}  시접 그룹 경계 순서(브리지 전제) — 연속 정점 최대 간격 ${(worst * 1000).toFixed(2)}mm ≤ 상한 ${(limit * 1000).toFixed(2)}mm @${worstLabel} (표본 ${n})`,
   );
   if (!ok) fails.push("시접 그룹 경계 순서(브리지 전제)");
+}
+
+// ── 10. 배치 사상이 **전단사**인가 (§4 S0 3판의 3검증)
+// 전부 `placedRaw`(S0 교정 **전**)에서 잰다 — 교정은 하네스가 덧붙인 것이고
+// 그 산출물을 섞으면 사상 자체의 성질을 못 본다.
+{
+  const P = placedRaw;
+  const at = (i: number): [number, number, number] => [P[i * 3], P[i * 3 + 1], P[i * 3 + 2]];
+  // (a) 코너 8개 일치 — 목점·어깨끝은 앞뒤판이 **같은 점**이어야 하고(링·능선
+  //     공유), 겨드랑이·밑단은 z만 패널 부호 × margin 만큼 갈라져야 한다.
+  const nearest = (panel: number, x: number, y: number): number => {
+    let best = -1, bd = Infinity;
+    for (let i = 0; i < g.panelCounts[panel]; i++) {
+      const gi = g.panelStarts[panel] + i;
+      const d = Math.hypot(g.pos2[gi * 2] - x, g.pos2[gi * 2 + 1] - y);
+      if (d < bd) { bd = d; best = gi; }
+    }
+    return best;
+  };
+  const D = g.draft.dims;
+  const corners: { name: string; x: number; y: number; expectDzM: number }[] = [];
+  for (const s of [1, -1]) {
+    corners.push({ name: `목점(${s > 0 ? "x+" : "x-"})`, x: s * D.neckHalfWidthM, y: 0, expectDzM: 0 });
+    corners.push({ name: `어깨끝(${s > 0 ? "x+" : "x-"})`, x: s * D.shoulderHalfM, y: D.shoulderDropM, expectDzM: 0 });
+    corners.push({ name: `겨드랑이(${s > 0 ? "x+" : "x-"})`, x: s * D.halfWidthM, y: D.armholeDepthM, expectDzM: 2 * COLLISION_MARGIN });
+    corners.push({ name: `밑단(${s > 0 ? "x+" : "x-"})`, x: s * D.halfWidthM, y: D.lengthM, expectDzM: 2 * COLLISION_MARGIN });
+  }
+  let worstCornerMm = 0, worstCornerName = "";
+  for (const c of corners) {
+    const f = at(nearest(PANEL_PAT_FRONT, c.x, c.y));
+    const b = at(nearest(PANEL_PAT_BACK, c.x, c.y));
+    // z는 기대 분리량만큼 어긋나는 게 정상 — 그만큼 뺀 잔차를 본다.
+    const err = Math.hypot(f[0] - b[0], f[1] - b[1], Math.abs(f[2] - b[2]) - c.expectDzM);
+    if (err * 1000 > worstCornerMm) { worstCornerMm = err * 1000; worstCornerName = c.name; }
+  }
+  const okCorner = worstCornerMm < 0.01;
+  console.log(`\n[pattern] 배치 사상 전단사 검증`);
+  console.log(
+    `  ${okCorner ? "PASS" : "FAIL"}  코너 8개 앞뒤판 일치 — 최대 잔차 ${worstCornerMm.toFixed(4)}mm @${worstCornerName} (겨드랑이·밑단은 z 분리 ${(2 * COLLISION_MARGIN * 1000).toFixed(1)}mm 제외)`,
+  );
+  if (!okCorner) fails.push("배치 코너 일치");
+
+  // (b) 링 길이 — 부풂 이분법이 목표로 삼은 것은 표본 폴리라인이므로 해석
+  //     길이(necklineGirthM)와의 잔차는 **이산화분뿐**이어야 한다.
+  let ringM = 0;
+  for (const e of g.necklineRing) {
+    ringM += Math.hypot(P[e.b * 3] - P[e.a * 3], P[e.b * 3 + 1] - P[e.a * 3 + 1], P[e.b * 3 + 2] - P[e.a * 3 + 2]);
+  }
+  // 같은 표본의 2D 폴리라인 길이 = 이산화 하한. 링이 이 값이면 오차는 전부 이산화분.
+  let poly2dM = 0;
+  for (const pi of [0, 1]) {
+    const sp = g.draft.panels[pi].segments.find((s) => s.name === "neck")?.samples ?? [];
+    for (let i = 1; i < sp.length; i++) poly2dM += 2 * Math.hypot(sp[i].x - sp[i - 1].x, sp[i].y - sp[i - 1].y);
+  }
+  const discCm = (D.necklineGirthM - poly2dM) * 100;
+  const errCm = (ringM - poly2dM) * 100;
+  const okRing = Math.abs(errCm) < 0.01;
+  console.log(
+    `  ${okRing ? "PASS" : "FAIL"}  링 길이 = 패턴 목선(이산화분만) — 배치 ${(ringM * 100).toFixed(3)}cm vs 표본 폴리라인 ${(poly2dM * 100).toFixed(3)}cm (잔차 ${errCm.toFixed(4)}cm) · 해석 목선 ${(D.necklineGirthM * 100).toFixed(3)}cm(이산화 손실 ${discCm.toFixed(3)}cm) · 부풂 앞 ${(g.meta.neckBulgeFrontM * 100).toFixed(2)}cm / 뒤 ${(g.meta.neckBulgeBackM * 100).toFixed(2)}cm · 반곡선 앞 ${(g.meta.neckArcM[0] * 100).toFixed(3)}/${(g.meta.neckArcTargetM[0] * 100).toFixed(3)}cm 뒤 ${(g.meta.neckArcM[1] * 100).toFixed(3)}/${(g.meta.neckArcTargetM[1] * 100).toFixed(3)}cm`,
+  );
+  if (!okRing) fails.push("배치 링 길이(이산화분만)");
+
+  // (c) 삼각형 뒤집힘 — 내부 깊이 매개화가 패널 중앙부에서 모호해지면 여기서
+  //     드러난다. 다른 채널(관통·자기교차)은 겹치기만 한 접힘을 못 잡는다.
+  const foldRaw = countPlacementFolds(placedRaw, g.tris);
+  const foldCor = countPlacementFolds(g.positions, g.tris);
+  const okFold = foldRaw.folds === 0;
+  for (const t of foldRaw.examples) {
+    const c = [0, 1, 2].map((k) => g.tris[t * 3 + k]);
+    const mx = c.reduce((a, i) => a + g.pos2[i * 2], 0) / 3, my = c.reduce((a, i) => a + g.pos2[i * 2 + 1], 0) / 3;
+    console.log(`    접힘 위치: 패널${panelOfIdx(c[0])} 패턴(${cm(mx)},${cm(my)})cm`);
+  }
+  console.log(
+    `  ${okFold ? "PASS" : "FAIL"}  삼각형 뒤집힘 0(배치 원본) — ${foldRaw.folds}건 · 최악 인접 법선 내적 ${foldRaw.worstDot.toFixed(4)} · [참고] S0 교정 후 ${foldCor.folds}건(내적 ${foldCor.worstDot.toFixed(4)})`,
+  );
+  if (!okFold) fails.push("배치 삼각형 뒤집힘 0");
 }
 
 console.log(
