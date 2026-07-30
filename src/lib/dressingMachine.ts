@@ -73,6 +73,10 @@ export interface DressingHooks {
   beforeStep?: (frame: number, state: DressingState) => void;
   // 상태 전이 로그에 병기할 한 줄 — 스케줄 상태를 전이와 같은 줄에서 읽게 한다.
   stateNote?: () => string;
+  // 앵커 하드 핀 on/off(§4 S1). 봉합 해제창 **밖**(아직 열림)에서 위치를
+  // 고정하고, 창에 들어오면 풀어 아래 강도 램프가 이어받는다. 구현하지 않은
+  // 호출자(2a-thin 스파이크)는 기존 소프트 앵커 그대로 동작한다.
+  setAnchorHard?: (hard: boolean) => void;
 }
 
 // smoothstep — §4 S1 "램프는 연속 함수로만"(함정 7: 불리언 전환이 M2-7
@@ -184,9 +188,14 @@ export function runDressing(
       const closeThresh = maxTarget(seams) + cfg.seamSlackM;
       const span = Math.max(1e-9, closeThresh - maxTarget(seams));
       const closure = Math.min(1, Math.max(0, (closeThresh - hooks.maxSeamGapM()) / span));
+      // 해제창 **밖**(closure=0, 아직 열림) = 하드 핀. 창에 들어오는 순간
+      // 핀을 풀고 같은 closure로 강도를 1→0 램프아웃한다 — 해제 문턱과
+      // 램프 폭이 하나의 양(봉합 진행)에서 나오므로 새 상수가 없다.
+      hooks.setAnchorHard?.(closure <= 0);
       setAnchorStrength(1 - smoothstep(closure));
     } else {
       setRest(sim, seams, startRest, 1);
+      hooks.setAnchorHard?.(false);
       setAnchorStrength(0);
     }
 

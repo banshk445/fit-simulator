@@ -476,6 +476,33 @@ const proximityPairs = (): number => {
   return n;
 };
 
+// ── 앵커 하드 핀 (7회차 단일 변경): 소프트(강도 1.0) → `pinned=1` 위치 고정.
+// 6회차 실측 = 목표 |x| 6.26cm인데 정점은 10.5cm(4.2cm 밖) — 소프트 앵커를
+// 시접·링·중력의 합력이 이긴다. `pinned=1`은 적분·제약·충돌·변위클램프가
+// 전부 스킵하므로 합력과 무관하게 좌표가 유지된다(§4 개정).
+// 해제는 상태기계가 봉합 해제창에서 부른다 — 여기서는 켜고 끄기만.
+let anchorHard = false;
+const setAnchorHard = (hard: boolean): void => {
+  if (hard === anchorHard) return;
+  anchorHard = hard;
+  for (const a of anchorList) {
+    if (hard) sim.pin(a.i, a.x, a.y, a.z);
+    else sim.pinned[a.i] = 0;
+  }
+  console.log(
+    `[dress] 앵커 ${hard ? "**하드 핀 고정**" : "**핀 해제 → 소프트 램프아웃**"} ${anchorList.length}개 · seamGap ${(maxSeamGapM() * 1000).toFixed(1)}mm`,
+  );
+};
+// 배선 검증 — 핀이 실제로 좌표를 잡고 있는가. 목점(s≈0)의 실측 |x|가 6회차
+// 목표 6.26cm를 유지하는지 본다(6회차는 10.5cm로 밀렸다).
+const neckAnchor = anchorList.reduce((m, a) => (a.sign > 0 && a.s < m.s ? a : m), anchorList.find((a) => a.sign > 0)!);
+const pinResidualMm = (): number =>
+  Math.hypot(
+    sim.positions[neckAnchor.i * 3] - neckAnchor.x,
+    sim.positions[neckAnchor.i * 3 + 1] - neckAnchor.y,
+    sim.positions[neckAnchor.i * 3 + 2] - neckAnchor.z,
+  ) * 1000;
+
 const gravity = new THREE.Vector3(0, -9.81, 0);
 const frameLayout = { widthM: layout.widthM, heightM: garmentDims.lengthM, topY: layout.topY, centerZ: collision.centerZ, sleeveWidthM: layout.sleeveWidthM };
 const framePose = { pinLeft: pose.pinLeft, pinRight: pose.pinRight, armLeft: pose.armLeft, armRight: pose.armRight };
@@ -502,6 +529,7 @@ const result = runDressing(
     diverged,
     maxSeamGapM,
     maxDelta20Mm,
+    setAnchorHard,
     beforeStep: (_frame, state) => {
       const target = Math.max(...g.seams.map((s) => s.targetM));
       const slack = Math.max(0, maxSeamGapM() - target);
@@ -519,6 +547,13 @@ const result = runDressing(
       return `링상한 ${ringLimitNow.toFixed(4)}${Math.abs(ringLimitNow - COLLAR_STRAIN_LIMIT) < 1e-9 ? "(완전 발동)" : "(완화)"} · 앵커강도 ${anchorStrength.toFixed(3)}(게이트: seamGap ${(maxSeamGapM() * 1000).toFixed(1)}mm vs 해제창 ${(target * 1000).toFixed(1)}~${(thresh * 1000).toFixed(1)}mm)`;
     },
     onFrame: (frame, state) => {
+      // 배선 검증(항상) — 하드 핀이 좌표를 잡고 있는가. 6회차는 이 값이
+      // 목표 6.26cm에서 10.5cm로 밀렸다(잔차 42mm).
+      if (state === "S1" && frame % 60 === 0) {
+        console.log(
+          `  [pin·검증] f=${String(frame).padStart(4)} 목점 실측 |x−center| ${cm(Math.abs(sim.positions[neckAnchor.i * 3] - centerX))}cm vs 목표 ${cm(Math.abs(neckAnchor.x - centerX))}cm · 잔차 ${pinResidualMm().toFixed(2)}mm · pinned=${sim.pinned[neckAnchor.i]} · 앵커강도 ${anchorStrength.toFixed(3)}`,
+        );
+      }
       if (DIAG && frame % 60 === 0) {
         const st = maxStrain();
         const meanY = (list: number[]): number => list.reduce((a, i) => a + sim.positions[i * 3 + 1], 0) / Math.max(1, list.length);
