@@ -288,9 +288,39 @@ const neckPointPairs = g.seams.filter((x) => x.kind === "shoulder")
   .sort((x, y) => x.d2 - y.d2)
   .slice(0, 2);
 let closureLog: string | null = null;
+// ── 앵커 목표 (5회차 단일 변경): 배치 시점 좌표 → **어깨 능선 최근접 표면점**
+// §4 S0/S1의 문구는 "목표 = 배치 시점 좌표"였다. 그 목표는 앞판의 배치 z
+// (몸통 축 +11.9cm — 몸 두께를 피해 놓은 위치)를 그대로 가리키므로, 앵커를
+// 봉합까지 유지하면 **봉합 목표 지점 자체가 공중**에 남는다(4회차 실측:
+// 앞 목점 z+10.02 / 뒤 목점 z+4.76, 중점은 몸 밖 50.5mm). 실물에서 어깨
+// 이음선이 가야 하는 곳은 배치 평면이 아니라 **어깨 능선**이므로 목표를
+// 그 표면점으로 바꾼다. 능선 집합은 2a 계기의 능선 전용 집합
+// (`bodyMeasure.ridgePoints`, 팔 제외 없음·목 최소 높이 상한)을 그대로
+// 재사용하고 새 상수는 없다.
 const anchorList = g.seams
   .filter((s) => s.kind === "shoulder")
-  .map((s) => ({ i: s.a, x: g.positions[s.a * 3], y: g.positions[s.a * 3 + 1], z: g.positions[s.a * 3 + 2] }));
+  .map((s) => {
+    const px = g.positions[s.a * 3], py = g.positions[s.a * 3 + 1], pz = g.positions[s.a * 3 + 2];
+    let best = Infinity, bx = px, by = py, bz = pz;
+    for (const r of body.ridgePoints) {
+      const d = (r.x - px) ** 2 + (r.y - py) ** 2 + (r.z - pz) ** 2;
+      if (d < best) { best = d; bx = r.x; by = r.y; bz = r.z; }
+    }
+    return { i: s.a, x: bx, y: by, z: bz };
+  });
+{
+  // 배선 검증 — 목표가 배치 평면(z ≈ +11.9cm)과 구분되는지 + 전부 몸 표면 위인지.
+  const ys = anchorList.map((a) => a.y), zs = anchorList.map((a) => a.z);
+  let worstOffSurfaceMm = 0;
+  for (const a of anchorList) {
+    const c = wholeMesh.closestPointUnsigned(a.x, a.y, a.z, SDF_FAR);
+    if (c && c.distance * 1000 > worstOffSurfaceMm) worstOffSurfaceMm = c.distance * 1000;
+  }
+  const placedZ = g.positions[anchorList[0].i * 3 + 2];
+  console.log(
+    `[dress] 앵커 목표 = 능선 표면점 ${anchorList.length}개 · y ${cm(Math.min(...ys))}~${cm(Math.max(...ys))}cm · z ${cm(Math.min(...zs))}~${cm(Math.max(...zs))}cm (배치 평면 z ${cm(placedZ)}cm과 구분됨) · 표면 이탈 최대 ${worstOffSurfaceMm.toFixed(2)}mm · 능선 표본 ${body.ridgePoints.length}개(1cm 간격)`,
+  );
+}
 const selfCollision = new SelfCollision(
   [...g.panelStarts], [...g.panelCounts], 0,
   [...g.edgePairs, ...g.seams.map((s) => ({ a: s.a, b: s.b }))],
@@ -565,11 +595,31 @@ console.log(
   `  cov 몸통(신 정의 + 다리 제외 · 병기): 노출 ${covLegless.exposed}/${covLegless.samples} (${(covLegless.exposedRatio * 100).toFixed(1)}%)`,
 );
 {
-  // 노출 샘플의 높이 분포 — 대역 결함을 눈으로 확인할 채널.
-  const hist: Record<string, number> = {};
-  for (const p of cov.exposedExamples) void p;
-  for (const [k, b] of Object.entries(cov.buckets)) hist[k] = b.exposed;
-  void hist;
+  // ── cov 65%의 정체를 **관측으로** 특정한다(가설 금지 — 2b에서 대역 가설이
+  // 세 번 기각됐다). `exposedExamples`는 노출 좌표 전수를 담는다.
+  const yHist = new Map<number, number>();
+  const zHist = new Map<string, number>();
+  const allY = new Map<number, number>();
+  for (const p of cov.exposedExamples) {
+    const yb = Math.floor(p.y * 20) / 20; // 5cm 빈
+    yHist.set(yb, (yHist.get(yb) ?? 0) + 1);
+    const zs = p.z >= collision.centerZ ? "앞" : "뒤";
+    zHist.set(zs, (zHist.get(zs) ?? 0) + 1);
+  }
+  // 분모(전체 샘플)의 y 분포도 같이 — 노출률이 아니라 "샘플이 어디 있나"를 본다.
+  for (const h of cov.hits) {
+    const yb = Math.floor(h.y * 20) / 20;
+    allY.set(yb, (allY.get(yb) ?? 0) + 1);
+  }
+  const rows = [...new Set([...yHist.keys(), ...allY.keys()])].sort((a, b) => a - b);
+  console.log("  cov 노출 샘플 관측(가설 없음) — 5cm 빈별 노출/전체:");
+  console.log(
+    `    ${rows.map((y) => {
+      const e = yHist.get(y) ?? 0, c = allY.get(y) ?? 0;
+      return `y${(y * 100).toFixed(0)}:${e}/${e + c}`;
+    }).join(" ")}`,
+  );
+  console.log(`    앞/뒤 분포: ${JSON.stringify(Object.fromEntries(zHist))}`);
 }
 console.log(`  cov 몸통 버킷: ${JSON.stringify(Object.fromEntries(Object.entries(cov.buckets).map(([k, b]) => [k, `${b.exposed}/${b.samples}`])))}`);
 console.log(`  covShoulder: 노출 ${covSh.exposed}/${covSh.samples} (${(covSh.exposedRatio * 100).toFixed(1)}%)`);

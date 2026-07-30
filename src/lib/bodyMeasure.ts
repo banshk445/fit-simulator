@@ -82,6 +82,10 @@ export interface BodyMeasure {
   shoulderPassGirthM: number;
   // 어깨 능선 상면 프로파일(x 오름차순, x는 중심에서의 거리).
   ridge: { xM: number; topY: number }[];
+  // 능선 상면의 **실제 표면 정점 좌표**(좌·우 양쪽, 1cm 간격). 프로파일을
+  // (x, topY, centerZ)로 재구성하면 z가 실제 정점의 z와 달라 표면을 벗어난다 —
+  // 앵커 목표처럼 "몸 표면 위의 점"이 필요한 소비자는 이 집합을 쓴다.
+  ridgePoints: Vec3Like[];
   // 능선 상면 높이 — 프로파일 선형 보간. 표본 밖은 가장 가까운 표본.
   ridgeTopYAt: (xM: number) => number;
 }
@@ -247,17 +251,20 @@ export function measureBody(
   // 어깨 능선 상면 — 목 최소 높이(neckY)를 상한으로 두면 머리가 안 섞인다.
   const neckY = slices[neckIdx].y;
   const ridge: { xM: number; topY: number }[] = [];
+  const ridgePoints: Vec3Like[] = [];
   for (let xc = 0; xc <= shoulderSpanM / 2 + 0.03; xc += 0.01) {
     let top = -Infinity;
     for (let s = -1; s <= 1; s += 2) {
       const x0 = centerX + s * xc;
+      let bestY = -Infinity, best: Vec3Like | null = null;
       for (const v of ridgeVerts) {
         const x = position[v * 3], y = position[v * 3 + 1], z = position[v * 3 + 2];
         if (y > neckY) continue;
         if (Math.abs(x - x0) > RIDGE_X_HALF_M) continue;
         if (Math.abs(z - centerZ) > RIDGE_Z_HALF_M) continue;
-        if (y > top) top = y;
+        if (y > bestY) { bestY = y; best = { x, y, z }; }
       }
+      if (best) { ridgePoints.push(best); if (bestY > top) top = bestY; }
     }
     if (top > -Infinity) ridge.push({ xM: xc, topY: top });
   }
@@ -285,6 +292,6 @@ export function measureBody(
     frontExtentM: slices.reduce((m, s) => (s.y <= shoulderJointY && s.zMax - centerZ > m ? s.zMax - centerZ : m), 0),
     backExtentM: slices.reduce((m, s) => (s.y <= shoulderJointY && centerZ - s.zMin > m ? centerZ - s.zMin : m), 0),
     shoulderPassGirthM,
-    ridge, ridgeTopYAt,
+    ridge, ridgePoints, ridgeTopYAt,
   };
 }
