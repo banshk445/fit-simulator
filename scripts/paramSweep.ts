@@ -48,7 +48,7 @@ import { FABRIC_PRESETS } from "../src/lib/fabricPresets";
 import type { Vec3Like } from "../src/lib/clothProtocol";
 import { armholeRingJaggedness, ringJaggedness } from "../src/lib/seamDiagnostics";
 import { capsuleGapBands, computeCapsuleGapChannels, computeDrapeMetrics, computeOrderViolations, computeRippleMm, columnRipplePerVertex, type DrapeMetrics, type GapStats } from "../src/lib/drapeMetrics";
-import { computeBodyCoverage } from "../src/lib/coverageMetric";
+import { computeBodyCoverage, deriveShoulderBand } from "../src/lib/coverageMetric";
 import { computeNecklineLift } from "../src/lib/necklineLift";
 import { bakeSdf, createCachedSdfIterationFriction, createSdfFrictionPass, createSdfIterationFrictionPass, createSdfPushResolver, makeRadialSignedSampler, sampleSdf, type SdfField } from "../src/lib/sdfCollision";
 
@@ -853,6 +853,52 @@ function runFixture(path: string): void {
   console.log(`  coverage: 노출 ${coverage.exposed}/${coverage.samples} (${(coverage.exposedRatio * 100).toFixed(1)}%)`);
   console.log(`  coverage 버킷(노출/샘플):`, JSON.stringify(Object.fromEntries(Object.entries(coverage.buckets).map(([k, v]) => [k, `${v.exposed}/${v.samples}`]))));
   console.log(`  coverage 노출 예시:`, JSON.stringify(coverage.exposedExamples.slice(0, 5)));
+  // §9-1 어깨/삼각근 대역 — **별도 채널**. 위 몸통 대역과 샘플 집합이 서로
+  // 겹치지 않으므로(coverageMetric.deriveShoulderBand 주석) 두 수치를 합산
+  // 하거나 서로 비교하지 말 것. 기준선 cov 6.4%는 몸통 대역 정의로 잰 값이라
+  // 정의가 다른 이 채널과는 애초에 비교 불능이다.
+  //
+  // **판정 제외(계기 미교정)** — 참고로만 찍고 통과/실패를 가르지 말 것.
+  // 근거(2026-07-30 3자 대조 실측, 같은 기준선 상태):
+  //   바깥 방향 참조 = 팔 축      → 노출 42.1%
+  //                  = 몸통 축    → 노출 11.0%
+  //                  = 원 와인딩  → 노출 27.6%
+  // 31pp가 부호 판정 하나로 갈린다. 이 대역은 팔 표면과 암홀 근방 몸통
+  // 표면이 섞여 있어(축 시점이 어깨 관절 = 몸 안쪽) 단일 참조가 양쪽을
+  // 동시에 맞힐 수 없다. 기본을 팔 축으로 둔 이유는 몸통 축 방사
+  // (star-shaped) 전제가 팔에서 불성립한다는 게 이미 확정 원인 후보로
+  // 등재된 사실이라서다(소매 콜라이더 기각, v2-design §5) — 즉 "덜 틀린
+  // 쪽"의 선택이고 교정된 게 아니다.
+  // 교정 절차(§9-1 마감 조건): 노출 좌표 집합을 기준 4뷰 화면과 대조해
+  // 참조 규칙을 정하고, **그때 식을 재도출**한 뒤에 게이트로 승격한다
+  // (규범 6 — 문턱 주 채널은 채택 시점에 식부터 재도출).
+  {
+    const band = deriveShoulderBand(
+      position,
+      fixture.collision.wholeBodyIndex,
+      [pose.armLeft, pose.armRight],
+      (pose.pinLeft.x + pose.pinRight.x) / 2,
+    );
+    const shCov = computeBodyCoverage(position, [fixture.collision.wholeBodyIndex], sim, clothRanges(), {
+      sampleMask: band.mask,
+      yMin: band.yMin,
+      yMax: band.yMax,
+      // 목 구멍 제외는 몸통 대역 몫 — 어깨 대역은 팔 축 반경이 이미
+      // 목 개구부를 안 물므로 0으로 둔다(제외하면 어깨선 안쪽이 사라진다).
+      neckCenter: { x: 0, y: 0, z: 0 },
+      neckRadius: 0,
+      centerX: (pose.pinLeft.x + pose.pinRight.x) / 2,
+      centerZ: fixture.collision.centerZ,
+      outwardAxes: band.axes,
+      probeReverse: true,
+    });
+    const axisLen = Math.hypot(band.axes[0].b.x - band.axes[0].a.x, band.axes[0].b.y - band.axes[0].a.y, band.axes[0].b.z - band.axes[0].a.z);
+    console.log(
+      `  covShoulder[판정제외·계기미교정](어깨/삼각근 · 참조=팔축 · r${(band.radius * 100).toFixed(0)}cm · 축길이 ${(axisLen * 100).toFixed(1)}cm · Y ${band.yMin.toFixed(3)}..${band.yMax.toFixed(3)} · 삼각형 ${band.triangles}): 노출 ${shCov.exposed}/${shCov.samples} (${(shCov.exposedRatio * 100).toFixed(1)}%) · 부호오판후보 ${shCov.reverseHits}/${shCov.exposed}`,
+    );
+    console.log(`  covShoulder 버킷(노출/샘플):`, JSON.stringify(Object.fromEntries(Object.entries(shCov.buckets).map(([k, v]) => [k, `${v.exposed}/${v.samples}`]))));
+    console.log(`  covShoulder 노출 예시:`, JSON.stringify(shCov.exposedExamples.slice(0, 5)));
+  }
   // 어깨 hover — top 버킷(어깨 상면)의 히트율 + 히트 거리(몸→천).
   {
     const band = (names: string[]) => {

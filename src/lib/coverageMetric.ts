@@ -35,11 +35,108 @@ export interface CoverageResult {
   // 키: "top|mid|bot-front|back-left|right"
   buckets: Record<string, CoverageBucket>;
   exposedExamples: { x: number; y: number; z: number }[];
+  // probeReverse=true일 때만 채워진다: 노출 샘플 중 반대 방향 레이가 천을
+  // 맞힌 수(= 부호 오판 후보). params.probeReverse 주석 참고.
+  reverseHits: number;
   // 히트 샘플별 (버킷키, hover mm, 몸 샘플 좌표) — 분포·접촉률 계산용.
   // 영역 정의를 **몸 표면 샘플 좌표계 하나로** 고정하기 위해 원자료를
   // 그대로 노출한다(천 행 인덱스로 대역을 재정의하면 비교 불가 —
   // 이번 세션 2회 재발한 함정).
   hits: { bucket: string; hoverMm: number; x: number; y: number; z: number }[];
+}
+
+// ── §9-1 어깨/삼각근(deltoid) 대역 ──────────────────────────────────────
+// 기존 몸통 대역이 **버린** 집합을 잰다. frontIndex/backIndex는 팔 축 9cm
+// 안쪽 삼각형을 빼고 굽는데(meshCollision.excludeArms), 소매산이 덮어야 할
+// 어깨 곡면·삼각근 능선이 정확히 그 제외 영역이다 — 함정 11의 "현
+// coverageMetric은 몸통 대역만 봐서 어깨 구간에 면적계 역할을 못 한다"가
+// 이것. 신 대역을 그 여집합으로 정의하므로 두 대역은 **구조적으로 서로
+// 겹치지 않는다** → 합산 금지·별도 채널 규약이 배선으로 지켜진다.
+// (몸통 대역의 절대값은 대역 정의가 그대로이므로 비교 가능성도 유지된다.)
+//
+// 대역은 전부 **몸 기준 도출**(규범 1) — 옷 치수·행 인덱스 무관:
+//   축   = 어깨 관절(trueShoulder, 뼈대) → 팔 방향(dir, 뼈대) 선분
+//   반경 = SHOULDER_BAND_RADIUS — meshCollision.ARM_EXCLUDE_RADIUS와 같은
+//          값이어야 여집합이 성립한다(둘이 갈라지면 두 대역이 겹치거나
+//          사이에 빈틈이 생긴다).
+//   길이 = 어깨 반폭 |trueShoulder.x − centerX| (추정, Stage 2a 실측 확정)
+//          — 삼각근 축방향 범위의 몸 기준 스케일. 팔 전체를 넣으면 반팔에서
+//          정상 노출인 맨살 전완이 노출률을 지배해 게이트가 못 된다.
+//   Y범위 = 걸러낸 삼각형 정점의 실측 extent(버킷 3분할의 분모도 이것).
+export const SHOULDER_BAND_RADIUS = 0.09;
+
+export interface ArmAxis {
+  a: Vec3Like;
+  b: Vec3Like;
+}
+
+// 점 p에서 선분 ab의 최근접점(어깨 캡처럼 t가 구간 밖이면 끝점으로 클램프 —
+// meshCollision.pointToSegmentDistSq와 같은 규칙이라야 여집합이 정확하다).
+function closestOnSegment(px: number, py: number, pz: number, s: ArmAxis): [number, number, number] {
+  const abx = s.b.x - s.a.x, aby = s.b.y - s.a.y, abz = s.b.z - s.a.z;
+  const abLenSq = abx * abx + aby * aby + abz * abz;
+  const t = abLenSq > 1e-9 ? Math.min(1, Math.max(0, ((px - s.a.x) * abx + (py - s.a.y) * aby + (pz - s.a.z) * abz) / abLenSq)) : 0;
+  return [s.a.x + abx * t, s.a.y + aby * t, s.a.z + abz * t];
+}
+
+function distSqToAxes(px: number, py: number, pz: number, axes: readonly ArmAxis[]): { d2: number; axis: ArmAxis } {
+  let best = Infinity;
+  let bestAxis = axes[0];
+  for (const s of axes) {
+    const [cx, cy, cz] = closestOnSegment(px, py, pz, s);
+    const d2 = (px - cx) ** 2 + (py - cy) ** 2 + (pz - cz) ** 2;
+    if (d2 < best) { best = d2; bestAxis = s; }
+  }
+  return { d2: best, axis: bestAxis };
+}
+
+export interface ShoulderBand {
+  mask: Uint8Array;
+  triangles: number;
+  axes: ArmAxis[];
+  yMin: number;
+  yMax: number;
+  radius: number;
+}
+
+// 팔 축 근방(= 몸통 대역이 뺀 영역) 삼각형의 정점 마스크와 그 Y extent.
+// 입력 인덱스는 wholeBodyIndex(팔 포함·머리 제외) — 머리 삼각형은 팔 축에서
+// 9cm보다 멀어 어차피 걸러지므로 머리 제외 여부는 결과를 바꾸지 않는다.
+export function deriveShoulderBand(
+  position: Float32Array,
+  wholeBodyIndex: ArrayLike<number> | null,
+  arms: readonly { trueShoulder: Vec3Like; dir: Vec3Like }[],
+  centerX: number,
+  radius = SHOULDER_BAND_RADIUS,
+): ShoulderBand {
+  const axes: ArmAxis[] = arms.map(({ trueShoulder, dir }) => {
+    const len = Math.abs(trueShoulder.x - centerX);
+    return {
+      a: trueShoulder,
+      b: { x: trueShoulder.x + dir.x * len, y: trueShoulder.y + dir.y * len, z: trueShoulder.z + dir.z * len },
+    };
+  });
+  const mask = new Uint8Array(position.length / 3);
+  if (!wholeBodyIndex || axes.length === 0) return { mask, triangles: 0, axes, yMin: 0, yMax: 0, radius };
+  const r2 = radius * radius;
+  let triangles = 0;
+  let yMin = Infinity;
+  let yMax = -Infinity;
+  for (let t = 0; t < wholeBodyIndex.length; t += 3) {
+    const a = wholeBodyIndex[t], b = wholeBodyIndex[t + 1], c = wholeBodyIndex[t + 2];
+    const cx = (position[a * 3] + position[b * 3] + position[c * 3]) / 3;
+    const cy = (position[a * 3 + 1] + position[b * 3 + 1] + position[c * 3 + 1]) / 3;
+    const cz = (position[a * 3 + 2] + position[b * 3 + 2] + position[c * 3 + 2]) / 3;
+    if (distSqToAxes(cx, cy, cz, axes).d2 >= r2) continue;
+    triangles++;
+    for (const vi of [a, b, c]) {
+      mask[vi] = 1;
+      const y = position[vi * 3 + 1];
+      if (y < yMin) yMin = y;
+      if (y > yMax) yMax = y;
+    }
+  }
+  return { mask, triangles, axes, yMin, yMax, radius };
 }
 
 // 몸 메시(fixture의 position+index)에서 Y 대역 안 정점들을 샘플로 뽑고,
@@ -59,6 +156,11 @@ function collectBandSamples(
   yMax: number,
   excludeCenter: Vec3Like,
   excludeRadius: number,
+  // 샘플로 쓸 정점 마스크(없으면 전부). **법선은 언제나 넘겨받은 인덱스
+  // 전체에서 누적**하고 마스크는 샘플 선택만 한다 — 대역만 잘라낸 조각
+  // 메시로 법선을 누적하면 조각 경계 정점이 한쪽 삼각형만 받아 법선이
+  // 기울고, 그 기울기가 부호 판정을 흔든다(어깨 대역 3자 불일치의 원인).
+  mask?: Uint8Array,
 ): BodySamples {
   const n = position.length / 3;
   const normalAcc = new Float32Array(n * 3);
@@ -94,6 +196,7 @@ function collectBandSamples(
   const exclR2 = excludeRadius * excludeRadius;
   for (let i = 0; i < n; i++) {
     if (!used[i]) continue;
+    if (mask && !mask[i]) continue;
     const y = position[i * 3 + 1];
     if (y < yMin || y > yMax) continue;
     const x = position[i * 3];
@@ -192,16 +295,18 @@ function rayNearestHit(
 // 천을 못 만난 것. 와인딩을 신뢰하지 않고, 몸통 축 기준 방사 방향
 // (+위쪽 성분 약간 — 어깨 꼭대기는 방사 성분이 0에 가까워서)과 내적이
 // 음수면 법선을 뒤집어 항상 바깥을 향하게 교정한다.
-function orientOutward(nx: number, ny: number, nz: number, px: number, pz: number, centerX: number, centerZ: number): [number, number, number] {
+function orientOutward(nx: number, ny: number, nz: number, refX: number, refY: number, refZ: number): [number, number, number] {
+  const dot = nx * refX + ny * refY + nz * refZ;
+  return dot < 0 ? [-nx, -ny, -nz] : [nx, ny, nz];
+}
+
+// 몸통 축 기준 바깥 방향 참조 벡터 — 방사 + 위쪽 25%(어깨 꼭대기는
+// 방사 성분이 0에 가까워서).
+function torsoOutwardRef(px: number, pz: number, centerX: number, centerZ: number): [number, number, number] {
   const rx = px - centerX;
   const rz = pz - centerZ;
   const rLen = Math.hypot(rx, rz) || 1e-9;
-  // 방사 + 위쪽 25% — 어깨 캡 정점(방사≈0, 법선≈+y)도 안정적으로 판정.
-  const refX = rx / rLen;
-  const refY = 0.25;
-  const refZ = rz / rLen;
-  const dot = nx * refX + ny * refY + nz * refZ;
-  return dot < 0 ? [-nx, -ny, -nz] : [nx, ny, nz];
+  return [rx / rLen, 0.25, rz / rLen];
 }
 
 export interface CoverageParams {
@@ -218,6 +323,22 @@ export interface CoverageParams {
   // 헐렁한 옷(품65도 밑단 이탈 ~18cm)까지 넉넉히.
   rayMin?: number;
   rayMax?: number;
+  // 어깨/삼각근 대역(§9-1)용 — 바깥 방향 참조를 몸통 축이 아니라 **팔 축**
+  // 기준으로 잡는다. 팔 표면은 몸통 축 방사 전제(star-shaped)가 깨져서
+  // (소매 콜라이더 기각의 확정 원인 후보) 겨드랑이 쪽 법선이 뒤집혀 정상
+  // 상태가 "노출"로 나온다 — mid-back 93% 오판(위 주석)의 팔 버전.
+  outwardAxes?: readonly ArmAxis[];
+  // 계기 검증 채널 — 노출로 판정된 샘플에서 **반대 방향 근거리**(기본 2cm)
+  // 레이도 쏴 본다. 바로 뒤에 천이 있으면 (i) 법선 부호 오판(몸 안으로 쏘고
+  // "노출"이라 우긴 mid-back 93% 오판의 팔 버전) 또는 (ii) 천이 몸 안으로
+  // 관통한 상태 — 둘 다 노출률을 게이트로 쓰기 전에 0에 가까워야 한다.
+  // **근거리 제한이 핵심**: 무제한으로 쏘면 반대쪽 레이가 몸을 관통해 소매
+  // 튜브의 **반대편 벽**을 맞히므로(팔 두께 ~9cm < rayMax 25cm) 정상 상태에서
+  // 도 대부분 히트한다 — 실제로 그렇게 재서 92%가 나왔다(계기 오설계).
+  probeReverse?: boolean;
+  probeReverseMax?: number;
+  // 샘플 정점 마스크 — collectBandSamples의 mask 주석 참고.
+  sampleMask?: Uint8Array;
 }
 
 export function computeBodyCoverage(
@@ -229,13 +350,14 @@ export function computeBodyCoverage(
 ): CoverageResult {
   const rayMin = params.rayMin ?? 0.005;
   const rayMax = params.rayMax ?? 0.25;
-  const body = collectBandSamples(bodyPosition, bodyIndexes, params.yMin, params.yMax, params.neckCenter, params.neckRadius);
+  const body = collectBandSamples(bodyPosition, bodyIndexes, params.yMin, params.yMax, params.neckCenter, params.neckRadius, params.sampleMask);
   const tris = clothTriangles(sim, clothPanels);
 
   const buckets: Record<string, CoverageBucket> = {};
   const exposedExamples: { x: number; y: number; z: number }[] = [];
   const hits: { bucket: string; hoverMm: number; x: number; y: number; z: number }[] = [];
   let exposed = 0;
+  let reverseHits = 0;
   const bandH = (params.yMax - params.yMin) / 3;
   for (let i = 0; i < body.count; i++) {
     const x = body.points[i * 3];
@@ -245,9 +367,20 @@ export function computeBodyCoverage(
     const key = `${yBand}-${z >= params.centerZ ? "front" : "back"}-${x >= params.centerX ? "left" : "right"}`;
     const bucket = (buckets[key] ??= { samples: 0, exposed: 0, hoverSumMm: 0, hoverMaxMm: 0, hoverMaxAt: null });
     bucket.samples++;
+    // 바깥 방향 참조: 몸통 축 방사(기존) 또는 팔 축 방사(어깨 대역).
+    let refX: number, refY: number, refZ: number;
+    if (params.outwardAxes && params.outwardAxes.length > 0) {
+      const [cx, cy, cz] = closestOnSegment(x, y, z, distSqToAxes(x, y, z, params.outwardAxes).axis);
+      const rl = Math.hypot(x - cx, y - cy, z - cz) || 1e-9;
+      refX = (x - cx) / rl;
+      refY = (y - cy) / rl + 0.25;
+      refZ = (z - cz) / rl;
+    } else {
+      [refX, refY, refZ] = torsoOutwardRef(x, z, params.centerX, params.centerZ);
+    }
     const [nx, ny, nz] = orientOutward(
       body.normals[i * 3], body.normals[i * 3 + 1], body.normals[i * 3 + 2],
-      x, z, params.centerX, params.centerZ,
+      refX, refY, refZ,
     );
     const hitT = rayNearestHit(x, y, z, nx, ny, nz, tris, rayMin, rayMax);
     const hit = hitT >= 0;
@@ -263,6 +396,7 @@ export function computeBodyCoverage(
     if (!hit) {
       exposed++;
       bucket.exposed++;
+      if (params.probeReverse && rayNearestHit(x, y, z, -nx, -ny, -nz, tris, rayMin, params.probeReverseMax ?? 0.02) >= 0) reverseHits++;
       // 전체 노출 좌표를 담는다(수백 개 수준) — 신구 대조 시 "새로 노출된
       // 지점"을 집합 차로 특정하는 데 필요. 출력부가 알아서 잘라 보여준다.
       exposedExamples.push({ x: Number(x.toFixed(4)), y: Number(y.toFixed(4)), z: Number(z.toFixed(4)) });
@@ -275,5 +409,6 @@ export function computeBodyCoverage(
     buckets,
     exposedExamples,
     hits,
+    reverseHits,
   };
 }
