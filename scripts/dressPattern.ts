@@ -180,23 +180,60 @@ const t0Fails: string[] = [];
   console.log(`[dress] t=0 링 원주 ${cm(ringM)}cm vs 패턴 목선 ${cm(g.draft.dims.necklineGirthM)}cm ${okRing ? "OK" : "**불일치**"}`);
   if (!okRing) t0Fails.push("t=0 링 원주");
 
-  // 링 정점들의 목축 거리 vs 그 높이 목 반경 → 링 안에 목 기둥이 들어갔나.
+  // 링 안에 목 기둥이 들어갔나 — **수평 투영 점-다각형**으로 판정한다.
+  //
+  // 9회차까지의 판정은 "링 정점의 목축 거리 > 그 높이 단면의 max(width,depth)/2"
+  // 였는데, 목선은 어깨에 걸치는 **안장 곡선**이라 그 높이의 단면이 어깨(또는
+  // 턱)를 포함한다 — 8회차 8.23cm는 턱, 9회차 8.91cm는 어깨였고 목 기둥 반경은
+  // 둘레 32.38cm에서 5.15cm다. 이름이 주장하는 양을 재고 있지 않았다(함정 13).
+  // 스레딩은 원래 위상 질문이므로 높이에 의존하지 않는 판정을 쓴다.
   const ringIdx = [...new Set(g.necklineRing.flatMap((e) => [e.a, e.b]))];
   const ringY = ringIdx.reduce((a, i) => a + g.positions[i * 3 + 1], 0) / ringIdx.length;
-  const slice = body.slices.reduce((best, sl) => (Math.abs(sl.y - ringY) < Math.abs(best.y - ringY) ? sl : best), body.slices[0]);
-  const neckHalfExtent = Math.max(slice.widthM, slice.depthM) / 2;
+  // 링은 앞목·뒤목 두 **열린 사슬**이다(패널을 넘는 접합은 rest 오염 때문에
+  // 일부러 뺐다 — patternGarment 주석). 폐곡선을 만들려면 두 사슬을 목점에서
+  // 이어야 하고, 목선은 패턴 x에 대해 단조라 x로 정렬하면 그 순서가 나온다.
+  const ringLoop = (() => {
+    const backStart = g.panelStarts[PANEL_PAT_BACK];
+    const front = ringIdx.filter((i) => i < backStart).sort((a, b) => g.pos2[a * 2] - g.pos2[b * 2]);
+    const back = ringIdx.filter((i) => i >= backStart).sort((a, b) => g.pos2[b * 2] - g.pos2[a * 2]);
+    return [...front, ...back];
+  })();
+  const insideLoopXZ = (px: number, pz: number): boolean => {
+    let c = false;
+    for (let i = 0, j = ringLoop.length - 1; i < ringLoop.length; j = i++) {
+      const x1 = g.positions[ringLoop[i] * 3], z1 = g.positions[ringLoop[i] * 3 + 2];
+      const x2 = g.positions[ringLoop[j] * 3], z2 = g.positions[ringLoop[j] * 3 + 2];
+      if ((z1 > pz) !== (z2 > pz) && px < x1 + ((pz - z1) / (z2 - z1)) * (x2 - x1)) c = !c;
+    }
+    return c;
+  };
+  const neckSlice = body.slices.reduce(
+    (best, sl) => (Math.abs(sl.y - body.neckY) < Math.abs(best.y - body.neckY) ? sl : best), body.slices[0],
+  );
+  const okThread = insideLoopXZ(neckSlice.axisX, neckSlice.axisZ);
+  // 변이 역검증 — 목축을 링 밖(반경 1m)으로 옮기면 반드시 false여야 한다.
+  const mutOut = insideLoopXZ(neckSlice.axisX + 1, neckSlice.axisZ);
   let minD = Infinity, maxD = 0;
   for (const i of ringIdx) {
-    const d = Math.hypot(g.positions[i * 3] - slice.axisX, g.positions[i * 3 + 2] - slice.axisZ);
+    const d = Math.hypot(g.positions[i * 3] - neckSlice.axisX, g.positions[i * 3 + 2] - neckSlice.axisZ);
     if (d < minD) minD = d;
     if (d > maxD) maxD = d;
   }
-  const okThread = minD > neckHalfExtent;
   console.log(
-    `[dress] t=0 목 스레딩 검사: 링 정점 ${ringIdx.length}개 · 링 높이 y${cm(ringY)}cm · 목축 거리 ${cm(minD)}~${cm(maxD)}cm vs 그 높이 몸 반경 ${cm(neckHalfExtent)}cm → ${okThread ? "**링 안에 목이 있다**" : "**링이 목을 감싸지 못했다**"}`,
+    `[dress] t=0 목 스레딩 검사(수평 투영 점-다각형): 링 정점 ${ringIdx.length}개(폐곡선 ${ringLoop.length}) · 링 높이 y${cm(ringY)}cm · 목축(${cm(neckSlice.axisX)},${cm(neckSlice.axisZ)}) → ${okThread ? "**링 안에 목이 있다**" : "**링이 목을 감싸지 못했다**"} · 변이 역검증(목축 +1m) ${mutOut ? "**실패(밖인데 안이라고 함)**" : "OK"} · [기록] 링 정점의 목축 거리 ${cm(minD)}~${cm(maxD)}cm`,
   );
+  if (mutOut) t0Fails.push("목 스레딩 판정기 변이 역검증");
   if (!okThread) t0Fails.push("t=0 목 스레딩");
   console.log(`[dress] t=0 게이트: ${t0Fails.length === 0 ? "통과" : `실패 ${t0Fails.join(", ")}`}`);
+}
+
+// t=0 게이트가 실패하면 **물리로 넘어가지 않는다**. 9회차까지 이 차단이 배선돼
+// 있지 않아 게이트를 찍고도 720프레임을 돌렸고, 무효 배치에서 나온 cov·strain·
+// 정착 프레임이 로그에 남았다(계기가 아니라 입력이 무효라 판정 자료가 될 수
+// 없는 값들이다). 게이트는 "통과 시에만 물리"라는 뜻이어야 한다.
+if (t0Fails.length > 0) {
+  console.log(`[dress] **정지** — t=0 게이트 ${t0Fails.length}건 실패. 물리를 실행하지 않는다(무효 배치의 물리값은 판정 자료가 아니다).`);
+  process.exit(1);
 }
 
 // ── 물리 조립

@@ -482,6 +482,26 @@ if (after.n > 0) fails.push("배치 관통 0");
     `  ${okFold ? "PASS" : "FAIL"}  삼각형 뒤집힘 0(배치 원본) — ${foldRaw.folds}건 · 최악 인접 법선 내적 ${foldRaw.worstDot.toFixed(4)} · [참고] S0 교정 후 ${foldCor.folds}건(내적 ${foldCor.worstDot.toFixed(4)})`,
   );
   if (!okFold) fails.push("배치 삼각형 뒤집힘 0");
+
+  // (d) **예측** — 링이 안착할 높이 = 몸 폐곡선(표면+옷 오프셋)이 링 길이와
+  //     같아지는 높이. 볼록 폐곡선의 오프셋은 정확히 2πm만큼 늘어나므로
+  //     슬라이스 둘레에서 바로 도출한다(새 계측 없음). 정착 후 실측과 대조할 것.
+  {
+    const offM = 2 * Math.PI * COLLISION_MARGIN;
+    const up = body.slices.filter((s) => s.y >= body.shoulderJointY).sort((a, b) => a.y - b.y);
+    let pred = NaN, lo = "", hi2 = "";
+    for (let i = 1; i < up.length; i++) {
+      const g0 = up[i - 1].girthM + offM, g1 = up[i].girthM + offM;
+      if ((g0 - D.necklineGirthM) * (g1 - D.necklineGirthM) <= 0 && g0 !== g1) {
+        pred = up[i - 1].y + (up[i].y - up[i - 1].y) * ((D.necklineGirthM - g0) / (g1 - g0));
+        lo = `y${cm(up[i - 1].y)}:${cm(g0)}`; hi2 = `y${cm(up[i].y)}:${cm(g1)}`;
+        break;
+      }
+    }
+    console.log(
+      `  [예측] 링 안착 높이 = 몸 폐곡선(표면+오프셋 ${cm(COLLISION_MARGIN)}cm) ${cm(D.necklineGirthM)}cm 지점 → **y${Number.isNaN(pred) ? "미교차" : cm(pred)}cm** (보간 구간 ${lo} ~ ${hi2}) · 목밑 y${cm(D.neckBaseY)}cm · 정착 후 실측과 대조할 것`,
+    );
+  }
 }
 
 console.log(

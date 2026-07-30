@@ -21,15 +21,25 @@
 // 값은 이 저장소의 실측으로 확정된 것이 아니므로 전부 (추정)이다.
 import type { BodyMeasure } from "./bodyMeasure";
 
-// 목너비(중심~목점) = 목둘레/6 + 0.5cm. 표준 상의 원형(뒤목너비 = 목둘레/6
-// + 여유). (추정, Stage 2b 화면 V1로 확정)
-const NECK_WIDTH_DIVISOR = 6;
-const NECK_WIDTH_EASE_M = 0.005;
+// 목선 둘레 = **목밑둘레 + 여유**. 목선이 앉는 자리는 목 기둥이 아니라 목밑
+// (어깨 뿌리)이다 — 9회차까지는 `body.neckGirthM`(목 기둥 최소 단면
+// 32.38cm@y148.04)을 넣었는데 목밑 폐곡선은 46.27cm(y145.23, 표면+옷 오프셋)라
+// 제도가 23% 작았고 배치가 원리적으로 불가능했다(링을 패턴 길이로 맞추면 목선
+// 정점이 몸 안 6~9cm, 표면에 올리면 링 56cm — 9회차 실측).
+//
+// 목너비는 관계식이 아니라 **이분법**으로 푼다(소매산 "walking the sleeve"와
+// 같은 방식). 표준 관계식 목너비 = 둘레/6 + 0.5cm를 목밑둘레에 그대로 쓰면
+// 그린 곡선의 실제 호장이 목표를 3% 밑돌아(실측 44.96 vs 46.27) 하한 검사를
+// 구조적으로 못 넘긴다 — 관계식은 근사이고 여기서는 호장이 규범이다.
+// 여유 2cm — 목선은 목밑에 얹히되 조이지 않아야 한다. (추정, Stage 2b 화면 V1)
+const NECKLINE_EASE_M = 0.020;
 // 앞목깊이 = 목너비 + 1cm. §3.1의 "앞>뒤 목선 깊이"를 **구조적으로** 보장한다
 // (뒤목깊이가 2cm 고정이므로 목너비가 1cm 이상이면 항상 앞>뒤). (추정)
 const FRONT_NECK_EXTRA_M = 0.010;
-// 뒤목깊이 2cm — 표준값. (추정)
-const BACK_NECK_DROP_M = 0.020;
+// 뒤목깊이 — **도출한다**(표준값 2cm 고정을 버렸다). 총 둘레만 맞추고 앞/뒤
+// 배분을 고정 상수로 두면 이 마네킹에서 목선 앞 29.45 / 뒤 18.82cm vs 몸 목밑
+// 앞 25.98 / 뒤 20.29cm로 어긋나고(실측), 배치에서 앞은 남고 뒤는 모자라
+// 이분법이 한쪽만 포화한다. 앞/뒤 각각을 몸의 목밑 앞/뒤 호장에 맞춘다.
 // 진동깊이 = 가슴둘레/4. 표준 상의 원형의 대표 관계식(교재별로 B/4 · B/6+7 ·
 // B/8+7.5가 있고 B=84cm에서 21.0/21.0/18.0cm로 모여 B/4를 대표로 택했다).
 // 정찰 교차검증: 이 마네킹의 팔 제외 최대폭 슬라이스(=흉위 대역)가 어깨
@@ -95,7 +105,9 @@ export interface PatternDraft {
   seams: SeamSpec[];
   dims: {
     // 몸 실측 유래
-    chestGirthM: number; neckGirthM: number; shoulderPassGirthM: number;
+    chestGirthM: number; neckGirthM: number;
+    neckBaseGirthM: number; neckBaseY: number; neckBaseFrontM: number; neckBaseBackM: number;
+    shoulderPassGirthM: number;
     ridgeAnchorY: number; shoulderSlope: number;
     // 옷 슬라이더 유래
     lengthM: number; halfWidthM: number; shoulderHalfM: number;
@@ -201,10 +213,37 @@ export function draftTshirtPattern(body: BodyMeasure, g: GarmentDims): PatternDr
   const halfWidthM = g.widthM / 2;
   const shoulderHalfM = g.shoulderWidthM / 2;
 
-  // 목 — 몸 목둘레에서 도출.
-  const neckHalfWidthM = body.neckGirthM / NECK_WIDTH_DIVISOR + NECK_WIDTH_EASE_M;
+  // 목 — 목선 둘레가 목밑둘레 + 여유가 되도록 목너비를 이분법으로 푼다.
+  // 목선 곡선(중심 원점의 4분 타원)은 목너비 w와 깊이만으로 정해지고, 앞깊이는
+  // w + 1cm이므로 둘레는 w에 대해 단조 증가한다.
+  const necklineCurveFor = (w: number, dropM: number): CurveDef => ({
+    kind: "cubic",
+    p0: { x: 0, y: dropM },
+    c0: { x: KAPPA * w, y: dropM },
+    c1: { x: w, y: KAPPA * dropM },
+    p1: { x: w, y: 0 },
+  });
+  // 여유는 앞/뒤에 **호장 비율대로** 나눠 붙인다(한쪽에 몰면 배분이 다시 깨진다).
+  const easeScale = 1 + NECKLINE_EASE_M / body.neckBaseGirthM;
+  const bisect = (f: (v: number) => number, target: number): number => {
+    let lo = 1e-4, hi = 0.5;
+    for (let i = 0; i < 60; i++) {
+      const mid = (lo + hi) / 2;
+      if (f(mid) < target) lo = mid; else hi = mid;
+    }
+    return (lo + hi) / 2;
+  };
+  // 앞: 깊이가 목너비에 묶여 있으므로(앞목깊이 = 목너비 + 1cm) 목너비가 미지수.
+  const neckHalfWidthM = bisect(
+    (w) => 2 * curveLength(necklineCurveFor(w, w + FRONT_NECK_EXTRA_M)),
+    body.neckBaseFrontM * easeScale,
+  );
   const frontNeckDropM = neckHalfWidthM + FRONT_NECK_EXTRA_M;
-  const backNeckDropM = BACK_NECK_DROP_M;
+  // 뒤: 목너비는 이미 정해졌으므로 깊이가 미지수.
+  const backNeckDropM = bisect(
+    (b) => 2 * curveLength(necklineCurveFor(neckHalfWidthM, b)),
+    body.neckBaseBackM * easeScale,
+  );
 
   // 어깨 경사 — 몸 능선 상면의 실제 기울기를 목점~어깨 관절 구간에서 재고,
   // 옷 어깨너비까지 **선형 연장**한다(옷 어깨점은 몸 관절보다 바깥일 수
@@ -241,13 +280,7 @@ export function draftTshirtPattern(body: BodyMeasure, g: GarmentDims): PatternDr
   };
 
   // 목선 곡선 — 중심(0,0)을 중심으로 하는 4분 타원(반축 목너비 × 목깊이).
-  const necklineCurve = (dropM: number): CurveDef => ({
-    kind: "cubic",
-    p0: { x: 0, y: dropM },
-    c0: { x: KAPPA * neckHalfWidthM, y: dropM },
-    c1: { x: neckHalfWidthM, y: KAPPA * dropM },
-    p1: neckPoint,
-  });
+  const necklineCurve = (dropM: number): CurveDef => necklineCurveFor(neckHalfWidthM, dropM);
 
   const torsoPanel = (name: "front" | "back", dropM: number): PatternPanel => ({
     name,
@@ -333,6 +366,8 @@ export function draftTshirtPattern(body: BodyMeasure, g: GarmentDims): PatternDr
     seams,
     dims: {
       chestGirthM: body.chestGirthM, neckGirthM: body.neckGirthM,
+      neckBaseGirthM: body.neckBaseGirthM, neckBaseY: body.neckBaseY,
+      neckBaseFrontM: body.neckBaseFrontM, neckBaseBackM: body.neckBaseBackM,
       shoulderPassGirthM: body.shoulderPassGirthM,
       ridgeAnchorY, shoulderSlope,
       lengthM: g.lengthM, halfWidthM, shoulderHalfM,
@@ -374,16 +409,33 @@ export function checkDraft(d: PatternDraft, armGirthM: number): DraftCheck[] {
     `암홀 ${cm(d.dims.armholeGirthM)}cm / 소매산 ${cm(d.dims.capGirthM)}cm / 이즈 ${cm(ease)}cm(목표 3.00cm)`,
   );
 
+  // 하한은 **목밑**이어야 한다 — 목선이 넘어가는 곳은 목 기둥이 아니라 목밑이고,
+  // 목 기둥 기준으로는 통과하면서 목밑에서 23% 모자란 상태가 9회차까지의 배치
+  // 불가능 원인이었다. 목 기둥 값은 참고로 병기한다.
   push(
-    "목선 둘레 하한(몸 목 최소 단면)",
-    d.dims.necklineGirthM > d.dims.neckGirthM,
-    `목선 ${cm(d.dims.necklineGirthM)}cm > 몸 목 ${cm(d.dims.neckGirthM)}cm (여유 ${cm(d.dims.necklineGirthM - d.dims.neckGirthM)}cm)`,
+    "목선 둘레 하한(몸 목밑 폐곡선)",
+    d.dims.necklineGirthM > d.dims.neckBaseGirthM,
+    `목선 ${cm(d.dims.necklineGirthM)}cm > 몸 목밑 ${cm(d.dims.neckBaseGirthM)}cm@y${cm(d.dims.neckBaseY)} (여유 ${cm(d.dims.necklineGirthM - d.dims.neckBaseGirthM)}cm) · [참고] 목 기둥 최소 단면 ${cm(d.dims.neckGirthM)}cm`,
   );
   push(
     "목선 둘레 상한(어깨 통과 단면 — v1 96.2<106.7 재도출)",
     d.dims.necklineGirthM < d.dims.shoulderPassGirthM,
     `목선 ${cm(d.dims.necklineGirthM)}cm < 어깨 통과 ${cm(d.dims.shoulderPassGirthM)}cm (필요 신장 ${(((d.dims.shoulderPassGirthM / d.dims.necklineGirthM) - 1) * 100).toFixed(1)}%)`,
   );
+
+  // 앞/뒤 **배분** — 총 둘레가 맞아도 배분이 어긋나면 목선이 몸의 목밑을 한쪽만
+  // 파고든다. 배치의 반곡선 이분법이 한쪽만 포화하는 것이 그 증상이다.
+  {
+    const fp = 2 * front.segments[0].lengthM, bp = 2 * back.segments[0].lengthM;
+    const fb = d.dims.neckBaseFrontM, bb = d.dims.neckBaseBackM;
+    // 여유는 앞/뒤에 비례 배분되므로 절대 길이가 아니라 **몫**을 본다.
+    const share = fp / (fp + bp), bodyShare = fb / (fb + bb);
+    push(
+      "목선 앞/뒤 배분 = 몸 목밑 앞/뒤 배분",
+      Math.abs(share - bodyShare) <= 0.02,
+      `목선 앞 ${cm(fp)} / 뒤 ${cm(bp)}cm (앞 몫 ${(share * 100).toFixed(2)}%) vs 몸 목밑 앞 ${cm(fb)} / 뒤 ${cm(bb)}cm (앞 몫 ${(bodyShare * 100).toFixed(2)}%) · 차 ${((share - bodyShare) * 100).toFixed(2)}pp (허용 2.00pp) · 뒤목깊이 ${cm(d.dims.backNeckDropM)}cm(도출)`,
+    );
+  }
 
   push(
     "앞목깊이 > 뒤목깊이",

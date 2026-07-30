@@ -32,6 +32,7 @@
 // (정의 교차검증 — metrics-log 2026-07-29 B 블록).
 import type { Vec3Like } from "./clothProtocol";
 import { nearestOnSegments } from "./bodySkeleton";
+import { COLLISION_MARGIN } from "./clothConfig";
 import type { BodySkeleton } from "./bodySkeleton";
 
 // 슬라이스 두께 — 물리 상수가 아니라 **이산화 폭**이다(bodySkeleton의
@@ -69,6 +70,13 @@ export interface BodyMeasure {
   slices: BodySlice[];
   // 국소 극값에서 도출한 대표 치수.
   waistGirthM: number; waistY: number;
+  // 목**밑** — 목선이 실제로 앉는 자리. neckGirth(목 기둥 최소 단면)와 다르다.
+  // 9회차 실측: 이 몸에서 32.38 vs 45.7cm. 제도 입력은 이쪽이어야 한다.
+  neckBaseGirthM: number; neckBaseY: number;
+  // 그 폐곡선을 **x 극점 두 곳**(어깨-목점이 놓이는 자리)에서 앞/뒤로 자른 길이.
+  // 목선의 앞/뒤 배분이 몸과 맞는지 재는 데 쓴다(제도의 뒤목 깊이 고정 상수가
+  // 몸과 어긋나는지가 여기서 드러난다).
+  neckBaseFrontM: number; neckBaseBackM: number;
   chestGirthM: number; chestY: number;
   neckGirthM: number; neckY: number;
   // 밑단~어깨 관절 구간의 최대 앞뒤 두께.
@@ -90,9 +98,10 @@ export interface BodyMeasure {
   ridgeTopYAt: (xM: number) => number;
 }
 
-// Andrew monotone chain. 반환은 둘레만(형상은 쓰는 곳이 없다).
-function hullPerimeter(pts: readonly [number, number][]): number {
-  if (pts.length < 3) return 0;
+// Andrew monotone chain. 목밑 앞/뒤 배분을 재려면 **형상**이 필요해서
+// 껍질 자체를 돌려주고 둘레는 그 위에서 잰다.
+function convexHull(pts: readonly [number, number][]): [number, number][] {
+  if (pts.length < 3) return [];
   const p = [...pts].sort((a, b) => a[0] - b[0] || a[1] - b[1]);
   const cross = (o: [number, number], a: [number, number], b: [number, number]): number =>
     (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0]);
@@ -106,7 +115,11 @@ function hullPerimeter(pts: readonly [number, number][]): number {
   };
   const lower = build(p);
   const upper = build([...p].reverse());
-  const hull = [...lower.slice(0, -1), ...upper.slice(0, -1)];
+  return [...lower.slice(0, -1), ...upper.slice(0, -1)];
+}
+
+function hullPerimeter(pts: readonly [number, number][]): number {
+  const hull = convexHull(pts);
   let per = 0;
   for (let i = 0; i < hull.length; i++) {
     const a = hull[i];
@@ -117,7 +130,11 @@ function hullPerimeter(pts: readonly [number, number][]): number {
 }
 
 // 위 주석의 3층 정의. `pts`는 이미 팔이 걸러진 (x,z) 표본.
-function girthOfSlice(pts: readonly [number, number][], cx: number, cz: number): { girthM: number; bins: number } {
+function girthOfSlice(
+  pts: readonly [number, number][], cx: number, cz: number,
+  // 표면에서 바깥으로 밀어낼 거리(0이면 표면 그대로 — 기존 소비자는 비트 동일).
+  marginM = 0,
+): { girthM: number; bins: number; points: [number, number][] } {
   const bestR = new Array<number>(GIRTH_BINS).fill(Infinity);
   const nearest = new Array<[number, number] | null>(GIRTH_BINS).fill(null);
   for (const [x, z] of pts) {
@@ -127,7 +144,11 @@ function girthOfSlice(pts: readonly [number, number][], cx: number, cz: number):
     if (d < bestR[b]) { bestR[b] = d; nearest[b] = [x, z]; }
   }
   const pick = nearest.filter((p): p is [number, number] => p !== null);
-  return { girthM: hullPerimeter(pick), bins: pick.length };
+  const off = pick.map(([x, z]): [number, number] => {
+    const d = Math.hypot(x - cx, z - cz) || 1;
+    return [cx + (x - cx) * (1 + marginM / d), cz + (z - cz) * (1 + marginM / d)];
+  });
+  return { girthM: hullPerimeter(off), bins: pick.length, points: off };
 }
 
 export function measureBody(
@@ -270,6 +291,52 @@ export function measureBody(
   }
   if (ridge.length < 2) throw new Error("어깨 능선 프로파일 표본 부족 — z 대역·목 상한 확인");
 
+  // ── 목밑 — 어깨 능선 상면 프로파일이 **가장 가파르게 떨어지는** 지점이 목
+  // 기둥이 어깨로 꺾이는 전이다(실측: x 7cm에서 1.52cm 하강, 이웃 구간의 1.3배
+  // 이상이고 그 위 x 0~5cm는 하강 0). 그 높이의 표면 + 옷 오프셋 최소 폐곡선이
+  // 목선이 앉을 자리이고, 9회차 배치가 관통 교정으로 41.1cm를 잰 것과 같은 양이다.
+  // 둘레 계산은 단면 둘레와 **같은 함수**를 쓴다(각도 bin 최근접 + 볼록껍질).
+  let kneeI = 1, kneeDrop = -Infinity;
+  for (let i = 1; i < ridge.length; i++) {
+    const drop = ridge[i - 1].topY - ridge[i].topY;
+    if (drop > kneeDrop) { kneeDrop = drop; kneeI = i; }
+  }
+  const neckBaseY = ridge[kneeI].topY;
+  const neckBase = (() => {
+    const [cx, cz] = axisAt(neckBaseY);
+    const pts: [number, number][] = [];
+    for (const v of torsoVerts) {
+      if (Math.abs(position[v * 3 + 1] - neckBaseY) > SLICE_THICKNESS_M / 2) continue;
+      pts.push([position[v * 3], position[v * 3 + 2]]);
+    }
+    if (pts.length < 3) throw new Error("목밑 단면 표본 부족 — 능선 무릎 높이 확인");
+    const { girthM, points } = girthOfSlice(pts, cx, cz, COLLISION_MARGIN);
+    // 앞/뒤 배분 — 같은 폐곡선을 x 최대·최소 정점에서 자른다.
+    const hull = convexHull(points);
+    let iMax = 0, iMin = 0;
+    for (let i = 1; i < hull.length; i++) {
+      if (hull[i][0] > hull[iMax][0]) iMax = i;
+      if (hull[i][0] < hull[iMin][0]) iMin = i;
+    }
+    const walk = (from: number, to: number): number => {
+      let l = 0;
+      for (let i = from; i !== to; i = (i + 1) % hull.length) {
+        const a = hull[i], b = hull[(i + 1) % hull.length];
+        l += Math.hypot(b[0] - a[0], b[1] - a[1]);
+      }
+      return l;
+    };
+    const aSide = walk(iMax, iMin), bSide = walk(iMin, iMax);
+    // z가 큰 쪽(앞)을 고른다 — 두 조각의 중점 z로 판별한다.
+    const midZ = (from: number, to: number): number => {
+      let sum = 0, n = 0;
+      for (let i = from; i !== to; i = (i + 1) % hull.length) { sum += hull[i][1]; n++; }
+      return n > 0 ? sum / n : cz;
+    };
+    const aIsFront = midZ(iMax, iMin) > midZ(iMin, iMax);
+    return { girthM, frontM: aIsFront ? aSide : bSide, backM: aIsFront ? bSide : aSide };
+  })();
+
   const ridgeTopYAt = (xM: number): number => {
     if (xM <= ridge[0].xM) return ridge[0].topY;
     if (xM >= ridge[ridge.length - 1].xM) return ridge[ridge.length - 1].topY;
@@ -288,6 +355,8 @@ export function measureBody(
     waistGirthM: slices[waistIdx].girthM, waistY: slices[waistIdx].y,
     chestGirthM: slices[chestIdx].girthM, chestY: slices[chestIdx].y,
     neckGirthM: slices[neckIdx].girthM, neckY,
+    neckBaseGirthM: neckBase.girthM, neckBaseY,
+    neckBaseFrontM: neckBase.frontM, neckBaseBackM: neckBase.backM,
     maxDepthM: slices.reduce((m, s) => (s.y <= shoulderJointY && s.depthM > m ? s.depthM : m), 0),
     frontExtentM: slices.reduce((m, s) => (s.y <= shoulderJointY && s.zMax - centerZ > m ? s.zMax - centerZ : m), 0),
     backExtentM: slices.reduce((m, s) => (s.y <= shoulderJointY && centerZ - s.zMin > m ? centerZ - s.zMin : m), 0),
