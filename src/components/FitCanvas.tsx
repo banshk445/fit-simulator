@@ -92,6 +92,14 @@ export function FitCanvas() {
   const shot = view ? CAPTURE_VIEWS[view] : undefined;
   // v2 patternCore — 켜면 v1 옷 대신 패턴 정적 배치만 그린다(물리 없음).
   const patternCore = import.meta.env.DEV && query.get("patterncore") === "1";
+  // 이 플래그가 켜진 URL에서 사진을 올리면 화면에 아무 일도 안 일어난다
+  // (아래에서 `<Garment>`를 마운트하지 않으므로). 실제로 "업로드가 안 된다"로
+  // 한 번 보고됐다 — 조용히 삼키지 말고 콘솔에 이유와 해법을 남긴다.
+  if (patternCore && garmentImage) {
+    console.warn(
+      "[fit] ?patterncore=1 이 켜져 있어 v1 옷을 그리지 않는다 — 업로드한 사진은 화면에 안 나온다. 사진을 보려면 patterncore 파라미터를 빼고 열 것(http://localhost:5173/).",
+    );
+  }
 
   return (
     <Canvas camera={{ position: shot?.pos ?? [0, 1.3, 3], fov: shot?.fov ?? 45 }}>
