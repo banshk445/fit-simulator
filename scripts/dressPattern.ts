@@ -521,13 +521,13 @@ if (DIAG) {
 
 // ── 화면 판정용 최종 상태 덤프 (1급 게이트는 화면이다 — §2)
 {
-  const out = "scripts/fixtures/dress-state.json";
+  const out = "public/dress-state.json";
   writeFileSync(out, JSON.stringify({
     patternHash, fixtureHash, frames: result.frames, state: result.state,
     garmentDims,
     positions: Array.from(sim.positions, (v) => Number(v.toFixed(5))),
   }));
-  console.log(`\n[dress] 최종 상태 덤프 → ${out} (브라우저 ?patterncore=1&patternstate=1 로 렌더)`);
+  console.log(`\n[dress] 최종 상태 덤프 → ${out} (브라우저 ?patterncore=1&patternstate=1 로 렌더 · 커밋 대상 아님)`);
 }
 
 // ── 하드 게이트

@@ -4,4 +4,4 @@ dist-electron/
 release/
 .DS_Store
 *.log
-scripts/fixtures/dress-state.json
+public/dress-state.json

@@ -95,17 +95,22 @@ export function PatternPreview(): React.JSX.Element | null {
       );
       if (!alive) return;
 
-      if (useDressState) {
-        const st = (await import("../../scripts/fixtures/dress-state.json")).default as unknown as {
-          positions: number[]; frames: number; state: string; patternHash: string;
-        };
+      if (useDressState) try {
+        // 정적 import가 아니라 **런타임 fetch**다 — 덤프는 실행 산출물이라
+        // 커밋되지 않고, 정적 import로 두면 파일이 없을 때 tsc·빌드가 깨진다.
+        const res = await fetch("/dress-state.json");
+        if (!res.ok) {
+          console.warn("[patternPreview] dress-state.json 없음 — npm run dress:pattern 먼저 실행. 정적 배치를 그린다.");
+          throw new Error("no dump");
+        }
+        const st = (await res.json()) as { positions: number[]; frames: number; state: string; patternHash: string };
         if (st.positions.length === g.positions.length) {
           g.positions.set(Float32Array.from(st.positions));
           console.log(`[patternPreview] 착장 최종 상태 로드 — ${st.state} @ ${st.frames}프레임 · pattern ${st.patternHash}`);
         } else {
           console.warn(`[patternPreview] 덤프 정점 수 불일치(${st.positions.length / 3} vs ${g.positions.length / 3}) — 정적 배치를 그린다`);
         }
-      }
+      } catch { /* 덤프 없음·불일치 — 정적 배치로 진행 */ }
 
       const out: THREE.BufferGeometry[] = [];
       for (let p = 0; p < 4; p++) {
