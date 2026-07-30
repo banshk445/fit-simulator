@@ -208,19 +208,21 @@ export function pointBoneTowardWorldDirection(
   const worldDelta = new THREE.Quaternion().setFromUnitVectors(currentDirWorld, targetDirWorld);
   const parentWorldQuat = new THREE.Quaternion();
   parent.getWorldQuaternion(parentWorldQuat);
-  // **정규화가 필수다.** getWorldQuaternion은 부모 월드 행렬을 분해해서
-  // 회전을 뽑는데, 조상 중에 비균등 스케일이 있고 그 아래에 회전이 섞이면
-  // (가슴둘레 슬라이더가 몸통 본에 축별로 다른 스케일을 건다) 분해 결과가
-  // 순수 회전이 아니라 크기가 1이 아닌 쿼터니언이 된다. 이 함수는 매
-  // 프레임 호출돼 bone.quaternion에 **누적 곱**을 하므로, 1이 아닌 크기가
-  // 프레임마다 복리로 곱해져 지수로 발산한다.
+  const localDelta = parentWorldQuat.clone().invert().multiply(worldDelta).multiply(parentWorldQuat);
+  // **마지막 normalize()가 발산을 막는 실제 픽스다.** getWorldQuaternion은
+  // 부모 월드 행렬을 분해해서 회전을 뽑는데, 조상 중에 비균등 스케일이
+  // 있고 그 아래에 회전이 섞이면(가슴둘레 슬라이더가 몸통 본에 축별로
+  // 다른 스케일을 건다) 분해 결과가 크기 1이 아닌 쿼터니언이 된다. 이
+  // 함수는 매 프레임 bone.quaternion에 **누적 곱**을 하므로, 1이 아닌
+  // 크기를 그대로 두면 프레임마다 복리로 곱해져 지수로 발산한다 — 누적
+  // 대상(bone.quaternion)을 곱 직후 정규화해서 끊는다. parentWorldQuat
+  // 쪽은 정규화할 필요가 없다: q⁻¹·w·q 컨쥬게이션에서 q의 크기는 소거된다
+  // (스칼라는 중심원소라 s·q 컨쥬게이션 = q 컨쥬게이션).
   //
   // 실측(2026-07-29): 가슴 100(스케일 정확히 1)에서는 멀쩡하고, 101만
   // 돼도 25초 뒤 팔 정점 6,172개(전체의 38.9%)가 Float32 포화값(3.4e38)이
   // 됐다. 가슴이 클수록 발산이 빨랐다(102는 3초에 이미 Y가 8.4까지).
   // 화면에서는 마네킹 팔이 사라지고, 구운 충돌 메시가 손상돼 옷이 몸에서
   // 떨어졌다. check:demo가 이 상황을 재현해 지킨다.
-  parentWorldQuat.normalize();
-  const localDelta = parentWorldQuat.clone().invert().multiply(worldDelta).multiply(parentWorldQuat);
   bone.quaternion.premultiply(localDelta).normalize();
 }
