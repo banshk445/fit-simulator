@@ -1,5 +1,6 @@
 import { create } from "zustand";
 import type { FabricType } from "../lib/fabricPresets";
+import { DEFAULT_NEW_CORE } from "../lib/clothConfig";
 
 interface BodySize {
   height: number; // cm
@@ -64,6 +65,18 @@ interface FitState {
   // 색으로 보여주는 핏 맵 — 켜지면 텍스처 대신 이 색으로 렌더한다.
   showFitMap: boolean;
   setShowFitMap: (show: boolean) => void;
+  // 렌더 드레이프 개선(레버 1): 물리 격자(44x28)는 그대로 두고 렌더 지오메트리만
+  // GPU 쌍선형 텍스처 샘플링으로 세분화(RENDER_SUBDIV)하는 기존 파이프라인의
+  // on/off 토글 — 끄면 물리 격자 해상도 그대로 렌더(원복 비교용), dev 전용.
+  renderSmoothing: boolean;
+  setRenderSmoothing: (show: boolean) => void;
+  // M1(신 코어): 암홀 링 정점 용접 + physIndex 직결 렌더(DataTexture 프록시
+  // 미사용) 경로 토글 — 신구 대조용, dev 전용. 끄면 기존 경로 그대로.
+  newCore: boolean;
+  setNewCore: (on: boolean) => void;
+  // M2: SDF 접선 마찰 — 신 코어 안에서 마찰만 독립 on/off(A/B 판정용).
+  friction: boolean;
+  setFriction: (on: boolean) => void;
   setFabric: (fabric: FabricType) => void;
   setBodyHeight: (height: number) => void;
   setBodyChest: (chest: number) => void;
@@ -135,6 +148,14 @@ export const useFitStore = create<FitState>((set) => ({
   setShowAllRegionsWireframe: (show) => set({ showAllRegionsWireframe: show }),
   showFitMap: false,
   setShowFitMap: (show) => set({ showFitMap: show }),
+  renderSmoothing: true,
+  setRenderSmoothing: (show) => set({ renderSmoothing: show }),
+  // 2026-07-30 기본 전환 — 구 코어는 ?newcore=0(웹)·NEWCORE=0(하네스)으로
+  // 진입 가능(대조 손잡이). 기본값은 하네스와 공유하는 단일 출처에서.
+  newCore: DEFAULT_NEW_CORE,
+  setNewCore: (on) => set({ newCore: on }),
+  friction: true,
+  setFriction: (on) => set({ friction: on }),
   setFabric: (fabric) => set({ fabric }),
   setBodyHeight: (height) => set((state) => ({ bodySize: { ...state.bodySize, height } })),
   setBodyChest: (chest) => set((state) => ({ bodySize: { ...state.bodySize, chest } })),
@@ -163,3 +184,74 @@ export const useFitStore = create<FitState>((set) => ({
       return { sleeveType, garmentSize: { ...state.garmentSize, sleeveLength } };
     }),
 }));
+
+// DEV 전용: 콘솔 측정 워크플로우(__fitDebug 계열)에서 이미지 업로드 UI를
+// 거치지 않고 상태를 조작할 수 있게 스토어를 노출한다 — 예:
+// window.__fitStore.getState().setGarmentImage(dataUrl).
+if (import.meta.env.DEV) {
+  (window as unknown as { __fitStore?: typeof useFitStore }).__fitStore = useFitStore;
+}
+
+// 화면 판정 자립 워크플로우: 쿼리 파라미터로 페이지 로드 시 상태를
+// 자동 복원한다 — 리로드 후에도 콘솔 조작 없이 항상 같은 판정 상태로
+// 돌아오게. prod에서도 동작한다(2026-07-30) — ?pin/?view/?trimdebug와
+// 같은 이유로, 프로덕션 빌드의 화면 판정(캡처 게이트)이 같은 구도를
+// 재현할 수 있어야 한다. 예:
+//   localhost:5173/?autofit=1&newcore=1        (신 코어 판정 상태)
+//   localhost:5173/?autofit=1&newcore=1&friction=0  (마찰 A/B)
+{
+  const q = new URLSearchParams(window.location.search);
+  if (q.get("autofit") === "1") {
+    const canvas = document.createElement("canvas");
+    canvas.width = 400;
+    canvas.height = 400;
+    const g = canvas.getContext("2d");
+    if (g) {
+      g.fillStyle = "#3a6ea5";
+      g.fillRect(0, 0, 400, 400);
+      useFitStore.getState().setGarmentImage(canvas.toDataURL());
+    }
+  }
+  {
+    const nc = q.get("newcore");
+    if (nc != null) useFitStore.getState().setNewCore(nc !== "0");
+  }
+  if (q.get("friction") === "0") useFitStore.getState().setFriction(false);
+  if (q.get("smoothing") === "0") useFitStore.getState().setRenderSmoothing(false);
+  if (q.get("fitmap") === "1") useFitStore.getState().setShowFitMap(true);
+  // 데모 경로 실주행·문턱 실측용: 치수를 쿼리로 넣는다. 슬라이더를
+  // 손으로 옮기지 않고도 같은 조합을 다시 재현할 수 있어야 "사이즈 변경
+  // 시 드레이프가 실제로 달라지는가"를 전후 대조할 수 있다.
+  const chest = q.get("chest");
+  if (chest) useFitStore.getState().setBodyChest(Number(chest));
+  // 나머지 체형 슬라이더도 동일하게 — 발산 잔존 검사(함정 9)가 슬라이더
+  // 전수를 자동으로 돌 수 있어야 한다.
+  const bh = q.get("bodyheight");
+  if (bh) useFitStore.getState().setBodyHeight(Number(bh));
+  const al = q.get("armlen");
+  if (al) useFitStore.getState().setArmLength(Number(al));
+  const ll = q.get("leglen");
+  if (ll) useFitStore.getState().setLegLength(Number(ll));
+  const sw = q.get("bodyshoulder");
+  if (sw) useFitStore.getState().setShoulderWidth(Number(sw));
+  // ?chestseq=100,120,100&chestseqms=4000 — 가슴 치수를 시간 간격으로
+  // 바꾼다(리로드 없이). "바꿨다 되돌리면 원상 복귀되는가"(상태 누적)는
+  // 페이지를 다시 여는 방식으로는 검증할 수 없어서 만든 것 — 스모크
+  // 테스트도 이 경로를 쓴다.
+  const seq = q.get("chestseq");
+  if (seq) {
+    const step = Number(q.get("chestseqms") ?? 4000);
+    seq.split(",").forEach((v, i) => {
+      setTimeout(() => {
+        console.log(`[fit] chestseq -> ${v}`);
+        useFitStore.getState().setBodyChest(Number(v));
+      }, step * (i + 1));
+    });
+  }
+  const width = q.get("width");
+  if (width) useFitStore.getState().setGarmentWidth(Number(width));
+  const pinlift = q.get("pinlift");
+  if (pinlift) {
+    void import("../lib/shoulderPin").then((m) => m.setShoulderPinLiftOverride(Number(pinlift) / 100));
+  }
+}

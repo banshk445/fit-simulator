@@ -3,6 +3,7 @@ import { useRef, useState } from "react";
 import { useFitStore } from "../store/useFitStore";
 import { FABRIC_PRESETS, type FabricType } from "../lib/fabricPresets";
 import { cropToGarmentRegion } from "../lib/garmentSegmentation";
+import { checkGarmentFit } from "../lib/garmentFitLimits";
 
 function Slider({
   label,
@@ -76,6 +77,13 @@ export function Controls() {
   const setShowAllRegionsWireframe = useFitStore((s) => s.setShowAllRegionsWireframe);
   const showFitMap = useFitStore((s) => s.showFitMap);
   const setShowFitMap = useFitStore((s) => s.setShowFitMap);
+  const renderSmoothing = useFitStore((s) => s.renderSmoothing);
+  const setRenderSmoothing = useFitStore((s) => s.setRenderSmoothing);
+  const newCore = useFitStore((s) => s.newCore);
+  const setNewCore = useFitStore((s) => s.setNewCore);
+  const friction = useFitStore((s) => s.friction);
+  const setFriction = useFitStore((s) => s.setFriction);
+  const fit = checkGarmentFit(bodySize.chest, garmentSize.width);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [isProcessingImage, setIsProcessingImage] = useState(false);
 
@@ -125,6 +133,15 @@ export function Controls() {
           <Shirt size={16} />
           <span>Garment Size</span>
         </div>
+        {fit.message && (
+          <div
+            className={`mb-3 rounded-md px-3 py-2 text-sm ${
+              fit.verdict === "impossible" ? "bg-red-950/70 text-red-200 ring-1 ring-red-800" : "bg-amber-950/60 text-amber-200 ring-1 ring-amber-800"
+            }`}
+          >
+            {fit.message}
+          </div>
+        )}
         <div className="mb-4">
           {/* Safari에서는 hidden input을 <label>로 감싸 클릭을 위임하는 방식이
               신뢰할 수 없어서, ref로 직접 참조해 버튼 클릭 시 .click()을
@@ -333,6 +350,34 @@ export function Controls() {
               className="accent-red-500"
             />
             <span>[DEV] 전 영역 표시(진단용, 텍스처 완전 교체)</span>
+          </label>
+          <label className="mt-2 flex cursor-pointer items-center gap-2 text-sm text-slate-300">
+            <input
+              type="checkbox"
+              checked={renderSmoothing}
+              onChange={(e) => setRenderSmoothing(e.target.checked)}
+              className="accent-red-500"
+            />
+            <span>[DEV] 렌더 스무딩(서브디비전) — 끄면 물리 격자 해상도 그대로</span>
+          </label>
+          <label className="mt-2 flex cursor-pointer items-center gap-2 text-sm text-slate-300">
+            <input
+              type="checkbox"
+              checked={newCore}
+              onChange={(e) => setNewCore(e.target.checked)}
+              className="accent-red-500"
+            />
+            <span>[DEV] 신 코어(M1) — 암홀 용접 + 직결 렌더 (신구 대조)</span>
+          </label>
+          <label className="mt-2 flex cursor-pointer items-center gap-2 text-sm text-slate-300">
+            <input
+              type="checkbox"
+              checked={friction}
+              onChange={(e) => setFriction(e.target.checked)}
+              disabled={!newCore}
+              className="accent-red-500"
+            />
+            <span>[DEV] └ SDF 마찰(M2) — 신 코어 켠 상태에서만</span>
           </label>
         </section>
       )}

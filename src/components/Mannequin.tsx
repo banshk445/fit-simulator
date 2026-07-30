@@ -2,9 +2,12 @@ import { useEffect, useMemo, useRef } from "react";
 import { useGLTF } from "@react-three/drei";
 import { useFrame } from "@react-three/fiber";
 import * as THREE from "three";
+
+// 임시 진단(가슴 스케일 시 몸 메시 폭발 원인 가르기): ?nocounter=1
+const NO_COUNTER = import.meta.env.DEV && new URLSearchParams(window.location.search).get("nocounter") === "1";
 import { DEFAULT_BODY_SIZE, useFitStore } from "../store/useFitStore";
 import { mannequinRootRef } from "../lib/mannequinRef";
-import { isBone, isDescendantOfAny } from "../lib/boneUtils";
+import { isBone, isDescendantOfAny, pointBoneTowardWorldDirection, worldDirection } from "../lib/boneUtils";
 
 // public/models/mannequin.glb — Adobe Fuse/Mixamo 기반의 맨몸 남성 캐릭터
 // ("Ch36")를 T포즈로 내려받아 Blender로 glTF 변환한 파일. 단일 메시라
@@ -89,34 +92,6 @@ function lengthAxis(bone: THREE.Object3D): Axis {
 
 function firstBoneChild(bone: THREE.Object3D): THREE.Object3D | undefined {
   return bone.children.find((c) => isBone(c));
-}
-
-// bone에서 child로 향하는 방향을 월드 공간 기준으로 계산한다.
-function worldDirection(bone: THREE.Object3D, child: THREE.Object3D): THREE.Vector3 {
-  bone.updateWorldMatrix(true, false);
-  child.updateWorldMatrix(true, false);
-  const bonePos = new THREE.Vector3();
-  const childPos = new THREE.Vector3();
-  bone.getWorldPosition(bonePos);
-  child.getWorldPosition(childPos);
-  return childPos.sub(bonePos).normalize();
-}
-
-// bone이 현재 currentDirWorld를 가리키고 있는데, 대신 targetDirWorld를
-// 가리키도록 회전시킨다. bone.quaternion은 부모 로컬 공간 기준이므로,
-// 월드 공간 회전량을 부모의 월드 회전으로 컨쥬게이트해 로컬 공간으로 변환한다.
-function pointBoneTowardWorldDirection(
-  bone: THREE.Object3D,
-  currentDirWorld: THREE.Vector3,
-  targetDirWorld: THREE.Vector3,
-) {
-  const parent = bone.parent;
-  if (!parent) return;
-  const worldDelta = new THREE.Quaternion().setFromUnitVectors(currentDirWorld, targetDirWorld);
-  const parentWorldQuat = new THREE.Quaternion();
-  parent.getWorldQuaternion(parentWorldQuat);
-  const localDelta = parentWorldQuat.clone().invert().multiply(worldDelta).multiply(parentWorldQuat);
-  bone.quaternion.premultiply(localDelta);
 }
 
 export function Mannequin() {
@@ -313,7 +288,7 @@ export function Mannequin() {
     // 위 torsoGirthBones 스케일이 어깨/팔/목/머리 쪽으로 새어 들어가는 걸
     // 상쇄한다 — 자세한 이유는 shoulderGirthAxes/neckCounterScaleBones
     // 선언부 주석 참고.
-    const counterChestMultiplier = 1 / chestMultiplier;
+    const counterChestMultiplier = NO_COUNTER ? 1 : 1 / chestMultiplier;
     for (const { bone, axes } of shoulderGirthAxes) {
       for (const axis of axes) {
         bone.scale[axis] = THREE.MathUtils.lerp(bone.scale[axis], counterChestMultiplier, t);

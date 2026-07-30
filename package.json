@@ -12,7 +12,12 @@
     "electron:dev": "concurrently -k \"vite\" \"wait-on http://localhost:5173 && cross-env NODE_ENV=development electron .\"",
     "electron:build": "tsc -b && vite build && electron-builder",
     "electron:pack": "tsc -b && vite build && electron-builder --dir",
-    "check:sleeve": "tsx scripts/checkSleeveSeam.ts"
+    "check:sleeve": "tsx scripts/checkSleeveSeam.ts",
+    "check:seambridge": "tsx scripts/checkSeamBridge.ts",
+    "sweep:pattern": "tsx scripts/paramSweep.ts",
+    "check:weld": "tsx scripts/checkWeldTopology.ts",
+    "capture": "tsx scripts/capture.ts",
+    "check:demo": "tsx scripts/checkDemoSmoke.ts"
   },
   "build": {
     "appId": "com.fitsimulator.app",

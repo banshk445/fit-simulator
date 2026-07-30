@@ -41,11 +41,21 @@ export function sphereCollisionResolver(colliders: readonly ClothCollider[]): Co
   };
 }
 
+// 드레이프 개선 A안: 제약을 종류별(structural/shear/bend/seam)로 태깅해
+// 종류별 목표 강성을 따로 걸 수 있게 한다. 숫자 enum인 이유 — solver 안쪽
+// 루프(프레임당 수십만 회)에서 배열 인덱스 lookup이 문자열 키보다 싸다.
+export const CONSTRAINT_STRUCTURAL = 0;
+export const CONSTRAINT_SHEAR = 1;
+export const CONSTRAINT_BEND = 2;
+export const CONSTRAINT_SEAM = 3;
+export type ConstraintKind = 0 | 1 | 2 | 3;
+
 interface Constraint {
   a: number;
   b: number;
   restLength: number;
   stiffness: number;
+  kind: ConstraintKind;
 }
 
 export interface PanelDims {
@@ -74,6 +84,13 @@ export class ClothSimulation {
   prevPositions: Float32Array;
   pinned: Uint8Array;
   private constraints: Constraint[] = [];
+  // 드레이프 개선 A안: 제약 종류별 목표 강성(0~1, 인덱스=ConstraintKind).
+  // step()이 iteration 수 n에 맞춰 per-iteration 배율 k'=1-(1-k)^(1/n)로
+  // 보정해 적용한다 — 단순 배율은 Gauss-Seidel n회 반복이 유효 강성을
+  // 1-(1-k)^n으로 되살려버려서(소매 relaxSleeveStiffness가 0.60/0.35에선
+  // 무효했고 0.15에서야 효과가 보인 실측이 이 수학과 일치, buildGarmentSim.ts
+  // 참고) "목표 강성" 의미가 없었다. 전부 1이면 k'=1이라 기존과 비트 동일.
+  private kindTargetStiffness: [number, number, number, number] = [1, 1, 1, 1];
   // step() 시작 시점 위치를 담아두는 스크래치 버퍼 — displacement clamping이
   // "이번 서브스텝 동안 얼마나 움직였는지"를 비교할 기준점으로 쓴다. 매
   // step() 호출마다 새로 할당하면 60fps 워커에서 GC 압박이 생기므로 한 번만
@@ -102,7 +119,8 @@ export class ClothSimulation {
 
   // 시접 등으로 실제 연결된 파티클 쌍을 읽기전용으로 노출 — 자체충돌
   // (selfCollision.ts)이 "이미 제약으로 묶인 쌍"을 정확히 알아야 할 때 씀.
-  get constraintPairs(): ReadonlyArray<{ readonly a: number; readonly b: number }> {
+  // restLength는 drapeMetrics(strain 계산)용 — 타입만 넓혔고 내용은 그대로.
+  get constraintPairs(): ReadonlyArray<{ readonly a: number; readonly b: number; readonly restLength: number }> {
     return this.constraints;
   }
 
@@ -138,7 +156,7 @@ export class ClothSimulation {
   // 연결(시접)은 별도로 addConstraint()를 호출해 추가한다.
   buildConstraints(): void {
     this.constraints = [];
-    const add = (a: number, b: number) => {
+    const add = (a: number, b: number, kind: ConstraintKind) => {
       const ax = this.positions[a * 3];
       const ay = this.positions[a * 3 + 1];
       const az = this.positions[a * 3 + 2];
@@ -146,21 +164,21 @@ export class ClothSimulation {
       const by = this.positions[b * 3 + 1];
       const bz = this.positions[b * 3 + 2];
       const restLength = Math.hypot(bx - ax, by - ay, bz - az);
-      this.constraints.push({ a, b, restLength, stiffness: 1 });
+      this.constraints.push({ a, b, restLength, stiffness: 1, kind });
     };
     for (let p = 0; p < this.panels; p++) {
       const { cols, rows } = this.panelDims[p];
       for (let y = 0; y < rows; y++) {
         for (let x = 0; x < cols; x++) {
           const i = this.index(p, x, y);
-          if (x < cols - 1) add(i, this.index(p, x + 1, y)); // structural
-          if (y < rows - 1) add(i, this.index(p, x, y + 1)); // structural
+          if (x < cols - 1) add(i, this.index(p, x + 1, y), CONSTRAINT_STRUCTURAL);
+          if (y < rows - 1) add(i, this.index(p, x, y + 1), CONSTRAINT_STRUCTURAL);
           if (x < cols - 1 && y < rows - 1) {
-            add(i, this.index(p, x + 1, y + 1)); // shear
-            add(this.index(p, x + 1, y), this.index(p, x, y + 1)); // shear
+            add(i, this.index(p, x + 1, y + 1), CONSTRAINT_SHEAR);
+            add(this.index(p, x + 1, y), this.index(p, x, y + 1), CONSTRAINT_SHEAR);
           }
-          if (x < cols - 2) add(i, this.index(p, x + 2, y)); // bend
-          if (y < rows - 2) add(i, this.index(p, x, y + 2)); // bend
+          if (x < cols - 2) add(i, this.index(p, x + 2, y), CONSTRAINT_BEND);
+          if (y < rows - 2) add(i, this.index(p, x, y + 2), CONSTRAINT_BEND);
         }
       }
     }
@@ -169,7 +187,7 @@ export class ClothSimulation {
   // 격자 위상과 무관한 임의의 제약(패널 간 시접 등)을 추가한다. buildConstraints()
   // 호출 이후에 호출해야 한다(그렇지 않으면 buildConstraints가 초기화해버린다).
   addConstraint(a: number, b: number, restLength: number): void {
-    this.constraints.push({ a, b, restLength, stiffness: 1 });
+    this.constraints.push({ a, b, restLength, stiffness: 1, kind: CONSTRAINT_SEAM });
   }
 
   // 46번 실측(면적 자체를 줄이는 접근): 정점 데이터 실측 결과, 소매 뽕이
@@ -197,6 +215,173 @@ export class ClothSimulation {
     for (const c of this.constraints) {
       const f = factorFor(c.a, c.b);
       if (f !== 1) c.stiffness *= f;
+    }
+  }
+
+  // 드레이프 개선 A안: 종류별 목표 강성 설정(0~1). 낮추는 방향만 쓸 것 —
+  // 1 초과는 발산 이력(docs/pattern-redesign.md 13번: stiffness>1 카오스적
+  // 불안정)이 있어 clamp한다.
+  setKindTargetStiffness(structural: number, shear: number, bend: number, seam = 1): void {
+    const clamp01 = (v: number) => Math.min(1, Math.max(0, v));
+    this.kindTargetStiffness = [clamp01(structural), clamp01(shear), clamp01(bend), clamp01(seam)];
+  }
+
+  // M1(용접): alias 파티클을 canon 파티클의 별칭으로 만든다 — 제약 끝점을
+  // 전부 canon으로 리맵하고(자기 자신을 잇게 된 제약=원래 시접은 제거,
+  // 리맵으로 기존 제약과 중복된 것도 제거), alias는 pinned 처리해 물리에서
+  // 완전히 제외한다(적분·충돌·보정 전부 pinned 스킵). 렌더/지표가 alias
+  // 인덱스로 읽어도 항상 canon과 같은 값을 보도록 syncWeldedPositions()를
+  // 프레임 루프(garmentFrame.ts)가 주기적으로 호출한다.
+  // buildConstraints()+시접 추가가 전부 끝난 뒤에 한 번만 불러야 한다.
+  private weldAliases: Uint32Array = new Uint32Array(0);
+  private weldCanons: Uint32Array = new Uint32Array(0);
+
+  applyWelds(pairs: ReadonlyArray<{ alias: number; canon: number }>): void {
+    const n = this.positions.length / 3;
+    const canonOf = new Uint32Array(n);
+    for (let i = 0; i < n; i++) canonOf[i] = i;
+    for (const { alias, canon } of pairs) canonOf[alias] = canon;
+    // 연쇄(canon 자신이 다른 쌍의 alias인 경우) 해소 — 현재 용접 셋(암홀
+    // 링)엔 연쇄가 없지만 일반성 유지.
+    for (let i = 0; i < n; i++) {
+      let c = canonOf[i];
+      while (canonOf[c] !== c) c = canonOf[c];
+      canonOf[i] = c;
+    }
+
+    const seen = new Set<number>();
+    const kept: Constraint[] = [];
+    for (const c of this.constraints) {
+      const a = canonOf[c.a];
+      const b = canonOf[c.b];
+      if (a === b) continue; // 용접된 시접 자체
+      const key = Math.min(a, b) * n + Math.max(a, b);
+      if (seen.has(key)) continue; // 리맵으로 기존 제약과 겹침(원본 유지)
+      seen.add(key);
+      kept.push(a === c.a && b === c.b ? c : { ...c, a, b });
+    }
+    this.constraints = kept;
+
+    const aliases: number[] = [];
+    const canons: number[] = [];
+    for (const { alias } of pairs) {
+      const canon = canonOf[alias];
+      aliases.push(alias);
+      canons.push(canon);
+      this.pinned[alias] = 1;
+      const ai = alias * 3;
+      const ci = canon * 3;
+      for (let k = 0; k < 3; k++) {
+        this.positions[ai + k] = this.positions[ci + k];
+        this.prevPositions[ai + k] = this.positions[ci + k];
+      }
+    }
+    this.weldAliases = Uint32Array.from(aliases);
+    this.weldCanons = Uint32Array.from(canons);
+  }
+
+  get weldPairs(): { aliases: Uint32Array; canons: Uint32Array } {
+    return { aliases: this.weldAliases, canons: this.weldCanons };
+  }
+
+  // M2-6(칼라 원주 제약): row0 링 엣지의 **신장만** 상한을 건다(압축은
+  // 자유 — 목선이 오므라드는 건 막을 이유가 없다). limitStrain과 같은
+  // 기계지만 대상이 링 엣지 한정이고 상한이 훨씬 빡빡하다(1.02 vs 1.2).
+  // 목적은 "천이 어깨를 넘어 흘러내리려면 목선 원주가 늘어야 한다"는
+  // 기하 조건(정찰: row0 레스트 96.2cm < 어깨 통과 106.7cm, 통과에
+  // +10.9% 필요)을 물리로 강제하는 것.
+  private collarRing: { a: number; b: number; restLength: number }[] = [];
+
+  setCollarRing(pairs: ReadonlyArray<{ a: number; b: number }>): void {
+    this.collarRing = pairs.map(({ a, b }) => {
+      const ai = a * 3;
+      const bi = b * 3;
+      return {
+        a,
+        b,
+        restLength: Math.hypot(
+          this.positions[bi] - this.positions[ai],
+          this.positions[bi + 1] - this.positions[ai + 1],
+          this.positions[bi + 2] - this.positions[ai + 2],
+        ),
+      };
+    });
+  }
+
+  // 발화 횟수를 돌려준다 — 배선 검증(0이면 제약이 안 걸린 것)용.
+  limitCollarStrain(maxStretch: number): number {
+    let fired = 0;
+    for (const c of this.collarRing) {
+      const ai = c.a * 3;
+      const bi = c.b * 3;
+      const pinnedA = this.pinned[c.a];
+      const pinnedB = this.pinned[c.b];
+      if (pinnedA && pinnedB) continue;
+      const dx = this.positions[bi] - this.positions[ai];
+      const dy = this.positions[bi + 1] - this.positions[ai + 1];
+      const dz = this.positions[bi + 2] - this.positions[ai + 2];
+      const dist = Math.hypot(dx, dy, dz) || 1e-6;
+      const maxDist = c.restLength * maxStretch;
+      if (dist <= maxDist) continue;
+      fired++;
+      const diff = (dist - maxDist) / dist;
+      const moveA = pinnedA ? 0 : pinnedB ? 1 : 0.5;
+      const moveB = pinnedB ? 0 : pinnedA ? 1 : 0.5;
+      if (!pinnedA) {
+        this.positions[ai] += dx * diff * moveA;
+        this.positions[ai + 1] += dy * diff * moveA;
+        this.positions[ai + 2] += dz * diff * moveA;
+      }
+      if (!pinnedB) {
+        this.positions[bi] -= dx * diff * moveB;
+        this.positions[bi + 1] -= dy * diff * moveB;
+        this.positions[bi + 2] -= dz * diff * moveB;
+      }
+    }
+    return fired;
+  }
+
+  // 반복 안 앵커 — row0 목표 위치로 당긴다. pinned=0을 유지한 채
+  // **매 Gauss-Seidel 반복**에서 강제한다는 게 핵심: 프레임당 1회
+  // 보정은 18회 도는 제약에 지워진다(마찰 M2-5, 연속 핀 (a) 1차 시도
+  // 둘 다 같은 구조로 실패). 강성은 호출자가 복리 보정(k'=1-(1-k)^(1/n))
+  // 해서 넘긴다 — 안 하면 실효 강성이 폭증해 어떤 값이든 하드 핀이 된다.
+  private anchors: { i: number; x: number; y: number; z: number }[] = [];
+
+  setAnchors(list: { i: number; x: number; y: number; z: number }[]): void {
+    this.anchors = list;
+  }
+
+  // (i) 반복 내 prev 동기화: 앵커로 되돌린 직후 그 정점의 prevPositions를
+  // 새 위치와 맞춘다. 이유 — pinned=0이라 row0이 매 반복 충돌·순서에
+  // 밀린 뒤 앵커가 스냅하는데, prev를 프레임당 1회만 완화하면 그 왕복이
+  // 속도로 누적돼 지속 진동이 된다(실측: Δ20이 하드 핀 2.57mm 대비
+  // 7.19mm에서 안 내려옴). 하드 핀도 pinned=1로 속도를 소거하므로 이건
+  // 그보다 강한 감쇠가 아니다 — row0의 **충돌 참여만** 유지하는 게 목적.
+  // 대상은 앵커 정점뿐, 다른 정점의 prev는 안 건드린다.
+  applyAnchors(kPerIteration: number, syncPrev = false): void {
+    if (kPerIteration <= 0) return;
+    for (const a of this.anchors) {
+      const ix = a.i * 3;
+      this.positions[ix] += (a.x - this.positions[ix]) * kPerIteration;
+      this.positions[ix + 1] += (a.y - this.positions[ix + 1]) * kPerIteration;
+      this.positions[ix + 2] += (a.z - this.positions[ix + 2]) * kPerIteration;
+      if (syncPrev) {
+        this.prevPositions[ix] = this.positions[ix];
+        this.prevPositions[ix + 1] = this.positions[ix + 1];
+        this.prevPositions[ix + 2] = this.positions[ix + 2];
+      }
+    }
+  }
+
+  syncWeldedPositions(): void {
+    for (let i = 0; i < this.weldAliases.length; i++) {
+      const ai = this.weldAliases[i] * 3;
+      const ci = this.weldCanons[i] * 3;
+      for (let k = 0; k < 3; k++) {
+        this.positions[ai + k] = this.positions[ci + k];
+        this.prevPositions[ai + k] = this.positions[ci + k];
+      }
     }
   }
 
@@ -246,6 +431,15 @@ export class ClothSimulation {
     // 짧아짐). 반복마다 훑는 방향을 번갈아(정방향/역방향) 바꿔 이 편향을
     // 상쇄시킨다 — 표준적인 완화 기법이다.
     const constraintCount = this.constraints.length;
+    // 종류별 per-iteration 배율(위 kindTargetStiffness 주석 참고). 목표 1이면
+    // Math.pow(0, 1/n)=0이라 배율이 정확히 1 — 기존 경로와 비트 동일.
+    const invIter = 1 / iterations;
+    const kindFactor = [
+      1 - Math.pow(1 - this.kindTargetStiffness[0], invIter),
+      1 - Math.pow(1 - this.kindTargetStiffness[1], invIter),
+      1 - Math.pow(1 - this.kindTargetStiffness[2], invIter),
+      1 - Math.pow(1 - this.kindTargetStiffness[3], invIter),
+    ];
     for (let iter = 0; iter < iterations; iter++) {
       const forward = iter % 2 === 0;
       for (let ci = 0; ci < constraintCount; ci++) {
@@ -265,7 +459,7 @@ export class ClothSimulation {
         // 저항해, 좌표를 아무리 꺾어도 골판지처럼 각진 채로 굳었다.
         // stiffness(기본 1)를 곱해, 소매 영역처럼 부드럽게 흘러야 하는
         // 구간의 제약만 낮은 강도로 완화할 수 있게 한다.
-        const diff = ((dist - c.restLength) / dist) * c.stiffness;
+        const diff = ((dist - c.restLength) / dist) * c.stiffness * kindFactor[c.kind];
 
         const moveA = pinnedA ? 0 : pinnedB ? 1 : 0.5;
         const moveB = pinnedB ? 0 : pinnedA ? 1 : 0.5;

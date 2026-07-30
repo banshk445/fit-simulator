@@ -125,6 +125,80 @@ export const MAX_DISPLACEMENT_PER_SUBSTEP = 0.05;
 export const SELF_COLLISION_MIN_DIST = 0.0055;
 // 옆선(사이드심) 시접의 목표 간격.
 export const SEAM_REST_LENGTH = 0.006;
+
+// 드레이프 개선 A안(A-②): 제약 종류별 목표 강성. step()이 iteration 수로
+// 보정(k'=1-(1-k)^(1/n))해 적용하므로 "반복이 많으면 유효 강성이 도로
+// 1에 붙는" 문제 없이 이 값이 곧 프레임당 유효 강성이다(clothPhysics.ts
+// setKindTargetStiffness 참고). 표준 천 시뮬은 bend를 stretch 대비
+// 0.01~0.1로 두는데 기존엔 셋 다 1.0이라 2칸 거리 제약이 "펴진 상태"를
+// 100% 강도로 유지 — 44×28 셀(~2.5×3cm)보다 작은 곡률의 접힘이 아예
+// 불가능해 큰 평면 폴리곤이 각지게 굳는 원인이었다(A-① 조사).
+// 1 초과 금지 — docs/pattern-redesign.md 13번(stiffness>1 카오스적 불안정).
+export const STIFFNESS_STRUCTURAL = 1.0;
+// A-③(0.6) 원복: 12콤보 전 지표 개선/불변이었는데 화면은 참사 — 네 각도
+// 모두 어깨 천이 몸에서 떨어져 등판 노출(두 조합 실측 동일). 전단 저항이
+// 약해지면 천이 어깨 곡면을 감싸는 형태를 유지 못 하고 미끄러진다.
+// 이 실패가 bodyGapMm 지표(drapeMetrics.ts) 신설 계기 — A-② 128mm대 vs
+// A-③ 124~160mm 대조 참고. 다시 낮추려면 bodyGapMm 회귀 확인 필수.
+export const STIFFNESS_SHEAR = 1.0;
+export const STIFFNESS_BEND = 0.1;
+export const STIFFNESS_SEAM = 1.0;
+
+// M2(SDF 마찰). 복셀 2cm — 몸통 굴곡(어깨 캡 돔 반경 수 cm)을 담을 만큼
+// 촘촘하면서 굽기 비용(수만 회 BVH 질의, rebuild 시 1회)이 감당되는 선.
+// 팔은 여전히 해석적 캡슐이 담당한다(4.56cm 반경 팔은 2cm 복셀로 부정확).
+export const SDF_VOXEL = 0.02;
+export const SDF_FAR = 0.3;
+// 접촉 판정 폭 — COLLISION_MARGIN(1.5cm)보다 살짝 넓게 잡아, 밀어내기가
+// 목표 거리에 안착한 파티클도 접촉으로 계속 인식되게 한다.
+export const FRICTION_CONTACT_BAND = 0.02;
+// 계수는 실측이 아니라 눈대중 초기값 — 면(cotton) 대 인체 마찰이 대략
+// 0.3~0.6대라는 통념에서 시작. 게이트 수치·화면 판정으로 조정될 값이다.
+export const FRICTION_MU_STATIC = 0.6;
+// M2-3: SDF 밀어내기의 under-relaxation — bvhFromArrays.ts의
+// PUSH_RELAXATION(0.4)과 같은 값·같은 이유(한 번에 다 풀면 구조 제약이
+// 저항하기 전에 옷이 표면으로 수축한다).
+export const SDF_PUSH_RELAXATION = 0.4;
+export const FRICTION_MU_KINETIC = 0.4;
+// M2-5(반복 안 마찰) 전용 μ — 서브스텝 말미 속도 패스의 μ(위)와 별개.
+// 반복 안 운동 감쇠는 반복 수(18)만큼 누적되므로 훨씬 작아야 한다.
+// 스윕 실측(0.02/0.05/0.1): 0.05가 coverage 9.2%(역대 최저)·maxStrain
+// 3.57(-15%)·jitter 12.67(기준선 12.37 동등)로 세 기준 동시 충족.
+// 0.1은 strain이 더 내려가나(3.33) jitter가 오르기 시작(14.23, +15%).
+export const FRICTION_MU_ITER = 0.05;
+// 핀 전환(화면 판정 대기): 1=하드 핀. 반복 안 마찰(μ_iter)이 하중을 받게
+// 된 뒤의 재스윕에서 0.5가 후보 — bodyGap 어깨 mean -21.3→-10.6(절반),
+// 면각평균 15.2→19.5(+28%), maxStrain 4.155(기준 4.2 이하 유지),
+// jitter 13.26(동등). 비용: coverage 10.1→25.5%(+15.4pp — 이전 핀
+// 스윕의 +25.6pp보다 크게 줄었지만 여전히 문턱 밖이라 화면 판정 필요).
+// 원복(화면 판정 실패): PIN 0.5에서 등 상단 양쪽(견갑골) 노출 —
+// A-③/C 실패 부위 재현(/tmp/fit-shot-pin05-back.png). 앞면 몸통 드레이프는
+// 역대 최고였으나(면각 +28% 실재 확인) 목선 지그재그·소매캡 분리도 동반.
+// 재시도 조건: 어깨 mean 고원(-10.5)의 원인인 COLLISION_MARGIN(15mm)을
+// 먼저 낮춰 천이 실제로 어깨에 앉을 수 있게 한 뒤.
+export const PIN_STRENGTH = 1;
+
+// M2-6(칼라 원주 제약): row0 링 엣지 신장 상한. 정찰 근거 — row0 레스트
+// 96.2cm < 어깨 통과 최대 둘레 106.7cm이므로, 링이 +10.9% 이상 못 늘면
+// 천이 어깨를 넘어 흘러내릴 수 없다(실제 티셔츠의 목둘레<어깨둘레 원리).
+// 1.02는 그 여유(10.9%)보다 훨씬 빡빡하게 잡은 값 — 압축은 비제한.
+// **주의(기대치 오독 방지)**: LIFT 스윕에서 row0은 핀 고정(신장 0%)인데도
+// row1~2 확장으로 목선이 사각으로 벌어졌다. 즉 row0 제약 단독은 "사각
+// 개구 억제" 장치가 **아니다** — 이 제약의 검증 대상은 핀을 푼 상태의
+// "위치 자유 + 탈락 방지"다. 개구 억제가 필요하면 별건(M2-6b, row1).
+export const COLLAR_STRAIN_LIMIT = 1.02;
+
+// M2-8(국소 마찰): 접촉 법선의 위쪽 성분(n.y)에 비례해 반복 마찰 μ를
+// 증폭한다. 대역을 천 행 인덱스로 정의하지 않는 이유 = 함정 7(좌표계
+// 불일치, 이 세션 2회 재발) — 법선은 물리량이라 좌표계 논쟁이 없고,
+// "수평면 위에 얹힌 천"(어깨 상면)만 정확히 골라낸다. 옆구리·가슴처럼
+// 법선이 수평인 접촉은 배수 1(무변화).
+// 유효 μ = μ_iter * (1 + LOCAL_MU_GAIN * max(0, n.y)).
+// 스윕(0/2/5/10): gain 2가 유일한 통과 — coverage 10.1→7.8%(역대 최저),
+// maxStrain 3.663→3.467, hover tf 24.57→22.73, jitter 13.09→13.37(동등),
+// 히트율 불변(0.976/0.671). gain 5 이상은 어깨를 얼려 tb 히트율 붕괴
+// (0.671→0.402)+jitter 20.3(+55%) — 마찰 과다의 M2-5 μ0.6과 같은 패턴.
+export const LOCAL_MU_GAIN = 2;
 // 겨드랑이 밑부터 밑단까지만 옆선을 잇고, 그 위(어깨~겨드랑이)는 트여 있는
 // 암홀(진동)로 남겨둔다 — 별도 소매 패널 없이도 최소한의 팔 통로를 만든다.
 // 이 구간이 넓을수록 앞/뒤판이 서로 안 붙잡아 주는 구간도 넓어져서, 뒤판이
@@ -187,3 +261,8 @@ export const REBUILD_DEBOUNCE_MS = 200;
 // 몸통에 맞는 등의 영향이 섞여 있을 수 있다. 평균(4.0625cm)에 5mm
 // 여유를 더한 값으로 교체한다 — 옛 6.5cm는 실측치보다 컸던 추정값이었다.
 export const ARM_COLLISION_RADIUS = 0.0456;
+
+// 코어 기본값의 단일 출처 — 스토어(제품 기본)와 paramSweep(하네스 기본)이
+// 이 상수를 같이 본다. 하네스가 제품과 다른 코어를 기본으로 쓰면 "기본
+// 실행"이 제품을 안 재게 된다(함정 12). 구 코어 진입은 ?newcore=0 / NEWCORE=0.
+export const DEFAULT_NEW_CORE = true;

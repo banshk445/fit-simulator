@@ -7,11 +7,14 @@ import { useFitStore } from "../store/useFitStore";
 import { MannequinCollisionMesh } from "../lib/meshCollision";
 import { ArrayBvhCollision } from "../lib/bvhFromArrays";
 import { mannequinRootRef } from "../lib/mannequinRef";
-import { buildTorsoProxyCapsules } from "../lib/torsoCapsule";
+import { buildTorsoProxyCapsules, type Capsule } from "../lib/torsoCapsule";
+import { capsuleGapBands, computeCapsuleGapChannels, type GridView } from "../lib/drapeMetrics";
 import { findArmDirection, findShortSleeveDirection, findShoulderBones } from "../lib/boneUtils";
 import { computeShoulderPin } from "../lib/shoulderPin";
 import { compositeGarmentTexture } from "../lib/garmentTextureComposite";
-import { torsoColumnRange } from "../lib/buildGarmentSim";
+import { neckHoleColumnRange, torsoColumnRange } from "../lib/buildGarmentSim";
+import { computeNecklineLift } from "../lib/necklineLift";
+import { angleDegBetweenNormals, armholeRingJaggedness, ringJaggedness } from "../lib/seamDiagnostics";
 import {
   ARM_COLLISION_RADIUS,
   ARMHOLE_ROW_FRACTION,
@@ -25,6 +28,27 @@ import {
 } from "../lib/clothConfig";
 import type { MainToGarmentWorkerMessage, GarmentWorkerToMainMessage, ArmShapeMsg } from "../lib/garmentProtocol";
 import { MODEL_URL } from "./Mannequin";
+import { armholeSeamStrip, buildSeamBridge, shoulderSeamStrip, sideSeamStrip, updateSeamBridge } from "./seamBridge";
+import { buildWeldedGarmentGeometry } from "./weldedGarmentGeometry";
+import { buildTrimBand, type TrimRing } from "./trimBands";
+
+// 함정 1(HMR이 워커를 안 갱신) 가드. 워커는 페이지 로드 시점에 만들어지고
+// HMR 업데이트를 받지 않으므로, 로드 이후 갱신이 한 번이라도 오면 화면의
+// 물리는 디스크의 코드가 아니다. 판정·측정 전에 __fitDebug.buildStamp()로
+// 확인할 것 — 이걸 몰라 멀쩡한 수정을 원복한 사고가 있었다.
+const PAGE_LOADED_AT = new Date().toISOString();
+let hmrUpdateCount = 0;
+if (import.meta.hot) {
+  import.meta.hot.on("vite:afterUpdate", () => {
+    hmrUpdateCount += 1;
+    console.warn(
+      `[fit] HMR 갱신 ${hmrUpdateCount}회 — 워커 물리는 갱신되지 않았다. 화면 판정 전에 하드 리프레시(Cmd+Shift+R)할 것.`,
+    );
+  });
+}
+if (import.meta.env.DEV) {
+  console.log(`[fit] 페이지 로드 ${PAGE_LOADED_AT} — 워커 스탬프. __fitDebug.buildStamp()로 확인.`);
+}
 
 interface Props {
   imageUrl: string;
@@ -34,89 +58,6 @@ const shoulderVec = new THREE.Vector3();
 const rightShoulderVec = new THREE.Vector3();
 const leftDirVec = new THREE.Vector3();
 const rightDirVec = new THREE.Vector3();
-
-// 46번(재설계): 목선(0번 행)이 마네킹 어깨 위에서 여전히 부자연스럽게
-// 보인다는 지적을 받았다 — SHOULDER_PIN_LIFT를 키워봐도(2cm→5.5cm) 이
-// 상수는 "핀 코너 근방 8cm"에서만 실측된 값이라, 어깨 캡(삼각근) 돔의
-// 정점은 중심에 가까울수록 더 높이 솟기 때문에 균일한 리프트로는 부족한
-// 열이 남았다. 매 프레임 0번 행의 각 열마다 실제로 레이캐스팅해서 마네킹
-// 표면 높이를 직접 재고, 그 표면보다 낮으면 끌어올리는 보정치를 계산한다
-// — 상수 하나를 또 추측하는 대신, 실제 마네킹 형상을 그대로 따라가게 한다.
-const neckRayOrigin = new THREE.Vector3();
-const DOWN_VEC = new THREE.Vector3(0, -1, 0);
-const NECK_SURFACE_CLEARANCE = 0.012; // 표면 위로 얹히는 옷감 두께 여유
-// 46번 실측(버그): 처음엔 광선을 기준선 위 25cm에서 아래로 50cm까지
-// 넉넉하게 쐈는데, 목 구멍 중심부 열(u가 0에 가까운, 실제로는 목/턱이
-// 있는 위치)에서 광선이 머리(턱 밑)에 맞아버려 그 열이 머리 높이까지
-// 확 끌려 올라가는 "뿔"처럼 보이는 회귀가 실측(스크린샷)으로 확인됐다 —
-// 그 구간은 애초에 마네킹 표면을 따라갈 필요가 없는(목이 드러나야 하는)
-// 목 구멍 자체이므로 레이캐스팅 대상에서 아예 뺀다. 탐색 범위도 어깨 캡
-// 돔이 실제로 있을 법한 좁은 창(기준선 위 10cm~아래 5cm)으로 좁혀, 엉뚱한
-// 부위에 맞을 여지 자체를 줄인다.
-const NECK_RAYCAST_MIN_ABS_U = 0.3; // 이보다 중심에 가까운 열은 목 구멍이라 건너뜀
-// 46번 실측(버그): 위 문턱값에서 레이캐스팅 보정을 아예 껐다 켰다(if로
-// 완전히 건너뜀) 했더니, 정확히 그 경계 열에서 리프트 값이 뚝 끊겨(옆
-// 열은 보정 있음, 이 열은 0) 목선 곡선에 눈에 띄는 꺾임/톱니가 생겼다
-// — 경계 근방 몇 열에 걸쳐 부드럽게 0으로 줄어들도록(smoothstep) 블렌드해
-// 그 꺾임을 없앤다.
-const NECK_RAYCAST_BLEND_WIDTH = 0.08;
-function smoothstep01(t: number): number {
-  const c = THREE.MathUtils.clamp(t, 0, 1);
-  return c * c * (3 - 2 * c);
-}
-// 46번(전면 재설계): 몸판 열이 이제 소매 끝까지 뻗어 있으므로, 여기서
-// 쓰는 "열 위치 u"는 더 이상 pinLeft~pinRight 사이 어깨 폭 전체를
-// 나타내지 않는다 — u=±0.5는 이제 소매 끝이지 어깨점이 아니다. 목선
-// 레이캐스팅(그리고 그 기준이 되는 pinLeft~pinRight 보간)은 몸통 폭 안쪽
-// 열(xMin~xMax, buildGarmentSim.ts의 torsoColumnRange)에서만 의미가
-// 있다 — 그 바깥(소매 쪽, 핀 자체가 없는 열)은 raycasting 대상에서 뺀다.
-function computeNecklineLift(
-  bvh: ArrayBvhCollision,
-  pinLeft: THREE.Vector3,
-  pinRight: THREE.Vector3,
-  cols: number,
-  xMin: number,
-  xMax: number,
-): Float32Array {
-  // 46번(전면 재설계 버그): 여기 t/u는 예전엔 "0=왼쪽 어깨~1=오른쪽 어깨"를
-  // 의미했다(COLS가 어깨 폭만 담당하던 시절). 지금은 COLS가 소매 끝까지
-  // 담당하므로, 열 index 기준 raw t를 그대로 쓰면 (1) NECK_RAYCAST_MIN_ABS_U
-  // 문턱값이 더 이상 "어깨 근처"를 가리키지 않고, (2) baseX/Y/Z가 pinLeft~
-  // pinRight를 몸통 범위 전체가 아니라 그 일부만 잘라 보간해버린다 —
-  // 실측(스크린샷)에서 쇄골 근처에 남아있던 작은 흰 틈의 원인이었다.
-  // 몸통 범위(xMin~xMax)만으로 다시 0~1을 잡아 어깨점 기준 좌표로
-  // 되돌린다.
-  const lift = new Float32Array(cols);
-  const torsoSpan = xMax - xMin;
-  for (let x = xMin; x <= xMax; x++) {
-    const t = torsoSpan > 0 ? (x - xMin) / torsoSpan : 0.5;
-    const u = t - 0.5;
-    const absU = Math.abs(u);
-    if (absU < NECK_RAYCAST_MIN_ABS_U - NECK_RAYCAST_BLEND_WIDTH) continue;
-    const blend = smoothstep01((absU - (NECK_RAYCAST_MIN_ABS_U - NECK_RAYCAST_BLEND_WIDTH)) / NECK_RAYCAST_BLEND_WIDTH);
-    const baseX = pinLeft.x + (pinRight.x - pinLeft.x) * t;
-    const baseY = pinLeft.y + (pinRight.y - pinLeft.y) * t;
-    const baseZ = pinLeft.z + (pinRight.z - pinLeft.z) * t;
-    neckRayOrigin.set(baseX, baseY + 0.18, baseZ);
-    const hitPoint = bvh.raycastFirst(neckRayOrigin, DOWN_VEC, 0.3);
-    if (hitPoint) {
-      const surfaceY = hitPoint.y;
-      const neededY = surfaceY + NECK_SURFACE_CLEARANCE;
-      lift[x] = Math.max(0, neededY - baseY) * blend;
-    }
-  }
-  // 46번 실측(버그): 열마다 독립적으로 레이캐스팅하면, 마네킹이 저해상도
-  // 폴리곤이라 이웃 열끼리도 맞은 면(삼각형)이 살짝씩 달라 리프트 값이
-  // 계단식으로 들쭉날쭉해진다 — 목선 곡선에 톱니처럼 보이는 원인이었다.
-  // 이웃과 평균 내는 가벼운 스무딩을 한 번 통과시켜 매끄럽게 잇는다.
-  const smoothed = new Float32Array(cols);
-  for (let x = 0; x < cols; x++) {
-    const prev = lift[Math.max(0, x - 1)];
-    const next = lift[Math.min(cols - 1, x + 1)];
-    smoothed[x] = (prev + lift[x] * 2 + next) / 4;
-  }
-  return smoothed;
-}
 
 function toMsg(v: THREE.Vector3): { x: number; y: number; z: number } {
   return { x: v.x, y: v.y, z: v.z };
@@ -135,6 +76,7 @@ function toMsg(v: THREE.Vector3): { x: number; y: number; z: number } {
 // 켠 DataTexture를 이 UV로 샘플링하면 GPU 하드웨어가 쌍선형 보간을
 // 대신 해준다(수동으로 네 모서리를 따로 읽어 섞을 필요가 없음).
 const RENDER_SUBDIV = 3; // 저해상도 셀 하나를 3x3으로 쪼갠다(삼각형 수 약 9배)
+const RENDER_SUBDIV_OFF = 1; // renderSmoothing 토글 끔 = 물리 격자 해상도 그대로(원복 비교용)
 
 function makeDataTexture(cols: number, rows: number): { texture: THREE.DataTexture; data: Float32Array } {
   const data = new Float32Array(cols * rows * 4);
@@ -380,6 +322,9 @@ export function Garment({ imageUrl }: Props) {
   // 함정이 이 파일 43-42행 위쪽 주석에 이미 실측 기록돼 있다(같은 파일의
   // 다른 이유였지만 THREE.Color 자체의 함정이라 여기도 똑같이 적용된다).
   const [sleeveColor, setSleeveColor] = useState("#888888");
+  // 문서 21번(시임 브리지): 실제 봉제선처럼 대표색보다 살짝 어둡게. 0.8 배율은
+  // 실측이 아니라 눈대중 초기값 — 화면 확인 후 조정될 수 있다.
+  const seamColor = useMemo(() => new THREE.Color(sleeveColor).multiplyScalar(0.8), [sleeveColor]);
   useEffect(() => {
     const image = rawTexture.image as HTMLImageElement | undefined;
     if (!image) {
@@ -418,6 +363,27 @@ export function Garment({ imageUrl }: Props) {
   const showBackSleeveWireframe = useFitStore((s) => s.showBackSleeveWireframe);
   const showAllRegionsWireframe = useFitStore((s) => s.showAllRegionsWireframe);
   const showFitMap = useFitStore((s) => s.showFitMap);
+  // onmessage 클로저가 최신 값을 보게(seamBridgeRef와 같은 패턴).
+  const showFitMapRef = useRef(showFitMap);
+  showFitMapRef.current = showFitMap;
+  const renderSmoothing = useFitStore((s) => s.renderSmoothing);
+  const renderSubdiv = renderSmoothing ? RENDER_SUBDIV : RENDER_SUBDIV_OFF;
+  // M1(신 코어): 워커 물리(암홀 용접) + 직결 렌더 경로 토글. onmessage
+  // 클로저가 최신 값을 보도록 ref로도 노출(seamBridgeRef와 같은 패턴).
+  const newCore = useFitStore((s) => s.newCore);
+  const friction = useFitStore((s) => s.friction);
+  // DEV: ?pin= 쿼리로 핀 강도 override(화면 판정용).
+  const pinStrengthOverride = useMemo(() => {
+    const v = new URLSearchParams(window.location.search).get("pin");
+    return v === null ? undefined : Number(v);
+  }, []);
+  // DEV: ?trimdebug=1 이면 넥밴드=빨강 / 커프=초록으로 칠한다. 밴드가
+  // 화면에서 안 보일 때 "안 그려지는 것"인지 "가려진 것"인지를 가르는
+  // 유일하게 결정적인 검사였다(2026-07-29: 목은 마네킹 목 안으로 들어가
+  // 가려져 있었고, 커프는 정상이었다).
+  const trimDebug = useMemo(() => new URLSearchParams(window.location.search).get("trimdebug") === "1", []);
+  const newCoreRef = useRef(newCore);
+  newCoreRef.current = newCore;
   // 47번(디버그 전용): 영역별 와이어프레임 지오메트리를 나눌 몸통(xMin~xMax)
   // 경계 — torsoColumnRange가 이미 계산하는 값을 아래 useEffect에서 그대로
   // 채워 넣는다(포즈가 바뀔 때마다 다시 자르진 않는다 — 치수가 바뀔 때만
@@ -425,6 +391,18 @@ export function Garment({ imageUrl }: Props) {
   // 양쪽(x<torsoSleeveMin, x>torsoSleeveMax) 두 구간이다.
   const [torsoSleeveMin, setTorsoSleeveMin] = useState(0);
   const [torsoSleeveMax, setTorsoSleeveMax] = useState(COLS - 1);
+  // 넥밴드가 붙을 목 구멍 열 범위(neckHoleColumnRange에서 도출 — 위 어깨
+  // 경계와 같은 useEffect에서 채운다).
+  const [neckMin, setNeckMin] = useState(0);
+  const [neckMax, setNeckMax] = useState(COLS - 1);
+  // 몸통 열 범위 밖 구 플랩 셀은 삼각형 생성에서 제외(실측 회귀: 암홀 옆
+  // 각진 판 돌출 — weldedGarmentGeometry.ts 주석). 범위가 바뀌면 재생성.
+  // onmessage 클로저는 이 memo를 deps에 안 가지므로 ref로 최신 것을 본다
+  // (seamBridgeRef와 같은 패턴).
+  const weldedGeometry = useMemo(() => buildWeldedGarmentGeometry(torsoSleeveMin, torsoSleeveMax), [torsoSleeveMin, torsoSleeveMax]);
+  useEffect(() => () => weldedGeometry.dispose(), [weldedGeometry]);
+  const weldedGeometryRef = useRef(weldedGeometry);
+  weldedGeometryRef.current = weldedGeometry;
 
   // --- 몸판 지오메트리 (소매는 이제 별도 메시가 아니라 이 패널의 넓은
   // 바깥쪽 열이다 — 46번 전면 재설계) ---
@@ -485,8 +463,8 @@ export function Garment({ imageUrl }: Props) {
   // "구 플랩" 시스템)는 안 건드렸다 — 이건 그 시스템이 아니라 이 렌더
   // 전환으로 생긴 부산물 변수 하나였을 뿐이다.
   const frontRenderGeometry = useMemo(
-    () => new THREE.PlaneGeometry(1, 1, (COLS - 1) * RENDER_SUBDIV, (ROWS - 1) * RENDER_SUBDIV),
-    [],
+    () => new THREE.PlaneGeometry(1, 1, (COLS - 1) * renderSubdiv, (ROWS - 1) * renderSubdiv),
+    [renderSubdiv],
   );
   // 47번(디버그 전용): 영역별 와이어프레임 토글용 부분 지오메트리. 몸통은
   // [torsoSleeveMin, torsoSleeveMax], 소매는 그 밖의 양쪽(x<min, x>max)
@@ -494,20 +472,20 @@ export function Garment({ imageUrl }: Props) {
   // "전 영역 표시" 진단 모드에서만 쓴다 — 기존 showFrontWireframe 토글은
   // 그대로 전체 앞판(frontRenderGeometry)을 쓴다.
   const frontTorsoRenderGeometry = useMemo(
-    () => buildRegionPlaneGeometry(torsoSleeveMin, torsoSleeveMax, COLS, ROWS, RENDER_SUBDIV),
-    [torsoSleeveMin, torsoSleeveMax],
+    () => buildRegionPlaneGeometry(torsoSleeveMin, torsoSleeveMax, COLS, ROWS, renderSubdiv),
+    [torsoSleeveMin, torsoSleeveMax, renderSubdiv],
   );
   const backTorsoRenderGeometry = useMemo(
-    () => buildRegionPlaneGeometry(torsoSleeveMin, torsoSleeveMax, COLS, ROWS, RENDER_SUBDIV),
-    [torsoSleeveMin, torsoSleeveMax],
+    () => buildRegionPlaneGeometry(torsoSleeveMin, torsoSleeveMax, COLS, ROWS, renderSubdiv),
+    [torsoSleeveMin, torsoSleeveMax, renderSubdiv],
   );
   const frontSleeveRenderGeometry = useMemo(
-    () => buildSleeveRegionGeometry(torsoSleeveMin, torsoSleeveMax, COLS, ROWS, RENDER_SUBDIV),
-    [torsoSleeveMin, torsoSleeveMax],
+    () => buildSleeveRegionGeometry(torsoSleeveMin, torsoSleeveMax, COLS, ROWS, renderSubdiv),
+    [torsoSleeveMin, torsoSleeveMax, renderSubdiv],
   );
   const backSleeveRenderGeometry = useMemo(
-    () => buildSleeveRegionGeometry(torsoSleeveMin, torsoSleeveMax, COLS, ROWS, RENDER_SUBDIV),
-    [torsoSleeveMin, torsoSleeveMax],
+    () => buildSleeveRegionGeometry(torsoSleeveMin, torsoSleeveMax, COLS, ROWS, renderSubdiv),
+    [torsoSleeveMin, torsoSleeveMax, renderSubdiv],
   );
   // 범위 B 구현 5번: 새 독립 소매 패널의 실제 렌더 지오메트리(원통, wrap
   // 닫힘) — 위 frontSleeveRenderGeometry(구 플랩 디버그용, 몸통 밖 두
@@ -515,6 +493,93 @@ export function Garment({ imageUrl }: Props) {
   // 그대로 — RENDER_SUBDIV 세분화 없이 원본 SLEEVE_RING_COLS×ROWS 그대로 쓴다.
   const sleeveTubeGeometryLeft = useMemo(() => buildSleeveTubeGeometry(SLEEVE_RING_COLS, SLEEVE_RING_ROWS), []);
   const sleeveTubeGeometryRight = useMemo(() => buildSleeveTubeGeometry(SLEEVE_RING_COLS, SLEEVE_RING_ROWS), []);
+  // 문서 21번: 이음매를 덮는 폴리곤이 하나도 없어 생기는 구멍을 메우는 렌더
+  // 전용 띠. 1단계 어깨선(0.8cm)이 화면 확인에서 법선 아티팩트 없이 통과해,
+  // 2단계로 실제 주범인 암홀 링(2.7cm, 좌우 2개)을 같은 메커니즘에 쌍 목록만
+  // 추가했다 — 스트립 = (순서있는 쌍 목록, closed 플래그) 형태 그대로.
+  const seamBridge = useMemo(() => {
+    const armholeStartRow = Math.round(ROWS * ARMHOLE_ROW_FRACTION);
+    return buildSeamBridge([
+      shoulderSeamStrip(torsoSleeveMin, torsoSleeveMax, COLS),
+      // M1(신 코어): 암홀 링은 용접돼 좌표가 비트 일치 — 덮을 간격 자체가
+      // 없으므로 브리지 대상에서 뺀다. 어깨(넥라인 rise 차)·옆선(6mm)은
+      // 의도된 간격이라 신구 공통으로 유지.
+      ...(newCore
+        ? []
+        : [
+            // 좌/우 대응은 buildUnifiedGarmentSim의 addSleeveArmholeSeam 호출부와 동일:
+            // 왼팔 소매 ↔ xMin, 오른팔 소매 ↔ xMax.
+            armholeSeamStrip("armholeLeft", torsoSleeveMin, "sleeveLeft", armholeStartRow, COLS),
+            armholeSeamStrip("armholeRight", torsoSleeveMax, "sleeveRight", armholeStartRow, COLS),
+          ]),
+      // 3단계: 옆선(겨드랑이~밑단). 암홀 링의 겨드랑이 쿼드와 변 하나를 공유해
+      // 이어진다 — 시작 행이 armholeStartRow로 같기 때문(문서 21-4).
+      sideSeamStrip("sideLeft", torsoSleeveMin, armholeStartRow, ROWS, COLS),
+      sideSeamStrip("sideRight", torsoSleeveMax, armholeStartRow, ROWS, COLS),
+    ]);
+  }, [torsoSleeveMin, torsoSleeveMax, newCore]);
+  // onmessage 클로저는 torsoSleeveMin/Max를 deps에 안 갖고 있어 사이즈 변경 시
+  // 낡은 seamBridge를 붙들 수 있다 — torsoColumnRangeRef와 같은 ref 패턴으로
+  // 항상 현재 것을 보게 한다(지오메트리와 쌍 테이블이 같은 useMemo에서 나오므로
+  // 둘이 어긋날 일도 없다).
+  // 넥밴드/커프 — 렌더 전용 트림(trimBands.ts). 물리 무관.
+  // 넥밴드: row0 링(앞판 xMin..xMax → 뒤판 역순). 커프: 소매 마지막 행 링.
+  const neckBand = useMemo(() => {
+    const cols = neckMax - neckMin + 1;
+    const ring: TrimRing = {
+      name: "neck",
+      count: cols * 2,
+      read: (out, i) => {
+        const front = i < cols;
+        const x = front ? neckMin + i : neckMax - (i - cols);
+        const src = front ? frontPositions : backPositions;
+        const o = x * 3;
+        out[0] = src[o];
+        out[1] = src[o + 1];
+        out[2] = src[o + 2];
+      },
+      // 안쪽 = row1(목선 바로 아래 행).
+      readInner: (out, i) => {
+        const front = i < cols;
+        const x = front ? neckMin + i : neckMax - (i - cols);
+        const src = front ? frontPositions : backPositions;
+        const o = (COLS + x) * 3;
+        out[0] = src[o];
+        out[1] = src[o + 1];
+        out[2] = src[o + 2];
+      },
+    };
+    return buildTrimBand([ring], { surfaceInset: 0.9, lift: 0.0015 });
+  }, [neckMin, neckMax, frontPositions, backPositions]);
+  const cuffBand = useMemo(() => {
+    const lastRow = SLEEVE_RING_ROWS - 1;
+    const mk = (src: Float32Array, name: string): TrimRing => ({
+      name,
+      count: SLEEVE_RING_COLS,
+      read: (out, i) => {
+        const o = (lastRow * SLEEVE_RING_COLS + i) * 3;
+        out[0] = src[o];
+        out[1] = src[o + 1];
+        out[2] = src[o + 2];
+      },
+      // 안쪽 = 소매 끝에서 한 링 위.
+      readInner: (out, i) => {
+        const o = ((lastRow - 1) * SLEEVE_RING_COLS + i) * 3;
+        out[0] = src[o];
+        out[1] = src[o + 1];
+        out[2] = src[o + 2];
+      },
+    });
+    return buildTrimBand([mk(sleevePositionsLeft, "cuffL"), mk(sleevePositionsRight, "cuffR")], { extrude: 0.025 });
+  }, [sleevePositionsLeft, sleevePositionsRight]);
+  useEffect(() => () => { neckBand.dispose(); cuffBand.dispose(); }, [neckBand, cuffBand]);
+  const neckBandRef = useRef(neckBand);
+  neckBandRef.current = neckBand;
+  const cuffBandRef = useRef(cuffBand);
+  cuffBandRef.current = cuffBand;
+
+  const seamBridgeRef = useRef(seamBridge);
+  seamBridgeRef.current = seamBridge;
   const frontPosTex = useMemo(() => makeDataTexture(COLS, ROWS), []);
   const backPosTex = useMemo(() => makeDataTexture(COLS, ROWS), []);
   const frontNormalTex = useMemo(() => makeDataTexture(COLS, ROWS), []);
@@ -584,6 +649,14 @@ export function Garment({ imageUrl }: Props) {
   // 매 프레임 바뀔 수 있어(useFrame 안에서 재계산), window.__fitDebug 함수가
   // React state가 아니라 이 ref로 최신 xMin/xMax를 동기적으로 읽는다.
   const torsoColumnRangeRef = useRef({ xMin: 0, xMax: COLS - 1 });
+  // capsuleGapChannels 디버그용 — rebuildCollision effect가 워커로 보내는 것과
+  // 같은 토르소 캡슐의 최신본(같은 물체를 봐야 stale 함정이 없다).
+  const torsoCapsulesRef = useRef<Capsule[] | null>(null);
+  // M0(fixture 수출용): 마지막 "init" 레이아웃과 마지막 "step" 포즈를 그대로
+  // 보관 — exportCollision()이 워커가 실제로 받은 값과 동일한 것을 내보내야
+  // Node 재현이 의미 있다(다시 계산하면 미세하게 어긋날 수 있음).
+  const lastInitLayoutRef = useRef<{ widthM: number; heightM: number; topY: number; centerZ: number; sleeveWidthM: number } | null>(null);
+  const lastStepPoseRef = useRef<Extract<MainToGarmentWorkerMessage, { type: "step" }> | null>(null);
   // 범위 B 구현 1번(격자 생성) 검증용 — 워커가 "init"마다 한 번 보내는
   // gridDebug(물리 이전 순수 초기 배치)를 그대로 들고 있는다.
   const sleeveGridDebugRef = useRef<Extract<GarmentWorkerToMainMessage, { type: "gridDebug" }> | null>(null);
@@ -601,6 +674,15 @@ export function Garment({ imageUrl }: Props) {
   useEffect(() => {
     const win = window as unknown as { __fitDebug?: Record<string, unknown> };
     if (!win.__fitDebug) win.__fitDebug = {};
+    // 함정 1 가드 — 워커는 HMR로 안 갱신된다. 페이지 로드 이후 HMR
+    // 업데이트가 한 번이라도 오면 화면의 물리는 **디스크의 코드가 아니다**.
+    // 이걸 모르고 판정하다가 멀쩡한 수정을 원복한 사고가 있었다.
+    // buildStamp()는 (로드 시각, HMR 갱신 횟수, stale 여부)를 낸다.
+    win.__fitDebug.buildStamp = () => ({
+      loadedAt: PAGE_LOADED_AT,
+      hmrUpdates: hmrUpdateCount,
+      stale: hmrUpdateCount > 0,
+    });
     win.__fitDebug.armholeCheck = () => {
       const { xMin } = torsoColumnRangeRef.current;
       const armholeStartRow = Math.round(ROWS * ARMHOLE_ROW_FRACTION);
@@ -628,6 +710,139 @@ export function Garment({ imageUrl }: Props) {
       return result;
     };
   }, [frontPositions, backPositions]);
+
+  // 천-몸 이탈 채널(어깨/몸통/밑단) — Node 하네스(paramSweep)와 완전히 같은
+  // 공식(drapeMetrics.ts computeCapsuleGapChannels 공유)을 워커 실좌표(BVH/
+  // 스무딩/자체충돌 포함 파이프라인 결과인 front/backPositions)에 대고
+  // 실행한다. C단계류(소프트 풀) 실패가 하네스에서 원리적으로 안 잡혀
+  // (실패 원인 물리가 하네스에 없음) 브라우저 측 게이트로 신설.
+  // 마운트 시 한 번만 등록(armholeCheck과 같은 이유) — 콘솔에서
+  // `window.__fitDebug.capsuleGapChannels()` 직접 호출.
+  useEffect(() => {
+    const win = window as unknown as { __fitDebug?: Record<string, unknown> };
+    if (!win.__fitDebug) win.__fitDebug = {};
+    win.__fitDebug.capsuleGapChannels = () => {
+      const capsules = torsoCapsulesRef.current;
+      if (!capsules) {
+        console.log("[CAPSULE-GAP] 캡슐 아직 없음(초기화 대기) — 잠시 후 다시 호출");
+        return null;
+      }
+      // front/backPositions를 GridView로 감싼다 — 패널 0=앞판, 1=뒤판.
+      const n = PARTICLES_PER_PANEL;
+      const positions = new Float32Array(n * 2 * 3);
+      positions.set(frontPositions, 0);
+      positions.set(backPositions, n * 3);
+      const view: GridView = {
+        panelDims: [
+          { cols: COLS, rows: ROWS },
+          { cols: COLS, rows: ROWS },
+        ],
+        positions,
+        index: (panel, x, y) => panel * n + y * COLS + x,
+      };
+      const { xMin, xMax } = torsoColumnRangeRef.current;
+      const armholeStartRow = Math.round(ROWS * ARMHOLE_ROW_FRACTION);
+      // 대역 정의는 capsuleGapBands(단일 출처) — paramSweep.ts와 자동 동일.
+      const [shoulder, shoulderFree, torso, hem] = computeCapsuleGapChannels(
+        view,
+        [0, 1],
+        capsules,
+        capsuleGapBands(armholeStartRow, ROWS),
+        xMin,
+        xMax,
+      );
+      const result = { xMin, xMax, shoulder, shoulderFree, torso, hem };
+      console.log("[CAPSULE-GAP]", JSON.stringify(result));
+      return result;
+    };
+  }, [frontPositions, backPositions]);
+
+  // M2 조사(뒤판 어깨선 프린지): 어깨 가장자리가 갈라져 보이는 원인이
+  // (a) 시임 브리지 스트립인지 (b) 소매캡 경계인지 (c) M1 플랩 컷의 렌더
+  // 삼각형 경계인지 가리기 위한 숫자. 마운트 시 1회 등록 —
+  // `window.__fitDebug.shoulderFringeCheck()`.
+  useEffect(() => {
+    const win = window as unknown as { __fitDebug?: Record<string, unknown> };
+    if (!win.__fitDebug) win.__fitDebug = {};
+    win.__fitDebug.shoulderFringeCheck = () => {
+      const bridge = seamBridgeRef.current;
+      const { xMin, xMax } = torsoColumnRangeRef.current;
+      const src: Record<string, Float32Array> = {
+        front: frontPositions,
+        back: backPositions,
+        sleeveLeft: sleevePositionsLeft,
+        sleeveRight: sleevePositionsRight,
+      };
+      // (a) 브리지: 어떤 스트립이 살아있고, 각 쌍의 실제 간격은 얼마인지.
+      const strips = bridge.layouts.map(({ strip }) => {
+        const gaps = strip.pairs.map((pair) => {
+          const A = src[pair.a.source];
+          const B = src[pair.b.source];
+          const ai = pair.a.index * 3;
+          const bi = pair.b.index * 3;
+          return Math.hypot(A[ai] - B[bi], A[ai + 1] - B[bi + 1], A[ai + 2] - B[bi + 2]) * 100;
+        });
+        return {
+          name: strip.name,
+          pairs: strip.pairs.length,
+          closed: strip.closed,
+          gapCm: { min: Number(Math.min(...gaps).toFixed(3)), max: Number(Math.max(...gaps).toFixed(3)) },
+          // 폭이 0에 가까운 쿼드는 슬리버(찢어진 것처럼 보이는 렌더 아티팩트)가 된다.
+          degenerateQuads: gaps.filter((g) => g < 0.05).length,
+        };
+      });
+      // (b) 소매캡 경계: 용접이라 물리적으로 0이어야 한다. 실제 거리 확인.
+      const armholeStartRow = Math.round(ROWS * ARMHOLE_ROW_FRACTION);
+      const capGap = (col: number, sleeve: Float32Array) => {
+        const out: number[] = [];
+        let k = 0;
+        for (let y = 0; y <= armholeStartRow; y++, k++) {
+          const t = (y * COLS + col) * 3;
+          const sIdx = k * 3;
+          out.push(Math.hypot(frontPositions[t] - sleeve[sIdx], frontPositions[t + 1] - sleeve[sIdx + 1], frontPositions[t + 2] - sleeve[sIdx + 2]) * 100);
+        }
+        for (let y = armholeStartRow; y >= 0; y--, k++) {
+          const t = (y * COLS + col) * 3;
+          const sIdx = k * 3;
+          out.push(Math.hypot(backPositions[t] - sleeve[sIdx], backPositions[t + 1] - sleeve[sIdx + 1], backPositions[t + 2] - sleeve[sIdx + 2]) * 100);
+        }
+        return Number(Math.max(...out).toFixed(4));
+      };
+      // (c) 렌더 삼각형 경계: 신 코어 지오메트리의 그룹별 삼각형 수 + row0
+      // 근방 퇴화(면적≈0) 삼각형 수.
+      const geo = weldedGeometryRef.current.geometry;
+      const idx = geo.getIndex();
+      const pos = geo.getAttribute("position");
+      let degenerateTris = 0;
+      let shoulderTris = 0;
+      if (idx) {
+        for (let t = 0; t < idx.count; t += 3) {
+          const i0 = idx.getX(t), i1 = idx.getX(t + 1), i2 = idx.getX(t + 2);
+          const row0 = i0 % (COLS * ROWS) < COLS || i1 % (COLS * ROWS) < COLS || i2 % (COLS * ROWS) < COLS;
+          if (!row0) continue;
+          shoulderTris++;
+          const ax = pos.getX(i0), ay = pos.getY(i0), az = pos.getZ(i0);
+          const e1x = pos.getX(i1) - ax, e1y = pos.getY(i1) - ay, e1z = pos.getZ(i1) - az;
+          const e2x = pos.getX(i2) - ax, e2y = pos.getY(i2) - ay, e2z = pos.getZ(i2) - az;
+          const cx = e1y * e2z - e1z * e2y, cy = e1z * e2x - e1x * e2z, cz = e1x * e2y - e1y * e2x;
+          if (Math.hypot(cx, cy, cz) / 2 < 1e-7) degenerateTris++;
+        }
+      }
+      const result = {
+        newCore: newCoreRef.current,
+        xMin,
+        xMax,
+        bridgeStrips: strips,
+        bridgeTriangles: idx ? undefined : undefined,
+        sleeveCapMaxGapCm: { left: capGap(xMin, sleevePositionsLeft), right: capGap(xMax, sleevePositionsRight) },
+        weldedRenderTriangles: idx ? idx.count / 3 : 0,
+        row0Triangles: shoulderTris,
+        row0DegenerateTriangles: degenerateTris,
+      };
+      console.log("[SHOULDER-FRINGE]", JSON.stringify(result));
+      return result;
+    };
+  }, [frontPositions, backPositions, sleevePositionsLeft, sleevePositionsRight]);
 
   // 소매 범위 B 별개 이슈(뒤판 겨드랑이 캡슐 침투) 조사용 — 지정한 행(기본
   // row4)의 front/back 정점이 왼팔 캡슐(armCapsuleCollision과 완전히 같은
@@ -851,6 +1066,242 @@ export function Garment({ imageUrl }: Props) {
     };
   }, [sleeveGeometryLeft, sleeveGeometryRight]);
 
+  // 이음매 커버리지 진단 — 어느 구간이 시임 브리지로 덮여 있고, 어느 구간이
+  // 아직 폴리곤 없이 뚫려 있는지 가른다.
+  //
+  // 배경(문서 21번): 앞판/뒤판/소매는 각자 별개 BufferGeometry + 별개 위치
+  // 텍스처라, 원래 이음매를 잇는 폴리곤이 하나도 없었다 — 물리 제약으로만
+  // 붙어 있어서 물리가 6mm까지 좁혀도 화면엔 그대로 구멍이었다. seamBridge가
+  // 그중 어깨선과 암홀 링을 덮었고, 이 훅은 (a) 브리지가 실제로 몇 개
+  // 삼각형으로 무엇을 덮고 있는지와 (b) 아직 안 덮인 이음매의 개구폭을
+  // 나눠서 보고한다.
+  //
+  // **bridgedSpanCm은 "구멍 폭"이 아니라 "브리지가 덮고 있는 폭"이다** —
+  // 값이 커도 결함이 아니다(그만큼 넓은 띠가 덮고 있다는 뜻). 진짜 구멍은
+  // unbridgedSpanCm 쪽이다.
+  // 콘솔에서 `window.__fitDebug.shoulderGapGeometry()` 호출.
+  useEffect(() => {
+    const win = window as unknown as { __fitDebug?: Record<string, unknown> };
+    if (!win.__fitDebug) win.__fitDebug = {};
+    win.__fitDebug.shoulderGapGeometry = () => {
+      const { xMin, xMax } = torsoColumnRangeRef.current;
+      const arrays = {
+        front: frontPositions,
+        back: backPositions,
+        sleeveLeft: sleevePositionsLeft,
+        sleeveRight: sleevePositionsRight,
+      };
+      const refPt = (ref: { source: keyof typeof arrays; index: number }) => {
+        const arr = arrays[ref.source];
+        const i = ref.index * 3;
+        return { x: arr[i], y: arr[i + 1], z: arr[i + 2] };
+      };
+      const cm = (a: { x: number; y: number; z: number }, b: { x: number; y: number; z: number }) =>
+        Number((Math.hypot(a.x - b.x, a.y - b.y, a.z - b.z) * 100).toFixed(3));
+      const maxOf = (a: number[]) => (a.length === 0 ? 0 : Number(Math.max(...a).toFixed(3)));
+
+      // (a) 브리지가 실제로 무엇을 덮고 있나 — 지오메트리에서 직접 센다
+      // (예전엔 여기가 "구조적으로 0"이라고 하드코딩돼 있었다).
+      const bridge = seamBridgeRef.current;
+      const bridgeIndex = bridge.geometry.getIndex();
+      const perStrip = bridge.layouts.map(({ strip }) => {
+        const p = strip.pairs.length;
+        return { name: strip.name, pairs: p, closed: strip.closed, triangles: 2 * (strip.closed ? p : p - 1) };
+      });
+      // 스트립별 폭 = 각 쌍의 두 정점 사이 거리(=그 자리에서 띠가 덮는 폭).
+      const bridgedSpanCm = Object.fromEntries(
+        bridge.layouts.map(({ strip }) => {
+          const spans = strip.pairs.map((pr) => cm(refPt(pr.a), refPt(pr.b)));
+          return [strip.name, { perPair: spans, max: maxOf(spans) }];
+        }),
+      );
+
+      // (b) 아직 안 덮인 구간이 있나 — 하드코딩하지 않고 실제 쌍 목록에서 훑는다.
+      // (이 필드를 "옆선은 미봉합"으로 적어뒀다가 3단계에서 옆선을 덮는 순간
+      // 곧바로 stale이 됐던 전례가 있다 — 그래서 사실을 적지 말고 도출한다.)
+      //
+      // 몸판 경계열(xMin/xMax)의 앞/뒤 각 행이 어느 스트립엔가 등장하는지 본다.
+      // 등장하지 않는 행 = 그 자리에 폴리곤이 없다 = 구멍.
+      const coveredTorso = new Set<string>();
+      for (const { strip } of bridge.layouts) {
+        for (const pr of strip.pairs) {
+          for (const ref of [pr.a, pr.b]) {
+            if (ref.source !== "front" && ref.source !== "back") continue;
+            const row = Math.floor(ref.index / COLS);
+            coveredTorso.add(`${ref.source}:${ref.index % COLS}:${row}`);
+          }
+        }
+      }
+      const uncoveredTorsoRows: string[] = [];
+      for (const col of [xMin, xMax]) {
+        for (const source of ["front", "back"] as const) {
+          for (let y = 0; y < ROWS; y++) {
+            if (!coveredTorso.has(`${source}:${col}:${y}`)) uncoveredTorsoRows.push(`${source} col${col} row${y}`);
+          }
+        }
+      }
+
+      // (c) 스트립 접합부 정점 일치 — 어깨 스트립 양 끝 쌍과 암홀 링의
+      // 첫/마지막 쌍이 같은 몸판 정점을 참조해야 두 띠가 변 하나를 공유하며
+      // 이어진다. 참조(source+index) 동일성과 실제 좌표 거리를 둘 다 본다.
+      const stripByName = new Map(bridge.layouts.map(({ strip }) => [strip.name, strip]));
+      const shoulder = stripByName.get("shoulder");
+      const junction = ["armholeLeft", "armholeRight"].map((ringName) => {
+        const ring = stripByName.get(ringName);
+        if (!ring || !shoulder) return { ring: ringName, ok: false, note: "스트립 없음" };
+        // 왼팔 링은 어깨 스트립의 첫 쌍(xMin), 오른팔 링은 마지막 쌍(xMax)과 만난다.
+        const sh = ringName === "armholeLeft" ? shoulder.pairs[0] : shoulder.pairs[shoulder.pairs.length - 1];
+        const ringFirst = ring.pairs[0]; // k=0 = front row0
+        const ringLast = ring.pairs[ring.pairs.length - 1]; // k=마지막 = back row0
+        const sameRef = (p: { source: string; index: number }, q: { source: string; index: number }) => p.source === q.source && p.index === q.index;
+        return {
+          ring: ringName,
+          frontRefMatches: sameRef(ringFirst.a, sh.a),
+          backRefMatches: sameRef(ringLast.a, sh.b),
+          frontCoordDistCm: cm(refPt(ringFirst.a), refPt(sh.a)),
+          backCoordDistCm: cm(refPt(ringLast.a), refPt(sh.b)),
+        };
+      });
+
+      const result = {
+        bridge: {
+          triangles: bridgeIndex ? bridgeIndex.count / 3 : 0,
+          strips: perStrip,
+        },
+        // 구멍 아님 — 브리지가 덮고 있는 폭.
+        bridgedSpanCm,
+        // 몸판 경계열에서 아직 어느 스트립에도 안 덮인 행(=구멍). 비어 있으면
+        // 경계열은 전부 덮인 것. 목둘레/밑단/소맷부리는 애초에 열려 있어야 하는
+        // 개구부라 여기 대상이 아니다(그 행들은 스트립에 등장하므로 안 잡힌다).
+        uncoveredTorsoRows,
+        stripJunction: junction,
+      };
+      console.log("[SEAM-COVERAGE]", JSON.stringify(result));
+      return result;
+    };
+  }, [frontPositions, backPositions, sleevePositionsLeft, sleevePositionsRight]);
+
+  // 톱니 정도를 링 전체로 일반화한 지표 — sleeveSeamNormalCheck는 wrap
+  // 지점(첫/끝)만 비교하지만, 이번 조사(sleeveSeamCheck 실측)에서 코너
+  // 인접 열(k1/k10)이 코너 자체보다 더 벌어지는 게 확인돼 wrap 지점만
+  // 보는 걸로는 부족하다 — 링을 따라 인접(랩 포함) 정점쌍의 법선 각도차를
+  // 전부 재서 분산/최댓값을 낸다. 값이 클수록 그 링을 따라 법선이 급격히
+  // 꺾인다는(=톱니가 심하다는) 뜻. 콘솔에서
+  // `window.__fitDebug.seamNormalJaggedness()` 호출.
+  useEffect(() => {
+    const win = window as unknown as { __fitDebug?: Record<string, unknown> };
+    if (!win.__fitDebug) win.__fitDebug = {};
+    win.__fitDebug.seamNormalJaggedness = () => {
+      const readNormal = (geometry: THREE.BufferGeometry, i: number) => {
+        const normal = geometry.getAttribute("normal") as THREE.BufferAttribute;
+        return { x: normal.getX(i), y: normal.getY(i), z: normal.getZ(i) };
+      };
+
+      // armholeRingVertices/sleeveSeamCheck와 같은 순서: front row0..armholeStartRow,
+      // back armholeStartRow..0(역순) — 어깨 wrap(k0↔k11)도 링으로 취급(문서 선례).
+      const armholeStartRow = Math.round(ROWS * ARMHOLE_ROW_FRACTION);
+      const { xMin, xMax } = torsoColumnRangeRef.current;
+      const armholeRingNormals = (col: number) => {
+        const pts: { x: number; y: number; z: number }[] = [];
+        for (let y = 0; y <= armholeStartRow; y++) pts.push(readNormal(frontGeometry, y * COLS + col));
+        for (let y = armholeStartRow; y >= 0; y--) pts.push(readNormal(backGeometry, y * COLS + col));
+        return pts;
+      };
+      const sleeveRingNormals = (geometry: THREE.BufferGeometry, row = 0) => {
+        const pts: { x: number; y: number; z: number }[] = [];
+        for (let k = 0; k < SLEEVE_RING_COLS; k++) pts.push(readNormal(geometry, row * SLEEVE_RING_COLS + k));
+        return pts;
+      };
+
+      // row0(어깨 캡)뿐 아니라 링 전체(row0~SLEEVE_RING_ROWS-1, 캡~소맷부리)를
+      // 훑는다 — row0만 보면 캡 바깥(row3~8 등)의 톱니를 놓칠 수 있어서
+      // (pattern-redesign.md 11번, 화면 확인 후 지표 확장 필요성 확인).
+      const sleeveRowsJaggedness = (geometry: THREE.BufferGeometry) =>
+        Array.from({ length: SLEEVE_RING_ROWS }, (_, row) => ringJaggedness(sleeveRingNormals(geometry, row)));
+      const sleeveLeftRows = sleeveRowsJaggedness(sleeveGeometryLeft);
+      const sleeveRightRows = sleeveRowsJaggedness(sleeveGeometryRight);
+
+      const result = {
+        // 암홀만 armholeRingJaggedness — maxDeg에서 앞판↔뒤판 경계 2곳
+        // (어깨/겨드랑이)을 빼고, 뺀 값은 panelBoundaryDeg로 따로 본다
+        // (seamDiagnostics.ts 주석 참고). 소매 링은 같은 패널 하나로 닫힌
+        // 원통이라 기존 ringJaggedness 그대로.
+        armholeLeft: armholeRingJaggedness(armholeRingNormals(xMin)),
+        armholeRight: armholeRingJaggedness(armholeRingNormals(xMax)),
+        sleeveLeftRows,
+        sleeveRightRows,
+        sleeveLeftMax: Number(Math.max(...sleeveLeftRows.map((r) => r.maxDeg)).toFixed(2)),
+        sleeveRightMax: Number(Math.max(...sleeveRightRows.map((r) => r.maxDeg)).toFixed(2)),
+      };
+      console.log("[SEAM-NORMAL-JAGGEDNESS]", JSON.stringify(result));
+      return result;
+    };
+  }, [frontGeometry, backGeometry, sleeveGeometryLeft, sleeveGeometryRight]);
+
+  // pattern-redesign.md 다음 가설(탄젠트 매칭) 1번 — 위 세 시도(각도 재배분류)가
+  // 전부 실패한 뒤 나온 가설: row0(=암홀, 위치는 정확히 일치)에서 소매가
+  // "뻗어나가는 방향"이 몸판 표면이 그 자리에서 이어졌을 방향과 얼마나
+  // 어긋나는지 실측한다 — 세 시도 전부 "position은 lerp, 각도/반지름 목표는
+  // 새로 계산"이라 이 방향(도함수) 자체는 한 번도 직접 맞춘 적이 없었다.
+  // 몸판 쪽 탄젠트: 같은 행(row)에서 암홀 열(xMin/xMax)과 그 바로 바깥
+  // 열(xMin-1/xMax+1, 같은 패널의 소매 확장 열 — 구 플랩, 아직 살아있음)을
+  // 잇는 방향 — "이 표면이 이음매를 넘어 계속됐다면 향했을 방향"의 근사.
+  // 소매 쪽 탄젠트: 그냥 row0→row1 방향(소매가 실제로 처음 뻗는 방향).
+  // 콘솔에서 `window.__fitDebug.sleeveRow0TangentCheck()` 호출 — 코드 변경
+  // 없음, 순수 측정.
+  useEffect(() => {
+    const win = window as unknown as { __fitDebug?: Record<string, unknown> };
+    if (!win.__fitDebug) win.__fitDebug = {};
+    win.__fitDebug.sleeveRow0TangentCheck = () => {
+      const armholeStartRow = Math.round(ROWS * ARMHOLE_ROW_FRACTION);
+      const { xMin, xMax } = torsoColumnRangeRef.current;
+      const torsoPt = (arr: Float32Array, col: number, row: number) => {
+        const i = (row * COLS + col) * 3;
+        return { x: arr[i], y: arr[i + 1], z: arr[i + 2] };
+      };
+      const sleevePt = (arr: Float32Array, k: number, r: number) => {
+        const i = (r * SLEEVE_RING_COLS + k) * 3;
+        return { x: arr[i], y: arr[i + 1], z: arr[i + 2] };
+      };
+      const normalize = (v: { x: number; y: number; z: number }) => {
+        const len = Math.hypot(v.x, v.y, v.z) || 1e-9;
+        return { x: v.x / len, y: v.y / len, z: v.z / len };
+      };
+      const sub = (a: { x: number; y: number; z: number }, b: { x: number; y: number; z: number }) => ({
+        x: a.x - b.x,
+        y: a.y - b.y,
+        z: a.z - b.z,
+      });
+
+      // armholeRingVertices/sleeveSeamCheck와 같은 순서: front row0..armholeStartRow,
+      // back armholeStartRow..0(역순) — (panel, row) 쌍을 k 순서대로 뽑는다.
+      const ringRowPanels: Array<{ front: boolean; row: number }> = [];
+      for (let y = 0; y <= armholeStartRow; y++) ringRowPanels.push({ front: true, row: y });
+      for (let y = armholeStartRow; y >= 0; y--) ringRowPanels.push({ front: false, row: y });
+
+      const sideCheck = (col: number, neighborCol: number, sleeveArr: Float32Array) => {
+        const diffsDeg = ringRowPanels.map(({ front, row }, k) => {
+          const panelArr = front ? frontPositions : backPositions;
+          const torsoTangent = normalize(sub(torsoPt(panelArr, col, row), torsoPt(panelArr, neighborCol, row)));
+          const sleeveTangent = normalize(sub(sleevePt(sleeveArr, k, 1), sleevePt(sleeveArr, k, 0)));
+          return Number(angleDegBetweenNormals(torsoTangent, sleeveTangent).toFixed(2));
+        });
+        const maxDeg = Number(Math.max(...diffsDeg).toFixed(2));
+        const meanDeg = Number((diffsDeg.reduce((s, d) => s + d, 0) / diffsDeg.length).toFixed(2));
+        return { diffsDeg, maxDeg, meanDeg };
+      };
+
+      const result = {
+        // 몸통 쪽 이웃 열이 그리드 밖으로 안 나가는지만 확인(구 플랩 열이 항상
+        // 존재해 실무에서는 항상 참이지만, 극단적으로 좁은 소매/품 조합 대비 방어).
+        left: xMin > 0 ? sideCheck(xMin, xMin - 1, sleevePositionsLeft) : null,
+        right: xMax < COLS - 1 ? sideCheck(xMax, xMax + 1, sleevePositionsRight) : null,
+      };
+      console.log("[SLEEVE-ROW0-TANGENT-CHECK]", JSON.stringify(result));
+      return result;
+    };
+  }, [frontPositions, backPositions, sleevePositionsLeft, sleevePositionsRight]);
+
   // 워커는 컴포넌트 생명주기 동안 하나만 띄우고 언마운트 시 종료한다.
   // frontGeometry/backGeometry/frontPositions/backPositions는 몸판
   // 파티클 수(PARTICLES_PER_PANEL)에만 의존해 컴포넌트 생명주기 내내
@@ -883,6 +1334,24 @@ export function Garment({ imageUrl }: Props) {
       backPositions.set(msg.back);
       sleevePositionsLeft.set(msg.sleeveLeft);
       sleevePositionsRight.set(msg.sleeveRight);
+
+      // M1(신 코어): 직결 지오메트리 갱신 + 브리지(어깨/옆선)만 — DataTexture
+      // 프록시 경로(아래 전부)는 신 코어에서 미사용이라 건너뛴다. 핏 맵/
+      // 와이어프레임 DEV 토글은 구 경로 전용(신 코어에선 미지원, 대조용
+      // 토글이니 그대로 둠).
+      if (newCoreRef.current) {
+        weldedGeometryRef.current.update(msg.front, msg.back, msg.sleeveLeft, msg.sleeveRight);
+        if (showFitMapRef.current) weldedGeometryRef.current.setFit(msg.frontFit, msg.backFit);
+        neckBandRef.current.update();
+        cuffBandRef.current.update();
+        updateSeamBridge(seamBridgeRef.current, {
+          front: frontPositions,
+          back: backPositions,
+          sleeveLeft: sleevePositionsLeft,
+          sleeveRight: sleevePositionsRight,
+        });
+        return;
+      }
       (frontGeometry.getAttribute("position") as THREE.BufferAttribute).needsUpdate = true;
       (backGeometry.getAttribute("position") as THREE.BufferAttribute).needsUpdate = true;
       (sleeveGeometryLeft.getAttribute("position") as THREE.BufferAttribute).needsUpdate = true;
@@ -893,6 +1362,17 @@ export function Garment({ imageUrl }: Props) {
       sleeveGeometryRight.computeVertexNormals();
       averageSleeveSeamNormals(sleeveGeometryLeft, SLEEVE_RING_COLS, SLEEVE_RING_ROWS);
       averageSleeveSeamNormals(sleeveGeometryRight, SLEEVE_RING_COLS, SLEEVE_RING_ROWS);
+      // 네 위치 배열이 다 갱신된 직후 — 시임 브리지는 그 배열들에서 좌표를
+      // 그대로 복사하므로 여기가 올바른 지점이다(법선은 스트립 자체 기하에서
+      // 뽑으므로 패널 법선 계산 순서와는 무관).
+      updateSeamBridge(seamBridgeRef.current, {
+        front: frontPositions,
+        back: backPositions,
+        sleeveLeft: sleevePositionsLeft,
+        sleeveRight: sleevePositionsRight,
+      });
+      neckBandRef.current.update();
+      cuffBandRef.current.update();
       frontGeometry.computeBoundingSphere();
       backGeometry.computeBoundingSphere();
 
@@ -1011,6 +1491,81 @@ export function Garment({ imageUrl }: Props) {
     const root = mannequinRootRef.current;
     const { left: leftShoulder, right: rightShoulder } = shoulderBones;
     if (!root || !leftShoulder || !rightShoulder) return;
+    // M0(fixture 수출): 충돌 스냅샷(몸 메시/캡슐)+마지막 레이아웃·포즈를
+    // JSON으로 다운로드 — Node 하네스(FIXTURE=경로 npm run sweep:pattern)가
+    // 워커와 같은 환경을 재현하는 입력. 이 effect 안에 두는 이유: 아래
+    // 워커 전송과 같은 굽기(collisionMesh.bake)·같은 캡슐 공식을 쓰는
+    // 최신 클로저를 공유하기 위해서다.
+    const win = window as unknown as { __fitDebug?: Record<string, unknown> };
+    if (!win.__fitDebug) win.__fitDebug = {};
+    win.__fitDebug.exportCollision = (fileName?: string) => {
+      const layout = lastInitLayoutRef.current;
+      const step = lastStepPoseRef.current;
+      if (!layout || !step) {
+        console.log("[EXPORT-COLLISION] init/step 아직 없음 — 옷 마운트 후 다시 호출");
+        return null;
+      }
+      const baked = collisionMesh.bake(root);
+      leftShoulder.updateWorldMatrix(true, false);
+      rightShoulder.updateWorldMatrix(true, false);
+      leftShoulder.getWorldPosition(shoulderVec);
+      rightShoulder.getWorldPosition(rightShoulderVec);
+      const proxy = buildTorsoProxyCapsules(
+        { x: shoulderVec.x, y: shoulderVec.y, z: shoulderVec.z },
+        { x: rightShoulderVec.x, y: rightShoulderVec.y, z: rightShoulderVec.z },
+        bodySize.height / 100,
+        bodySize.chest / 100,
+      );
+      const fixture = {
+        layout,
+        pose: {
+          pinLeft: step.pinLeft,
+          pinRight: step.pinRight,
+          necklineLift: step.necklineLift,
+          fabric: step.fabric,
+          armLeft: step.armLeft,
+          armRight: step.armRight,
+        },
+        collision: {
+          position: Array.from(baked.position),
+          frontIndex: baked.frontIndex ? Array.from(baked.frontIndex) : null,
+          backIndex: baked.backIndex ? Array.from(baked.backIndex) : null,
+          wholeBodyIndex: baked.wholeBodyIndex ? Array.from(baked.wholeBodyIndex) : null,
+          capsules: proxy.capsules,
+          centerZ: proxy.centerZ,
+        },
+      };
+      const blob = new Blob([JSON.stringify(fixture)], { type: "application/json" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = fileName ?? "collision-fixture.json";
+      a.click();
+      setTimeout(() => URL.revokeObjectURL(url), 10_000);
+      const summary = {
+        positionFloats: baked.position.length,
+        frontIndex: baked.frontIndex?.length ?? 0,
+        backIndex: baked.backIndex?.length ?? 0,
+        wholeBodyIndex: baked.wholeBodyIndex?.length ?? 0,
+        capsules: proxy.capsules.length,
+        fabric: step.fabric,
+      };
+      console.log("[EXPORT-COLLISION]", JSON.stringify(summary));
+      return summary;
+    };
+    // DEV: ?exportfixture=<파일명> 이면 정착 후 자동으로 fixture를 내려받는다.
+    // 브라우저 콘솔을 손으로 두드리지 않고 치수 조합별 fixture를 뽑기 위한
+    // 것 — 문턱 실측(garmentFitLimits)은 몸 치수가 바뀐 fixture가 있어야
+    // 하고, 마네킹은 본 스케일 + 어깨/목 역스케일이라 Node에서 정점만
+    // 곱해 흉내내면 그 역스케일 구간이 틀어져 측정 자체가 무효가 된다.
+    const exportName = new URLSearchParams(window.location.search).get("exportfixture");
+    if (exportName) {
+      const delay = Number(new URLSearchParams(window.location.search).get("exportafter") ?? 8000);
+      setTimeout(() => {
+        const fn = win.__fitDebug?.exportCollision as ((n?: string) => unknown) | undefined;
+        console.log("[EXPORT-COLLISION] 자동 내보내기", exportName, fn?.(exportName));
+      }, delay);
+    }
     const timer = setTimeout(() => {
       const { position, frontIndex, backIndex, wholeBodyIndex } = collisionMesh.bake(root);
       // 46번(프레임 드랍 수정): position/wholeBodyIndex는 메인 스레드
@@ -1035,6 +1590,9 @@ export function Garment({ imageUrl }: Props) {
         bodySize.height / 100,
         bodySize.chest / 100,
       );
+
+      // capsuleGapChannels 디버그가 워커와 같은 캡슐을 보도록 최신본을 ref에 보관.
+      torsoCapsulesRef.current = capsules;
 
       workerRef.current?.postMessage(
         { type: "rebuildCollision", position, frontIndex, backIndex, wholeBodyIndex, capsules, centerZ } satisfies MainToGarmentWorkerMessage,
@@ -1066,12 +1624,16 @@ export function Garment({ imageUrl }: Props) {
     const topY = Math.max(pins.left.y, pins.right.y);
     const centerZ = (pins.left.z + pins.right.z) / 2;
     const { xMin, xMax } = torsoColumnRange(COLS, pins.left, pins.right, armShapes.left, armShapes.right);
-    const necklineLift = neckSurfaceBvh.ready ? Array.from(computeNecklineLift(neckSurfaceBvh, pins.left, pins.right, COLS, xMin, xMax)) : [];
+    const neckHole = neckHoleColumnRange(COLS, pins.left, pins.right, armShapes.left, armShapes.right);
+    const necklineLift = neckSurfaceBvh.ready ? Array.from(computeNecklineLift(neckSurfaceBvh, pins.left, pins.right, COLS, xMin, xMax, neckHole.xMin, neckHole.xMax)) : [];
     // 47번(디버그 전용 와이어프레임) 영역 분할 경계.
     setTorsoSleeveMin(xMin);
     setTorsoSleeveMax(xMax);
+    setNeckMin(neckHole.xMin);
+    setNeckMax(neckHole.xMax);
 
     generationRef.current += 1;
+    lastInitLayoutRef.current = { widthM, heightM, topY, centerZ, sleeveWidthM: garmentSize.sleeveWidth / 100 };
     worker.postMessage({
       type: "init",
       widthM,
@@ -1084,6 +1646,9 @@ export function Garment({ imageUrl }: Props) {
       necklineLift,
       armLeft: armShapes.left,
       armRight: armShapes.right,
+      newCore,
+      friction,
+      pinStrength: pinStrengthOverride,
     } satisfies MainToGarmentWorkerMessage);
     pendingDtRef.current = 0;
     pendingRef.current = false;
@@ -1095,10 +1660,18 @@ export function Garment({ imageUrl }: Props) {
     bodySize.armLength,
     bodySize.shoulderWidth,
     bodySize.height,
+    // 몸통 둘레도 재구성 대상이다. 빠져 있어서 가슴 슬라이더를 올리면
+    // 충돌 메시만 커지고 옷의 재단·핀은 옛 몸에 맞춘 채로 남았다
+    // (가슴 115에서 maxStrain 10.85, 어깨 접촉률 0). 충돌 메시 useEffect
+    // 의존성과 같은 목록이 되도록 맞춘다.
+    bodySize.chest,
     garmentSize.shoulderWidth,
     sleeveType,
     garmentSize.sleeveLength,
     garmentSize.sleeveWidth,
+    newCore,
+    friction,
+    pinStrengthOverride,
   ]);
 
   useFrame((_, delta) => {
@@ -1148,9 +1721,10 @@ export function Garment({ imageUrl }: Props) {
 
     const { xMin, xMax } = torsoColumnRange(COLS, pins.left, pins.right, armShapes.left, armShapes.right);
     torsoColumnRangeRef.current = { xMin, xMax };
-    const necklineLift = neckSurfaceBvh.ready ? Array.from(computeNecklineLift(neckSurfaceBvh, pins.left, pins.right, COLS, xMin, xMax)) : [];
+    const neckHole = neckHoleColumnRange(COLS, pins.left, pins.right, armShapes.left, armShapes.right);
+    const necklineLift = neckSurfaceBvh.ready ? Array.from(computeNecklineLift(neckSurfaceBvh, pins.left, pins.right, COLS, xMin, xMax, neckHole.xMin, neckHole.xMax)) : [];
 
-    worker.postMessage({
+    const stepMsg = {
       type: "step",
       dt,
       pinLeft: { x: pins.left.x, y: pins.left.y, z: pins.left.z },
@@ -1160,7 +1734,9 @@ export function Garment({ imageUrl }: Props) {
       armLeft: armShapes.left,
       armRight: armShapes.right,
       generation: generationRef.current,
-    } satisfies MainToGarmentWorkerMessage);
+    } satisfies MainToGarmentWorkerMessage;
+    lastStepPoseRef.current = stepMsg;
+    worker.postMessage(stepMsg);
   });
 
   // 임시 디버그 훅 — 어깨 근처에 나타나는 회색/무늬 없는 삼각형 조각이
@@ -1206,7 +1782,23 @@ export function Garment({ imageUrl }: Props) {
       {/* 47번(디버그 전용 — "전 영역 표시" 진단 모드): 텍스처 완전 교체를
           위해, 그 모드가 켜져 있으면 원본 앞/뒤판 메시 자체를 렌더하지
           않는다(오버레이가 아니라 교체 — 아래 4구역 메시만 보이게 됨). */}
-      {!showAllRegionsWireframe && (
+      {/* M1(신 코어): 4개 패널 메시 + DataTexture 프록시 대신 용접 직결
+          지오메트리 하나 — 그룹별 머티리얼(앞판 미러 텍스처/뒤판/소매 대표색)은
+          구 경로와 동일 구성. 셰이더 주입이 없어 프로그램 캐시 함정과 무관. */}
+      {newCore && !showAllRegionsWireframe && (
+        <mesh geometry={weldedGeometry.geometry} frustumCulled={false}>
+          {/* polygonOffset은 구 경로 앞/뒤판과 같은 값 — 시임 브리지(오프셋
+              없음)와 같은 깊이에 놓이면 어깨선을 따라 z-fighting이 생겨
+              가장자리가 너덜너덜하게 갈라져 보인다(M1 화면 실측). */}
+          {/* 핏 맵일 때는 텍스처 대신 정점색(여유 cm) — 구 코어는 셰이더
+              주입으로 하지만 이 직결 경로엔 바인딩할 위치 텍스처가 없다.
+              key를 갈라 두 모드가 같은 프로그램을 재사용하지 않게 한다. */}
+          <meshStandardMaterial key={showFitMap ? "welded-front-fit" : "welded-front"} attach="material-0" map={showFitMap ? undefined : mirroredTexture} vertexColors={showFitMap} side={THREE.DoubleSide} roughness={0.85} polygonOffset polygonOffsetFactor={-4} polygonOffsetUnits={-4} />
+          <meshStandardMaterial key={showFitMap ? "welded-back-fit" : "welded-back"} attach="material-1" map={showFitMap ? undefined : compositedTexture} vertexColors={showFitMap} side={THREE.DoubleSide} roughness={0.85} polygonOffset polygonOffsetFactor={-4} polygonOffsetUnits={-4} />
+          <meshStandardMaterial key={showFitMap ? "welded-sleeve-fit" : "welded-sleeve"} attach="material-2" color={showFitMap ? "#ffffff" : sleeveColor} vertexColors={showFitMap} side={THREE.DoubleSide} roughness={0.85} polygonOffset polygonOffsetFactor={-4} polygonOffsetUnits={-4} />
+        </mesh>
+      )}
+      {!newCore && !showAllRegionsWireframe && (
         // 범위 B 구현 5번(렌더링 전환): 기본 경로는 몸통 폭만(frontTorsoRenderGeometry)
         // 그린다 — 구 플랩(frontRenderGeometry, 전체 폭)은 아직 지우지 않고
         // showFrontWireframe 토글 전용으로 남겨둔다(408행 기존 의도 유지 —
@@ -1262,7 +1854,7 @@ export function Garment({ imageUrl }: Props) {
           )}
         </mesh>
       )}
-      {!showAllRegionsWireframe && (
+      {!newCore && !showAllRegionsWireframe && (
         // 범위 B 구현 5번(렌더링 전환): 뒤판엔 앞판 같은 "전체 폭" 디버그
         // 토글이 없으므로(showBackTorsoWireframe은 이미 몸통 전용) 조건 없이
         // 바로 교체 — 구 플랩(backRenderGeometry) 정의 자체는 아직 안 지운다.
@@ -1298,15 +1890,37 @@ export function Garment({ imageUrl }: Props) {
           (sleeveColor)만 — UV 매핑 자체가 필요 없다. onBeforeCompile은
           위치/법선 바인딩(injectProxyBinding)만, injectFitMapBinding류는
           핏 맵이 몸판 전용 기능이라 소매엔 적용 안 함. */}
-      {!showAllRegionsWireframe && (
+      {!newCore && !showAllRegionsWireframe && (
         <mesh geometry={sleeveTubeGeometryLeft} frustumCulled={false}>
           <meshStandardMaterial key="sleeve-left" color={sleeveColor} side={THREE.DoubleSide} roughness={0.85} onBeforeCompile={sleeveLeftOnBeforeCompile} />
         </mesh>
       )}
-      {!showAllRegionsWireframe && (
+      {!newCore && !showAllRegionsWireframe && (
         <mesh geometry={sleeveTubeGeometryRight} frustumCulled={false}>
           <meshStandardMaterial key="sleeve-right" color={sleeveColor} side={THREE.DoubleSide} roughness={0.85} onBeforeCompile={sleeveRightOnBeforeCompile} />
         </mesh>
+      )}
+      {/* 문서 21번(시임 브리지 1단계 — 어깨선): 위치가 이미 월드 좌표로
+          들어있는 평범한 지오메트리라 onBeforeCompile이 아예 없다 —
+          핏맵/와이어프레임/사진맵 셰이더 변형과 상호작용할 여지 자체가 없고,
+          three.js 프로그램 캐시 사고(위 핏맵 주석 참고)와도 무관하다.
+          색은 실제 봉제선처럼 대표색보다 살짝 어둡게. */}
+      {!showAllRegionsWireframe && (
+        <mesh geometry={seamBridge.geometry} frustumCulled={false}>
+          <meshStandardMaterial key="seam-bridge" color={seamColor} side={THREE.DoubleSide} roughness={0.85} />
+        </mesh>
+      )}
+      {/* 넥밴드(립)·커프 — 렌더 전용. 대표색보다 어둡게 해 실제 립처럼
+          보이게 한다. 물리에는 관여하지 않는다(trimBands.ts 주석). */}
+      {!showAllRegionsWireframe && (
+        <>
+          <mesh geometry={neckBand.geometry} frustumCulled={false}>
+            <meshStandardMaterial key="neck-band" color={trimDebug ? "#ff0000" : seamColor} side={THREE.DoubleSide} roughness={0.75} polygonOffset polygonOffsetFactor={-6} polygonOffsetUnits={-6} />
+          </mesh>
+          <mesh geometry={cuffBand.geometry} frustumCulled={false}>
+            <meshStandardMaterial key="cuff-band" color={trimDebug ? "#00ff00" : seamColor} side={THREE.DoubleSide} roughness={0.75} polygonOffset polygonOffsetFactor={-6} polygonOffsetUnits={-6} />
+          </mesh>
+        </>
       )}
       {/* 47번(디버그 전용): 영역별 와이어프레임 — showFrontWireframe(초록,
           전체 앞판)과 같은 방식(단색 머티리얼 교체)이지만, 기존 메시를

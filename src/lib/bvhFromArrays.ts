@@ -110,6 +110,23 @@ export class ArrayBvhCollision {
     );
   }
 
+  // 부호 없는 최근접점 — 부호(안/밖) 판정을 호출자가 직접 하려는 경우.
+  // signedClearance는 면 법선 내적으로 부호를 정하는데, 이 마네킹 메시는
+  // 일부 영역의 삼각형 와인딩이 뒤집혀 있어(coverageMetric.ts orientOutward
+  // 주석의 실측 — mid-back 버킷이 93~96% "노출"로 오판됐던 그 영역) 그
+  // 영역에서 부호가 통째로 뒤집힌다. SDF를 그 부호로 구우면 기울기가 몸
+  // 안쪽을 가리켜 파티클을 관통시킨다(M2-3 1차 시도의 하드 실패, 앞뒤판
+  // 교차 31~36개). 와인딩에 의존하지 않는 부호 규칙이 필요한 곳은 이걸
+  // 쓴다.
+  closestPointUnsigned(px: number, py: number, pz: number, detectionRadius: number): { x: number; y: number; z: number; distance: number } | null {
+    const bvh = this.bvh;
+    if (!bvh) return null;
+    scratchPoint.set(px, py, pz);
+    const hit = bvh.closestPointToPoint(scratchPoint, this.hitInfo, 0, detectionRadius);
+    if (!hit) return null;
+    return { x: hit.point.x, y: hit.point.y, z: hit.point.z, distance: hit.distance };
+  }
+
   // 핏 맵 전용(물리에 관여 안 함): 점 p가 표면에서 얼마나 떨어져 있는지
   // 부호 있는 거리로 돌려준다(몸 안쪽이면 음수) — createResolver와 똑같은
   // closestPointToPoint 질의를 재사용하지만, 위치를 밀어내지 않고 값만
@@ -170,12 +187,26 @@ export class ArrayBvhCollision {
   // 이 메시 충돌 대상이 될 필요 자체가 없다. columnRange(살아있는 참조
   // 객체 — 매 프레임 garmentWorker.ts가 torsoColumnRange로 갱신)가 주어지면
   // 몸통 열 범위 밖은 트리 탐색 자체를 건너뛴다.
+  // M2-4(흡착 완화): penetrationAxis를 주면 "관통 시에만" 모드로 바뀐다 —
+  // 표면 밖(d>=0)인 파티클은 아예 건드리지 않고, 안쪽으로 들어간 것만
+  // 표면+margin으로 밀어낸다. 기존 동작은 탐지 반경(15cm) 안이면 관통
+  // 여부와 무관하게 목표를 표면+margin으로 잡아 40%씩 끌어당기는
+  // **양방향 흡착**이었고(프레임당 4회 → 87% 스냅), 몸통 전체가 상시
+  // 15cm 안이라 천이 몸에서 떨어져 늘어지는 것 자체가 금지돼 있었다.
+  //
+  // 안/밖 판정에 signedClearance(면 법선 내적)를 쓰지 않는 이유: 이
+  // 마네킹 메시는 일부 영역 와인딩이 뒤집혀 있어 그 영역 부호가 통째로
+  // 반대가 된다(M2-3이 이 함정으로 3연속 실패). sdfCollision.ts의
+  // makeRadialSignedSampler / coverageMetric.ts의 orientOutward와 같은
+  // 전제(몸통은 세로축 기준 star-shaped)로 방사 방향 부호를 쓴다.
+  // penetrationAxis는 살아있는 참조(columnRange와 같은 패턴).
   createResolver(
     margin: number,
     detectionRadius = margin,
     skipLocalStart?: number,
     skipLocalEndExclusive?: number,
     columnRange?: ColumnRange,
+    penetrationAxis?: { enabled: boolean; x: number; z: number },
   ): CollisionResolver {
     return (positions, pinned, n) => {
       const bvh = this.bvh;
@@ -193,6 +224,17 @@ export class ArrayBvhCollision {
         scratchPoint.set(positions[ix], positions[ix + 1], positions[ix + 2]);
         const hit = bvh.closestPointToPoint(scratchPoint, this.hitInfo, 0, detectionRadius);
         if (!hit) continue;
+        if (penetrationAxis?.enabled) {
+          const px = positions[ix];
+          const py = positions[ix + 1];
+          const pz = positions[ix + 2];
+          const rx = px - penetrationAxis.x;
+          const rz = pz - penetrationAxis.z;
+          const rl = Math.hypot(rx, rz) || 1e-9;
+          // 방사 바깥 + 위쪽 25%(어깨 꼭대기는 방사 성분이 0에 가깝다).
+          const outward = (px - hit.point.x) * (rx / rl) + (py - hit.point.y) * 0.25 + (pz - hit.point.z) * (rz / rl);
+          if (outward >= 0) continue; // 표면 밖 — 건드리지 않음
+        }
         this.faceNormal(hit.faceIndex, scratchNormal);
         const targetX = hit.point.x + scratchNormal.x * margin;
         const targetY = hit.point.y + scratchNormal.y * margin;

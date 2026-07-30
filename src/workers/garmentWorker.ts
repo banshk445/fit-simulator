@@ -3,32 +3,37 @@ import { ClothSimulation } from "../lib/clothPhysics";
 import type { CollisionResolver } from "../lib/clothPhysics";
 import { ArrayBvhCollision } from "../lib/bvhFromArrays";
 import { SelfCollision } from "../lib/selfCollision";
-import { applyCapsuleCollision, applyFrontBackSidedness } from "../lib/torsoCapsule";
-import type { Capsule } from "../lib/torsoCapsule";
 import { FABRIC_PRESETS } from "../lib/fabricPresets";
-import { applyArmSoftPull, applyNecklineHug, enforceArmFrontBackYAlignment, pinCorners, torsoColumnRange } from "../lib/buildGarmentSim";
 import { buildUnifiedGarmentSim } from "../lib/buildUnifiedGarmentSim";
-import { enforceLeftRightSymmetry } from "../lib/garmentStitch";
+import { bakeSdf, createCachedSdfIterationFriction, createSdfFrictionPass, createSdfPushResolver, makeRadialSignedSampler, type SdfField } from "../lib/sdfCollision";
+// M0(파이프라인 일원화): 프레임 시퀀스·unifiedResolver·팔 캡슐 빌더는
+// garmentFrame.ts로 이사 — paramSweep(Node)과 이 워커가 같은 함수를 쓴다.
+import { buildArmCapsules, createGarmentSession, createPanelSplitResolver, createUnifiedResolver, defaultSmoothing, PANEL_COUNTS } from "../lib/garmentFrame";
+import type { CollisionState, GarmentSession } from "../lib/garmentFrame";
 import {
   ARMHOLE_ROW_FRACTION,
-  ARM_COLLISION_RADIUS,
   COLLISION_DETECTION_RADIUS,
   COLLISION_EVERY,
   COLLISION_MARGIN,
   COLS,
+  FRICTION_CONTACT_BAND,
+  COLLAR_STRAIN_LIMIT,
+  FRICTION_MU_ITER,
+  LOCAL_MU_GAIN,
+  FRICTION_MU_KINETIC,
+  PIN_STRENGTH,
+  FRICTION_MU_STATIC,
   GRAVITY_BASE,
   MAX_DISPLACEMENT_PER_SUBSTEP,
-  MAX_SUBSTEPS,
   PANEL_BACK,
   PANEL_FRONT,
   PANEL_SLEEVE_LEFT,
   PANEL_SLEEVE_RIGHT,
-  PARTICLES_PER_PANEL,
   ROWS,
+  SDF_FAR,
+  SDF_PUSH_RELAXATION,
+  SDF_VOXEL,
   SELF_COLLISION_MIN_DIST,
-  SLEEVE_RING_COLS,
-  SLEEVE_RING_ROWS,
-  SUBSTEP_DT,
 } from "../lib/clothConfig";
 import type { MainToGarmentWorkerMessage, GarmentWorkerToMainMessage, ArmShapeMsg } from "../lib/garmentProtocol";
 
@@ -47,7 +52,9 @@ interface WorkerScope {
 const ctx = self as unknown as WorkerScope;
 
 let sim: ClothSimulation | null = null;
-let accumulator = 0;
+// M0: 프레임 시퀀스(핀→서브스텝 루프→후처리)는 세션이 담당 — "init"마다
+// 새로 만든다(accumulator 리셋과 동일한 효과).
+let session: GarmentSession | null = null;
 // 46번(약한 지지): "step" 메시지는 widthM/heightM/topY/centerZ를 싣지
 // 않는다(치수가 바뀔 때만 "init"으로 다시 온다) — applyArmSoftPull이 매
 // 프레임 이 값들로 목표 지점을 다시 계산해야 하므로 마지막 "init" 값을
@@ -108,20 +115,22 @@ function computeFitCm(positions: Float32Array, count: number): Float32Array {
 const MESH_SKIP_START = 0;
 const MESH_SKIP_END = 0;
 const armholeStartRow = Math.round(ROWS * ARMHOLE_ROW_FRACTION);
-const SHOULDER_CAP_SKIP_START = COLS * 1;
-const SHOULDER_CAP_SKIP_END = COLS * (armholeStartRow + 1);
 // 46번(프레임 드랍 진짜 원인 — BVH 트리 탐색 스킵): 몸통 열 범위(torsoColumnRange
 // 로 매 스텝 갱신)만 이 비싼 메시 충돌 대상으로 삼는다 — 소매로 뻗은 바깥쪽
 // 열은 어차피 팔 캡슐이 따로 관리하므로 트리 탐색 자체가 낭비였다. 초기값은
 // "전체 범위"(min=0, max=COLS-1)로 둬 collisionRange가 아직 갱신되기 전에도
 // 안전하게 동작한다.
 const meshColumnRange = { cols: COLS, min: 0, max: COLS - 1 };
+// M2-4: 흡착 완화 모드와 그 부호 판정 기준축(살아있는 참조).
+// rebuildCollision에서 토르소 캡슐 축으로 갱신한다.
+const penetrationAxis = { enabled: false, x: 0, z: 0 };
 const frontMeshResolver = frontCollisionMesh.createResolver(
   COLLISION_MARGIN,
   COLLISION_DETECTION_RADIUS,
   MESH_SKIP_START,
   MESH_SKIP_END,
   meshColumnRange,
+  penetrationAxis,
 );
 const backMeshResolver = backCollisionMesh.createResolver(
   COLLISION_MARGIN,
@@ -129,130 +138,17 @@ const backMeshResolver = backCollisionMesh.createResolver(
   MESH_SKIP_START,
   MESH_SKIP_END,
   meshColumnRange,
+  penetrationAxis,
 );
 
-// 범위 B(소매 재설계 — 별도 패널): 예전엔 항상 앞/뒤 2패널·n=2*particlesPerPanel
-// 라는 전제가 성립해 backCount=n-particlesPerPanel로 뒤판 몫을 역산해도
-// 맞았다 — 지금은 n에 소매(panel 2·3, 144×2)가 더 얹혀 있어 그 역산이
-// 소매 파티클까지 뒤판 리졸버에 흘려보낸다(뒤판 몸통 메시 충돌이 소매
-// 정점에 엉뚱한 로컬 인덱스로 적용됨). 패널별 리졸버(없으면 null=스킵)와
-// 패널별 개수를 배열로 받아, 각 패널을 정확히 그 폭만큼만 잘라 넘긴다 —
-// 소매(현재 리졸버 없음)는 자동으로 건너뛴다.
-function createPanelSplitResolver(resolvers: readonly (CollisionResolver | null)[], panelCounts: readonly number[]): CollisionResolver {
-  return (positions, pinned) => {
-    let offset = 0;
-    for (let p = 0; p < panelCounts.length; p++) {
-      const count = panelCounts[p];
-      const resolver = resolvers[p];
-      if (resolver) {
-        resolver(positions.subarray(offset * 3, (offset + count) * 3), pinned.subarray(offset, offset + count), count);
-      }
-      offset += count;
-    }
-  };
-}
-
-// panelDims는 전부 상수(COLS/ROWS/SLEEVE_RING_*)라 sim 인스턴스 없이도
-// 패널별 개수를 미리 알 수 있다 — buildUnifiedGarmentSim.ts의 panelDims
-// 배열과 반드시 같은 순서([front, back, sleeveLeft, sleeveRight])여야 한다.
-const PANEL_COUNTS = [PARTICLES_PER_PANEL, PARTICLES_PER_PANEL, SLEEVE_RING_COLS * SLEEVE_RING_ROWS, SLEEVE_RING_COLS * SLEEVE_RING_ROWS];
+// createPanelSplitResolver/PANEL_COUNTS는 garmentFrame.ts로 이사(M0).
 const meshResolver = createPanelSplitResolver([frontMeshResolver, backMeshResolver, null, null], PANEL_COUNTS);
 
-let torsoCapsules: Capsule[] = [];
-let armCapsules: Capsule[] = [];
-let centerZ = 0;
-let dirX = 1;
-let dirY = 0;
-let dirZ = 0;
 
-// 33번: 이 캡슐은 실제 마네킹 팔을 근사하는 충돌 표면이므로, 몸판용으로
-// 바깥으로 민 shoulder가 아니라 실제 어깨 관절(trueShoulder)을 축으로
-// 써야 한다 — shoulder를 쓰면 캡슐 자체가 진짜 팔에서 벗어나 있어 소매가
-// 진짜 팔 위에 앉도록 밀어주지 못한다.
-function buildArmCapsules(shape: ArmShapeMsg): Capsule[] {
-  const midLength = shape.length * 0.55;
-  const endLength = shape.length * 1.25;
-  const mid = {
-    x: shape.trueShoulder.x + shape.dir.x * midLength,
-    y: shape.trueShoulder.y + shape.dir.y * midLength,
-    z: shape.trueShoulder.z + shape.dir.z * midLength,
-  };
-  const end = {
-    x: shape.trueShoulder.x + shape.dir.x * endLength,
-    y: shape.trueShoulder.y + shape.dir.y * endLength,
-    z: shape.trueShoulder.z + shape.dir.z * endLength,
-  };
-  return [
-    { top: shape.trueShoulder, bottom: mid, radius: ARM_COLLISION_RADIUS },
-    { top: mid, bottom: end, radius: ARM_COLLISION_RADIUS },
-  ];
-}
-
-// 37번: 캡슐 충돌도 meshResolver와 똑같이 앞판/뒤판을 나눠서, 각 패널
-// 로컬 인덱스 기준으로 어깨 캡 스킵 구간을 적용한다 — 하나로 합쳐서 그냥
-// SHOULDER_CAP_SKIP_START/END를 넘기면 뒤판 쪽 어깨 캡 구간(로컬 인덱스가
-// PARTICLES_PER_PANEL만큼 밀려 있음)은 전혀 스킵되지 않는다. 팔 캡슐은
-// 반대로 스킵 구간을 안 준다 — 소매 열이 실제로 팔에 걸치는 구간이 바로
-// 이 어깨 캡 행 범위이므로 여기서 빠지면 안 된다.
-const unifiedResolver: CollisionResolver = (positions, pinned, n) => {
-  meshResolver(positions, pinned, n);
-  // 범위 B: frontCount/backCount는 둘 다 패널 크기(상수) 그 자체다 — n에서
-  // 역산하면(옛 backCount = n - frontCount) n에 얹힌 소매(panel 2·3)까지
-  // 뒤판 몫으로 잘못 흡수된다. 뒤판 subarray 끝도 n이 아니라 backEnd(=
-  // 앞+뒤 패널 딱 그만큼)로 고정해 소매가 몸판 전용 캡슐 충돌(어깨 캡
-  // 스킵 등)에 걸리지 않게 한다.
-  const frontCount = PARTICLES_PER_PANEL;
-  const backCount = PARTICLES_PER_PANEL;
-  const backEnd = (frontCount + backCount) * 3;
-  applyCapsuleCollision(
-    positions.subarray(0, frontCount * 3),
-    pinned.subarray(0, frontCount),
-    frontCount,
-    torsoCapsules,
-    COLLISION_MARGIN,
-    SHOULDER_CAP_SKIP_START,
-    SHOULDER_CAP_SKIP_END,
-  );
-  applyCapsuleCollision(
-    positions.subarray(frontCount * 3, backEnd),
-    pinned.subarray(frontCount, frontCount + backCount),
-    backCount,
-    torsoCapsules,
-    COLLISION_MARGIN,
-    SHOULDER_CAP_SKIP_START,
-    SHOULDER_CAP_SKIP_END,
-  );
-  applyFrontBackSidedness(positions, pinned, PARTICLES_PER_PANEL, centerZ);
-  applyCapsuleCollision(positions.subarray(0, frontCount * 3), pinned.subarray(0, frontCount), frontCount, armCapsules, 0.006);
-  applyCapsuleCollision(positions.subarray(frontCount * 3, backEnd), pinned.subarray(frontCount, frontCount + backCount), backCount, armCapsules, 0.006);
-  // 범위 B(조사 결과 반영): 소매는 팔 캡슐(armCapsules)만 별도 호출로 추가한다
-  // — torsoCapsules(몸통 표면)는 안 건다(소매는 몸통이 아니라 팔과 닿아야
-  // 함). backEnd/뒤판 호출은 그대로 두고 소매 좌/우 두 구간만 새로 추가 —
-  // backEnd를 늘려서 뒤판 호출 범위 자체를 넓히면 소매 파티클이 뒤판
-  // 로컬 인덱스(SHOULDER_CAP_SKIP 등 뒤판 전용 파라미터)로 잘못 취급된다
-  // (조사에서 확인). 실측: 소매 col5(겨드랑이 쪽) row0~11이 팔 캡슐 두
-  // 세그먼트 축을 따라가며 반경(4.56+0.6mm) 안에 여러 행이 들어와
-  // "소매가 팔을 감싼다"는 의도와 일치, row11(소맷부리)은 반경 밖이라
-  // 불필요한 반응 없음(반팔 기준 실측 — 팔 길이/자세가 크게 달라지면
-  // 재확인 필요할 수 있음).
-  const sleeveCount = SLEEVE_RING_COLS * SLEEVE_RING_ROWS;
-  const sleeveLeftEnd = backEnd + sleeveCount * 3;
-  const sleeveRightEnd = sleeveLeftEnd + sleeveCount * 3;
-  applyCapsuleCollision(
-    positions.subarray(backEnd, sleeveLeftEnd),
-    pinned.subarray(frontCount + backCount, frontCount + backCount + sleeveCount),
-    sleeveCount,
-    armCapsules,
-    0.006,
-  );
-  applyCapsuleCollision(
-    positions.subarray(sleeveLeftEnd, sleeveRightEnd),
-    pinned.subarray(frontCount + backCount + sleeveCount, frontCount + backCount + sleeveCount * 2),
-    sleeveCount,
-    armCapsules,
-    0.006,
-  );
-};
+// 37번/범위 B의 unifiedResolver 본체는 garmentFrame.ts의
+// createUnifiedResolver로 이사(M0) — 워커는 살아있는 상태 객체만 관리한다.
+const collisionState: CollisionState = { torsoCapsules: [], armCapsules: [], centerZ: 0, sidedness: true, pairSeparation: false };
+const unifiedResolver = createUnifiedResolver(meshResolver, collisionState);
 
 // 자체충돌은 몸판(앞+뒤)+소매(좌+우) 전체에 적용한다. 범위 B(소매 재설계
 // — 별도 패널): 패널 크기가 더 이상 균일(1232/1232/144/144)하지 않아,
@@ -263,6 +159,101 @@ const unifiedResolver: CollisionResolver = (positions, pinned, n) => {
 // SLEEVE_RING_*)라 매 rebuild마다 값 자체는 같지만, sim 인스턴스 없이는
 // 이 값을 들고 있는 곳이 없어 sim 생성 이후로 옮겨야 한다.
 let selfCollisionResolver: CollisionResolver | null = null;
+
+// M2(SDF 마찰): rebuildCollision이 준 몸 메시를 들고 있다가, 레이아웃까지
+// 확정된 뒤(첫 step) 한 번 굽는다 — 굽기 범위가 옷이 닿는 Y 구간에
+// 의존하기 때문. 몸이 바뀌면(rebuildCollision) 무효화 후 재굽기.
+// 두 필드를 따로 굽는다. 마찰용은 몸 전체(팔 포함) — 소매가 팔에 대해
+// 마찰을 받아야 하므로. 밀어내기용은 팔 제외(frontIndex+backIndex 합집합)
+// — 기존 BVH 리졸버가 정확히 그 인덱스를 쓰고 팔은 캡슐이 따로 담당하기
+// 때문. 하나로 합치면 몸통 천이 팔 표면에도 흡착돼 M2-3에 변화가 하나 더
+// 섞인다. 비용은 rebuild당 2회(각 ~0.36s, 디바운스 200ms 뒤 워커에서).
+let bakedBody: {
+  position: Float32Array;
+  wholeBodyIndex: Uint32Array | null;
+  frontIndex: Uint32Array | null;
+  backIndex: Uint32Array | null;
+} | null = null;
+let sdfField: SdfField | null = null;
+let sdfPushField: SdfField | null = null;
+let sdfFrictionEnabled = false;
+let sdfPushEnabled = false;
+
+function ensureSdf(): void {
+  if (!bakedBody || !lastLayout) return;
+  if (!sdfFrictionEnabled && !sdfPushEnabled) return;
+  if ((sdfField || !sdfFrictionEnabled) && (sdfPushField || !sdfPushEnabled)) return;
+  const { position, wholeBodyIndex, frontIndex, backIndex } = bakedBody;
+  const yTop = lastLayout.topY + 0.1;
+  const yBot = lastLayout.topY - lastLayout.heightM - 0.15;
+  let minX = Infinity, maxX = -Infinity, minZ = Infinity, maxZ = -Infinity;
+  for (let i = 0; i < position.length; i += 3) {
+    const y = position[i + 1];
+    if (y < yBot || y > yTop) continue;
+    if (position[i] < minX) minX = position[i];
+    if (position[i] > maxX) maxX = position[i];
+    if (position[i + 2] < minZ) minZ = position[i + 2];
+    if (position[i + 2] > maxZ) maxZ = position[i + 2];
+  }
+  if (!Number.isFinite(minX)) return;
+  const pad = 0.08;
+  const min = { x: minX - pad, y: yBot, z: minZ - pad };
+  const max = { x: maxX + pad, y: yTop, z: maxZ + pad };
+  // 부호는 와인딩이 아니라 방사 방향으로 정한다(makeRadialSignedSampler
+  // 주석 — M2-3 1차 하드 실패의 원인이 와인딩 의존이었다). 중심축은
+  // 굽기 bbox의 수평 중앙.
+  const cx = (min.x + max.x) / 2;
+  const cz = (min.z + max.z) / 2;
+  const bake = (index: Uint32Array | null, label: string): SdfField => {
+    const mesh = new ArrayBvhCollision();
+    mesh.rebuild(position, index);
+    const t = performance.now();
+    const f = bakeSdf(makeRadialSignedSampler(mesh, cx, cz, SDF_FAR, SDF_FAR), min, max, SDF_VOXEL, SDF_FAR);
+    console.log(`[SDF:${label}] ${f.nx}x${f.ny}x${f.nz} (${((f.nx * f.ny * f.nz) / 1000).toFixed(1)}k복셀) ${Math.round(performance.now() - t)}ms`);
+    return f;
+  };
+  if (sdfFrictionEnabled && !sdfField) sdfField = bake(wholeBodyIndex, "마찰/몸전체");
+  if (sdfPushEnabled && !sdfPushField) {
+    // frontIndex+backIndex 합집합 = 팔 제외 몸통(기존 BVH 리졸버와 동일 대상).
+    let merged: Uint32Array | null = null;
+    if (frontIndex && backIndex) {
+      merged = new Uint32Array(frontIndex.length + backIndex.length);
+      merged.set(frontIndex, 0);
+      merged.set(backIndex, frontIndex.length);
+    } else {
+      merged = frontIndex ?? backIndex;
+    }
+    sdfPushField = bake(merged, "밀어내기/팔제외");
+  }
+}
+
+// M2-3: BVH 면 법선 밀어내기(meshResolver) 대신 SDF 기울기 밀어내기.
+// 나머지 스테이지(토르소/팔 캡슐, sidedness)는 createUnifiedResolver가
+// 그대로 담당하므로 mesh 자리만 바꿔 끼운다.
+const sdfPushResolver = createPanelSplitResolver(
+  [
+    createSdfPushResolver(() => sdfPushField, COLLISION_MARGIN, COLLISION_DETECTION_RADIUS, SDF_PUSH_RELAXATION, meshColumnRange),
+    createSdfPushResolver(() => sdfPushField, COLLISION_MARGIN, COLLISION_DETECTION_RADIUS, SDF_PUSH_RELAXATION, meshColumnRange),
+    null,
+    null,
+  ],
+  PANEL_COUNTS,
+);
+const sdfUnifiedResolver = createUnifiedResolver(sdfPushResolver, collisionState);
+
+// M2-5 재개: 반복 모드 전용 μ(FRICTION_MU_ITER) — μ 스윕으로 양립 구간
+// 확인(위 clothConfig 주석). 서브스텝 말미 속도 패스는 기존 μ 유지.
+const iterationFriction = createCachedSdfIterationFriction(() => sdfField, {
+  contactBand: FRICTION_CONTACT_BAND,
+  muStatic: FRICTION_MU_ITER,
+  muKinetic: FRICTION_MU_ITER,
+  localMuGain: LOCAL_MU_GAIN,
+});
+const frictionPass = createSdfFrictionPass(() => sdfField, {
+  contactBand: FRICTION_CONTACT_BAND,
+  muStatic: FRICTION_MU_STATIC,
+  muKinetic: FRICTION_MU_KINETIC,
+});
 
 const gravityBase = new THREE.Vector3(...GRAVITY_BASE);
 const scratchGravity = new THREE.Vector3();
@@ -289,9 +280,10 @@ ctx.onmessage = (event) => {
         toArmDir(msg.armRight),
         msg.sleeveWidthM,
         msg.necklineLift,
+        msg.newCore ?? false,
       );
       sim = built.sim;
-      accumulator = 0;
+
 
       {
         const panelStarts: number[] = [];
@@ -302,6 +294,83 @@ ctx.onmessage = (event) => {
         }
         selfCollisionResolver = new SelfCollision(panelStarts, panelCols, armholeStartRow, built.seamSkipPairs).createResolver(SELF_COLLISION_MIN_DIST);
       }
+
+      // M0: 워커의 기존 시퀀스를 그대로 재현하는 환경 — 토글 전부 on,
+      // clamp는 서브스텝 안(기존 위치). columnRange는 meshResolver와 공유하는
+      // 살아있는 객체라 세션이 매 스텝 갱신하면 리졸버가 최신 값을 본다.
+      // M2: 마찰은 신 코어 경로에서만(구 코어는 비트 동일 유지). 레이아웃이
+      // 바뀌면 굽기 범위도 달라지므로 여기서 무효화한다.
+      sdfFrictionEnabled = (msg.newCore ?? false) && (msg.friction ?? true);
+      // M2-3 원복 — 3연속 실패로 정지(CLAUDE.md 3회 규칙). 1차: 와인딩
+      // 의존 부호 → 교차 31. 2차: 방사 부호로 교정 → 교차 33(부호가
+      // 원인이 아니었다). 3차: 앞/뒤 필드 분리(BVH의 frontIndex/backIndex
+      // 분리를 충실 이식) → 교차 8로 줄었으나 여전히 하드 실패이고
+      // coverage +7.4pp·드레이프 -18%. 원인은 SDF_VOXEL 2cm가 천 열
+      // 간격 12.8mm(=몸판 폭 0.55m/43갭)보다 굵어 몸 표면에 대한
+      // 저역통과로 작동하는 것 —
+      // 파라미터가 아니라 층위 문제다. 복셀을 1cm 이하로 낮춰 굽기 비용을
+      // 감당할 방법이 서기 전엔 재시도 금지.
+      sdfPushEnabled = false;
+      // M2 보정 제거 ①: 신 코어에선 sidedness 클램프를 끄고 SDF/마찰에 맡긴다.
+      collisionState.sidedness = !(msg.newCore ?? false);
+      // M2-4 선행: 신 코어는 반평면 클램프 대신 경량 쌍 분리.
+      collisionState.pairSeparation = msg.newCore ?? false;
+      // M2-4 원복(하드 실패): 흡착을 완전히 끊으니 coverage 20.0→57.8%
+      // (+37.8pp), 드레이프 면각평균 17.41→7.82(-55%)·주름RMS
+      // 4.456→2.372(-47%)로 무너졌다. 흡착은 드레이프를 막는 힘이기만 한
+      // 게 아니라 **천을 몸에 붙들어 두는 유일한 힘**이기도 했다 — 끊으면
+      // 어깨 핀에 매달린 커튼처럼 평평하게 떨어진다(면각 반토막이 그 신호).
+      // 마찰(μ0.6, 접촉폭 2cm)은 흡착이 눌러주지 않으면 접촉 자체가 거의
+      // 안 생겨 하중을 못 받는다 — "보조 힘은 마찰의 대체품" 패턴의 재현.
+      // 완전 이분법 말고 중간값(반경 축소·거리 반비례 감쇠)이 다음 후보.
+      // 부수 확인(중요): maxStrain이 4.1952→3.7801로 **처음 내려갔다** —
+      // limiter 상한 1.2의 3.5배 문제의 원인이 흡착임이 확인됐다.
+      penetrationAxis.enabled = false;
+      sdfField = null;
+      sdfPushField = null;
+      session = createGarmentSession(sim, {
+        collisionResolver: sdfPushEnabled ? sdfUnifiedResolver : unifiedResolver,
+        collisionEvery: COLLISION_EVERY,
+        selfCollision: (positions, pinned, n) => selfCollisionResolver!(positions, pinned, n),
+        // ④-1 원복(화면 판정 실패): bowtie는 비가시였고 밑단 열교차도
+        // 정상이었지만, 등 상단 자유 경계가 톱니형으로 거칠어졌다
+        // (jitter +18.6%의 실루엣 발현). 드레이프 이득이 없어(면각평균
+        // -4%, 주름RMS -6.7%) 순손해다.
+        // 여기서 얻은 결론: **"order가 최대 드레이프 차단 요인"은 기각.**
+        // 접힘 금지를 풀어도 접힘이 안 생겼다는 건 접힘을 만드는 힘이
+        // 부족하다는 뜻이고, 유력 용의자는 흡착(15cm 반경 87%/프레임 스냅)
+        // 이다. ④-2(preserveRowOrder)도 같은 논리라 보류.
+        orderColumn: true,
+        orderRow: true,
+        clampInSubstep: true,
+        // M2 제거 ② 재개(화면 판정 대기): 처음 원복했던 근거(ripple
+        // +85%)는 2차 차분 지표가 곡률 측정기라서 정상 폴드에도 반응한
+        // 것이었고, CLAUDE.md의 "애매 → 원복 말고 화면 확인" 규칙도
+        // 위반이었다. 4차 차분(jitter)으로 다시 재보니 실제 지그재그도
+        // 늘어난 건 맞다(3.20→11.56mm, 부호반전 0.189→0.379) — 그래서
+        // 통과가 아니라 **애매**로 두고 화면 판정을 받는다.
+        // 함께 얻는 것: coverage 27.6→20.5%(측정 이래 최저), 면각평균
+        // 15.88→17.05·주름RMS 4.081→4.403(최고), 교차 0, seamGap 0.
+        smoothing: defaultSmoothing(msg.newCore ?? false),
+        postOrder: true,
+        armSoftPull: true,
+        necklineHug: true,
+        sleeveArmPull: true,
+        yAlign: true,
+        symmetry: true,
+        clampAfterPost: false,
+        maxDisplacement: MAX_DISPLACEMENT_PER_SUBSTEP,
+        columnRange: meshColumnRange,
+        friction: sdfFrictionEnabled ? frictionPass : undefined,
+        // M2-5(μ=FRICTION_MU_ITER, 화면 판정 대기): 반복 안 위치 마찰.
+        // 주의 — 물리 ms가 아직 2.3배(비용 최적화는 화면 통과 후).
+        frictionIteration: sdfFrictionEnabled ? iterationFriction.apply : undefined,
+        frictionIterationReset: sdfFrictionEnabled ? iterationFriction.reset : undefined,
+        // 핀 전환 후보(화면 판정 대기) — 신 코어에서만 소프트 앵커.
+        pinStrength: (msg.newCore ?? false) ? (msg.pinStrength ?? PIN_STRENGTH) : 1,
+        // M2-6: 칼라 원주 제약(신 코어 전용).
+        collarStrainLimit: (msg.newCore ?? false) ? COLLAR_STRAIN_LIMIT : undefined,
+      });
 
       // 범위 B 구현 1번(격자 생성) 검증용 — buildConstraints()/step() 이전
       // 순수 초기 배치를 그대로 echo. "init"마다 한 번만.
@@ -346,31 +415,24 @@ ctx.onmessage = (event) => {
       frontCollisionMesh.rebuild(msg.position, msg.frontIndex);
       backCollisionMesh.rebuild(msg.position, msg.backIndex);
       wholeBodyCollisionMesh.rebuild(msg.position, msg.wholeBodyIndex);
-      torsoCapsules = msg.capsules;
-      centerZ = msg.centerZ;
+      collisionState.torsoCapsules = msg.capsules;
+      collisionState.centerZ = msg.centerZ;
+      if (msg.capsules.length > 0) {
+        penetrationAxis.x = msg.capsules[0].top.x;
+        penetrationAxis.z = msg.capsules[0].top.z;
+      }
+      // M2: 몸이 바뀌었으니 SDF 재굽기(다음 step에서 ensureSdf가 처리).
+      bakedBody = { position: msg.position, wholeBodyIndex: msg.wholeBodyIndex, frontIndex: msg.frontIndex, backIndex: msg.backIndex };
+      sdfField = null;
+      sdfPushField = null;
       break;
     }
     case "step": {
-      if (!sim) return;
-      // torsoOrderExtra는 클로저라 sim이 나중에(예: 다음 메시지 처리로)
-      // null로 바뀔 수 있다고 타입체커가 보수적으로 판단해 위 null 체크로
-      // 좁혀지지 않는다(tsc --noEmit은 못 잡지만 tsc -b는 잡는 차이가
-      // 실측으로 확인됨) — 지역 상수에 담아 이 case 블록 안에서는 항상
-      // non-null임을 명시한다.
+      if (!sim || !session || !lastLayout) return;
       const activeSim = sim;
       const armLeft = toArmDir(msg.armLeft);
       const armRight = toArmDir(msg.armRight);
-      pinCorners(activeSim, msg.pinLeft, msg.pinRight, PANEL_FRONT, PANEL_BACK, armLeft, armRight, msg.necklineLift);
-      armCapsules = [...buildArmCapsules(msg.armLeft), ...buildArmCapsules(msg.armRight)];
-      // 46번: 이번 스텝에서 쓸 몸통 열 범위를 서브스텝 루프(비싼 메시 충돌이
-      // 실제로 도는 곳) 시작 전에 미리 갱신해둔다 — meshColumnRange는 살아있는
-      // 참조라 여기서 값만 바꿔주면 frontMeshResolver/backMeshResolver가
-      // 그대로 최신 값을 읽는다.
-      {
-        const range = torsoColumnRange(COLS, msg.pinLeft, msg.pinRight, armLeft, armRight);
-        meshColumnRange.min = range.xMin;
-        meshColumnRange.max = range.xMax;
-      }
+      collisionState.armCapsules = [...buildArmCapsules(msg.armLeft), ...buildArmCapsules(msg.armRight)];
 
       const preset = FABRIC_PRESETS[msg.fabric];
       // rebuildCollision은 REBUILD_DEBOUNCE_MS(200ms) 디바운스 + 메인
@@ -380,90 +442,20 @@ ctx.onmessage = (event) => {
       // false거나 capsules=[]) unifiedResolver가 사실상 아무 일도 안 한다.
       // 충돌 메시가 아직 준비 안 됐으면 중력을 꺼서(구조 제약과 핀만으로
       // 유지) 이 구간에서 옷감이 무너지지 않게 막는다.
+      ensureSdf();
       const collisionReady = frontCollisionMesh.ready && backCollisionMesh.ready;
       scratchGravity.copy(collisionReady ? gravityBase : ZERO_VEC3).multiplyScalar(preset.gravityScale);
 
-      const rawDirX = msg.pinRight.x - msg.pinLeft.x;
-      const rawDirY = msg.pinRight.y - msg.pinLeft.y;
-      const rawDirZ = msg.pinRight.z - msg.pinLeft.z;
-      const dirLen = Math.hypot(rawDirX, rawDirY, rawDirZ) || 1;
-      dirX = rawDirX / dirLen;
-      dirY = rawDirY / dirLen;
-      dirZ = rawDirZ / dirLen;
-
-      // 31번: 31번에서 발견된 회귀(값싼 순서 보존을 비싼 메시 충돌과 같은
-      // 주기로 스로틀링하면 그 사이 반복들에서 구조 제약이 순서를 뒤집을
-      // 기회를 열어준다)를 다시 만들지 않도록, 매 Gauss-Seidel 반복마다
-      // 순서 보존을 돌리는 훅을 유지한다.
-      const torsoOrderExtra: CollisionResolver = () => {
-        activeSim.preserveColumnOrder(dirX, dirY, dirZ, undefined, false, PANEL_FRONT, PANEL_BACK + 1);
-        activeSim.preserveColumnOrder(dirX, dirY, dirZ, undefined, true, PANEL_FRONT, PANEL_BACK + 1);
-        activeSim.preserveRowOrder(undefined, false, PANEL_FRONT, PANEL_BACK + 1);
-        activeSim.preserveRowOrder(undefined, true, PANEL_FRONT, PANEL_BACK + 1);
-      };
-
-      accumulator = Math.min(accumulator + msg.dt, SUBSTEP_DT * MAX_SUBSTEPS);
-      while (accumulator >= SUBSTEP_DT) {
-        activeSim.step(
-          SUBSTEP_DT,
-          scratchGravity,
-          unifiedResolver,
-          preset.iterations,
-          COLLISION_EVERY,
-          preset.damping,
-          MAX_DISPLACEMENT_PER_SUBSTEP,
-          torsoOrderExtra,
-        );
-        selfCollisionResolver!(activeSim.positions, activeSim.pinned, activeSim.positions.length / 3);
-        // step() 안에서도 매 반복 돌긴 하지만, 자체충돌(step() 밖에서
-        // 실행)이 그 직후 다시 순서를 흐트러뜨릴 수 있어 여기서도 한 번
-        // 더 정리한다 — 병합 이전부터 있던 이중 안전장치.
-        torsoOrderExtra(activeSim.positions, activeSim.pinned, activeSim.positions.length / 3);
-        activeSim.clampOverstretchedConstraints();
-
-        accumulator -= SUBSTEP_DT;
-      }
-
-      // 29번(스무딩-보정 순서 버그): 스무딩을 먼저 실행해 BVH 충돌의
-      // 고주파 잔물결을 지우고, 그 다음에 어깨 표면 스냅을 "마지막
-      // 발언권"으로 적용한다 — 순서를 반대로 하면 스무딩이 정밀 보정을
-      // 다시 희석시킨다.
-      activeSim.smoothColumns(armholeStartRow + 1, 0.5, PANEL_FRONT, PANEL_BACK + 1, meshColumnRange.min, meshColumnRange.max);
-      activeSim.smoothRows(armholeStartRow + 1, 0.5, PANEL_FRONT, PANEL_BACK + 1, meshColumnRange.min, meshColumnRange.max);
-      activeSim.preserveColumnOrder(dirX, dirY, dirZ, undefined, false, PANEL_FRONT, PANEL_BACK + 1);
-      activeSim.preserveColumnOrder(dirX, dirY, dirZ, undefined, true, PANEL_FRONT, PANEL_BACK + 1);
-
-      if (lastLayout) {
-        applyArmSoftPull(
-          activeSim,
-          PANEL_FRONT,
-          PANEL_BACK,
-          lastLayout.widthM,
-          lastLayout.heightM,
-          lastLayout.topY,
-          lastLayout.centerZ,
-          msg.pinLeft,
-          msg.pinRight,
-          armLeft,
-          armRight,
-          lastLayout.sleeveWidthM,
-        );
-        applyNecklineHug(
-          activeSim,
-          PANEL_FRONT,
-          PANEL_BACK,
-          lastLayout.widthM,
-          lastLayout.centerZ,
-          msg.pinLeft,
-          msg.pinRight,
-          armLeft,
-          armRight,
-        );
-      }
-      enforceArmFrontBackYAlignment(activeSim, PANEL_FRONT, PANEL_BACK, msg.pinLeft, msg.pinRight, armLeft, armRight);
-      enforceLeftRightSymmetry(activeSim, PANEL_FRONT, PANEL_BACK, COLS, ROWS);
-      activeSim.preserveColumnOrder(dirX, dirY, dirZ, undefined, false, PANEL_FRONT, PANEL_BACK + 1);
-      activeSim.preserveColumnOrder(dirX, dirY, dirZ, undefined, true, PANEL_FRONT, PANEL_BACK + 1);
+      // M0: 핀→열범위 갱신→서브스텝 루프(충돌/자체충돌/순서/clamp)→후처리
+      // (스무딩/order/소프트풀/hug/sleevePull/yAlign/symmetry/order) 전체가
+      // garmentFrame.ts의 세션으로 이사 — 순서·경위 주석도 그쪽 참고.
+      session.step(
+        msg.dt,
+        scratchGravity,
+        preset,
+        lastLayout,
+        { pinLeft: msg.pinLeft, pinRight: msg.pinRight, armLeft, armRight, necklineLift: msg.necklineLift },
+      );
 
       const ppp = activeSim.panelParticleCount(PANEL_FRONT);
       const frontStart = activeSim.panelParticleStart(PANEL_FRONT) * 3;

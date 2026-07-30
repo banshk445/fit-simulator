@@ -79,13 +79,27 @@ function shoulderCapZBulge(y: number, shoulderU: number, armholeStartRow: number
 // 얼마나 "위로" 올라가는지 계산한다. isFrontPanel: 30번 병합 이후 패널
 // 번호가 더 이상 항상 0=앞/1=뒤가 아니므로 이 값으로 앞/뒤 깊이 차이를
 // 구분한다.
+// △3-2 후속(C¹ 연속화): 목 구멍 경계(absU = holeHalf)에서 두 가지가 이어져야
+// 한다 — 값과 1차 도함수. 값은 원래 이어졌지만(양쪽 다 rise) **기울기가
+// 끊겨 있었다**:
+//   안쪽 가지 (1 - DIP·(1-t²))의 t=1 기울기 = 2·rise·DIP/holeHalf
+//   바깥 가지 (1 - t²)      의 t=0 기울기 = 0
+// 안쪽 t² 를 smoothstep t²(3-2t)로 바꾸면 t=0/t=1 양끝 기울기가 0이 되어
+// 경계가 매끄러운 극대점이 된다. 값(중심 0.94·rise, 경계 rise)은 불변이다.
+//
+// **바깥 가지는 포물선을 유지할 것.** 격자에 찍힌 뒤의 이산 곡률(2차 차분)
+// 을 지수 m으로 스캔해봤는데(rise만, 앞판): m=1 7.03mm / 0.8 9.01 / 0.5 10.16
+// / 0.3 8.64 — 포물선이 최소다. 포물선은 1차 차분이 등차수열이라 곡률이
+// 전 구간 균일하게 퍼지고, smoothstep류는 양 끝에 3배로 몰린다.
+// 즉 이 자리에서 "더 매끄러운 함수"로 바꾸는 건 개악이다.
 function necklineRise(isFrontPanel: boolean, shoulderU: number): number {
   const rise = isFrontPanel ? NECKLINE_RISE_FRONT : NECKLINE_RISE_BACK;
   const holeHalf = NECKLINE_HOLE_WIDTH_FRACTION / 2;
   const absU = Math.abs(shoulderU);
   if (absU <= holeHalf) {
     const t = holeHalf > 0 ? absU / holeHalf : 1;
-    return rise * (1 - NECKLINE_CENTER_DIP_FRACTION * (1 - t * t));
+    const dip = t * t * (3 - 2 * t); // smoothstep — 양끝 기울기 0
+    return rise * (1 - NECKLINE_CENTER_DIP_FRACTION * (1 - dip));
   }
   const outerSpan = 0.5 - holeHalf;
   const t = outerSpan > 0 ? (absU - holeHalf) / outerSpan : 1;
@@ -111,6 +125,16 @@ function halfWidthAtRow(y: number, widthM: number, pinLeft: Vec3Like, pinRight: 
 // 중력·구조 제약에만 맡긴다. frac 계산은 layoutTorsoPanels와 반드시
 // 같은 공식을 써야 한다(레이아웃 때 놓은 위치와 핀 목표가 어긋나면 큰
 // 초기 위반이 생긴다) — columnLayout()으로 공유한다.
+// strength: 1이면 기존 하드 핀(sim.pin — pinned=1, 위치 강제, 속도 소거).
+// 1 미만이면 **칼라 소프트 앵커**로 바뀐다: pinned를 세우지 않고 목표
+// 지점으로 그만큼만 당긴다. 0이면 앵커 없음.
+//
+// 왜 필요한가(M2-4 실패 분석): 하드 핀은 row0을 매 프레임 고정 좌표에
+// 못박아, 그 행이 몸에 **닿을 수가 없다**. 실측(fixture): 핀은 어깨
+// 표면보다 2.0cm 바깥·0.6cm 위에 떠 있다. 실제 옷은 중력이 천을 어깨에
+// 눌러 앉히고 그 접촉의 수직항력으로 마찰이 하중을 받는데, 그 첫 단계가
+// 하드 핀으로 봉쇄돼 있다 — 그래서 흡착을 끊자(M2-4) 천이 몸이 아니라
+// 핀에 매달린 커튼이 됐다. 핀을 풀어야 마찰이 일할 조건이 생긴다.
 export function pinCorners(
   sim: ClothSimulation,
   pinLeft: Vec3Like,
@@ -120,6 +144,26 @@ export function pinCorners(
   armLeft: ArmDir,
   armRight: ArmDir,
   necklineLift?: readonly number[],
+  strength = 1,
+  // 연속 모드(램프 전용). false면 기존 동작(strength>=1은 sim.pin,
+  // 미만은 pinned=0 + 위치 lerp) — 그 경로는 **불연속**이다: 1.0에서
+  // 0.98로 넘어가는 순간 pinned 불리언이 뒤집혀 충돌·순서·자체충돌·중력이
+  // 한꺼번에 그 행에 작동하기 시작하고, sim.pin()이 죽여두던 속도가
+  // 갑자기 살아난다. 실측(램프 시계열): 핀 2% 해제 한 프레임에 tf hit
+  // 0.897→0.508, Δ20이 MAX_DISPLACEMENT_PER_SUBSTEP(50mm)에 4프레임
+  // 연속 포화. 스윕·램프는 파라미터가 실제로 연속일 때만 유효하다(함정 7).
+  //
+  // true면 strength 값과 무관하게 항상 pinned=0으로 두고, 위치와
+  // **속도(prevPositions)를 같은 계수로** 보간한다:
+  //   p   += (target - p) * s
+  //   prev = lerp(prev, p, s)
+  // s=1이면 위치=목표·속도=0으로 sim.pin()과 같은 효과가 되고, s가
+  // 내려갈수록 둘 다 매끄럽게 풀린다. 속도 동기화가 (b) 항목을 연속
+  // 형태로 흡수한다 — 해제 시점에 따로 prev를 맞추면 그 자체가 또 하나의
+  // 불연속이 된다.
+  continuous = false,
+  // continuous일 때 목표를 여기 채운다(위치 강제는 반복 안 앵커가 담당).
+  targetsOut?: { i: number; x: number; y: number; z: number }[],
 ): void {
   const sideSign = Math.sign(pinLeft.x - pinRight.x) || 1;
   const thw0 = halfWidthAtRow(0, 0, pinLeft, pinRight); // widthM 무관(row0은 항상 shoulderHalfWidth)
@@ -140,7 +184,37 @@ export function pinCorners(
       const baseZ = pinLeft.z + (pinRight.z - pinLeft.z) * ((shoulderU + 0.5) / 1);
       const rise = necklineRise(isFront, shoulderU);
       const lift = necklineLift?.[x] ?? 0;
-      sim.pin(sim.index(panel, x, 0), baseX, baseY + rise + lift, baseZ);
+      const targetY = baseY + rise + lift;
+      const i = sim.index(panel, x, 0);
+      if (!continuous && strength >= 1) {
+        sim.pin(i, baseX, targetY, baseZ);
+        continue;
+      }
+      if (continuous) {
+        sim.pinned[i] = 0;
+        const s = Math.min(1, Math.max(0, strength));
+        // 위치 강제는 **반복 안 앵커**(ClothSimulation.applyAnchors)가
+        // 한다 — 여기서 프레임당 1회 옮기면 제약이 지워버린다(1차 시도
+        // 실패 원인). 여기서는 목표만 넘기고, 속도(prevPositions)만
+        // 프레임당 1회 같은 계수로 완화한다(반복마다 하면 과감쇠).
+        targetsOut?.push({ i, x: baseX, y: targetY, z: baseZ });
+        if (s > 0) {
+          const ix = i * 3;
+          for (let k = 0; k < 3; k++) {
+            sim.prevPositions[ix + k] += (sim.positions[ix + k] - sim.prevPositions[ix + k]) * s;
+          }
+        }
+        continue;
+      }
+      // 소프트 앵커 — pinned를 세우지 않는다(충돌·마찰·제약이 이 행에도
+      // 작동해야 중력이 천을 어깨에 앉힐 수 있다). 속도(prevPositions)는
+      // 건드리지 않아 관성이 유지된다.
+      sim.pinned[i] = 0;
+      if (strength <= 0) continue;
+      const ix = i * 3;
+      sim.positions[ix] += (baseX - sim.positions[ix]) * strength;
+      sim.positions[ix + 1] += (targetY - sim.positions[ix + 1]) * strength;
+      sim.positions[ix + 2] += (baseZ - sim.positions[ix + 2]) * strength;
     }
   }
 }
@@ -548,6 +622,66 @@ export function applyArmSoftPull(
   }
 }
 
+// 소매 패널(PANEL_SLEEVE_LEFT/RIGHT) 전용 소프트 풀.
+// applyArmSoftPull은 몸판(PANEL_FRONT/BACK)의 frac>1 열만 처리하고
+// 독립 소매 패널은 건드리지 않아, row0 봉제선 하나만 의지하면 전체가
+// 중력에 그대로 늘어진다. 매 프레임 row0 평균을 암홀 중심으로 쓰므로
+// 봉제선 정착 후 소매가 움직여도 타깃이 따라온다.
+const SLEEVE_ARM_PULL_WEIGHT = 0.35;
+
+export function applySleeveArmPull(
+  sim: ClothSimulation,
+  sleeveLeftPanel: number,
+  sleeveRightPanel: number,
+  ringCols: number,
+  ringRows: number,
+  armLeft: ArmDir,
+  armRight: ArmDir,
+  sleeveWidthM: number,
+): void {
+  const targetRadius = computeArmTubeRadius(sleeveWidthM);
+
+  for (const [panel, arm] of [
+    [sleeveLeftPanel, armLeft],
+    [sleeveRightPanel, armRight],
+  ] as [number, ArmDir][]) {
+    const basis = armOrthogonalBasis(arm.dir);
+
+    // row0 현재 위치 평균 → 암홀 중심 (봉제선이 이미 몸판에 묶어둔 값)
+    let cx = 0, cy = 0, cz = 0;
+    for (let k = 0; k < ringCols; k++) {
+      const idx = sim.index(panel, k, 0) * 3;
+      cx += sim.positions[idx];
+      cy += sim.positions[idx + 1];
+      cz += sim.positions[idx + 2];
+    }
+    cx /= ringCols;
+    cy /= ringCols;
+    cz /= ringCols;
+
+    for (let r = 1; r < ringRows; r++) {
+      const rT = r / (ringRows - 1);
+      const weight = SLEEVE_ARM_PULL_WEIGHT * (1 - 0.5 * rT);
+      const reach = arm.length * rT;
+
+      for (let k = 0; k < ringCols; k++) {
+        const angle = Math.PI / 2 - (k * (2 * Math.PI)) / ringCols;
+        const cosA = Math.cos(angle);
+        const sinA = Math.sin(angle);
+        const tx = cx + arm.dir.x * reach + (basis.right.x * cosA + basis.up.x * sinA) * targetRadius;
+        const ty = cy + arm.dir.y * reach + (basis.right.y * cosA + basis.up.y * sinA) * targetRadius;
+        const tz = cz + arm.dir.z * reach + (basis.right.z * cosA + basis.up.z * sinA) * targetRadius;
+        const i = sim.index(panel, k, r);
+        if (sim.pinned[i]) continue;
+        const ix = i * 3;
+        sim.positions[ix]     += (tx - sim.positions[ix])     * weight;
+        sim.positions[ix + 1] += (ty - sim.positions[ix + 1]) * weight;
+        sim.positions[ix + 2] += (tz - sim.positions[ix + 2]) * weight;
+      }
+    }
+  }
+}
+
 // 46번 실측(거리 제약은 방향을 못 가림 — 진짜 원인 재확인): ARM_SOFT_PULL_WEIGHT
 // 를 풍선 실루엣 개선을 위해 낮추면(예: 0.15), 소매 구간(0~ARM_ROWS 행)의
 // 앞판/뒤판이 실제로 최대 3.7cm까지 Y로 벌어지는 게 실측(전체 행/열 스캔)
@@ -770,6 +904,42 @@ export function torsoColumnRange(
   return { xMin, xMax };
 }
 
+// 목 구멍 열 범위 — 넥밴드(렌더 트림)가 붙을 구간. necklineRise가 "구멍"
+// 으로 취급하는 조건(|shoulderU| <= NECKLINE_HOLE_WIDTH_FRACTION/2)을
+// 그대로 뒤집은 것이다: shoulderU = s * frac * 0.5 이므로
+//   |shoulderU| <= HOLE/2  ⟺  frac <= HOLE.
+// 하드코딩한 열 번호가 아니라 목선을 만드는 그 공식에서 도출하므로,
+// 어깨너비·팔 길이·COLS가 바뀌어도 따라온다.
+export function neckHoleColumnRange(
+  cols: number,
+  pinLeft: Vec3Like,
+  pinRight: Vec3Like,
+  armLeft: ArmDir,
+  armRight: ArmDir,
+): { xMin: number; xMax: number } {
+  const thw0 = halfWidthAtRow(0, 0, pinLeft, pinRight);
+  const armSpanHalf = thw0 + Math.max(armLeft.length, armRight.length);
+  const fracAt = (x: number) => {
+    const u = x / (cols - 1) - 0.5;
+    return thw0 > 0 ? (Math.abs(u) * 2 * armSpanHalf) / thw0 : 0;
+  };
+  let xMin = 0;
+  let xMax = cols - 1;
+  for (let x = 0; x < cols; x++) {
+    if (fracAt(x) <= NECKLINE_HOLE_WIDTH_FRACTION) {
+      xMin = x;
+      break;
+    }
+  }
+  for (let x = cols - 1; x >= 0; x--) {
+    if (fracAt(x) <= NECKLINE_HOLE_WIDTH_FRACTION) {
+      xMax = x;
+      break;
+    }
+  }
+  return { xMin, xMax };
+}
+
 // 46번(디테일 조각 1단계 — 넥라인/어깨 안착): 목~쇄골 중앙부(frac이 0에
 // 가까운 안쪽 열, y=1~2)는 레이아웃이 배치한 그대로 굳어 있어 마네킹
 // 피부에서 살짝 붕 떠 보였다 — pullShoulderCapToSurface는 rowT가 row1
@@ -906,17 +1076,44 @@ export function armholeRingVertices(
   return pts;
 }
 
-// 범위 B(단면 원형화 재설계): 예전엔 암홀 단면(슬릿, 세로로 긴 비원형)을
-// 그대로 팔 축 방향으로 압출했다 — row0은 완벽했지만(시접 늘어남 0) 그
-// 슬릿 모양이 소매 끝까지 그대로 이어져 "원통"이 아니라 "납작한 리본"이
-// 됐다(화면 실측: 날개/플랩처럼 보임). 실측(이 세션): 슬릿 12점의 중심
-// 기준 반지름이 2.92~7.61cm로 원 지름(computeArmTubeRadius)보다 편차가
-// 커서 원형 근사가 애초에 안 되고, 슬릿 정점의 실제 각도도 균등 30°
-// 배치와 최대 177.5° 어긋나 있었다(k=9) — 그래서 "같은 이상각에서
-// 반지름만 보간"은 안 되고, row0는 슬릿 XYZ를 그대로 쓰고 그 이후 행만
-// XYZ 직선 보간으로 이상적 원을 향해 블렌드한다. blendT=0에서 대수적으로
-// 정확히 armholeVertex와 같아지므로(리덤던트 분기 없이 lerp 공식 자체가
-// 보장) row0 시접 갭은 손대지 않는다.
+// 소매산(캡) 이즈량(cm) — 표준 패턴 제도 조사(pattern-redesign.md 1번):
+// 우븐 1.5~2.5cm, 니트 0.5~1.5cm, "핏된 소매" 3~4.5cm 중 우븐 평균값.
+const SLEEVE_CAP_EASE_CM = 3;
+
+// armholeVertex(닫힌 링, wrap 포함)의 전체 둘레(cm) — 소매산 높이
+// 삼각법 공식(hyp=(둘레+이즈)/2)의 입력.
+function ringTotalArcLengthCm(vertices: readonly Vec3Like[]): number {
+  let total = 0;
+  for (let i = 1; i < vertices.length; i++) {
+    const a = vertices[i - 1];
+    const b = vertices[i];
+    total += Math.hypot(b.x - a.x, b.y - a.y, b.z - a.z) * 100;
+  }
+  const first = vertices[0];
+  const last = vertices[vertices.length - 1];
+  total += Math.hypot(first.x - last.x, first.y - last.y, first.z - last.z) * 100;
+  return total;
+}
+
+// pattern-redesign.md 7번(방향 전환): row0을 슬릿(armholeVertex) 압출로
+// 맞추는 접근을 네 번 시도(각도+반지름 재배분/각도만/방향유지+반지름만/
+// 탄젠트 실측)했으나 전부 같은 함수 안 파라미터 미세조정이었고 다
+// 기각됐다(seamNormalJaggedness 실측, 이 파일 히스토리 참고). 여기서부터는
+// 그 접근을 전부 버리고 CLO3D류 방식으로 바꾼다 — 2D 패턴(둘레 각도 ×
+// 팔 축 길이)을 팔 옆에 대충 배치하고, row0을 armholeVertex와 더 이상
+// 대수적으로 일치시키지 않는다. 대신 addSleeveArmholeSeam(그대로
+// 재사용, restLength=SEAM_REST_LENGTH)이 물리 시뮬레이션 동안 봉제선처럼
+// 끌어당겨 실제 암홀에 붙게 만든다 — 사람이 각도/반지름/방향을 정밀
+// 계산해서 미리 맞춰놓는 대신 PBD 솔버(구조/전단/벤드 제약)가 드레이프를
+// 실제로 수행하게 둔다.
+//
+// 반지름은 모든 행·열에서 상수(targetRadius) — 완전한 원통이라 옆선이
+// 저절로 직선이 된다. 각도는 균등 분배(호장비율/atan2 재배정은 이미
+// 기각됨). 유일하게 새로 쓰는 부분은 row0의 "팔 축 방향 오프셋"(reach)을
+// 어깨점(k=0)에서 표준 캡 높이 공식만큼 볼록하게, 언더암(어깨 반대편)
+// 에서 0으로 떨어지는 반코사인으로 주는 것 — 실제 소매산 곡선의 거친
+// 근사. 소맷부리(마지막 행)는 이 오프셋이 완전히 사라져 k와 무관하게
+// 평평하다.
 export function layoutSleevePanel(
   sim: ClothSimulation,
   panel: number,
@@ -933,24 +1130,31 @@ export function layoutSleevePanel(
     y: armholeVertex.reduce((s, p) => s + p.y, 0) / armholeVertex.length,
     z: armholeVertex.reduce((s, p) => s + p.z, 0) / armholeVertex.length,
   };
-  for (let r = 0; r < ringRows; r++) {
-    const t = ringRows > 1 ? r / (ringRows - 1) : 0;
-    const blendT = tubeRadiusScale(t); // 0~30%는 0→SHOULDER_SCALE(0.45), 30%~100%는 0.45→1로 계속 서서히 진행 — 완전 블렌드(1.0)는 소매 끝에서 도달. 반지름 램프와 같은 곡선을 슬릿→이상원 블렌드 가중치로 재사용.
-    const reach = arm.length * t;
-    for (let k = 0; k < ringCols; k++) {
-      const slit = armholeVertex[k];
-      const angle = Math.PI / 2 - k * ((2 * Math.PI) / ringCols); // k=0(어깨)을 위쪽(90°)에, wrap 순서대로 시계 방향.
-      const cosA = Math.cos(angle);
-      const sinA = Math.sin(angle);
-      const idealX = center.x + arm.dir.x * reach + (basis.right.x * cosA + basis.up.x * sinA) * targetRadius;
-      const idealY = center.y + arm.dir.y * reach + (basis.right.y * cosA + basis.up.y * sinA) * targetRadius;
-      const idealZ = center.z + arm.dir.z * reach + (basis.right.z * cosA + basis.up.z * sinA) * targetRadius;
-      sim.setParticle(
-        sim.index(panel, k, r),
-        slit.x + (idealX - slit.x) * blendT,
-        slit.y + (idealY - slit.y) * blendT,
-        slit.z + (idealZ - slit.z) * blendT,
-      );
+
+  const armholeArcCm = ringTotalArcLengthCm(armholeVertex);
+  const capCircumferenceCm = armholeArcCm + SLEEVE_CAP_EASE_CM;
+  const bicepHalfCm = (sleeveWidthM * 100) / 2;
+  const hypCm = capCircumferenceCm / 2;
+  // ponytail: hyp<=base인 드문 조합(이즈가 극단적으로 작고 소매통은 큼)은
+  // 삼각형이 안 만들어짐 — bicep 절반의 30%를 안전값으로 쓴다.
+  const capHeightM = (hypCm > bicepHalfCm ? Math.sqrt(hypCm * hypCm - bicepHalfCm * bicepHalfCm) : bicepHalfCm * 0.3) / 100;
+
+  for (let k = 0; k < ringCols; k++) {
+    const angle = Math.PI / 2 - k * ((2 * Math.PI) / ringCols); // k=0(어깨)을 위쪽(90°)에, wrap 순서대로 시계 방향.
+    const cosA = Math.cos(angle);
+    const sinA = Math.sin(angle);
+    // 어깨점(top, angle=90°)에서 각도로 얼마나 떨어졌는지 [0,π] — 언더암
+    // (반대편, π 떨어짐)에서 최대.
+    const rawOffset = angle - Math.PI / 2;
+    const angFromTop = Math.abs(Math.atan2(Math.sin(rawOffset), Math.cos(rawOffset)));
+    const capBulge = Math.max(0, Math.cos(angFromTop)) * capHeightM; // 어깨쪽만 볼록, 옆~언더암은 0
+    for (let r = 0; r < ringRows; r++) {
+      const v = ringRows > 1 ? r / (ringRows - 1) : 0;
+      const reach = arm.length * v - capBulge * (1 - v);
+      const x = center.x + arm.dir.x * reach + (basis.right.x * cosA + basis.up.x * sinA) * targetRadius;
+      const y = center.y + arm.dir.y * reach + (basis.right.y * cosA + basis.up.y * sinA) * targetRadius;
+      const z = center.z + arm.dir.z * reach + (basis.right.z * cosA + basis.up.z * sinA) * targetRadius;
+      sim.setParticle(sim.index(panel, k, r), x, y, z);
     }
   }
 }
