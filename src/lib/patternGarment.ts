@@ -96,10 +96,12 @@ export interface PatternGarment {
   quality: { panel: string; q: MeshQuality }[];
   place: (offsetScale: number) => void;
   meta: {
-    // 목선 부풂(이분법 해) — 0이면 "부풂 0에서 이미 목표보다 길다" = 패턴
-    // 목선이 몸보다 작다는 신호다(§4 S0 3판).
-    neckBulgeFrontM: number;
-    neckBulgeBackM: number;
+    // 목선 정점 높이(이분법 해) — 앞/뒤. `neckApexSat`가 0이 아니면 대역 끝에서
+    // 포화했다는 뜻이다(+1 = 위 끝 = 패턴 목선이 몸보다 짧다).
+    neckApexY: number[];
+    neckApexSat: number[];
+    // 미지수 대역 5점 스캔(정점 높이 → 사상된 반곡선 길이) — 자유도의 유효성 증거.
+    neckArcScan: { apexY: number; arcM: number }[][];
     neckPointY: number;
     // 사상된 목선 반곡선 길이 vs 그 목표(같은 표본의 2D 폴리라인) — 앞/뒤.
     neckArcM: number[];
@@ -497,16 +499,28 @@ export function buildPatternGarment(
     return { x: tip.x + (side.x - tip.x) * w, y: h, z: tip.z + (side.z - tip.z) * w };
   };
 
-  // (4) 중심선 C(v) — 목선 정점(v = 목깊이)에서 몸 앞/뒤 돌출까지 벌어진다.
-  //     **부풂 = 목선 정점의 목축 기준 z 반경**이고 이분법의 미지수다.
+  // (4) 중심선 C(v) — 목선 정점은 **몸 표면 + 옷 오프셋 위**에 두고, 그 정점의
+  //     **높이**를 이분법 미지수로 잡는다. z는 그 높이의 표면에서 도출되므로
+  //     별도 자유도가 아니다(부풂이 z였던 10회차까지의 형태를 뒤집은 것).
   //
-  //     대안 2종을 실측으로 비교하고 이 형태를 택했다(같은 fixture·같은 사상):
-  //       (a) 아래 구간을 그 높이 **몸 표면 + margin**으로 램프 — 관통 1413
-  //       (b) 중심선 전체를 몸 표면 프로파일의 호장 매개화 — 관통 809·교차 73
-  //           이지만 목선 반곡선이 16.65cm(목표 10.06)로 부풀어 링 56.0cm
-  //       (c) **채택** — 관통 1166·교차 163·뒤집힘 16·링 37.11cm
-  //     (b)가 관통에서 낫지만 링이 배로 벌어진다: 몸 목밑 표면이 패턴 목선보다
-  //     크다는 같은 사실이 채널만 바꿔 나타난 것이라 해석이 가장 쉬운 (c)를 둔다.
+  //     10회차 실측이 이 변경의 근거다 — 배치 원본 링/패턴 초과율이 패턴 크기와
+  //     **무관하게** +11.6~14.0%로 고정이었다(패턴 33.24 / 44.89 / 48.24cm 3점).
+  //     원인은 `heightAt`이 패턴 목깊이를 세로 낙차로 사상해 목선 정점이 몸의
+  //     목밑 폐곡선보다 9.8cm 아래에 놓인 것이었다. 실제 몸에서 그 깊이는
+  //     대부분 가슴/등 쪽으로 감아 도는 거리다.
+  const surfaceZAt = (h: number, panelSign: number, scale: number): number => {
+    const m = COLLISION_MARGIN * scale;
+    const pick = (s: { zMin: number; zMax: number }): number => (panelSign > 0 ? s.zMax + m : s.zMin - m);
+    if (sliceByY.length === 0) return body.centerZ + panelSign * m;
+    if (h <= sliceByY[0].y) return pick(sliceByY[0]);
+    for (let i = 1; i < sliceByY.length; i++) {
+      if (sliceByY[i].y >= h) {
+        const r = (h - sliceByY[i - 1].y) / Math.max(1e-12, sliceByY[i].y - sliceByY[i - 1].y);
+        return pick(sliceByY[i - 1]) + (pick(sliceByY[i]) - pick(sliceByY[i - 1])) * r;
+      }
+    }
+    return pick(sliceByY[sliceByY.length - 1]);
+  };
   const neckAxis = (() => {
     let best = Infinity, ax = body.centerX, az = body.centerZ;
     for (const sl of body.slices) {
@@ -517,13 +531,22 @@ export function buildPatternGarment(
   })();
   const neckDropOf = [draft.dims.frontNeckDropM, draft.dims.backNeckDropM];
   const torsoOffsetOf = [torsoOffsetFront, torsoOffsetBack];
-  const centerAt = (panelIdx: number, panelSign: number, v: number, scale: number, bulge: number): Vec3Like => {
+  // 미지수 apexY의 대역. 위 끝은 목점 높이 — 그보다 위면 중심선이 v에 대해
+  // 비단조가 되어 행이 서로 넘는다(접힘). 아래 끝은 밑단.
+  const apexYHi = neckPointY;
+  const apexYLo = heightAt(draft.dims.lengthM);
+  const centerAt = (panelIdx: number, panelSign: number, v: number, scale: number, apexY: number): Vec3Like => {
     const drop = neckDropOf[panelIdx];
-    const y = heightAt(v);
-    const apexZ = neckAxis.z + panelSign * bulge;
+    const apexZ = surfaceZAt(apexY, panelSign, scale);
     if (v <= drop) {
-      return { x: body.centerX, y, z: neckAxis.z + (apexZ - neckAxis.z) * (v / Math.max(1e-9, drop)) };
+      // 목점 높이의 목축에서 정점까지 — 상단 행이 등거리에 가깝게 유지된다.
+      const t = v / Math.max(1e-9, drop);
+      return { x: body.centerX, y: neckPointY + (apexY - neckPointY) * t, z: neckAxis.z + (apexZ - neckAxis.z) * t };
     }
+    // 정점 아래는 가장자리와 **같은 밑단 높이**로 내려간다(밑단이 수평이 되고
+    // 기울기가 아래로 갈수록 0으로 수렴한다 — 새 상수 없음).
+    const rate = (apexY - apexYLo) / Math.max(1e-6, draft.dims.lengthM - drop);
+    const y = apexY - (v - drop) * rate;
     const target = torsoOffsetOf[panelIdx] * scale;
     const far = body.centerZ + panelSign * target;
     const r = Math.min(1, (v - drop) / Math.max(1e-6, target));
@@ -537,13 +560,13 @@ export function buildPatternGarment(
   //     방향이 등거리라 패턴 폭이 그대로 보존된다.
   const ROW_ARC_SAMPLES = 32;
   const rowCum = new Float64Array(ROW_ARC_SAMPLES + 1);
-  const mapTorso = (panelIdx: number, xp: number, yp: number, scale: number, bulge: number): Vec3Like => {
+  const mapTorso = (panelIdx: number, xp: number, yp: number, scale: number, apexY: number): Vec3Like => {
     const panelSign = panelIdx === PANEL_PAT_FRONT ? 1 : -1;
     const v = Math.max(0, yp);
     const sign = xp >= 0 ? 1 : -1;
     const u = Math.min(1, Math.abs(xp) / Math.max(1e-9, outerXPanel[panelIdx](v)));
     const e = edgeAt(sign, panelSign, v, scale);
-    const c = centerAt(panelIdx, panelSign, v, scale, bulge);
+    const c = centerAt(panelIdx, panelSign, v, scale, apexY);
     const dx = e.x - body.centerX, dy = c.y - e.y, dz = c.z - e.z;
     // 형상은 사분타원(x = sin, y·z = cos). 대안으로 x를 t에 선형인 "코사인
     // 아치"도 재봤는데 링 35.96cm·교차 84로 낫지만 관통 1860(vs 1162)·뒤집힘
@@ -571,46 +594,55 @@ export function buildPatternGarment(
     return at(1);
   };
 
-  // 부풂 이분법. 부풂 0에서 이미 목표보다 길면 **패턴 목선이 몸보다 작다**는
-  // 뜻이라 0을 돌려주고 잔차를 meta로 노출한다(억지로 맞추면 링이 몸을 파고든다).
-  const solveNeckBulge = (panelIdx: number, scale: number): number => {
+  // 정점 높이 이분법 — 낮출수록 반곡선이 길어진다(단조). 대역 끝에서 포화하면
+  // 그 자체가 신호다(위쪽 포화 = 패턴 목선이 몸보다 짧다).
+  const solveNeckApexY = (panelIdx: number, scale: number): number => {
     const sp = draft.panels[panelIdx].segments.find((s) => s.name === "neck")?.samples ?? [];
     if (sp.length < 2) return 0;
     let target = 0;
     for (let i = 1; i < sp.length; i++) target += Math.hypot(sp[i].x - sp[i - 1].x, sp[i].y - sp[i - 1].y);
-    const lenAt = (b: number): number => {
+    const lenAt = (a: number): number => {
       let l = 0;
       for (let i = 1; i < sp.length; i++) {
-        const p = mapTorso(panelIdx, sp[i - 1].x, sp[i - 1].y, scale, b);
-        const q = mapTorso(panelIdx, sp[i].x, sp[i].y, scale, b);
+        const p = mapTorso(panelIdx, sp[i - 1].x, sp[i - 1].y, scale, a);
+        const q = mapTorso(panelIdx, sp[i].x, sp[i].y, scale, a);
         l += Math.hypot(q.x - p.x, q.y - p.y, q.z - p.z);
       }
       return l;
     };
     neckArcTargetM[panelIdx] = target;
-    if (lenAt(0) >= target) { neckArcM[panelIdx] = lenAt(0); return 0; }
-    let lo = 0, hi = 0.30;
-    if (lenAt(hi) <= target) { neckArcM[panelIdx] = lenAt(hi); return hi; }
+    // 대역 스캔 — 자유도가 실제로 길이를 줄이는지 5점으로 남긴다. 포화가
+    // "대역이 좁아서"인지 "함수가 그 방향으로 안 줄어서"인지 구분하는 근거다.
+    neckArcScan[panelIdx] = [0, 1, 2, 3, 4].map((k) => {
+      const a = apexYLo + ((apexYHi - apexYLo) * k) / 4;
+      return { apexY: a, arcM: lenAt(a) };
+    });
+    if (lenAt(apexYHi) >= target) { neckArcM[panelIdx] = lenAt(apexYHi); neckApexSat[panelIdx] = 1; return apexYHi; }
+    if (lenAt(apexYLo) <= target) { neckArcM[panelIdx] = lenAt(apexYLo); neckApexSat[panelIdx] = -1; return apexYLo; }
+    let lo = apexYLo, hi = apexYHi;
     for (let i = 0; i < 60; i++) {
       const mid = (lo + hi) / 2;
-      if (lenAt(mid) < target) lo = mid; else hi = mid;
+      if (lenAt(mid) < target) hi = mid; else lo = mid;
     }
-    const b = (lo + hi) / 2;
-    neckArcM[panelIdx] = lenAt(b);
-    return b;
+    const a = (lo + hi) / 2;
+    neckArcM[panelIdx] = lenAt(a);
+    neckApexSat[panelIdx] = 0;
+    return a;
   };
-  const neckBulgeM = [0, 0];
+  const neckApexYM = [0, 0];
+  const neckApexSat = [0, 0];
+  const neckArcScan: { apexY: number; arcM: number }[][] = [[], []];
   const neckArcM = [0, 0];
   const neckArcTargetM = [0, 0];
 
   const place = (offsetScale: number): void => {
     // ── 몸판: 위 (1)~(5)의 합성. 8개 코너는 u=1 값으로 자동 선사상된다.
     for (const panel of [PANEL_PAT_FRONT, PANEL_PAT_BACK] as const) {
-      neckBulgeM[panel] = solveNeckBulge(panel, offsetScale);
+      neckApexYM[panel] = solveNeckApexY(panel, offsetScale);
       const start = panelStarts[panel];
       for (let i = 0; i < panelCounts[panel]; i++) {
         const gi = start + i;
-        const p = mapTorso(panel, pos2[gi * 2], pos2[gi * 2 + 1], offsetScale, neckBulgeM[panel]);
+        const p = mapTorso(panel, pos2[gi * 2], pos2[gi * 2 + 1], offsetScale, neckApexYM[panel]);
         positions[gi * 3] = p.x;
         positions[gi * 3 + 1] = p.y;
         positions[gi * 3 + 2] = p.z;
@@ -677,7 +709,8 @@ export function buildPatternGarment(
     ],
     place,
     meta: {
-      neckBulgeFrontM: neckBulgeM[0], neckBulgeBackM: neckBulgeM[1], neckPointY,
+      neckApexY: [neckApexYM[0], neckApexYM[1]], neckApexSat: [neckApexSat[0], neckApexSat[1]],
+      neckArcScan: [neckArcScan[0], neckArcScan[1]], neckPointY,
       neckArcM: [neckArcM[0], neckArcM[1]], neckArcTargetM: [neckArcTargetM[0], neckArcTargetM[1]],
       armGirthM: 2 * Math.PI * ARM_COLLISION_RADIUS,
       sleeveRadiusM,
