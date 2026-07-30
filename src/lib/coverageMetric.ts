@@ -15,6 +15,7 @@
 // 고정되는 패턴(이 프로젝트 4회)을 위치 정보로 즉시 검출하기 위해서다.
 import type { GridView } from "./drapeMetrics";
 import type { Vec3Like } from "./clothProtocol";
+import { ARM_AXIS_RADIUS, nearestOnSegments, type Segment } from "./bodySkeleton";
 
 export interface CoverageBucket {
   samples: number;
@@ -63,32 +64,12 @@ export interface CoverageResult {
 //          — 삼각근 축방향 범위의 몸 기준 스케일. 팔 전체를 넣으면 반팔에서
 //          정상 노출인 맨살 전완이 노출률을 지배해 게이트가 못 된다.
 //   Y범위 = 걸러낸 삼각형 정점의 실측 extent(버킷 3분할의 분모도 이것).
-export const SHOULDER_BAND_RADIUS = 0.09;
+// = bodySkeleton.ARM_AXIS_RADIUS = meshCollision.ARM_EXCLUDE_RADIUS.
+export const SHOULDER_BAND_RADIUS = ARM_AXIS_RADIUS;
 
-export interface ArmAxis {
-  a: Vec3Like;
-  b: Vec3Like;
-}
-
-// 점 p에서 선분 ab의 최근접점(어깨 캡처럼 t가 구간 밖이면 끝점으로 클램프 —
-// meshCollision.pointToSegmentDistSq와 같은 규칙이라야 여집합이 정확하다).
-function closestOnSegment(px: number, py: number, pz: number, s: ArmAxis): [number, number, number] {
-  const abx = s.b.x - s.a.x, aby = s.b.y - s.a.y, abz = s.b.z - s.a.z;
-  const abLenSq = abx * abx + aby * aby + abz * abz;
-  const t = abLenSq > 1e-9 ? Math.min(1, Math.max(0, ((px - s.a.x) * abx + (py - s.a.y) * aby + (pz - s.a.z) * abz) / abLenSq)) : 0;
-  return [s.a.x + abx * t, s.a.y + aby * t, s.a.z + abz * t];
-}
-
-function distSqToAxes(px: number, py: number, pz: number, axes: readonly ArmAxis[]): { d2: number; axis: ArmAxis } {
-  let best = Infinity;
-  let bestAxis = axes[0];
-  for (const s of axes) {
-    const [cx, cy, cz] = closestOnSegment(px, py, pz, s);
-    const d2 = (px - cx) ** 2 + (py - cy) ** 2 + (pz - cz) ** 2;
-    if (d2 < best) { best = d2; bestAxis = s; }
-  }
-  return { d2: best, axis: bestAxis };
-}
+// 선분 최근접점 수학은 bodySkeleton.ts 공유(부호 기준과 같은 정의를 써야
+// 대역과 부호가 같은 몸을 본다 — 함정 6).
+export type ArmAxis = Segment;
 
 export interface ShoulderBand {
   mask: Uint8Array;
@@ -127,7 +108,7 @@ export function deriveShoulderBand(
     const cx = (position[a * 3] + position[b * 3] + position[c * 3]) / 3;
     const cy = (position[a * 3 + 1] + position[b * 3 + 1] + position[c * 3 + 1]) / 3;
     const cz = (position[a * 3 + 2] + position[b * 3 + 2] + position[c * 3 + 2]) / 3;
-    if (distSqToAxes(cx, cy, cz, axes).d2 >= r2) continue;
+    if (nearestOnSegments(cx, cy, cz, axes).d2 >= r2) continue;
     triangles++;
     for (const vi of [a, b, c]) {
       mask[vi] = 1;
@@ -370,7 +351,7 @@ export function computeBodyCoverage(
     // 바깥 방향 참조: 몸통 축 방사(기존) 또는 팔 축 방사(어깨 대역).
     let refX: number, refY: number, refZ: number;
     if (params.outwardAxes && params.outwardAxes.length > 0) {
-      const [cx, cy, cz] = closestOnSegment(x, y, z, distSqToAxes(x, y, z, params.outwardAxes).axis);
+      const { x: cx, y: cy, z: cz } = nearestOnSegments(x, y, z, params.outwardAxes);
       const rl = Math.hypot(x - cx, y - cy, z - cz) || 1e-9;
       refX = (x - cx) / rl;
       refY = (y - cy) / rl + 0.25;

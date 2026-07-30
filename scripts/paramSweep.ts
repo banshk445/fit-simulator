@@ -50,8 +50,9 @@ import type { Vec3Like } from "../src/lib/clothProtocol";
 import { armholeRingJaggedness, ringJaggedness } from "../src/lib/seamDiagnostics";
 import { capsuleGapBands, computeCapsuleGapChannels, computeDrapeMetrics, computeOrderViolations, computeRippleMm, columnRipplePerVertex, type DrapeMetrics, type GapStats } from "../src/lib/drapeMetrics";
 import { computeBodyCoverage, deriveShoulderBand } from "../src/lib/coverageMetric";
+import { ARM_AXIS_RADIUS, deriveBodySkeleton, nearestOnSegments } from "../src/lib/bodySkeleton";
 import { computeNecklineLift } from "../src/lib/necklineLift";
-import { bakeSdf, createCachedSdfIterationFriction, createSdfFrictionPass, createSdfIterationFrictionPass, createSdfPushResolver, makeRadialSignedSampler, sampleSdf, type SdfField } from "../src/lib/sdfCollision";
+import { bakeSdf, createCachedSdfIterationFriction, createSdfFrictionPass, createSdfIterationFrictionPass, createSdfPushResolver, makeRadialSignedSampler, makeSkeletonSignedSampler, sampleSdf, type SdfField } from "../src/lib/sdfCollision";
 
 // 대표 포즈 — checkSleeveSeam.ts와 같은 출처(이 세션 __fitDebug 실측), 반팔
 // 기본값(소매길이 22cm), 어깨너비 45cm 기준.
@@ -461,6 +462,156 @@ function runFixture(path: string): void {
   const sdfCx = (sdfMin.x + sdfMax.x) / 2;
   const sdfCz = (sdfMin.z + sdfMax.z) / 2;
 
+  // 골격(부호 기준·대역 공통) — 몸 메시 + 뼈대에서 도출(bodySkeleton.ts).
+  const torsoIndexAll = (() => {
+    const fi = fixture.collision.frontIndex ?? [];
+    const bi = fixture.collision.backIndex ?? [];
+    const out = new Uint32Array(fi.length + bi.length);
+    out.set(fi, 0);
+    out.set(bi, fi.length);
+    return out;
+  })();
+  const skeleton = deriveBodySkeleton(
+    position,
+    torsoIndexAll,
+    [pose.armLeft, pose.armRight],
+    (pose.pinLeft.x + pose.pinRight.x) / 2,
+    fixture.collision.centerZ,
+    // 골반 하단 = 토르소 프록시 캡슐 마지막 칸의 bottom(몸 실측 도출).
+    fixture.collision.capsules[fixture.collision.capsules.length - 1].bottom.y,
+  );
+
+  // SIGNMAP=1 — 부호 오분류 측정기(Stage 1a 2회차 계기 선행). 물리 무실행.
+  // 손잡이를 돌리기 전에 "현 radial 부호와 골격 부호가 **어디서** 갈리는가"를
+  // 수치로 확정한다. 가설: 불일치는 어깨/삼각근 대역에 집중되고 몸통 중앙
+  // (대조군)에서는 ~0이다. 아니면 즉시 정지 — 가설 기각.
+  //
+  // 참값 근사(보수적 내부 오라클): 골격점 a는 몸 내부다(캡슐 축 = 확실한
+  // 내부, 사용자 승인 전제). |p−a| < unsignedDist(a)이면 열린 공
+  // B(a, unsignedDist(a))가 표면을 하나도 안 물으므로 그 공 전체가 내부고,
+  // p도 내부다 — **레이 패리티 없이** 성립하는 엄격한 판정이다(함정 6:
+  // 와인딩 불일치 메시에서 패리티는 못 쓴다). 상수 없음.
+  if (process.env.SIGNMAP === "1") {
+    const mutate = process.env.SIGNMAP_MUTATE === "1";
+    const toU32 = (a: number[] | null) => (a ? Uint32Array.from(a) : null);
+    const wholeMesh = new ArrayBvhCollision();
+    wholeMesh.rebuild(position, toU32(fixture.collision.wholeBodyIndex));
+    const armR2 = ARM_AXIS_RADIUS * ARM_AXIS_RADIUS;
+    // 대역 정의는 §9-1 coverage 어깨 대역과 **같은 함수**에서 가져온다 —
+    // 부호 기준의 팔 축은 손끝까지(67.5cm, 전완 부호가 맞아야 하므로)이지만
+    // **영역 라벨은 어깨 반폭으로 자른 축**이라야 "어깨/삼각근"이 실제로
+    // 어깨/삼각근이다. 첫 실행에서 이걸 안 나눠 손·전완이 어깨 대역으로
+    // 집계되는 오염이 있었다(함정 6: 대역 정의 혼용).
+    const bandAxes = deriveShoulderBand(
+      position, fixture.collision.wholeBodyIndex, [pose.armLeft, pose.armRight],
+      (pose.pinLeft.x + pose.pinRight.x) / 2,
+    ).axes;
+    // 몸통 대조군 = 토르소 캡슐의 Y 구간 ∩ y ≤ 어깨 관절, 어깨 대역 제외.
+    // 다리·머리·전완은 "그외"로 빼서 대조군을 오염시키지 않는다.
+    const torsoLoY = fixture.collision.capsules[fixture.collision.capsules.length - 1].bottom.y;
+    const torsoHiY = skeleton.torso[skeleton.torso.length - 1].b.y;
+    // 팔 전체(손끝까지)를 따로 뺀다 — 안 빼면 손(x≈0.53, y≈0.80)이 Y창만으로
+    // 몸통 대조군에 들어와 대조군을 오염시킨다(첫 두 실행에서 실제로 그랬다).
+    const region = (x: number, y: number, z: number) =>
+      nearestOnSegments(x, y, z, bandAxes).d2 < armR2
+        ? "어깨/삼각근"
+        : nearestOnSegments(x, y, z, skeleton.arms).d2 < armR2
+          ? "팔(전완·손)"
+          : y >= torsoLoY && y <= torsoHiY
+            ? "몸통(대조군)"
+            : "그외(다리·머리)";
+    // 두 부호 규칙을 같은 최근접점 c에서 평가 — 규칙 차이만 남긴다.
+    const signRadial = (x: number, y: number, z: number, c: { x: number; y: number; z: number }) => {
+      const rx = x - sdfCx, rz = z - sdfCz;
+      const rLen = Math.hypot(rx, rz) || 1e-9;
+      return (x - c.x) * (rx / rLen) + (y - c.y) * 0.25 + (z - c.z) * (rz / rLen) >= 0 ? 1 : -1;
+    };
+    const signSkel = (x: number, y: number, z: number, c: { x: number; y: number; z: number }) => {
+      const k = nearestOnSegments(x, y, z, skeleton.segments);
+      const s = (x - c.x) * (x - k.x) + (y - c.y) * (y - k.y) + (z - c.z) * (z - k.z) >= 0 ? 1 : -1;
+      return mutate ? -s : s;
+    };
+    console.log(
+      `[SIGNMAP] 골격: 몸통축 폴리라인 ${skeleton.torso.length}구간 y ${skeleton.torso[0].a.y.toFixed(3)}..${skeleton.torso[skeleton.torso.length - 1].b.y.toFixed(3)} z ${skeleton.torso.map((t) => t.a.z.toFixed(3)).join("→")} / 팔 길이 ${skeleton.arms.map((s) => (Math.hypot(s.b.x - s.a.x, s.b.y - s.a.y, s.b.z - s.a.z) * 100).toFixed(1)).join("·")}cm (몸 실측 도출)${mutate ? " · **변이(부호 반전) 역검증 모드**" : ""}`,
+    );
+    // 오라클 전제 검증 — "몸통 축은 몸 내부"가 실제로 성립하는지, 축을
+    // 따라 표면까지의 여유(=국소 내반경)를 찍는다. 이 값이 축 전 구간에서
+    // 넉넉한 양수라야 아래 공(ball) 판정이 유효하다.
+    {
+      const prof: string[] = [];
+      for (const seg of skeleton.torso) {
+        const c = wholeMesh.closestPointUnsigned(seg.a.x, seg.a.y, seg.a.z, SDF_FAR);
+        prof.push(`y${seg.a.y.toFixed(2)}=${c ? (c.distance * 100).toFixed(1) : "?"}cm`);
+      }
+      console.log(`[SIGNMAP] 축 여유(내반경) 프로파일: ${prof.join(" ")} — 전 구간 양수라야 오라클 유효`);
+    }
+    // (A) 불일치 지도 — 실제 밀어내기 필드가 쓰는 앞/뒤 메시 위에서.
+    for (const [label, idx] of [["앞면", fixture.collision.frontIndex], ["뒷면", fixture.collision.backIndex]] as const) {
+      const m = new ArrayBvhCollision();
+      m.rebuild(position, toU32(idx));
+      const stride = 2 * SDF_PUSH_VOXEL;
+      const stat = new Map<string, { n: number; dis: number; ex: { x: number; y: number; z: number }[] }>();
+      let near = 0;
+      for (let z = sdfMin.z; z <= sdfMax.z; z += stride) {
+        for (let y = sdfMin.y; y <= sdfMax.y; y += stride) {
+          for (let x = sdfMin.x; x <= sdfMax.x; x += stride) {
+            const c = m.closestPointUnsigned(x, y, z, SDF_FAR);
+            // 부호가 물리에 영향을 주는 구간 = 표면 근방. 5cm로 자른다
+            // (margin 1.5cm + 흡착 목표 이동폭을 넉넉히 덮는다).
+            if (!c || c.distance > 0.05) continue;
+            near++;
+            const key = `${region(x, y, z)}/${z >= sdfCz ? "앞" : "뒤"}`;
+            const e = stat.get(key) ?? { n: 0, dis: 0, ex: [] };
+            e.n++;
+            if (signRadial(x, y, z, c) !== signSkel(x, y, z, c)) {
+              e.dis++;
+              if (e.ex.length < 3) e.ex.push({ x: Number(x.toFixed(3)), y: Number(y.toFixed(3)), z: Number(z.toFixed(3)) });
+            }
+            stat.set(key, e);
+          }
+        }
+      }
+      const rows = [...stat.entries()].sort((a, b) => b[1].dis - a[1].dis);
+      const totalDis = rows.reduce((a, r) => a + r[1].dis, 0);
+      console.log(`[SIGNMAP] ${label} 필드: 표면근방(≤5cm) 표본 ${near} · 불일치 ${totalDis} (${((totalDis / (near || 1)) * 100).toFixed(1)}%)`);
+      for (const [key, e] of rows) {
+        console.log(`[SIGNMAP]   ${key.padEnd(18)} 표본 ${String(e.n).padStart(6)} · 불일치 ${String(e.dis).padStart(6)} (${((e.dis / (e.n || 1)) * 100).toFixed(1)}%)${e.ex.length ? ` 예 ${JSON.stringify(e.ex)}` : ""}`);
+      }
+    }
+    // (B) 참값 대조 — 몸 전체 메시 + 위 공(ball) 오라클. 내부로 확정된
+    // 표본에서 각 규칙이 "밖"이라 답한 횟수(= 오분류).
+    {
+      const stride = 2 * SDF_PUSH_VOXEL;
+      const stat = new Map<string, { n: number; radialBad: number; skelBad: number }>();
+      for (let z = sdfMin.z; z <= sdfMax.z; z += stride) {
+        for (let y = sdfMin.y; y <= sdfMax.y; y += stride) {
+          for (let x = sdfMin.x; x <= sdfMax.x; x += stride) {
+            const k = nearestOnSegments(x, y, z, skeleton.segments);
+            const a = wholeMesh.closestPointUnsigned(k.x, k.y, k.z, SDF_FAR);
+            if (!a) continue;
+            // 엄격 내부 판정: |p−a| < unsignedDist(a).
+            if (Math.sqrt(k.d2) >= a.distance) continue;
+            const c = wholeMesh.closestPointUnsigned(x, y, z, SDF_FAR);
+            if (!c) continue;
+            const key = region(x, y, z);
+            const e = stat.get(key) ?? { n: 0, radialBad: 0, skelBad: 0 };
+            e.n++;
+            if (signRadial(x, y, z, c) > 0) e.radialBad++;
+            if (signSkel(x, y, z, c) > 0) e.skelBad++;
+            stat.set(key, e);
+          }
+        }
+      }
+      for (const [key, e] of stat) {
+        console.log(
+          `[SIGNMAP] 오라클(확정 내부) ${key.padEnd(14)} 표본 ${String(e.n).padStart(6)} · radial 오분류 ${e.radialBad} (${((e.radialBad / (e.n || 1)) * 100).toFixed(1)}%) · 골격 오분류 ${e.skelBad} (${((e.skelBad / (e.n || 1)) * 100).toFixed(1)}%)`,
+        );
+      }
+    }
+    console.log(`[SIGNMAP] 물리 미실행(측정 전용). 경과 ${((performance.now() - tProcess) / 1000).toFixed(1)}s`);
+    return;
+  }
+
   let sdfField: SdfField | null = null;
   if (process.env.FRICTION === "1") {
     const wholeMesh = new ArrayBvhCollision();
@@ -495,7 +646,13 @@ function runFixture(path: string): void {
       const m = new ArrayBvhCollision();
       m.rebuild(position, toU32(idx));
       const t = performance.now();
-      const f = bakeSdf(makeRadialSignedSampler(m, sdfCx, sdfCz, SDF_FAR, SDF_FAR), sdfMin, sdfMax, SDF_PUSH_VOXEL, SDF_FAR);
+      // 2회차: 부호 기준을 골격 선분으로 교체(SIGNMAP 실측 근거 — 어깨
+      // 대역 오분류 36.3%→1.8%). PUSHSIGN=radial 로 1회차 재현(롤백 지점).
+      // **마찰 필드는 radial 유지** — 이번 변수는 밀어내기 부호 하나다.
+      const sampler = process.env.PUSHSIGN === "radial"
+        ? makeRadialSignedSampler(m, sdfCx, sdfCz, SDF_FAR, SDF_FAR)
+        : makeSkeletonSignedSampler(m, skeleton.segments, SDF_FAR, SDF_FAR);
+      const f = bakeSdf(sampler, sdfMin, sdfMax, SDF_PUSH_VOXEL, SDF_FAR);
       // 규범 4: 굽기 보고에 elapsedMs와 **누적 경과 시간**을 병기한다.
       // §1.1의 ~12.5s/필드는 추정이므로 이 줄이 확정 근거가 된다.
       const ms = performance.now() - t;
@@ -505,6 +662,7 @@ function runFixture(path: string): void {
       );
       return f;
     };
+    console.log(`[paramSweep:fixture] 밀어내기 부호 기준=${process.env.PUSHSIGN === "radial" ? "radial(1회차 재현)" : "골격 선분(2회차)"}`);
     sdfPushFront = bakeSide(fixture.collision.frontIndex, "밀어내기/앞면");
     sdfPushBack = bakeSide(fixture.collision.backIndex, "밀어내기/뒷면");
     const push = createPanelSplitResolver(

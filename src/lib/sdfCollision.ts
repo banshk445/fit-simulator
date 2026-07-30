@@ -10,6 +10,8 @@
 //
 // 굽기 비용은 rebuildCollision(200ms 디바운스, 워커) 때 한 번뿐이고,
 // 조회는 트라이리니어 보간이라 O(1) — BVH 트리 탐색보다 훨씬 싸다.
+import { nearestOnSegments, type Segment } from "./bodySkeleton";
+
 export interface SdfField {
   originX: number;
   originY: number;
@@ -53,6 +55,31 @@ export function makeRadialSignedSampler(
     const refY = 0.25;
     const refZ = rz / rLen;
     const dot = (x - c.x) * refX + (y - c.y) * refY + (z - c.z) * refZ;
+    return dot >= 0 ? c.distance : -c.distance;
+  };
+}
+
+// v2 Stage 1a 2회차 — **골격 선분 기준 부호 샘플러**.
+// 위 radial 샘플러의 구조적 한계(세로축 단일 star-shaped 전제 + 위쪽 25%
+// 특례)를 기준 자체를 올려 없앤다: 최근접 **골격점**에서 밖으로 나가는
+// 방향을 참조로 쓴다. 도출·기전·"몸통 축을 어깨 관절에서 끊는 이유"는
+// bodySkeleton.ts 상단 주석. 파라미터 재시도가 아니라 기준의 교체다.
+//
+// refY 특례는 **제거**했다 — 어깨 캡의 위쪽 성분은 축 끝점 접힘에서
+// 기하적으로 나온다(특례가 흉내던 것을 원리로 대체).
+export function makeSkeletonSignedSampler(
+  mesh: { closestPointUnsigned(px: number, py: number, pz: number, r: number): { x: number; y: number; z: number; distance: number } | null },
+  skeleton: readonly Segment[],
+  detectionRadius: number,
+  farValue: number,
+): (x: number, y: number, z: number) => number {
+  return (x, y, z) => {
+    const c = mesh.closestPointUnsigned(x, y, z, detectionRadius);
+    if (!c) return farValue;
+    const k = nearestOnSegments(x, y, z, skeleton);
+    const rx = x - k.x, ry = y - k.y, rz = z - k.z;
+    const rLen = Math.hypot(rx, ry, rz) || 1e-9;
+    const dot = ((x - c.x) * rx + (y - c.y) * ry + (z - c.z) * rz) / rLen;
     return dot >= 0 ? c.distance : -c.distance;
   };
 }

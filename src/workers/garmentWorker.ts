@@ -5,7 +5,8 @@ import { ArrayBvhCollision } from "../lib/bvhFromArrays";
 import { SelfCollision } from "../lib/selfCollision";
 import { FABRIC_PRESETS } from "../lib/fabricPresets";
 import { buildUnifiedGarmentSim } from "../lib/buildUnifiedGarmentSim";
-import { bakeSdf, createCachedSdfIterationFriction, createSdfFrictionPass, createSdfPushResolver, makeRadialSignedSampler, type SdfField } from "../lib/sdfCollision";
+import { bakeSdf, createCachedSdfIterationFriction, createSdfFrictionPass, createSdfPushResolver, makeRadialSignedSampler, makeSkeletonSignedSampler, type SdfField } from "../lib/sdfCollision";
+import { deriveBodySkeleton } from "../lib/bodySkeleton";
 // M0(파이프라인 일원화): 프레임 시퀀스·unifiedResolver·팔 캡슐 빌더는
 // garmentFrame.ts로 이사 — paramSweep(Node)과 이 워커가 같은 함수를 쓴다.
 import { buildArmCapsules, createGarmentSession, createPanelSplitResolver, createUnifiedResolver, defaultSmoothing, PANEL_COUNTS } from "../lib/garmentFrame";
@@ -174,6 +175,8 @@ let bakedBody: {
   wholeBodyIndex: Uint32Array | null;
   frontIndex: Uint32Array | null;
   backIndex: Uint32Array | null;
+  // 골격 부호 기준 도출 입력(bodySkeleton.deriveBodySkeleton) — 몸 실측만.
+  torsoBottomY: number;
 } | null = null;
 let sdfField: SdfField | null = null;
 // v2 Stage 1a: 밀어내기 필드는 **앞/뒤 분리**다. 단일 병합 필드(구 구현)는
@@ -183,6 +186,7 @@ let sdfField: SdfField | null = null;
 // 장치이기도 하다.
 let sdfPushFront: SdfField | null = null;
 let sdfPushBack: SdfField | null = null;
+let lastArms: { left: ArmShapeMsg; right: ArmShapeMsg } | null = null;
 let sdfFrictionEnabled = false;
 let sdfPushEnabled = false;
 
@@ -211,23 +215,38 @@ function ensureSdf(): void {
   // 굽기 bbox의 수평 중앙.
   const cx = (min.x + max.x) / 2;
   const cz = (min.z + max.z) / 2;
-  const bake = (index: Uint32Array | null, label: string, voxel: number): SdfField => {
+  // 2회차: 밀어내기 필드의 부호 기준을 골격 선분으로. 마찰 필드는 radial
+  // 유지(변수 하나). 근거·기전은 bodySkeleton.ts + SIGNMAP 실측 블록.
+  const torsoMerged = (() => {
+    if (!frontIndex || !backIndex) return frontIndex ?? backIndex;
+    const m = new Uint32Array(frontIndex.length + backIndex.length);
+    m.set(frontIndex, 0);
+    m.set(backIndex, frontIndex.length);
+    return m;
+  })();
+  const skeleton = lastArms
+    ? deriveBodySkeleton(position, torsoMerged, [lastArms.left, lastArms.right], cx, cz, bakedBody.torsoBottomY)
+    : null;
+  const bake = (index: Uint32Array | null, label: string, voxel: number, sign: "radial" | "skeleton"): SdfField => {
     const mesh = new ArrayBvhCollision();
     mesh.rebuild(position, index);
     const t = performance.now();
-    const f = bakeSdf(makeRadialSignedSampler(mesh, cx, cz, SDF_FAR, SDF_FAR), min, max, voxel, SDF_FAR);
+    const sampler = sign === "skeleton" && skeleton
+      ? makeSkeletonSignedSampler(mesh, skeleton.segments, SDF_FAR, SDF_FAR)
+      : makeRadialSignedSampler(mesh, cx, cz, SDF_FAR, SDF_FAR);
+    const f = bakeSdf(sampler, min, max, voxel, SDF_FAR);
     // 규범 4: elapsedMs·복셀 크기 병기. 6mm 밀어내기 필드는 수십 초가 걸리고
     // 그 동안 물리 워커가 막힌다 — 몸 불변 전제(세션당 1회)에서만 성립하는
     // 상태이고, 몸 슬라이더 경로는 Stage 0(이중 버퍼)이 걷어내야 한다.
     console.log(
-      `[SDF:${label}] ${f.nx}x${f.ny}x${f.nz} (${((f.nx * f.ny * f.nz) / 1000).toFixed(1)}k복셀 · 복셀 ${(voxel * 1000).toFixed(0)}mm) elapsedMs ${Math.round(performance.now() - t)}`,
+      `[SDF:${label}] ${f.nx}x${f.ny}x${f.nz} (${((f.nx * f.ny * f.nz) / 1000).toFixed(1)}k복셀 · 복셀 ${(voxel * 1000).toFixed(0)}mm · 부호 ${sign === "skeleton" && skeleton ? "골격" : "radial"}) elapsedMs ${Math.round(performance.now() - t)}`,
     );
     return f;
   };
-  if (sdfFrictionEnabled && !sdfField) sdfField = bake(wholeBodyIndex, "마찰/몸전체", SDF_VOXEL);
+  if (sdfFrictionEnabled && !sdfField) sdfField = bake(wholeBodyIndex, "마찰/몸전체", SDF_VOXEL, "radial");
   if (sdfPushEnabled && !(sdfPushFront && sdfPushBack)) {
-    sdfPushFront = bake(frontIndex, "밀어내기/앞면", SDF_PUSH_VOXEL);
-    sdfPushBack = bake(backIndex, "밀어내기/뒷면", SDF_PUSH_VOXEL);
+    sdfPushFront = bake(frontIndex, "밀어내기/앞면", SDF_PUSH_VOXEL, "skeleton");
+    sdfPushBack = bake(backIndex, "밀어내기/뒷면", SDF_PUSH_VOXEL, "skeleton");
   }
 }
 
@@ -430,7 +449,14 @@ ctx.onmessage = (event) => {
         penetrationAxis.z = msg.capsules[0].top.z;
       }
       // M2: 몸이 바뀌었으니 SDF 재굽기(다음 step에서 ensureSdf가 처리).
-      bakedBody = { position: msg.position, wholeBodyIndex: msg.wholeBodyIndex, frontIndex: msg.frontIndex, backIndex: msg.backIndex };
+      bakedBody = {
+        position: msg.position,
+        wholeBodyIndex: msg.wholeBodyIndex,
+        frontIndex: msg.frontIndex,
+        backIndex: msg.backIndex,
+        // 골반 하단 = 토르소 프록시 캡슐 마지막 칸 bottom(몸 실측 도출).
+        torsoBottomY: msg.capsules.length > 0 ? msg.capsules[msg.capsules.length - 1].bottom.y : 0,
+      };
       sdfField = null;
       sdfPushFront = null;
       sdfPushBack = null;
@@ -442,6 +468,8 @@ ctx.onmessage = (event) => {
       const armLeft = toArmDir(msg.armLeft);
       const armRight = toArmDir(msg.armRight);
       collisionState.armCapsules = [...buildArmCapsules(msg.armLeft), ...buildArmCapsules(msg.armRight)];
+      // 골격 부호 기준용 — 팔 뼈대(trueShoulder·dir)는 step에만 실려 온다.
+      lastArms = { left: msg.armLeft, right: msg.armRight };
 
       const preset = FABRIC_PRESETS[msg.fabric];
       // rebuildCollision은 REBUILD_DEBOUNCE_MS(200ms) 디바운스 + 메인
