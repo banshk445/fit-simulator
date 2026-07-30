@@ -238,6 +238,14 @@ export interface GarmentFrameEnv {
   collarStrainLimit?: number;
   // 발화 카운트 수집(배선 검증용) — 있으면 프레임마다 누적 호출.
   onCollarFired?: (count: number) => void;
+  // v2(patternCore): v1 목선 핀 배치를 끈다. v1 `pinCorners`는 COLS·ROWS
+  // 격자와 목선 코너 규약에 묶여 있어 패턴 패널에는 의미가 없다(인덱스도
+  // 안 맞는다). **undefined = true = 기존 동작**이라 구 경로는 비트 동일.
+  pinCorners?: boolean;
+  // v2(patternCore): 앵커 목표를 호출자가 프레임마다 공급한다(§4 S1의
+  // "임시 배치 앵커"). pinCorners:false와 짝으로만 쓴다 — 켠 상태로 두면
+  // pinCorners가 만든 목표를 덮어써 v1 경로가 조용히 바뀐다.
+  anchors?: () => { i: number; x: number; y: number; z: number }[];
 }
 
 export interface GarmentSession {
@@ -257,8 +265,12 @@ export function createGarmentSession(sim: ClothSimulation, env: GarmentFrameEnv)
   return {
     step(dt, gravity, preset, layout, pose) {
       const { pinLeft, pinRight, armLeft, armRight } = pose;
-      const anchorTargets: { i: number; x: number; y: number; z: number }[] = [];
-      pinCorners(sim, pinLeft, pinRight, PANEL_FRONT, PANEL_BACK, armLeft, armRight, pose.necklineLift, env.pinStrength ?? 1, env.pinContinuous ?? false, anchorTargets);
+      let anchorTargets: { i: number; x: number; y: number; z: number }[] = [];
+      if (env.pinCorners ?? true) {
+        pinCorners(sim, pinLeft, pinRight, PANEL_FRONT, PANEL_BACK, armLeft, armRight, pose.necklineLift, env.pinStrength ?? 1, env.pinContinuous ?? false, anchorTargets);
+      } else {
+        anchorTargets = env.anchors?.() ?? [];
+      }
       sim.setAnchors(anchorTargets);
       // 복리 보정 — 반복 n회 누적 유효 강성이 프레임당 1회 모드의
       // strength와 일치하도록 k'=1-(1-k)^(1/n)(A-①과 같은 식). 보정 없이

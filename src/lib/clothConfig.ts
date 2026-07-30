@@ -277,3 +277,14 @@ export const ARM_COLLISION_RADIUS = 0.0456;
 // 이 상수를 같이 본다. 하네스가 제품과 다른 코어를 기본으로 쓰면 "기본
 // 실행"이 제품을 안 재게 된다(함정 12). 구 코어 진입은 ?newcore=0 / NEWCORE=0.
 export const DEFAULT_NEW_CORE = true;
+
+// v2 플래그 — 패턴 기반 옷(폐곡 패널 + 봉제 착장). `newCore`와 **독립**이며
+// 기본 off다(v2-design §6 공통 규칙). 구 경로 비트 동일성이 하드 게이트이므로
+// 이 플래그가 off인 실행에는 v2 코드가 한 줄도 관여하지 않아야 한다.
+// 진입: PATTERNCORE=1(하네스). 제품(워커·브라우저) 배선은 렌더할 것이 생기는
+// Stage 2a에서 — 지금 배선하면 화면에 아무것도 없는 죽은 경로만 늘어난다.
+export const DEFAULT_PATTERN_CORE = false;
+
+// 2a-thin 스파이크 패널의 목표 엣지 길이(§1.3: "엣지 ~25mm — 추정, 값 자체는
+// 무의미"). 스파이크 전용 — 실물 패턴의 경계 grading 목표(§1.4)와 무관하다.
+export const SPIKE_EDGE_M = 0.025;

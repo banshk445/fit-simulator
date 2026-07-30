@@ -17,7 +17,8 @@
     "sweep:pattern": "tsx scripts/paramSweep.ts",
     "check:weld": "tsx scripts/checkWeldTopology.ts",
     "capture": "tsx scripts/capture.ts",
-    "check:demo": "tsx scripts/checkDemoSmoke.ts"
+    "check:demo": "tsx scripts/checkDemoSmoke.ts",
+    "spike:dressing": "tsx scripts/spikeDressing.ts"
   },
   "build": {
     "appId": "com.fitsimulator.app",
