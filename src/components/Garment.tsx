@@ -382,6 +382,9 @@ export function Garment({ imageUrl }: Props) {
   // 유일하게 결정적인 검사였다(2026-07-29: 목은 마네킹 목 안으로 들어가
   // 가려져 있었고, 커프는 정상이었다).
   const trimDebug = useMemo(() => new URLSearchParams(window.location.search).get("trimdebug") === "1", []);
+  // v2 Stage 1a: ?sdfpush=1 이면 밀어내기를 SDF 기울기 경로로(화면 판정용).
+  // 기본 off = BVH. 첫 굽기 ~21s(앞/뒤 6mm 2필드) 동안 물리가 멈춘다.
+  const sdfPush = useMemo(() => new URLSearchParams(window.location.search).get("sdfpush") === "1", []);
   const newCoreRef = useRef(newCore);
   newCoreRef.current = newCore;
   // 47번(디버그 전용): 영역별 와이어프레임 지오메트리를 나눌 몸통(xMin~xMax)
@@ -1648,6 +1651,7 @@ export function Garment({ imageUrl }: Props) {
       armRight: armShapes.right,
       newCore,
       friction,
+      sdfPush,
       pinStrength: pinStrengthOverride,
     } satisfies MainToGarmentWorkerMessage);
     pendingDtRef.current = 0;
@@ -1671,6 +1675,7 @@ export function Garment({ imageUrl }: Props) {
     garmentSize.sleeveWidth,
     newCore,
     friction,
+    sdfPush,
     pinStrengthOverride,
   ]);
 

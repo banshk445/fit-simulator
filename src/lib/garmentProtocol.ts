@@ -37,6 +37,11 @@ export type MainToGarmentWorkerMessage =
       newCore?: boolean;
       // M2: 신 코어 안에서 마찰만 독립 토글(A/B 판정용).
       friction?: boolean;
+      // v2 Stage 1a: 밀어내기를 BVH 면 법선 → SDF 기울기로 전환(?sdfpush=1).
+      // **기본 off** — 게이트 통과·채택 판정 전까지 제품 경로는 BVH다.
+      // 켜면 첫 굽기에서 앞/뒤 6mm 필드 2개(각 ~10s 실측, 물리 워커 동기)를
+      // 굽는다 — 화면 판정 시 정착 대기를 그만큼 늘려 잡을 것.
+      sdfPush?: boolean;
       // DEV 화면 판정용 핀 강도 override(?pin= 쿼리) — 없으면 상수.
       pinStrength?: number;
     }

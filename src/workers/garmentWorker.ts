@@ -33,6 +33,7 @@ import {
   SDF_FAR,
   SDF_PUSH_RELAXATION,
   SDF_VOXEL,
+  SDF_PUSH_VOXEL,
   SELF_COLLISION_MIN_DIST,
 } from "../lib/clothConfig";
 import type { MainToGarmentWorkerMessage, GarmentWorkerToMainMessage, ArmShapeMsg } from "../lib/garmentProtocol";
@@ -175,14 +176,20 @@ let bakedBody: {
   backIndex: Uint32Array | null;
 } | null = null;
 let sdfField: SdfField | null = null;
-let sdfPushField: SdfField | null = null;
+// v2 Stage 1a: 밀어내기 필드는 **앞/뒤 분리**다. 단일 병합 필드(구 구현)는
+// M2-3 3차 실측이 이미 기각했다 — 옆구리로 돌아간 앞판 파티클이 뒤쪽 표면에
+// 붙어 뒤판을 관통해 교차 31~33이 났고, 앞/뒤를 나눠 8로 떨어졌다. BVH
+// 리졸버의 frontIndex/backIndex 분리가 sidedness 제거 후 유일한 앞뒤 분리
+// 장치이기도 하다.
+let sdfPushFront: SdfField | null = null;
+let sdfPushBack: SdfField | null = null;
 let sdfFrictionEnabled = false;
 let sdfPushEnabled = false;
 
 function ensureSdf(): void {
   if (!bakedBody || !lastLayout) return;
   if (!sdfFrictionEnabled && !sdfPushEnabled) return;
-  if ((sdfField || !sdfFrictionEnabled) && (sdfPushField || !sdfPushEnabled)) return;
+  if ((sdfField || !sdfFrictionEnabled) && ((sdfPushFront && sdfPushBack) || !sdfPushEnabled)) return;
   const { position, wholeBodyIndex, frontIndex, backIndex } = bakedBody;
   const yTop = lastLayout.topY + 0.1;
   const yBot = lastLayout.topY - lastLayout.heightM - 0.15;
@@ -204,26 +211,23 @@ function ensureSdf(): void {
   // 굽기 bbox의 수평 중앙.
   const cx = (min.x + max.x) / 2;
   const cz = (min.z + max.z) / 2;
-  const bake = (index: Uint32Array | null, label: string): SdfField => {
+  const bake = (index: Uint32Array | null, label: string, voxel: number): SdfField => {
     const mesh = new ArrayBvhCollision();
     mesh.rebuild(position, index);
     const t = performance.now();
-    const f = bakeSdf(makeRadialSignedSampler(mesh, cx, cz, SDF_FAR, SDF_FAR), min, max, SDF_VOXEL, SDF_FAR);
-    console.log(`[SDF:${label}] ${f.nx}x${f.ny}x${f.nz} (${((f.nx * f.ny * f.nz) / 1000).toFixed(1)}k복셀) ${Math.round(performance.now() - t)}ms`);
+    const f = bakeSdf(makeRadialSignedSampler(mesh, cx, cz, SDF_FAR, SDF_FAR), min, max, voxel, SDF_FAR);
+    // 규범 4: elapsedMs·복셀 크기 병기. 6mm 밀어내기 필드는 수십 초가 걸리고
+    // 그 동안 물리 워커가 막힌다 — 몸 불변 전제(세션당 1회)에서만 성립하는
+    // 상태이고, 몸 슬라이더 경로는 Stage 0(이중 버퍼)이 걷어내야 한다.
+    console.log(
+      `[SDF:${label}] ${f.nx}x${f.ny}x${f.nz} (${((f.nx * f.ny * f.nz) / 1000).toFixed(1)}k복셀 · 복셀 ${(voxel * 1000).toFixed(0)}mm) elapsedMs ${Math.round(performance.now() - t)}`,
+    );
     return f;
   };
-  if (sdfFrictionEnabled && !sdfField) sdfField = bake(wholeBodyIndex, "마찰/몸전체");
-  if (sdfPushEnabled && !sdfPushField) {
-    // frontIndex+backIndex 합집합 = 팔 제외 몸통(기존 BVH 리졸버와 동일 대상).
-    let merged: Uint32Array | null = null;
-    if (frontIndex && backIndex) {
-      merged = new Uint32Array(frontIndex.length + backIndex.length);
-      merged.set(frontIndex, 0);
-      merged.set(backIndex, frontIndex.length);
-    } else {
-      merged = frontIndex ?? backIndex;
-    }
-    sdfPushField = bake(merged, "밀어내기/팔제외");
+  if (sdfFrictionEnabled && !sdfField) sdfField = bake(wholeBodyIndex, "마찰/몸전체", SDF_VOXEL);
+  if (sdfPushEnabled && !(sdfPushFront && sdfPushBack)) {
+    sdfPushFront = bake(frontIndex, "밀어내기/앞면", SDF_PUSH_VOXEL);
+    sdfPushBack = bake(backIndex, "밀어내기/뒷면", SDF_PUSH_VOXEL);
   }
 }
 
@@ -232,8 +236,8 @@ function ensureSdf(): void {
 // 그대로 담당하므로 mesh 자리만 바꿔 끼운다.
 const sdfPushResolver = createPanelSplitResolver(
   [
-    createSdfPushResolver(() => sdfPushField, COLLISION_MARGIN, COLLISION_DETECTION_RADIUS, SDF_PUSH_RELAXATION, meshColumnRange),
-    createSdfPushResolver(() => sdfPushField, COLLISION_MARGIN, COLLISION_DETECTION_RADIUS, SDF_PUSH_RELAXATION, meshColumnRange),
+    createSdfPushResolver(() => sdfPushFront, COLLISION_MARGIN, COLLISION_DETECTION_RADIUS, SDF_PUSH_RELAXATION, meshColumnRange),
+    createSdfPushResolver(() => sdfPushBack, COLLISION_MARGIN, COLLISION_DETECTION_RADIUS, SDF_PUSH_RELAXATION, meshColumnRange),
     null,
     null,
   ],
@@ -310,7 +314,10 @@ ctx.onmessage = (event) => {
       // 저역통과로 작동하는 것 —
       // 파라미터가 아니라 층위 문제다. 복셀을 1cm 이하로 낮춰 굽기 비용을
       // 감당할 방법이 서기 전엔 재시도 금지.
-      sdfPushEnabled = false;
+      // v2 Stage 1a 재개: 등재된 재개 조건(복셀 ≤1cm + 굽기 비용)을 6mm +
+      // 세션당 1회 굽기로 충족. 기본은 여전히 off = BVH(롤백 지점) —
+      // ?sdfpush=1 로만 켠다. 앞/뒤 분리 필드는 3차 실측 교훈(위 주석).
+      sdfPushEnabled = (msg.newCore ?? false) && (msg.sdfPush ?? false);
       // M2 보정 제거 ①: 신 코어에선 sidedness 클램프를 끄고 SDF/마찰에 맡긴다.
       collisionState.sidedness = !(msg.newCore ?? false);
       // M2-4 선행: 신 코어는 반평면 클램프 대신 경량 쌍 분리.
@@ -327,7 +334,8 @@ ctx.onmessage = (event) => {
       // limiter 상한 1.2의 3.5배 문제의 원인이 흡착임이 확인됐다.
       penetrationAxis.enabled = false;
       sdfField = null;
-      sdfPushField = null;
+      sdfPushFront = null;
+      sdfPushBack = null;
       session = createGarmentSession(sim, {
         collisionResolver: sdfPushEnabled ? sdfUnifiedResolver : unifiedResolver,
         collisionEvery: COLLISION_EVERY,
@@ -424,7 +432,8 @@ ctx.onmessage = (event) => {
       // M2: 몸이 바뀌었으니 SDF 재굽기(다음 step에서 ensureSdf가 처리).
       bakedBody = { position: msg.position, wholeBodyIndex: msg.wholeBodyIndex, frontIndex: msg.frontIndex, backIndex: msg.backIndex };
       sdfField = null;
-      sdfPushField = null;
+      sdfPushFront = null;
+      sdfPushBack = null;
       break;
     }
     case "step": {

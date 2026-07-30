@@ -39,6 +39,7 @@ import {
   SDF_FAR,
   SDF_PUSH_RELAXATION,
   SDF_VOXEL,
+  SDF_PUSH_VOXEL,
   SELF_COLLISION_MIN_DIST,
   SLEEVE_RING_COLS,
   SLEEVE_RING_ROWS,
@@ -375,6 +376,8 @@ interface CollisionFixture {
 }
 
 function runFixture(path: string): void {
+  // 규범 4: 굽기·측정 보고의 "경과 시간" 기준점(프로세스 시작 아님 — 실행 시작).
+  const tProcess = performance.now();
   // 기본은 제품과 같은 코어(DEFAULT_NEW_CORE) — 하네스가 제품과 다른 코어를
   // 기본으로 쓰면 "기본 실행"이 제품을 안 재게 된다(함정 12). NEWCORE=0으로
   // 구 코어 진입(신구 대조는 같은 fixture로 이 스위치만 바꿔 두 번 돌린다).
@@ -472,7 +475,13 @@ function runFixture(path: string): void {
   const muOverride = process.env.MU ? Number(process.env.MU) : null;
   // M2-3: 신 코어면 밀어내기를 SDF 기울기로(팔 제외 필드 = 기존 BVH
   // 리졸버와 같은 대상). PUSH=bvh로 강제 복원해 대조 가능.
-  // M2-3 원복(3연속 실패) — 기본 off. PUSH=sdf 로 재현만 가능.
+  // **v2 Stage 1a 재개**: 등재된 재개 조건("복셀 1cm 이하 + 굽기 비용 해결")을
+  // SDF_PUSH_VOXEL 6mm + 세션당 1회 굽기(몸 불변 fixture)로 충족한다.
+  // 기본은 여전히 BVH — 게이트 통과·채택 판정 후에만 기본을 바꾼다.
+  // 스위치(= 롤백 지점): `PUSH=sdf`(신 경로) / 생략 또는 `PUSH=bvh`(구 경로).
+  // 새 env 이름을 만들지 않은 이유는 이 스위치가 M2-3 때 이미 이 이름으로
+  // 있고 metrics-log 블록들이 그 이름으로 기록돼 있어서다 — 이름을 바꾸면
+  // 과거 블록과의 대조가 끊긴다.
   // 필드를 앞/뒤로 나눈다 — BVH 리졸버가 frontIndex/backIndex로 분리돼
   // 있었고, 그 분리가 "앞판은 앞면에만 붙는다"는 앞뒤 분리 장치로도
   // 작동하고 있었다(sidedness 제거 후엔 유일한 장치). 단일 필드로 합치면
@@ -486,8 +495,14 @@ function runFixture(path: string): void {
       const m = new ArrayBvhCollision();
       m.rebuild(position, toU32(idx));
       const t = performance.now();
-      const f = bakeSdf(makeRadialSignedSampler(m, sdfCx, sdfCz, SDF_FAR, SDF_FAR), sdfMin, sdfMax, SDF_VOXEL, SDF_FAR);
-      console.log(`[paramSweep:fixture] SDF ${label} 굽기 ${Math.round(performance.now() - t)}ms`);
+      const f = bakeSdf(makeRadialSignedSampler(m, sdfCx, sdfCz, SDF_FAR, SDF_FAR), sdfMin, sdfMax, SDF_PUSH_VOXEL, SDF_FAR);
+      // 규범 4: 굽기 보고에 elapsedMs와 **누적 경과 시간**을 병기한다.
+      // §1.1의 ~12.5s/필드는 추정이므로 이 줄이 확정 근거가 된다.
+      const ms = performance.now() - t;
+      const cells = f.nx * f.ny * f.nz;
+      console.log(
+        `[paramSweep:fixture] SDF ${label} 굽기 ${f.nx}x${f.ny}x${f.nz}(${(cells / 1000).toFixed(1)}k복셀 · 복셀 ${(SDF_PUSH_VOXEL * 1000).toFixed(0)}mm) elapsedMs ${Math.round(ms)} (${(ms / 1000).toFixed(1)}s) · 누적 ${((performance.now() - tProcess) / 1000).toFixed(1)}s · ${(ms / cells * 1e3).toFixed(2)}µs/셀`,
+      );
       return f;
     };
     sdfPushFront = bakeSide(fixture.collision.frontIndex, "밀어내기/앞면");
