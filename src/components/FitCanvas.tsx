@@ -11,8 +11,12 @@ import { ArmCapsuleDebug } from "./ArmCapsuleDebug";
 import { lazy } from "react";
 
 // v2 Stage 2a — `?patterncore=1`에서만 로드되는 정적 배치 미리보기(DEV).
-// lazy로 두어야 patternCore off 실행의 번들에 패턴 코드·fixture가 안 들어간다.
-const PatternPreview = lazy(async () => ({ default: (await import("./PatternPreview")).PatternPreview }));
+// **삼항의 조건이 빌드 시 리터럴 false로 치환**되므로 프로덕션 번들에서는
+// import 자체가 도달 불가가 되어 통째로 잘린다. 이 가드가 없으면 fixture
+// 1.8MB가 dist에 청크로 남는다(실측 — `npm run build` 산출물에서 확인).
+const PatternPreview = import.meta.env.DEV
+  ? lazy(async () => ({ default: (await import("./PatternPreview")).PatternPreview }))
+  : null;
 
 // 단위 원기둥(반지름 1, 높이 1)을 scale로 늘려 부드럽게 보간(lerp)한다.
 function useLerpedScale(targetScale: THREE.Vector3Tuple, targetPositionY: number) {
@@ -96,7 +100,7 @@ export function FitCanvas() {
       <Suspense fallback={null}>
         <Mannequin />
       </Suspense>
-      {patternCore && (
+      {patternCore && PatternPreview && (
         <Suspense fallback={null}>
           <PatternPreview />
         </Suspense>
