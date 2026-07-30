@@ -1,5 +1,6 @@
 import { create } from "zustand";
 import type { FabricType } from "../lib/fabricPresets";
+import { DEFAULT_NEW_CORE } from "../lib/clothConfig";
 
 interface BodySize {
   height: number; // cm
@@ -150,8 +151,8 @@ export const useFitStore = create<FitState>((set) => ({
   renderSmoothing: true,
   setRenderSmoothing: (show) => set({ renderSmoothing: show }),
   // 2026-07-30 기본 전환 — 구 코어는 ?newcore=0(웹)·NEWCORE=0(하네스)으로
-  // 진입 가능(대조 손잡이).
-  newCore: true,
+  // 진입 가능(대조 손잡이). 기본값은 하네스와 공유하는 단일 출처에서.
+  newCore: DEFAULT_NEW_CORE,
   setNewCore: (on) => set({ newCore: on }),
   friction: true,
   setFriction: (on) => set({ friction: on }),

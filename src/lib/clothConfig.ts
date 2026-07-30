@@ -261,3 +261,8 @@ export const REBUILD_DEBOUNCE_MS = 200;
 // 몸통에 맞는 등의 영향이 섞여 있을 수 있다. 평균(4.0625cm)에 5mm
 // 여유를 더한 값으로 교체한다 — 옛 6.5cm는 실측치보다 컸던 추정값이었다.
 export const ARM_COLLISION_RADIUS = 0.0456;
+
+// 코어 기본값의 단일 출처 — 스토어(제품 기본)와 paramSweep(하네스 기본)이
+// 이 상수를 같이 본다. 하네스가 제품과 다른 코어를 기본으로 쓰면 "기본
+// 실행"이 제품을 안 재게 된다(함정 12). 구 코어 진입은 ?newcore=0 / NEWCORE=0.
+export const DEFAULT_NEW_CORE = true;

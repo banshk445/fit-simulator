@@ -22,6 +22,7 @@ import {
   COLLISION_EVERY,
   COLLAR_STRAIN_LIMIT,
   COLLISION_MARGIN,
+  DEFAULT_NEW_CORE,
   LOCAL_MU_GAIN,
   COLS,
   GRAVITY_BASE,
@@ -374,9 +375,10 @@ interface CollisionFixture {
 }
 
 function runFixture(path: string): void {
-  // NEWCORE=1이면 M1 신 코어(암홀 링 용접) — 신구 대조는 같은 fixture로
-  // 이 스위치만 바꿔 두 번 돌린다.
-  const newCore = process.env.NEWCORE === "1";
+  // 기본은 제품과 같은 코어(DEFAULT_NEW_CORE) — 하네스가 제품과 다른 코어를
+  // 기본으로 쓰면 "기본 실행"이 제품을 안 재게 된다(함정 12). NEWCORE=0으로
+  // 구 코어 진입(신구 대조는 같은 fixture로 이 스위치만 바꿔 두 번 돌린다).
+  const newCore = process.env.NEWCORE != null ? process.env.NEWCORE !== "0" : DEFAULT_NEW_CORE;
   // PINLIFT=cm 이면 SHOULDER_PIN_LIFT 스윕 — fixture의 핀 좌표에는 브라우저
   // 기준값(5.5cm)이 이미 구워져 있으므로 차이만큼 핀 Y와 topY를 함께
   // 이동시킨다(topY = max(pin.y) 파생값). necklineLift는 불변(단일 변수).

@@ -38,8 +38,15 @@ A-③/C/B-1이 전부 "보정을 빼면 미끄러진다"로 수렴했는데 원�
 ## 측정 명령
 
 ```
-FRICTION=1 NEWCORE=1 FIXTURE=scripts/fixtures/collision-fixture.json npm run sweep:pattern
+SECONDS=10 FRICTION=1 FIXTURE=scripts/fixtures/collision-fixture.json npm run sweep:pattern
 ```
+
+코어·스무딩 기본값은 제품 코드에서 도출한다(`DEFAULT_NEW_CORE`,
+`defaultSmoothing` — 규범 5). 기본 실행 = **신 코어 + 스무딩 off**이고,
+실행 첫 줄에 `코어=… 스무딩=…(도출|env)`로 찍힌다 — **판정 전에 그 줄을
+확인할 것**(계기가 기대와 다르면 숫자가 아무리 좋아도 무의미하다).
+대조는 `NEWCORE=0`(구 코어) / `SMOOTHING=1`(옛 계기 재현).
+기준선은 600프레임(`SECONDS=10`)이다 — 프레임 수가 다르면 비교 불가.
 
 스위치와 하네스 2종의 차이는 `docs/metrics-log.md` 상단 규약을 따른다.
 **12콤보 하네스와 fixture 하네스의 절대값을 서로 비교하지 말 것.**
@@ -51,22 +58,42 @@ FRICTION=1 NEWCORE=1 FIXTURE=scripts/fixtures/collision-fixture.json npm run swe
 세 지표를 함께 본다. 하나만 보고 판정하지 말 것 — 실패마다 시그니처가
 다르다(A-③=버킷, C=총비율, B-1=잔물결).
 
+### 기준선 (문턱의 도출 근거)
+
+아래 지표 문턱은 전부 이 기준선 대비 **마진**이다. 절대 문턱은 폐기했다 —
+옛 절대값(ripple 4.5mm 등)은 스무딩 on 계기의 실패값에서 역산한 것이라
+교정 계기의 숫자와 비교할 수 없다(함정 12).
+
+```
+기준선: cov 6.4% / ripple mean 6.43mm / jitter mean 14.99mm·부호반전 0.411
+        strain 3.38 / bowtie 어깨 2 / 정착 65프레임 / 교차 0
+계기:   신 코어 · 스무딩 off(도출) · 600프레임 · fixture 9e8b2bf13925
+출처:   7cc3885 (docs/metrics-log.md 2026-07-30 09:50 블록)
+```
+
 **즉시 실패(하드)** — 하나라도 걸리면 원복:
 
 - 발산(NaN/Infinity) 발생
+- `maxStrain` 폭주 — 기준선(3.38) 대비 +25% 초과(≈4.2 이상)
 - `maxSeamGapCm` 회귀(신 코어는 0.00이어야 함)
 - 앞뒤판 **실제 교차** > 0 (반평면 위반은 실패 아님 — 옆구리 폴드다)
-- `npm run check:weld` / `check:sleeve` / `check:seambridge` 실패
+- `npm run check:weld` / `check:sleeve` / `check:seambridge` / `check:demo` 실패
 - 구 코어 12콤보 비트 동일성 깨짐(플래그 격리 실패)
 
-**지표 실패**:
+**지표 실패** (기준선 = 위 블록):
 
-- ripple mean이 기준선 대비 +25% 초과, 또는 절대값 4.5mm 초과
-  (B-1 실패값 5.03mm에 여유를 둔 선 — 그 값은 화면에서 확인된 실패다)
-- coverage 총비율이 +2pp 초과 악화
+- **jitter mean**이 기준선(14.99mm) 대비 +25% 초과, 또는 **부호반전**이
+  기준선(0.411) 대비 +0.1 초과 — 지그재그 판정의 **주 채널**이다.
+  ripple(2차 차분)은 곡률 측정기라 정상 폴드에도 반응한다(68327b7에서 규명).
+- ripple mean이 기준선(6.43mm) 대비 +25% 초과 — 보조 채널.
+- coverage 총비율이 기준선(6.4%) 대비 +2pp 초과 악화
 - 임의 버킷의 노출률이 +15pp 초과 악화(A-③의 bot-back은 +59pp였다)
+- bowtie(접힌 쿼드) 어깨가 **2 초과**(기준선 2에서 동결 — 화면 승인 상태에
+  이미 존재하는 값이라 0을 요구하지 않는다. `docs/pattern-redesign.md`
+  알려진 한계 참고)
+- 정착이 **80프레임 초과**(기준선 65프레임 + 여유 15)
 
-**통과**: 하드 실패 없음 + 세 지표 모두 개선 또는 위 문턱 안에서 불변.
+**통과**: 하드 실패 없음 + 위 문턱 안에서 불변 또는 개선.
 
 **애매(정지·화면 확인 요청)**: 지표가 서로 반대 방향
 (예: coverage 개선 + ripple 악화). 제거 ①이 이 경우였고 화면 확인으로
