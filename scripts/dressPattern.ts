@@ -859,22 +859,123 @@ const proximityPairs = (): number => {
   return n;
 };
 
+// ── 34회차 게이트(영구) — **배치는 rest를 보존해야 한다.**
+//
+// 문턱은 결과에 맞춘 값이 아니라 **같은 기계가 이미 달성한 수준**에서 도출한다:
+// 뒤판 내부는 하드 핀이 안 걸리는 패널이라 32회차 t=0 실측이 최대 신장비
+// **1.000 · 신장총 0.0cm**였다. 몸판 사상(`mapTorso`)은 평면 등거리이고 rest는
+// 패턴 2D 거리(`buildPatternSim`)이므로 앞뒤 **둘 다** 정확히 1.000이어야 한다.
+// 남는 허용분은 `Math.hypot` 반올림뿐이다.
+//
+// **소매는 게이트 대상이 아니다**(값은 보고만): 원통 감기라 등거리 사상이 아니고,
+// 중앙값 1.108의 전역·균일 신장은 33회차가 **별도 결함으로 등재**했다(배치 반경
+// vs wrapShrink). 이번 회차 변수가 아니라 제외하는 것이지, 통과시키는 게 아니다.
+// **시접 쌍도 제외**: rest가 3D 갭으로 등록돼 S1이 target까지 램프하는 대상이라
+// 배치 시점 정합의 의미가 없다.
+//
+// 허용분은 **저장 형식에서 도출한다**(결과에 맞춰 조정한 값이 아니다 · 규범 "문턱").
+// rest는 `pos2`(Float64) 2D 거리인데 3D 좌표는 `sim.positions`(**Float32**)다.
+// 좌표 크기 |c| ≈ 1.5m에서 float32 반올림은 |c|·2⁻²⁴ ≈ 0.09µm이고, 거리는 양 끝점
+// 오차를 받으므로 최대 2·|c|·2⁻²⁴. 이걸 **가장 짧은 rest 엣지**(≈6.6mm)로 나눈
+// 것이 배율 단위 허용분이다 ⇒ 2·1.5·5.96e−8 / 0.0066 ≈ **2.7e−5**.
+// 즉 배율 1.000에 3자리 이상을 요구하는 것은 float32가 표현할 수 없는 정밀도다.
+// 33회차가 "이산화 오차 허용분만 별도 명명"이라 적은 항목이 이것이다.
+// 잡아야 할 결함(30.1배)과는 6자릿수 떨어져 있으므로 탐지력은 잃지 않는다.
+const F32_HALF_ULP = Math.pow(2, -24);
+const placementRestTol = (): number => {
+  let maxCoord = 0, minRest = Infinity;
+  for (let i = 0; i < total * 3; i++) maxCoord = Math.max(maxCoord, Math.abs(sim.positions[i]));
+  for (const c of sim.constraintPairs) if (c.restLength > 0 && c.restLength < minRest) minRest = c.restLength;
+  return (2 * maxCoord * F32_HALF_ULP) / minRest;
+};
+const placementRestGate = (label: string): void => {
+  const PLACEMENT_REST_TOL = placementRestTol();
+  const acc = { torso: { n: 0, max: 1, maxAt: -1, min: 1, ext: 0, comp: 0 }, sleeve: { n: 0, max: 1, maxAt: -1, min: 1, ext: 0, comp: 0 } };
+  for (const c of sim.constraintPairs) {
+    if (c.restLength <= 0) continue;
+    if (seamKeyMap.has(c.a < c.b ? `${c.a}_${c.b}` : `${c.b}_${c.a}`)) continue;
+    const dd = Math.hypot(
+      sim.positions[c.b * 3] - sim.positions[c.a * 3],
+      sim.positions[c.b * 3 + 1] - sim.positions[c.a * 3 + 1],
+      sim.positions[c.b * 3 + 2] - sim.positions[c.a * 3 + 2],
+    );
+    const t = c.a < g.panelStarts[2] ? acc.torso : acc.sleeve;
+    const r = dd / c.restLength;
+    t.n++;
+    if (r > t.max) { t.max = r; t.maxAt = c.a; }
+    if (r < t.min) t.min = r;
+    if (dd > c.restLength) t.ext += dd - c.restLength; else t.comp += c.restLength - dd;
+  }
+  const row = (k: string, t: typeof acc.torso): string =>
+    `${k} n=${t.n} 최대 ${t.max.toFixed(6)}${t.maxAt >= 0 ? `@정점${t.maxAt}(패턴 ${cm(g.pos2[t.maxAt * 2])},${cm(g.pos2[t.maxAt * 2 + 1])})` : ""} · 최소 ${t.min.toFixed(6)} · 신장총 ${(t.ext * 100).toFixed(1)}cm · 압축총 ${(t.comp * 100).toFixed(1)}cm`;
+  console.log(`  [34게이트·배치 rest 보존] ${label} · 허용분 ±${PLACEMENT_REST_TOL.toExponential(2)}(float32 좌표/최단 rest에서 도출)`);
+  console.log(`    ${row("몸판(게이트)", acc.torso)}`);
+  console.log(`    ${row("소매(보고만)", acc.sleeve)}`);
+  const bad = acc.torso.max - 1 > PLACEMENT_REST_TOL || 1 - acc.torso.min > PLACEMENT_REST_TOL;
+  if (bad) {
+    throw new Error(
+      `배치 실패 — 34게이트 위반 ${label}: 몸판 신장비 ${acc.torso.min.toFixed(6)}~${acc.torso.max.toFixed(6)} (문턱 1.000000±${PLACEMENT_REST_TOL.toExponential(2)} · 값=뒤판 32회차 실측, 허용분=float32 저장 정밀도에서 도출) · 신장총 ${(acc.torso.ext * 100).toFixed(1)}cm`,
+    );
+  }
+};
+
+// 상태기계의 램프 길이. S1 시접 rest 램프·앵커 강도 램프아웃·앵커 위치 램프가
+// **같은 값 한 곳**을 쓴다(새 상수 신설 금지 — §4 "램프는 연속 함수로만").
+const RAMP_FRAMES = 120;
+
 // ── 앵커 하드 핀 (7회차 단일 변경): 소프트(강도 1.0) → `pinned=1` 위치 고정.
 // 6회차 실측 = 목표 |x| 6.26cm인데 정점은 10.5cm(4.2cm 밖) — 소프트 앵커를
 // 시접·링·중력의 합력이 이긴다. `pinned=1`은 적분·제약·충돌·변위클램프가
 // 전부 스킵하므로 합력과 무관하게 좌표가 유지된다(§4 개정).
 // 해제는 상태기계가 봉합 해제창에서 부른다 — 여기서는 켜고 끄기만.
+//
+// ── 34회차 단일 변경 (B: 램프) — **핀이 rest를 찢는 이동을 수행하지 않는다.**
+// 33회차가 지점을 확정했다: `sim.pin(a.i, a.x, a.y, a.z)`가 정점을 배치 평면
+// (앞판면 z +17.07cm)에서 어깨 능선(z −2.65cm)으로 **한 프레임에** 옮겼고,
+// 그 정점이 속한 rest 6.64mm 엣지가 3D 199.80mm(**30.1배**)가 됐다. 핀은 이웃
+// 엣지의 rest를 모르므로 이동분 전량이 이웃에 저장된다.
+// 처방: 목표까지 `RAMP_FRAMES`·같은 smoothstep으로 **나눠** 옮긴다. 프레임당
+// 증분이 작아 거리 제약 반복이 그 자리에서 분산할 시간이 생긴다. 핀의 유지력은
+// 반납하지 않는다 — 정점은 여전히 `pinned=1`이고 목표에 도달한다.
 let anchorHard = false;
+let anchorRampFrame = 0;
+let anchorRampS = 0;
+const anchorFrom = new Float32Array(anchorList.length * 3);
 const setAnchorHard = (hard: boolean): void => {
-  if (hard === anchorHard) return;
-  anchorHard = hard;
-  for (const a of anchorList) {
-    if (hard) sim.pin(a.i, a.x, a.y, a.z);
-    else sim.pinned[a.i] = 0;
+  if (hard !== anchorHard) {
+    anchorHard = hard;
+    anchorRampFrame = 0;
+    for (let k = 0; k < anchorList.length; k++) {
+      const a = anchorList[k];
+      if (hard) {
+        // 출발점 = **현재 좌표**(배치 결과). 좌표는 여기서 건드리지 않는다.
+        anchorFrom[k * 3] = sim.positions[a.i * 3];
+        anchorFrom[k * 3 + 1] = sim.positions[a.i * 3 + 1];
+        anchorFrom[k * 3 + 2] = sim.positions[a.i * 3 + 2];
+        sim.pinned[a.i] = 1;
+      } else {
+        sim.pinned[a.i] = 0;
+      }
+    }
+    console.log(
+      `[dress] 앵커 ${hard ? `**하드 핀 위치 램프 시작**(${RAMP_FRAMES}프레임 smoothstep · 순간이동 아님)` : "**핀 해제 → 소프트 램프아웃**"} ${anchorList.length}개 · seamGap ${(maxSeamGapM() * 1000).toFixed(1)}mm`,
+    );
   }
-  console.log(
-    `[dress] 앵커 ${hard ? "**하드 핀 고정**" : "**핀 해제 → 소프트 램프아웃**"} ${anchorList.length}개 · seamGap ${(maxSeamGapM() * 1000).toFixed(1)}mm`,
-  );
+  if (!hard) { anchorRampS = 0; return; }
+  const t = Math.min(1, anchorRampFrame / RAMP_FRAMES);
+  anchorRampS = t * t * (3 - 2 * t);
+  for (let k = 0; k < anchorList.length; k++) {
+    const a = anchorList[k];
+    sim.setParticle(
+      a.i,
+      anchorFrom[k * 3] + (a.x - anchorFrom[k * 3]) * anchorRampS,
+      anchorFrom[k * 3 + 1] + (a.y - anchorFrom[k * 3 + 1]) * anchorRampS,
+      anchorFrom[k * 3 + 2] + (a.z - anchorFrom[k * 3 + 2]) * anchorRampS,
+    );
+  }
+  // 게이트 (ii) — 핀이 좌표를 쓴 **직후**. 램프면 s=0이라 (i)과 같아야 한다.
+  if (anchorRampFrame === 0) placementRestGate("(ii) 핀 발화 직후");
+  anchorRampFrame++;
 };
 // 배선 검증 — 핀이 실제로 좌표를 잡고 있는가. 목점(s≈0)의 실측 |x|가 6회차
 // 목표 6.26cm를 유지하는지 본다(6회차는 10.5cm로 밀렸다).
@@ -894,10 +995,13 @@ const FRAMES = Math.round((process.env.SECONDS ? Number(process.env.SECONDS) : 2
 // S1 램프 대상 = **어깨 제외** 잔여 시접(옆선·암홀·소매 wrap).
 // 19회차: 어깨 용접 반납 → **전 시접**이 램프 대상이다(2a-thin 구성 복귀).
 const rampSeams = g.seams;
+// 게이트 (i) — **진짜 배치 직후 · 핀 발화 전.** 상태기계의 첫 setAnchorHard는
+// 루프 안(S1 분기)에 있고 그건 이미 핀이 돈 뒤다. 여기가 유일한 "핀 전" 시점이다.
+placementRestGate("(i) 진짜 배치 직후 · 핀 발화 전");
 const result = runDressing(
   sim, session, rampSeams.map((s) => ({ a: s.a, b: s.b, target: s.targetM, kind: s.kind })),
   {
-    rampFrames: 120,
+    rampFrames: RAMP_FRAMES,
     stallFrames: 60,
     seamSlackM: 0.01,
     settleDeltaMm: 5.6,
@@ -910,6 +1014,7 @@ const result = runDressing(
       g.place(scale);
       correctPlacementPenetration(g.positions, total, wholeMesh, insideParity, COLLISION_MARGIN, g.selfCollisionMinDistM, skipKeys, SDF_FAR);
       for (let i = 0; i < total; i++) sim.setParticle(i, g.positions[i * 3], g.positions[i * 3 + 1], g.positions[i * 3 + 2]);
+      placementRestGate(`(i) 재배치 직후 · 핀 발화 전 (오프셋 배수 ${scale.toFixed(2)})`);
     },
     countPenetrating: () => countInside(sim.positions, total, insideParity),
     diverged,
@@ -939,8 +1044,12 @@ const result = runDressing(
     // 램프는 그 시점 실측 신장에서 1.02까지 smoothstep(길이 = 기존 rampFrames).
     beforeStep: (_frame, state) => {
       // 31회차 — 표적 프레임에서만 프로브 무장. f1(문제의 +32cm) · f8 · f62(S1 최대) · 정착.
-      // t=0 지도 — 배치 직후, **첫 적분 전**. 시접 rest 램프는 이미 적용된 상태다.
-      if (_frame === 0) probeReports.push(restMap("t=0 (배치 직후 · 첫 적분 전)"));
+      // 34회차 **계기 라벨 정정**(함정 13 계열): 이 지도는 "t=0 = 배치 직후"가
+      // 아니다. 상태기계는 루프 진입 → S1 분기에서 `setAnchorHard`를 부른 **뒤**
+      // `beforeStep`을 부른다(dressingMachine 196행 vs 219행). 즉 32회차가
+      // "t=0(배치 직후)"라고 부른 지도는 **핀이 이미 돈 뒤**의 지도다.
+      // 진짜 배치 직후는 `placementRestGate("(i) …")`가 잰다.
+      if (_frame === 0) probeReports.push(restMap("f0 beforeStep (**핀 발화 직후** · 첫 적분 전) — 32회차가 't=0'이라 부른 시점"));
       probeArmed = PROBE_FRAMES.has(_frame + 1);
       if (probeArmed) {
         probeSub = 0; probeLog.length = 0; probeFrameLabel = `f${_frame + 1}/${state}`;
@@ -1044,7 +1153,7 @@ const result = runDressing(
       // 목표 6.26cm에서 10.5cm로 밀렸다(잔차 42mm).
       if (state === "S1" && frame % 60 === 0) {
         console.log(
-          `  [pin·검증] f=${String(frame).padStart(4)} 목점 실측 |x−center| ${cm(Math.abs(sim.positions[neckAnchor.i * 3] - centerX))}cm vs 목표 ${cm(Math.abs(neckAnchor.x - centerX))}cm · 잔차 ${pinResidualMm().toFixed(2)}mm · pinned=${sim.pinned[neckAnchor.i]} · 앵커강도 ${anchorStrength.toFixed(3)}`,
+          `  [pin·검증] f=${String(frame).padStart(4)} 목점 실측 |x−center| ${cm(Math.abs(sim.positions[neckAnchor.i * 3] - centerX))}cm vs 목표 ${cm(Math.abs(neckAnchor.x - centerX))}cm · 잔차 ${pinResidualMm().toFixed(2)}mm · pinned=${sim.pinned[neckAnchor.i]} · 앵커강도 ${anchorStrength.toFixed(3)} · **핀 위치램프 s=${anchorRampS.toFixed(3)}**(${anchorRampFrame}/${RAMP_FRAMES})`,
         );
       }
       // (2) 하중 배분 — 정착 구간(마지막 60프레임)만 누적한다.
