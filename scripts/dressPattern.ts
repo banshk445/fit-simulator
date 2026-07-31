@@ -583,10 +583,16 @@ const meshResolver = createPanelSplitResolver(
   ],
   g.panelCounts,
 );
-// 39회차 ablation 스위치(**진단 전용 · 기본 on**) — 몸통 캡슐만 끈다.
+// **45회차 승격**: 몸통 캡슐 전면 제거가 새 기준선이다(사전 등록 3/3 통과 —
+// 재현성 21채널 비트 일치 · DONE·RETRY 0 · A 대비 회귀 5종 전부 개선).
+// 기본값을 뒤집는다. `TORSOCAP=1`이 **처방 A(몸통 캡슐 구성)를 그대로 복원**하므로
+// 43회차가 확정한 A 기준선은 보존된다(45회차 등재 ①).
+// 44회차 (a) 실측: 이 분기는 `dressPattern.ts` 안에만 있고 그 파일은 어디서도
+// import되지 않는 진입 스크립트다 → v1 제품 0줄 · 12콤보 불변 · **fixture 불변**.
+// 39회차 ablation 스위치(원래 진단 전용) — 몸통 캡슐만 끈다.
 // 함정16 규범("근접을 기전으로 승격하려면 ablation으로 흔들어라")의 이행 수단이다.
 // 처방이 아니다: 관통·cov 붕괴는 예상된 부작용이고 판정 대상이 아니다.
-const TORSOCAP = process.env.TORSOCAP !== "0";
+const TORSOCAP = process.env.TORSOCAP === "1";
 // 42회차 처방 A — 정점당 **가장 깊이 파묻힌 캡슐 1개만** 민다(기본 on · `SINGLE=0`으로 해제).
 const SINGLE_DEEPEST = process.env.SINGLE !== "0";
 const unified = (positions: Float32Array, pinned: Uint8Array, n: number): void => {
@@ -936,7 +942,7 @@ const compReport = (label: string): string => {
   // 발화시키면 **실효 완화가 0.76~0.83**이 되고, `singleDeepest`가 켜지면 반대로 캡슐이
   // 1개로 강제된다. 두 경우 모두 이 식의 전제가 성립하지 않는다 → 참고값으로만 읽을 것.
   lines.push(`    [고정점·**계기 stale**] r* = (0.4·R_mesh + 0.35×${cm(CAP0_PUSH_R)}) / 0.75 = ${cm(rStar)}cm → 원 둘레 ${cm(2 * Math.PI * rStar)}cm` +
-    ` · **전제: 캡슐 1개 · 실효 완화 0.35** (현행 캡슐 ${collision.capsules.length}개 · singleDeepest ${SINGLE_DEEPEST ? "on" : "off"} — 전제 불성립 시 무효)`);
+    ` · **전제: 캡슐 1개 · 실효 완화 0.35** (현행 캡슐 ${collision.capsules.length}개 · singleDeepest ${SINGLE_DEEPEST ? "on" : "off"})${TORSOCAP ? "" : " · **[무효 — TORSOCAP off라 캡슐 항이 실행되지 않는다. 이 값은 식이 그대로 산출한 수이지 예측이 아니다]**"}`);
   // ── 계기 E — 후보 1 판별. mesh 표적점을 **ringOrder 순서로** 이은 다각형 길이.
   {
     // 40회차 정의역 정정(39회차 §8-2) — 링60과 **같은 집합**으로 다시 낸다.
@@ -1876,7 +1882,7 @@ console.log(`  maxStrain ${strain.v.toFixed(3)} (정점 ${strain.at}) · maxSeam
   console.log(`    폐곡선(링60+접합) 실측 ${cm(ringLenM() + joinLenM())}cm · 폐곡선 rest(거리 제약 기준) ${cm(ringRestConfirmedM + joinDistRestSumM())}cm`);
   console.log(ringShapeReport("정착"));
   console.log(capsuleCountReport("정착"));
-  console.log(`  [39·ablation 상태] 몸통 캡슐 ${TORSOCAP ? "**on**(기본)" : "**OFF**(TORSOCAP=0 · 진단 전용)"}`);
+  console.log(`  [45·기준선 상태] 몸통 캡슐 ${TORSOCAP ? "**on**(TORSOCAP=1 · 43회차 처방 A 복원)" : "**OFF**(기본 — 45회차 승격 기준선)"}`);
 }
 // ── 35계기 6번: maxSeamGap의 **공간 분포**. 어느 종류·어느 자리가 벌어졌는가.
 {
