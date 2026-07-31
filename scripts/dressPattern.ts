@@ -683,6 +683,79 @@ const unifiedProbed: typeof unified = (pos, pinned, n) => {
   unified(pos, pinned, n);
   probe("1a.충돌(흡착)");
 };
+// ── 32회차 계기: **rest 정합 지도**. 부호 있는 신장비(현재/rest)를 대역별로.
+// 대역은 링에서의 엣지 홉 수로 도출한다(상수 신설 없음).
+const ringVertsForMap = new Set<number>(g.necklineRing.flatMap((e) => [e.a, e.b]));
+const hopFromRing = (() => {
+  const adj = new Map<number, number[]>();
+  for (const e of g.edgePairs) {
+    (adj.get(e.a) ?? adj.set(e.a, []).get(e.a)!).push(e.b);
+    (adj.get(e.b) ?? adj.set(e.b, []).get(e.b)!).push(e.a);
+  }
+  const d = new Int32Array(g.pos2.length / 2).fill(-1);
+  let q = [...ringVertsForMap];
+  for (const i of q) d[i] = 0;
+  for (let depth = 1; depth <= 3 && q.length > 0; depth++) {
+    const nx: number[] = [];
+    for (const i of q) for (const j of adj.get(i) ?? []) if (d[j] < 0) { d[j] = depth; nx.push(j); }
+    q = nx;
+  }
+  return d;
+})();
+const seamKeyMap = new Set<string>(g.seams.map((sm) => (sm.a < sm.b ? `${sm.a}_${sm.b}` : `${sm.b}_${sm.a}`)));
+const bandOf = (a: number, b: number): string => {
+  if (seamKeyMap.has(a < b ? `${a}_${b}` : `${b}_${a}`)) return "시접 쌍";
+  const h = Math.max(hopFromRing[a], hopFromRing[b]);
+  if (h >= 0 && h <= 3) return `링 인접 ${h === 0 ? "0(링 자신)" : h}홉`;
+  if (a >= g.panelStarts[2]) return "소매";
+  return a < g.panelStarts[1] ? "앞판 내부" : "뒤판 내부";
+};
+const totals = new Map<string, { comp: number; ext: number; max: number; at: number }>();
+const restMap = (label: string): string => {
+  const bands = new Map<string, number[]>();
+  for (const c of sim.constraintPairs) {
+    if (c.restLength <= 0) continue;
+    const dd = Math.hypot(
+      sim.positions[c.b * 3] - sim.positions[c.a * 3],
+      sim.positions[c.b * 3 + 1] - sim.positions[c.a * 3 + 1],
+      sim.positions[c.b * 3 + 2] - sim.positions[c.a * 3 + 2],
+    );
+    const key = bandOf(c.a, c.b);
+    const arr = bands.get(key) ?? []; bands.set(key, arr);
+    arr.push(dd / c.restLength);
+    // 부호별 총량은 별도 누적(아래에서 같은 순회를 다시 돌지 않게 음수 인코딩 대신 맵 하나 더)
+    const t = totals.get(key) ?? { comp: 0, ext: 0, max: 0, at: -1 };
+    if (dd < c.restLength) t.comp += c.restLength - dd; else t.ext += dd - c.restLength;
+    if (dd / c.restLength > t.max) { t.max = dd / c.restLength; t.at = c.a; }
+    totals.set(key, t);
+  }
+  const lines = [`  [32계기·rest 정합 지도] ${label}`];
+  const order = ["링 인접 0(링 자신)", "링 인접 1홉", "링 인접 2홉", "링 인접 3홉", "앞판 내부", "뒤판 내부", "소매", "시접 쌍"];
+  for (const k of order) {
+    const arr = bands.get(k); if (!arr) continue;
+    arr.sort((x, y) => x - y);
+    const t = totals.get(k)!;
+    const md = arr[Math.floor(arr.length * 0.5)], p99 = arr[Math.floor(arr.length * 0.99)];
+    lines.push(`    ${k.padEnd(14)} n=${String(arr.length).padStart(5)} 중앙 ${md.toFixed(3)} p99 ${p99.toFixed(3)} 최대 ${t.max.toFixed(3)}@${t.at} · 압축총 ${(t.comp * 100).toFixed(1)}cm · 신장총 ${(t.ext * 100).toFixed(1)}cm`);
+  }
+  // 최악 엣지 국소화 — 어느 패널 어느 패턴 좌표인가(대역 평균으로는 안 보인다).
+  const worst: { r: number; a: number; b: number }[] = [];
+  for (const c of sim.constraintPairs) {
+    if (c.restLength <= 0) continue;
+    const dd = Math.hypot(
+      sim.positions[c.b * 3] - sim.positions[c.a * 3],
+      sim.positions[c.b * 3 + 1] - sim.positions[c.a * 3 + 1],
+      sim.positions[c.b * 3 + 2] - sim.positions[c.a * 3 + 2],
+    );
+    worst.push({ r: dd / c.restLength, a: c.a, b: c.b });
+  }
+  worst.sort((x, y) => y.r - x.r);
+  const pn = (i: number): string => (i < g.panelStarts[1] ? "앞판" : i < g.panelStarts[2] ? "뒤판" : "소매");
+  lines.push(`    최악 6: ${worst.slice(0, 6).map((w) => `${w.r.toFixed(1)}배 ${pn(w.a)}(${cm(g.pos2[w.a * 2])},${cm(g.pos2[w.a * 2 + 1])})→(${cm(g.pos2[w.b * 2])},${cm(g.pos2[w.b * 2 + 1])}) rest ${(Math.hypot(g.pos2[w.b * 2] - g.pos2[w.a * 2], g.pos2[w.b * 2 + 1] - g.pos2[w.a * 2 + 1]) * 1000).toFixed(1)}mm`).join(" · ")}`);
+  totals.clear();
+  return lines.join("\n");
+};
+
 const env: GarmentFrameEnv = {
   probe,
   collisionResolver: unifiedProbed,
@@ -859,6 +932,8 @@ const result = runDressing(
     // 램프는 그 시점 실측 신장에서 1.02까지 smoothstep(길이 = 기존 rampFrames).
     beforeStep: (_frame, state) => {
       // 31회차 — 표적 프레임에서만 프로브 무장. f1(문제의 +32cm) · f8 · f62(S1 최대) · 정착.
+      // t=0 지도 — 배치 직후, **첫 적분 전**. 시접 rest 램프는 이미 적용된 상태다.
+      if (_frame === 0) probeReports.push(restMap("t=0 (배치 직후 · 첫 적분 전)"));
       probeArmed = PROBE_FRAMES.has(_frame + 1);
       if (probeArmed) {
         probeSub = 0; probeLog.length = 0; probeFrameLabel = `f${_frame + 1}/${state}`;
@@ -897,6 +972,7 @@ const result = runDressing(
       return `링상한 ${Number.isFinite(ringLimitNow) ? ringLimitNow.toFixed(4) : "∞(일반 상한 위임)"}${Math.abs(ringLimitNow - COLLAR_STRAIN_LIMIT) < 1e-9 ? "(완전 발동)" : ""} · 앵커강도 ${anchorStrength.toFixed(3)}(게이트: seamGap ${(maxSeamGapM() * 1000).toFixed(1)}mm vs 해제창 ${(target * 1000).toFixed(1)}~${(thresh * 1000).toFixed(1)}mm)`;
     },
     onFrame: (frame, state) => {
+      if (frame === 1 || frame === 8) probeReports.push(restMap(`f${frame} 직후`));
       if (probeArmed && probeLog.length > 0) {
         const restM = ringRestConfirmedM;
         const lines: string[] = [`  [31계기·패스별 링 길이] ${probeFrameLabel} · rest ${cm(restM)}cm · 서브스텝 ${probeSub}개`];
