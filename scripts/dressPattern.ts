@@ -19,7 +19,7 @@ import type { GarmentFrameEnv } from "../src/lib/garmentFrame";
 import { applyCapsuleCollision } from "../src/lib/torsoCapsule";
 import type { Capsule } from "../src/lib/torsoCapsule";
 import { runDressing } from "../src/lib/dressingMachine";
-import { deriveBodySkeleton, nearestOnSegments } from "../src/lib/bodySkeleton";
+import { ARM_AXIS_RADIUS, deriveBodySkeleton, nearestOnSegments } from "../src/lib/bodySkeleton";
 import { measureBody } from "../src/lib/bodyMeasure";
 import { buildPatternGarment, PANEL_PAT_BACK, PANEL_PAT_FRONT, PATTERN_EDGE_INTERIOR_M } from "../src/lib/patternGarment";
 import { makeOutlineProvider } from "../src/lib/bodyOutline";
@@ -89,6 +89,79 @@ const arms = [pose.armLeft, pose.armRight] as const;
 
 const skeleton = deriveBodySkeleton(position, torsoIndex, [pose.armLeft, pose.armRight], centerX, collision.centerZ, hemY);
 const body = measureBody(position, torsoIndex, wholeIndex, arms, skeleton, hemY, centerX, collision.centerZ);
+
+// ══ 정본 · 몸 반경 프로파일 v1 (42회차 신설 · 영구) ══════════════════════════
+//
+// **이후 전 회차는 "몸 반경"을 이것만 인용한다.** 39·40·41회차가 서로 다른 세 값을
+// 썼고(아래 대조) 그 차이가 처방 판정을 뒤집었다 — 반복 인용되는 물리량은 명명된
+// 단일 계기로 고정한다(함정 13 "집합").
+//
+// 산출 규칙(전부 코드에서 도출 · 손으로 정한 상수 0개):
+//  · 대상 = 토르소 시트 정점(`frontIndex` ∪ `backIndex`)
+//  · 팔 제외 = `bodySkeleton.ARM_AXIS_RADIUS`(메시 굽기의 `ARM_EXCLUDE_RADIUS`와 같은 값)
+//    반경 안에 드는 정점을 뺀다. 기준 선분은 `pose.armLeft/armRight`의 어깨→끝.
+//    ※ `frontIndex+backIndex`는 **팔 제외가 아니다** — 41회차에 삼각근이 옆 방향
+//      18.6~20.6cm로 남아 있는 것이 실측됐다. 그래서 여기서 한 번 더 뺀다.
+//  · 반경 = 몸통 캡슐 축(`capsules[0].top`의 x·z) 기준 수평 거리
+//  · 방향 섹터 = 캡슐 축에서 본 방위각. 앞(+z ±30°) / 뒤(−z ±30°) / 나머지 옆
+const bodyRadiusProfile = (() => {
+  const cap = collision.capsules[0];
+  const ax = cap.top.x, az = cap.top.z;
+  const armSegs = [pose.armLeft, pose.armRight].map((a) => ({
+    sx: a.trueShoulder.x, sy: a.trueShoulder.y, sz: a.trueShoulder.z,
+    ex: a.trueShoulder.x + a.dir.x * a.length, ey: a.trueShoulder.y + a.dir.y * a.length, ez: a.trueShoulder.z + a.dir.z * a.length,
+  }));
+  const nearArm = (x: number, y: number, z: number): boolean => armSegs.some((g) => {
+    const vx = g.ex - g.sx, vy = g.ey - g.sy, vz = g.ez - g.sz;
+    const t = Math.max(0, Math.min(1, ((x - g.sx) * vx + (y - g.sy) * vy + (z - g.sz) * vz) / (vx * vx + vy * vy + vz * vz)));
+    const dx = x - (g.sx + vx * t), dy = y - (g.sy + vy * t), dz = z - (g.sz + vz * t);
+    return dx * dx + dy * dy + dz * dz < ARM_AXIS_RADIUS * ARM_AXIS_RADIUS;
+  });
+  const verts = new Set<number>();
+  for (const idx of [collision.frontIndex, collision.backIndex]) { if (!idx) continue; for (let k = 0; k < idx.length; k++) verts.add(idx[k]); }
+  const BIN = 0.01;
+  const bins = new Map<number, { max: number; front: number; back: number; side: number; n: number }>();
+  let excluded = 0;
+  for (const v of verts) {
+    const x = position[v * 3], y = position[v * 3 + 1], z = position[v * 3 + 2];
+    if (nearArm(x, y, z)) { excluded++; continue; }
+    const r = Math.hypot(x - ax, z - az);
+    const k = Math.round(y / BIN);
+    const b = bins.get(k) ?? { max: 0, front: 0, back: 0, side: 0, n: 0 };
+    b.max = Math.max(b.max, r); b.n++;
+    const deg = (Math.atan2(z - az, x - ax) * 180) / Math.PI;
+    if (deg > 60 && deg < 120) b.front = Math.max(b.front, r);
+    else if (deg < -60 && deg > -120) b.back = Math.max(b.back, r);
+    else b.side = Math.max(b.side, r);
+    bins.set(k, b);
+  }
+  return {
+    axisX: ax, axisZ: az, kept: verts.size - excluded, excluded, total: verts.size,
+    at: (yM: number) => bins.get(Math.round(yM / BIN)) ?? null,
+  };
+})();
+{
+  const c2 = (v: number): string => (v * 100).toFixed(2);
+  console.log(
+    `[정본·몸 반경 프로파일 v1] 대상 = frontIndex∪backIndex ${bodyRadiusProfile.total}정점 · 팔 제외 ${bodyRadiusProfile.excluded}(ARM_AXIS_RADIUS ${(ARM_AXIS_RADIUS * 1000).toFixed(0)}mm · pose 팔 선분) → 남은 ${bodyRadiusProfile.kept} · 축(x ${c2(bodyRadiusProfile.axisX)}, z ${c2(bodyRadiusProfile.axisZ)}) · 1cm bin`,
+  );
+  // 39·40·41회차가 인용한 값과 나란히. 앞 두 열은 **과거 인용값**이지 재측정이 아니다.
+  const past40 = new Map<number, number>([[132, 16.03], [135, 14.68], [138, 12.50], [140, 10.99], [143, 8.91], [145, 7.91]]);
+  const past41 = new Map<number, number>([[132, 17.07], [135, 16.03], [138, 13.92], [140, 13.08], [143, 12.11], [145, 7.98]]);
+  console.log("  y(cm)  정본최대   앞      뒤      옆     n  │ 40회차 인용  41회차 인용  차(정본−40)");
+  for (let yc = 128; yc <= 146; yc++) {
+    const b = bodyRadiusProfile.at(yc / 100);
+    if (!b) continue;
+    const p40 = past40.get(yc), p41 = past41.get(yc);
+    console.log(
+      `  ${String(yc).padStart(5)} ${c2(b.max).padStart(8)} ${c2(b.front).padStart(7)} ${c2(b.back).padStart(7)} ${c2(b.side).padStart(7)} ${String(b.n).padStart(4)}  │ ${(p40 !== undefined ? p40.toFixed(2) : "-").padStart(10)} ${(p41 !== undefined ? p41.toFixed(2) : "-").padStart(12)} ${(p40 !== undefined ? (b.max * 100 - p40).toFixed(2) : "-").padStart(12)}`,
+    );
+  }
+  console.log(
+    `  [대조] 39회차가 인용한 "실제 목밑 반경" ${c2(body.neckBaseGirthM / (2 * Math.PI))}cm는 **y${c2(body.neckBaseY)} 한 높이의 등방 등가반경**이고 프로파일이 아니다 — "2.37배" 진술의 분모였다(2b-39 정정).`,
+  );
+}
+
 const garmentDims = {
   lengthM: layout.heightM,
   widthM: layout.widthM,
@@ -1233,6 +1306,8 @@ const RAMP_FRAMES = 120;
 // 반납하지 않는다 — 정점은 여전히 `pinned=1`이고 목표에 도달한다.
 let anchorHard = false;
 let anchorRampFrame = 0;
+// 42회차 — 34게이트 (ii) 1회 무장 플래그. `place`(배치·재배치)가 다시 세운다.
+let gateArmed = true;
 let anchorRampS = 0;
 const anchorFrom = new Float32Array(anchorList.length * 3);
 const setAnchorHard = (hard: boolean): void => {
@@ -1268,7 +1343,14 @@ const setAnchorHard = (hard: boolean): void => {
     );
   }
   // 게이트 (ii) — 핀이 좌표를 쓴 **직후**. 램프면 s=0이라 (i)과 같아야 한다.
-  if (anchorRampFrame === 0) placementRestGate("(ii) 핀 발화 직후");
+  //
+  // 42회차 배선 정정: **배치 직후 첫 핀 발화에만** 돈다. 34회차 설계 의도가 그것인데
+  // `setAnchorHard`는 S1에서 `closure <= 0`이면 매 프레임 불리므로, seamGap이 다시
+  // 열려 하드 핀이 재결합하면 **시뮬 220프레임 뒤에도** "핀 발화 직후"라는 이름으로
+  // 배치 rest 정합을 검사했다(41회차 6회째 위반 = 함정 13 "시점").
+  // 재무장은 `place` 훅이 한다 — 재배치는 좌표를 배치 상태로 되돌리므로 그 뒤의
+  // 첫 핀 발화는 다시 "배치 직후"가 맞다.
+  if (anchorRampFrame === 0 && gateArmed) { gateArmed = false; placementRestGate("(ii) 핀 발화 직후"); }
   anchorRampFrame++;
 };
 // 배선 검증 — 핀이 실제로 좌표를 잡고 있는가. 목점(s≈0)의 실측 |x|가 6회차
@@ -1309,6 +1391,7 @@ const result = runDressing(
       correctPlacementPenetration(g.positions, total, wholeMesh, insideParity, COLLISION_MARGIN, g.selfCollisionMinDistM, skipKeys, SDF_FAR);
       for (let i = 0; i < total; i++) sim.setParticle(i, g.positions[i * 3], g.positions[i * 3 + 1], g.positions[i * 3 + 2]);
       placementRestGate(`(i) 재배치 직후 · 핀 발화 전 (오프셋 배수 ${scale.toFixed(2)})`);
+      gateArmed = true; // 재배치가 좌표를 배치 상태로 되돌렸다 → 다음 핀 발화는 다시 "배치 직후"다
     },
     countPenetrating: () => countInside(sim.positions, total, insideParity),
     diverged,
