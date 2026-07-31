@@ -452,8 +452,17 @@ const anchorList = (() => {
   };
   // 어깨 이음선의 호장 비율 — 패턴 좌표에서 목점→어깨점 거리 비.
   const shoulderSeamM = g.draft.dims.shoulderSeamM;
+  // 24회차 — **목점 2개를 앵커 집합에서 뺀다**(제약 중복 제거).
+  // 목점은 링의 끝점이라 **링 원주 제약이 이미 위치를 정한다**. 거기에 앵커까지
+  // 걸면 두 목표가 경쟁하고, 23회차 실측이 그 경쟁의 크기를 8.87cm(핀 잔차)로
+  // 찍었다 — 시접 쌍은 능선이 **아닌 곳**에서 10.0mm까지 만났는데 앵커가 앞판만
+  // 능선 목표로 끌어 쌍을 벌렸다. **앵커는 봉합을 유지하는 힘이 아니라 찢는
+  // 힘이었다.** 힘을 더하거나 목표를 새로 만드는 게 아니라 중복을 없앤다.
+  // 식별은 도출이다 — **링 정점이면서 어깨 시접의 정점**(= 공유 코너의 정의).
+  const ringVerts = new Set<number>(g.necklineRing.flatMap((e) => [e.a, e.b]));
   return g.seams
     .filter((sm) => sm.kind === "shoulder")
+    .filter((sm) => !(ringVerts.has(sm.a) || ringVerts.has(sm.b)))
     .map((sm) => {
       const px = g.pos2[sm.a * 2], py = g.pos2[sm.a * 2 + 1];
       const s = Math.hypot(Math.abs(px) - nwHalf, py) / Math.max(1e-9, shoulderSeamM);
@@ -476,6 +485,15 @@ const anchorList = (() => {
     if (c && c.distance * 1000 > worstOffSurfaceMm) worstOffSurfaceMm = c.distance * 1000;
   }
   const placedZ = g.positions[anchorList[0].i * 3 + 2];
+  // 배선 검증(24회차) — 제외분이 실제로 링·어깨 시접 양쪽에 속하는가.
+  {
+    const ringVerts = new Set<number>(g.necklineRing.flatMap((e) => [e.a, e.b]));
+    const shoulder = g.seams.filter((sm) => sm.kind === "shoulder");
+    const excluded = shoulder.filter((sm) => ringVerts.has(sm.a) || ringVerts.has(sm.b));
+    console.log(
+      `  [앵커·제외검증] 어깨 시접 ${shoulder.length}쌍 중 앵커 ${anchorList.length}개(제외 ${excluded.length}개) · 제외분 패턴 ${excluded.map((sm) => `(${cm(g.pos2[sm.a * 2])},${cm(g.pos2[sm.a * 2 + 1])})`).join(" ")} · 전부 링 정점 ${excluded.every((sm) => ringVerts.has(sm.a) && ringVerts.has(sm.b)) ? "OK(앞뒤 모두)" : "**일부만**"}`,
+    );
+  }
   // 배선 검증(20회차) — 목표가 **전 열에서** 그 x의 승모근 상단보다 위인가.
   let minClearMm = Infinity, worstAt = 0;
   for (const a of anchorList) {
