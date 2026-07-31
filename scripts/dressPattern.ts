@@ -749,7 +749,7 @@ const disReport = (label: string, rows: Dis[]): string => {
   return [
     `  [35계기·흡착 해부] ${label} n=${rows.length} · 1회 호출분(=목표까지 40%)`,
     `    |Δ| 중앙 ${mags[Math.floor(mags.length * 0.5)].toFixed(2)}mm · p99 ${mags[Math.floor(mags.length * 0.99)].toFixed(2)}mm · 최대 ${mags[mags.length - 1].toFixed(2)}mm · 합 ${(mags.reduce((a, b) => a + b, 0)).toFixed(1)}mm`,
-    `    반경 분해: 외향 ${outward.length}개 총 +${outward.reduce((a, b) => a + b, 0).toFixed(1)}mm · 내향 ${inward.length}개 총 ${inward.reduce((a, b) => a + b, 0).toFixed(1)}mm · 순 ${(rads.reduce((a, b) => a + b, 0)).toFixed(1)}mm · 링 62엣지 환산 둘레 ${(2 * Math.PI * rads.reduce((a, b) => a + b, 0) / Math.max(1, rows.length) / 10).toFixed(2)}cm`,
+    `    반경 분해: 외향 ${outward.length}개 총 +${outward.reduce((a, b) => a + b, 0).toFixed(1)}mm · 내향 ${inward.length}개 총 ${inward.reduce((a, b) => a + b, 0).toFixed(1)}mm · 순 ${(rads.reduce((a, b) => a + b, 0)).toFixed(1)}mm · **[폐기 채널]** 반경→둘레 환산 ${(2 * Math.PI * rads.reduce((a, b) => a + b, 0) / Math.max(1, rows.length) / 10).toFixed(2)}cm (35회차: 반경 분해는 링 길이를 원리적으로 못 잰다 — 참고만)`,
     `    목표 부위: ${[...parts].sort((a, b) => b[1] - a[1]).map(([k, v]) => `${k} ${v}`).join(" · ")}`,
     `    최대 5: ${worst.map(P).join("\n           ")}`,
   ].join("\n");
@@ -1168,7 +1168,7 @@ const result = runDressing(
         let vmax = 0;
         for (let i = 0; i < sim.positions.length; i++) vmax = Math.max(vmax, Math.abs(sim.positions[i] - sim.prevPositions[i]));
         const gdt2 = 9.81 * SUBSTEP_DT * SUBSTEP_DT;
-        probeReports.push(`  [31계기·적분 상한] ${probeFrameLabel} 관성 최대 |pos−prev| ${(vmax * 1000).toFixed(3)}mm · g·dt² ${(gdt2 * 1000).toFixed(3)}mm · 정점당 적분 변위 상한 ≈ ${((vmax + gdt2) * 1000).toFixed(3)}mm → 링 62엣지 전체가 그만큼 벌어져도 최대 ${((vmax + gdt2) * 2 * 62 * 100).toFixed(2)}cm`);
+        probeReports.push(`  [31계기·적분 상한] ${probeFrameLabel} 관성 최대 |pos−prev| ${(vmax * 1000).toFixed(3)}mm · g·dt² ${(gdt2 * 1000).toFixed(3)}mm · 정점당 적분 변위 상한 ≈ ${((vmax + gdt2) * 1000).toFixed(3)}mm → 링 ${g.necklineRing.length}엣지(= ringLenM이 순회하는 집합 · 폐곡선 62엣지가 아니다) 전체가 그만큼 벌어져도 최대 ${((vmax + gdt2) * 2 * g.necklineRing.length * 100).toFixed(2)}cm`);
       }
       if (seamClosedAtFrame < 0) {
         ringMaxBeforeCloseM = Math.max(ringMaxBeforeCloseM, ringLenM());
