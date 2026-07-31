@@ -443,7 +443,13 @@ const anchorList = (() => {
       const px = g.pos2[sm.a * 2], py = g.pos2[sm.a * 2 + 1];
       const s = Math.hypot(Math.abs(px) - nwHalf, py) / Math.max(1e-9, shoulderSeamM);
       const t = at(Math.sign(px) || 1, s);
-      return { i: sm.a, x: t.x, y: t.y, z: t.z, s, sign: Math.sign(px) || 1 };
+      // 20회차 단일 변경: 목표를 능선 **표면 위 margin**으로 올린다.
+      // 19회차는 목표가 표면 위(거리 0)였는데, 천은 충돌 해소가 항상 margin
+      // 만큼 밖으로 밀어내므로 **뒤판이 그 점에 도달할 수 없다** — 앞판만 핀으로
+      // 거기 박혀 있고 뒤판은 영원히 margin 밖에 머문다(실측: 목점 2쌍 갭
+      // 26.5/26.8mm, 두 점의 중점이 표면 거리 0.00~0.01cm = 몸을 사이에 두고
+      // 마주 봄). 능선점은 정의상 그 x의 **최상단** 표면점이라 바깥 방향이 +y다.
+      return { i: sm.a, x: t.x, y: t.y + COLLISION_MARGIN, z: t.z, s, sign: Math.sign(px) || 1 };
     });
 })();
 {
@@ -455,8 +461,19 @@ const anchorList = (() => {
     if (c && c.distance * 1000 > worstOffSurfaceMm) worstOffSurfaceMm = c.distance * 1000;
   }
   const placedZ = g.positions[anchorList[0].i * 3 + 2];
+  // 배선 검증(20회차) — 목표가 **전 열에서** 그 x의 승모근 상단보다 위인가.
+  let minClearMm = Infinity, worstAt = 0;
+  for (const a of anchorList) {
+    const top = body.ridgeTopYAt(Math.abs(a.x - body.centerX));
+    const clearMm = (a.y - top) * 1000;
+    if (clearMm < minClearMm) { minClearMm = clearMm; worstAt = Math.abs(a.x - body.centerX); }
+  }
   console.log(
-    `[dress] 앵커 목표 = 능선 호장 매핑 ${anchorList.length}개 · y ${cm(Math.min(...ys))}~${cm(Math.max(...ys))}cm · z ${cm(Math.min(...zs))}~${cm(Math.max(...zs))}cm (배치 평면 z ${cm(placedZ)}cm과 구분됨) · 표면 이탈 최대 ${worstOffSurfaceMm.toFixed(2)}mm · 능선 표본 ${body.ridgePoints.length}개(1cm 간격)`,
+    `[dress] 앵커 목표 = 능선 호장 매핑 + 오프셋 ${anchorList.length}개 · y ${cm(Math.min(...ys))}~${cm(Math.max(...ys))}cm · z ${cm(Math.min(...zs))}~${cm(Math.max(...zs))}cm (배치 평면 z ${cm(placedZ)}cm과 구분됨) · 표면 이탈 ${worstOffSurfaceMm.toFixed(2)}mm(= 오프셋 ${(COLLISION_MARGIN * 1000).toFixed(1)}mm) · 능선 표본 ${body.ridgePoints.length}개(1cm 간격)`,
+  );
+  const clearOk = minClearMm > 0;
+  console.log(
+    `  [앵커·배선검증] 승모근 상단 대비 여유 최소 ${minClearMm.toFixed(2)}mm @|x|${cm(worstAt)}cm → ${clearOk ? "전 열에서 위 OK" : "**아래 있음(교착 재발 위험)**"}`,
   );
   // 목점(s≈0) 목표 x가 패턴 목너비로 돌아왔는지 + 순서·간격 단조성.
   for (const sign of [1, -1]) {
