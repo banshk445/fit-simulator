@@ -541,7 +541,8 @@ const ringClosed = [...g.necklineRing, ...ringJoinPairs.map((sm) => ({ a: sm.a, 
   const targetM = g.draft.dims.necklineGirthM;
   const errCm = (ringM - targetM) * 100;
   console.log(
-    `[dress] 넥밴드 원주 제약: 링 엣지 ${g.necklineRing.length}쌍 · 배치 실측 원주 ${cm(ringM)}cm vs 패턴 목선 ${cm(targetM)}cm (오차 ${errCm.toFixed(3)}cm) · 신장 상한 ${COLLAR_STRAIN_LIMIT}(v1 승계·추정)`,
+    `[dress] 넥밴드 원주 제약: 링 엣지 ${g.necklineRing.length}쌍 · 배치 실측 원주 ${cm(ringM)}cm vs 패턴 목선 ${cm(targetM)}cm (오차 ${errCm.toFixed(3)}cm) · 신장 상한 ${COLLAR_STRAIN_LIMIT}(v1 승계·추정)` +
+    ` · **rest 집합 주의**: 여기 ${cm(ringM)}cm = \`necklineRing\` **${g.necklineRing.length}엣지**(= ringLenM이 순회하는 집합). 별도로 인쇄되는 ${cm(ringRestM)}cm는 **접합 2엣지의 시접 target을 더한 값**(ringRestM)이고 같은 것이 아니다 — 29회차 계열`,
   );
   if (g.necklineRing.length === 0) throw new Error("넥밴드 링 제약 0쌍 — 배선 실패");
   {
@@ -586,6 +587,8 @@ const meshResolver = createPanelSplitResolver(
 // 함정16 규범("근접을 기전으로 승격하려면 ablation으로 흔들어라")의 이행 수단이다.
 // 처방이 아니다: 관통·cov 붕괴는 예상된 부작용이고 판정 대상이 아니다.
 const TORSOCAP = process.env.TORSOCAP !== "0";
+// 42회차 처방 A — 정점당 **가장 깊이 파묻힌 캡슐 1개만** 민다(기본 on · `SINGLE=0`으로 해제).
+const SINGLE_DEEPEST = process.env.SINGLE !== "0";
 const unified = (positions: Float32Array, pinned: Uint8Array, n: number): void => {
   meshResolver(positions, pinned, n);
   let offset = 0;
@@ -598,7 +601,7 @@ const unified = (positions: Float32Array, pinned: Uint8Array, n: number): void =
       // 19단 스택에서 한 정점이 4~7개를 동시 발화시켜 실효 완화가 0.35 → 0.76~0.83으로
       // 2.4배 약해지고 축(y) 성분이 새로 생겼다. 캡슐 2개인 기준선에선 링 밴드에서
       // 1개만 발화하므로 이 플래그가 켜져도 **거동이 같다**(비트 동일 확인 대상).
-      applyCapsuleCollision(pos, pin, count, collision.capsules, COLLISION_MARGIN, undefined, undefined, true);
+      applyCapsuleCollision(pos, pin, count, collision.capsules, COLLISION_MARGIN, undefined, undefined, SINGLE_DEEPEST);
     }
     applyCapsuleCollision(pos, pin, count, armCapsules, 0.006);
     offset += count;
@@ -795,7 +798,7 @@ const JOIN_FRAMES = new Set<number>([0, 1, 2, 4, 8, 62, 110, 117]);
 // 39회차 — 계기 D(링 형상) · 계기 B(성분 3분리 · 순차 in-situ) 무장 프레임.
 const SHAPE_FRAMES = new Set<number>([0, 1, 2, 3, 4, 8, 62]);
 // 40회차 계기 E는 f1·f2·f4·f8을 요구한다 — f3(=_frame 2)도 이미 무장돼 있어 그대로 둔다.
-const COMP_FRAMES = new Set<number>([0, 1, 2, 3, 7]); // f1·f2·f3·f4·f8 직전
+const COMP_FRAMES = new Set<number>([0, 1, 2, 3, 7, 61]); // f1·f2·f3·f4·f8·f62 직전(43회차 f62 추가)
 const probeReports: string[] = [];
 const probeLog: { sub: number; label: string; L: number; J: number }[] = [];
 // 38회차 계기 A — **접합 2엣지 실거리 합**. 링 60엣지와 같은 패스 경계에서 읽어
@@ -881,7 +884,7 @@ const compSequential = (): { mesh: Float32Array; torso: Float32Array; arm: Float
     // 실측처럼 인쇄한다 — 39회차 ablation 로그의 몸통 캡슐 행이 그랬다.
     if (TORSOCAP && (p === PANEL_PAT_FRONT || p === PANEL_PAT_BACK)) {
       // 계기도 물리와 **같은 인자**로 부른다 — 안 그러면 계기가 다른 대상을 잰다(함정 19).
-      applyCapsuleCollision(compScratch.subarray(offset * 3, (offset + count) * 3), adsorbNoPin.subarray(offset, offset + count), count, collision.capsules, COLLISION_MARGIN, undefined, undefined, true);
+      applyCapsuleCollision(compScratch.subarray(offset * 3, (offset + count) * 3), adsorbNoPin.subarray(offset, offset + count), count, collision.capsules, COLLISION_MARGIN, undefined, undefined, SINGLE_DEEPEST);
     }
     offset += count;
   }
@@ -928,7 +931,12 @@ const compReport = (label: string): string => {
   // 고정점: mesh가 R_mesh로 0.4씩 당기고 캡슐이 17.4155로 0.35씩 밀 때의 평형
   const rStar = (0.4 * Rm + 0.35 * CAP0_PUSH_R) / 0.75;
   lines.push(`    [R_mesh] mesh 표적 반경 중앙 전체 ${cm(Rm)}cm(앞판 ${cm(med(fr))} / 뒤판 ${cm(med(bk))}) · 범위 ${cm(all[0])}~${cm(all[all.length - 1])}cm`);
-  lines.push(`    [고정점] r* = (0.4·R_mesh + 0.35×${cm(CAP0_PUSH_R)}) / 0.75 = **${cm(rStar)}cm** → 원 둘레 환산 ${cm(2 * Math.PI * rStar)}cm`);
+  // 43회차 — **stale 표기.** 이 식은 "캡슐 **1개**가 완화 **0.35**로 민다"를 분자·계수에
+  // 박아 둔 고정점 계기다. 42회차 사전 반증 실측: 다캡슐에서 한 정점이 4~7개를 동시
+  // 발화시키면 **실효 완화가 0.76~0.83**이 되고, `singleDeepest`가 켜지면 반대로 캡슐이
+  // 1개로 강제된다. 두 경우 모두 이 식의 전제가 성립하지 않는다 → 참고값으로만 읽을 것.
+  lines.push(`    [고정점·**계기 stale**] r* = (0.4·R_mesh + 0.35×${cm(CAP0_PUSH_R)}) / 0.75 = ${cm(rStar)}cm → 원 둘레 ${cm(2 * Math.PI * rStar)}cm` +
+    ` · **전제: 캡슐 1개 · 실효 완화 0.35** (현행 캡슐 ${collision.capsules.length}개 · singleDeepest ${SINGLE_DEEPEST ? "on" : "off"} — 전제 불성립 시 무효)`);
   // ── 계기 E — 후보 1 판별. mesh 표적점을 **ringOrder 순서로** 이은 다각형 길이.
   {
     // 40회차 정의역 정정(39회차 §8-2) — 링60과 **같은 집합**으로 다시 낸다.
@@ -954,6 +962,35 @@ const compReport = (label: string): string => {
 };
 // ── 39회차 계기 D — 링 형상 채널(38회차 §6 "확인 불가" 해소).
 // 반경으로 부푼 원인가, 제자리에서 물결친 곡선인가. 캡슐축 기준 반경의 분포를 본다.
+// ── 43회차 계기 정정 2 — **per-vertex 캡슐 카운트**(42회차 "산출 불가" 항목).
+// 계기 B의 `발화 n/35`는 *발화한 정점 수*이지 **정점당 캡슐 수**가 아니다. 여기서는
+// 한 정점이 동시에 몇 개의 캡슐 안에 들어가 있는지를 직접 센다 — `singleDeepest`가
+// 실제로 1개만 미는지 확인하는 채널이다(발화 판정식은 리졸버와 같은 것을 쓴다:
+// 캡슐 축 선분까지 거리 < radius + margin).
+const capsuleHitCount = (i: number): number => {
+  let n = 0;
+  for (const c of collision.capsules) {
+    const ax = c.top.x, ay = c.top.y, az = c.top.z;
+    const bx = c.bottom.x - ax, by = c.bottom.y - ay, bz = c.bottom.z - az;
+    const L = bx * bx + by * by + bz * bz;
+    const px = sim.positions[i * 3] - ax, py = sim.positions[i * 3 + 1] - ay, pz = sim.positions[i * 3 + 2] - az;
+    const t = L > 1e-9 ? Math.max(0, Math.min(1, (px * bx + py * by + pz * bz) / L)) : 0;
+    const dx = px - bx * t, dy = py - by * t, dz = pz - bz * t;
+    const r = c.radius + COLLISION_MARGIN;
+    if (dx * dx + dy * dy + dz * dz < r * r) n++;
+  }
+  return n;
+};
+const capsuleCountReport = (label: string): string => {
+  const rows = ringOrder.map(capsuleHitCount).sort((a, b) => a - b);
+  const hist = new Map<number, number>();
+  for (const v of rows) hist.set(v, (hist.get(v) ?? 0) + 1);
+  const zero = rows.filter((v) => v === 0).length;
+  return `  [43계기·정점당 캡슐 수] ${label} · 링 ${rows.length}정점 · 캡슐 총 ${collision.capsules.length}개 · singleDeepest ${SINGLE_DEEPEST ? "on" : "off"}` +
+    ` · 중앙 ${rows[Math.floor(rows.length / 2)]} 최대 ${rows[rows.length - 1]} · 0개(캡슐 밖) ${zero}` +
+    ` · 히스토그램 ${[...hist].sort((a, b) => a[0] - b[0]).map(([k, v]) => `${k}개:${v}`).join(" ")}` +
+    ` · **밀어내기 적용 수 = ${SINGLE_DEEPEST ? "정점당 1(가장 깊은 것)" : "위 개수 그대로(in-situ 누적)"}**`;
+};
 const ringShapeReport = (label: string): string => {
   const stat = (idx: number[], nm: string): string => {
     if (idx.length === 0) return `${nm} —`;
@@ -1450,7 +1487,7 @@ const result = runDressing(
       }
       // 39회차 계기 D(형상) · B(성분 3분리) — f1·f2·f3·f4·f8 + f62. beforeStep은 step 직전이라
       // 여기 값은 "f=_frame 종료 상태". D는 t=0(=f0)도 찍는다.
-      if (SHAPE_FRAMES.has(_frame)) probeReports.push(ringShapeReport(`f=${_frame}`));
+      if (SHAPE_FRAMES.has(_frame)) { probeReports.push(ringShapeReport(`f=${_frame}`)); probeReports.push(capsuleCountReport(`f=${_frame}`)); }
       if (COMP_FRAMES.has(_frame)) probeReports.push(compReport(`f${_frame + 1} 직전(=f${_frame} 종료 상태)`));
       // ── 35회차 계기. beforeStep(_frame)은 f=_frame+1을 만드는 step **직전**이다.
       if (_frame === 0 || _frame === 7) {
@@ -1835,6 +1872,7 @@ console.log(`  maxStrain ${strain.v.toFixed(3)} (정점 ${strain.at}) · maxSeam
   console.log(`  [38계기A·접합 실거리] 정착 링60 ${cm(ringLenM())}cm · 접합합 실거리 ${cm(joinLenM())}cm rest ${cm(joinDistRestSumM())}cm · ${rows.join(" · ")}`);
   console.log(`    폐곡선(링60+접합) 실측 ${cm(ringLenM() + joinLenM())}cm · 폐곡선 rest(거리 제약 기준) ${cm(ringRestConfirmedM + joinDistRestSumM())}cm`);
   console.log(ringShapeReport("정착"));
+  console.log(capsuleCountReport("정착"));
   console.log(`  [39·ablation 상태] 몸통 캡슐 ${TORSOCAP ? "**on**(기본)" : "**OFF**(TORSOCAP=0 · 진단 전용)"}`);
 }
 // ── 35계기 6번: maxSeamGap의 **공간 분포**. 어느 종류·어느 자리가 벌어졌는가.
