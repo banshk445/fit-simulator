@@ -683,6 +683,93 @@ const unifiedProbed: typeof unified = (pos, pinned, n) => {
   unified(pos, pinned, n);
   probe("1a.충돌(흡착)");
 };
+// ══ 35회차 계기 (읽기 전용 · 물리 0줄) — 흡착이 정점을 어디로 옮기는가 ══
+//
+// 계기는 **제약이 실제로 순회하는 집합에서 직접 뜬다**(함정 12): 흡착 목표를
+// 다시 계산하지 않고 `unified` 리졸버 **자신**을 스크래치 사본에 한 번 돌려
+// 그 차이를 읽는다. `sim.positions`는 건드리지 않는다.
+//
+// **1회 호출 = 목표까지 PUSH_RELAXATION(0.4)만큼만**이다(bvhFromArrays 29행).
+// 그래서 "함의 목표"는 pos + Δ/0.4로 역산해 병기한다 — 캡슐 충돌은 완화가
+// 없으므로 그 역산은 **메시 흡착이 지배적인 정점에서만** 유효하다(그렇게 표기).
+const adsorbScratch = new Float32Array(sim.positions.length);
+// 핀 면제분도 "핀이 없었다면 흡착이 어디로 보내는가"를 봐야 하므로 0으로 돈다.
+const adsorbNoPin = new Uint8Array(total);
+const adsorbRun = (): void => {
+  adsorbScratch.set(sim.positions);
+  unified(adsorbScratch, adsorbNoPin, total);
+};
+// 몸 부위 분류 — 전부 `bodyMeasure` 실측 랜드마크에서 도출한다(새 상수 0).
+//   목 기둥 = 목밑둘레 높이 위 · 어깨 능선 = 그 |x|의 최상단 표면점 근방(margin)
+//   팔 = 어깨너비 절반 밖 · 나머지는 centerZ 기준 가슴/등
+const bodyPartOf = (x: number, y: number, z: number): string => {
+  const dx = Math.abs(x - centerX);
+  if (y > body.neckBaseY) return "목기둥";
+  if (y >= body.ridgeTopYAt(dx) - COLLISION_MARGIN) return "어깨능선";
+  if (dx > body.shoulderSpanM / 2) return "팔";
+  return z > collision.centerZ ? "가슴" : "등";
+};
+// 링 중심(xz 평면) — 반경 방향 분해의 기준. 링 정점 무게중심에서 뜬다.
+const ringCenterXZ = (): { cx: number; cz: number } => {
+  const idx = [...new Set(g.necklineRing.flatMap((e) => [e.a, e.b]))];
+  let cx = 0, cz = 0;
+  for (const i of idx) { cx += sim.positions[i * 3]; cz += sim.positions[i * 3 + 2]; }
+  return { cx: cx / idx.length, cz: cz / idx.length };
+};
+type Dis = { i: number; dxm: number; dym: number; dzm: number; mag: number; radial: number; part: string; pinned: boolean };
+const dissect = (label: string, idx: number[]): Dis[] => {
+  adsorbRun();
+  const { cx, cz } = ringCenterXZ();
+  const out: Dis[] = [];
+  for (const i of idx) {
+    const px = sim.positions[i * 3], py = sim.positions[i * 3 + 1], pz = sim.positions[i * 3 + 2];
+    const dx = adsorbScratch[i * 3] - px, dy = adsorbScratch[i * 3 + 1] - py, dz = adsorbScratch[i * 3 + 2] - pz;
+    // 함의 목표 = pos + Δ/PUSH_RELAXATION(0.4). 부위는 그 목표로 분류한다.
+    const tx = px + dx / 0.4, ty = py + dy / 0.4, tz = pz + dz / 0.4;
+    const rx = px - cx, rz = pz - cz;
+    const rl = Math.hypot(rx, rz) || 1e-9;
+    out.push({
+      i, dxm: dx * 1000, dym: dy * 1000, dzm: dz * 1000, mag: Math.hypot(dx, dy, dz) * 1000,
+      radial: ((dx * rx + dz * rz) / rl) * 1000, part: bodyPartOf(tx, ty, tz), pinned: !!sim.pinned[i],
+    });
+  }
+  void label;
+  return out;
+};
+const disReport = (label: string, rows: Dis[]): string => {
+  if (rows.length === 0) return `  [35계기·흡착 해부] ${label} — 대상 0개`;
+  const mags = rows.map((r) => r.mag).sort((a, b) => a - b);
+  const rads = rows.map((r) => r.radial);
+  const outward = rads.filter((v) => v > 0), inward = rads.filter((v) => v < 0);
+  const parts = new Map<string, number>();
+  for (const r of rows) parts.set(r.part, (parts.get(r.part) ?? 0) + 1);
+  const worst = [...rows].sort((a, b) => b.mag - a.mag).slice(0, 5);
+  const P = (r: Dis): string =>
+    `#${r.i}(${cm(g.pos2[r.i * 2])},${cm(g.pos2[r.i * 2 + 1])})${r.pinned ? "[핀]" : ""} 위치(${cm(sim.positions[r.i * 3])},${cm(sim.positions[r.i * 3 + 1])},${cm(sim.positions[r.i * 3 + 2])}) Δ(${r.dxm.toFixed(1)},${r.dym.toFixed(1)},${r.dzm.toFixed(1)})mm |Δ|${r.mag.toFixed(1)} 반경${r.radial >= 0 ? "+" : ""}${r.radial.toFixed(1)} ${r.part}`;
+  return [
+    `  [35계기·흡착 해부] ${label} n=${rows.length} · 1회 호출분(=목표까지 40%)`,
+    `    |Δ| 중앙 ${mags[Math.floor(mags.length * 0.5)].toFixed(2)}mm · p99 ${mags[Math.floor(mags.length * 0.99)].toFixed(2)}mm · 최대 ${mags[mags.length - 1].toFixed(2)}mm · 합 ${(mags.reduce((a, b) => a + b, 0)).toFixed(1)}mm`,
+    `    반경 분해: 외향 ${outward.length}개 총 +${outward.reduce((a, b) => a + b, 0).toFixed(1)}mm · 내향 ${inward.length}개 총 ${inward.reduce((a, b) => a + b, 0).toFixed(1)}mm · 순 ${(rads.reduce((a, b) => a + b, 0)).toFixed(1)}mm · 링 62엣지 환산 둘레 ${(2 * Math.PI * rads.reduce((a, b) => a + b, 0) / Math.max(1, rows.length) / 10).toFixed(2)}cm`,
+    `    목표 부위: ${[...parts].sort((a, b) => b[1] - a[1]).map(([k, v]) => `${k} ${v}`).join(" · ")}`,
+    `    최대 5: ${worst.map(P).join("\n           ")}`,
+  ].join("\n");
+};
+const ringIdx = [...new Set(g.necklineRing.flatMap((e) => [e.a, e.b]))];
+// 어깨 시접 앵커 36 · 암홀 시접 대역(양끝 전부) — 5번 항목.
+const anchorIdx = anchorList.map((a) => a.i);
+const armholeIdx = [...new Set(g.seams.filter((s) => s.kind === "armhole").flatMap((s) => [s.a, s.b]))];
+// 4번 항목 — f8 최악 엣지(앞판 ±22.31,4.21 → ±22.29,4.94)를 패턴 좌표로 찾는다.
+const trackEdges = (() => {
+  const near = (i: number, x: number, y: number): boolean =>
+    Math.abs(Math.abs(g.pos2[i * 2]) - x) < 0.002 && Math.abs(g.pos2[i * 2 + 1] - y) < 0.002;
+  const out: { a: number; b: number; rest: number }[] = [];
+  for (const c of sim.constraintPairs) {
+    if (c.a >= g.panelStarts[1]) continue;
+    const hit = (near(c.a, 0.2231, 0.0421) && near(c.b, 0.2229, 0.0494)) || (near(c.b, 0.2231, 0.0421) && near(c.a, 0.2229, 0.0494));
+    if (hit) out.push({ a: c.a, b: c.b, rest: c.restLength });
+  }
+  return out;
+})();
 // ── 32회차 계기: **rest 정합 지도**. 부호 있는 신장비(현재/rest)를 대역별로.
 // 대역은 링에서의 엣지 홉 수로 도출한다(상수 신설 없음).
 const ringVertsForMap = new Set<number>(g.necklineRing.flatMap((e) => [e.a, e.b]));
@@ -1050,6 +1137,28 @@ const result = runDressing(
       // "t=0(배치 직후)"라고 부른 지도는 **핀이 이미 돈 뒤**의 지도다.
       // 진짜 배치 직후는 `placementRestGate("(i) …")`가 잰다.
       if (_frame === 0) probeReports.push(restMap("f0 beforeStep (**핀 발화 직후** · 첫 적분 전) — 32회차가 't=0'이라 부른 시점"));
+      // ── 35회차 계기. beforeStep(_frame)은 f=_frame+1을 만드는 step **직전**이다.
+      if (_frame === 0 || _frame === 7) {
+        const fl = `f${_frame + 1}`;
+        probeReports.push(disReport(`${fl} 링 62정점`, dissect(fl, ringIdx)));
+        probeReports.push(disReport(`${fl} 링 1홉 이웃`, dissect(fl, [...new Set(sim.constraintPairs.filter((c) => Math.max(hopFromRing[c.a], hopFromRing[c.b]) === 1).flatMap((c) => [c.a, c.b]))].filter((i) => !ringIdx.includes(i)))));
+        probeReports.push(disReport(`${fl} 어깨 시접 앵커 36`, dissect(fl, anchorIdx)));
+        probeReports.push(disReport(`${fl} 암홀 시접 대역`, dissect(fl, armholeIdx)));
+      }
+      // 4번 — 앞판 최대 신장 엣지의 프레임별 추적(f0~f8 · step 직전 값).
+      if (_frame <= 8 && trackEdges.length > 0) {
+        adsorbRun();
+        const line = trackEdges.map((e) => {
+          const d = Math.hypot(
+            sim.positions[e.b * 3] - sim.positions[e.a * 3],
+            sim.positions[e.b * 3 + 1] - sim.positions[e.a * 3 + 1],
+            sim.positions[e.b * 3 + 2] - sim.positions[e.a * 3 + 2],
+          );
+          const dm = (i: number): string => `${(Math.hypot(adsorbScratch[i * 3] - sim.positions[i * 3], adsorbScratch[i * 3 + 1] - sim.positions[i * 3 + 1], adsorbScratch[i * 3 + 2] - sim.positions[i * 3 + 2]) * 1000).toFixed(2)}`;
+          return `#${e.a}${sim.pinned[e.a] ? "[핀]" : ""}↔#${e.b}${sim.pinned[e.b] ? "[핀]" : ""} ${(d / e.rest).toFixed(3)}배(${(d * 1000).toFixed(1)}mm) 흡착Δ ${dm(e.a)}/${dm(e.b)}mm`;
+        }).join(" · ");
+        probeReports.push(`  [35계기·추적 엣지] step 직전 f=${_frame} → ${line}`);
+      }
       probeArmed = PROBE_FRAMES.has(_frame + 1);
       if (probeArmed) {
         probeSub = 0; probeLog.length = 0; probeFrameLabel = `f${_frame + 1}/${state}`;
@@ -1390,6 +1499,34 @@ console.log(`  covShoulder 버킷: ${JSON.stringify(Object.fromEntries(Object.en
 console.log(`  shoulderHover top-front: hit ${tf.hit.toFixed(3)} / hover ${tf.mean.toFixed(2)}|${tf.max.toFixed(2)}mm`);
 console.log(`  shoulderHover top-back : hit ${tb.hit.toFixed(3)} / hover ${tb.mean.toFixed(2)}|${tb.max.toFixed(2)}mm`);
 console.log(`  maxStrain ${strain.v.toFixed(3)} (정점 ${strain.at}) · maxSeamGap ${(maxSeamGapM() * 1000).toFixed(2)}mm · Δ20 ${maxDelta20Mm().toFixed(2)}mm`);
+// ── 35계기 6번: maxSeamGap의 **공간 분포**. 어느 종류·어느 자리가 벌어졌는가.
+{
+  const rows = g.seams.map((sm) => ({
+    kind: sm.kind, a: sm.a, b: sm.b, target: sm.targetM,
+    d: Math.hypot(
+      sim.positions[sm.b * 3] - sim.positions[sm.a * 3],
+      sim.positions[sm.b * 3 + 1] - sim.positions[sm.a * 3 + 1],
+      sim.positions[sm.b * 3 + 2] - sim.positions[sm.a * 3 + 2],
+    ),
+  })).sort((x, y) => y.d - x.d);
+  const byKind = new Map<string, { n: number; max: number; sum: number }>();
+  for (const r of rows) {
+    const t = byKind.get(r.kind) ?? { n: 0, max: 0, sum: 0 };
+    t.n++; t.sum += r.d; if (r.d > t.max) t.max = r.d;
+    byKind.set(r.kind, t);
+  }
+  console.log(`  [35계기·시접 갭 분포] 종류별 최대|평균(mm): ${[...byKind].map(([k, t]) => `${k} ${(t.max * 1000).toFixed(2)}|${(t.sum / t.n * 1000).toFixed(2)}(n=${t.n})`).join(" · ")}`);
+  console.log(`    상위 10쌍 (갭mm · target mm · 패턴좌표 · 3D):`);
+  for (const r of rows.slice(0, 10)) {
+    console.log(
+      `      ${(r.d * 1000).toFixed(2)}mm ${r.kind.padEnd(11)} target ${(r.target * 1000).toFixed(1)}mm · 패턴 a(${cm(g.pos2[r.a * 2])},${cm(g.pos2[r.a * 2 + 1])}) b(${cm(g.pos2[r.b * 2])},${cm(g.pos2[r.b * 2 + 1])}) · 3D a(${cm(sim.positions[r.a * 3])},${cm(sim.positions[r.a * 3 + 1])},${cm(sim.positions[r.a * 3 + 2])})`,
+    );
+  }
+}
+// ── 35계기 3번: 흡착 파라미터를 **코드에서** 인쇄한다(문서 인용 금지 — 함정 13).
+console.log(`  [35계기·흡착 파라미터] margin ${(COLLISION_MARGIN * 1000).toFixed(1)}mm(clothConfig · 근거="옷감 두께 근사치" **정성적**) · 탐지반경 ${(COLLISION_DETECTION_RADIUS * 1000).toFixed(1)}mm(근거=관통 파티클 구조 여유 **정성적·수치 도출 없음**) · under-relaxation 0.4(bvhFromArrays PUSH_RELAXATION · 근거=탐지반경 15cm에서 shrink-wrap **실측**) · 검사 주기 ${COLLISION_EVERY}반복마다`);
+console.log(`    표적 선택 = BVH closestPointToPoint(**최근접 삼각형**) → 목표 = hit.point + 그 삼각형 **면 법선** × margin. 법선 방향 제한 **없음**.`);
+console.log(`    penetrationAxis **미전달** → 관통-only 아님 = **양방향 흡착**(탐지반경 안이면 관통 여부 무관하게 항상 표면+margin으로 40%씩 끌어당김). 대상 = 앞/뒤판만(소매는 null 리졸버 + 팔 캡슐).`);
 console.log(
   `  proximityPairs(기록 채널 · 문턱 ${(g.selfCollisionMinDistM * 1000).toFixed(2)}mm · 게이트 아님 — 뭉친 폴드의 정상 접촉을 센다): ${prox}쌍`,
 );
