@@ -187,6 +187,9 @@ export function defaultSmoothing(newCore: boolean): boolean {
 }
 
 export interface GarmentFrameEnv {
+  // **읽기 전용 프로브**(31회차 계기). 서브스텝 안 각 위치 수정 패스의 경계에서
+  // 호출된다. 위치를 건드리면 안 된다 — 계기 전용. 미설정이면 빈 호출도 없다.
+  probe?: (label: string) => void;
   // step() 내부에서 collisionEvery 주기로 도는 충돌 리졸버.
   collisionResolver: CollisionResolver;
   collisionEvery: number;
@@ -324,6 +327,7 @@ export function createGarmentSession(sim: ClothSimulation, env: GarmentFrameEnv)
         // 반복 안 마찰 캐시 — 적분 직전 위치 기준(적분 한 스텝 오차는
         // 변위 클램프 이하, 법선장 연속이라 허용 — 동등성 실측으로 검증).
         env.frictionIterationReset?.(sim.positions, sim.pinned, sim.positions.length / 3);
+        env.probe?.("0.서브스텝 시작");
         sim.step(
           SUBSTEP_DT,
           gravity,
@@ -334,23 +338,30 @@ export function createGarmentSession(sim: ClothSimulation, env: GarmentFrameEnv)
           env.maxDisplacement,
           iterExtra,
         );
+        env.probe?.("1.sim.step(적분+거리제약×n+충돌+iterExtra)");
         // M2: 마찰 — 충돌이 법선 방향을 푼 직후, 그 접촉의 접선 성분을
         // 감쇠/정지시킨다(자체충돌·순서 보정 이전).
         env.friction?.(sim.positions, sim.prevPositions, sim.pinned, sim.positions.length / 3);
+        env.probe?.("2.friction(SDF 마찰)");
         if (env.selfCollision) {
           env.selfCollision(sim.positions, sim.pinned, sim.positions.length / 3);
           // 자체충돌이 흐트러뜨린 순서를 한 번 더 정리 — 이중 안전장치(워커 원본 주석).
         }
+        env.probe?.("3.selfCollision");
         if (anyOrder) torsoOrderExtra(sim.positions, sim.pinned, sim.positions.length / 3);
+        env.probe?.("4.order");
         if (env.clampInSubstep) sim.clampOverstretchedConstraints();
+        env.probe?.("5.limitStrain(1.2)");
         if (env.collarStrainLimit) {
           const fired = sim.limitCollarStrain(env.collarStrainLimit);
           if (fired > 0) env.onCollarFired?.(fired);
         }
+        env.probe?.("6.limitCollarStrain(1.02)");
         // M1(용접): alias 파티클을 canon 최신 위치로 동기화 — 후처리(sleeve
         // ArmPull의 row0 링 중심 등)가 alias를 읽기 전에 반영돼야 한다.
         // 용접 없는 구 코어에선 빈 루프(비트 동일).
         sim.syncWeldedPositions();
+        env.probe?.("7.syncWelded(서브스텝 끝)");
         accumulator -= SUBSTEP_DT;
       }
 

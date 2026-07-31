@@ -662,8 +662,30 @@ const selfCollision = new SelfCollision(
   [...g.edgePairs, ...g.seams.map((s) => ({ a: s.a, b: s.b }))],
   g.selfCollisionMinDistM, 0,
 ).createResolver(g.selfCollisionMinDistM);
+// ── 31회차 계기: 패스별 링 길이 프로브(읽기 전용). 무장된 프레임에서만
+// 서브스텝 안 각 패스 경계의 링 길이를 적는다. 위치는 건드리지 않는다.
+let probeArmed = false;
+let probeSub = 0;
+let probeFrameLabel = "";
+const PROBE_FRAMES = new Set<number>((process.env.PROBE ?? "1,8,62,280").split(",").map(Number));
+const probeReports: string[] = [];
+const probeLog: { sub: number; label: string; L: number }[] = [];
+const probe = (label: string): void => {
+  if (!probeArmed) return;
+  if (label.startsWith("0.")) probeSub++;
+  probeLog.push({ sub: probeSub, label, L: ringLenM() });
+};
+// sim.step 내부 분해 — 충돌(흡착)과 반복 안 마찰만 하네스에서 감쌀 수 있다.
+// 앵커(`sim.applyAnchors`)와 거리 제약은 garmentFrame이 만든 iterExtra 안이라
+// 분리 불가 → 잔여로 남긴다(정직하게 그렇게 표기한다).
+const unifiedProbed: typeof unified = (pos, pinned, n) => {
+  probe("0b.충돌 직전");
+  unified(pos, pinned, n);
+  probe("1a.충돌(흡착)");
+};
 const env: GarmentFrameEnv = {
-  collisionResolver: unified,
+  probe,
+  collisionResolver: unifiedProbed,
   collisionEvery: COLLISION_EVERY,
   selfCollision,
   orderColumn: false, orderRow: false, clampInSubstep: true, smoothing: false, postOrder: false,
@@ -673,7 +695,7 @@ const env: GarmentFrameEnv = {
   friction: createSdfFrictionPass(() => sdfField, {
     contactBand: FRICTION_CONTACT_BAND, muStatic: FRICTION_MU_STATIC, muKinetic: FRICTION_MU_KINETIC,
   }),
-  frictionIteration: cachedFric.apply,
+  frictionIteration: (pos, prev, pinned, n) => { cachedFric.apply(pos, prev, pinned, n); probe("1b.반복내 마찰"); },
   frictionIterationReset: cachedFric.reset,
   collarStrainLimit: ringLimitNow,
   onCollarFired: (n) => { collarFired += n; },
@@ -836,6 +858,18 @@ const result = runDressing(
     // S1→S2의 AND 조건이 진실의 단일 출처다).
     // 램프는 그 시점 실측 신장에서 1.02까지 smoothstep(길이 = 기존 rampFrames).
     beforeStep: (_frame, state) => {
+      // 31회차 — 표적 프레임에서만 프로브 무장. f1(문제의 +32cm) · f8 · f62(S1 최대) · 정착.
+      probeArmed = PROBE_FRAMES.has(_frame + 1);
+      if (probeArmed) {
+        probeSub = 0; probeLog.length = 0; probeFrameLabel = `f${_frame + 1}/${state}`;
+        // 0b 구간(적분+거리제약)을 더 가른다 — Verlet 적분이 만들 수 있는 변위는
+        // 관성 |pos−prev| + g·dt²가 상한이다. 이게 작으면 적분은 무죄이고
+        // 그 구간의 변화는 전부 **거리 제약 반복**이 만든 것이다.
+        let vmax = 0;
+        for (let i = 0; i < sim.positions.length; i++) vmax = Math.max(vmax, Math.abs(sim.positions[i] - sim.prevPositions[i]));
+        const gdt2 = 9.81 * SUBSTEP_DT * SUBSTEP_DT;
+        probeReports.push(`  [31계기·적분 상한] ${probeFrameLabel} 관성 최대 |pos−prev| ${(vmax * 1000).toFixed(3)}mm · g·dt² ${(gdt2 * 1000).toFixed(3)}mm · 정점당 적분 변위 상한 ≈ ${((vmax + gdt2) * 1000).toFixed(3)}mm → 링 62엣지 전체가 그만큼 벌어져도 최대 ${((vmax + gdt2) * 2 * 62 * 100).toFixed(2)}cm`);
+      }
       if (seamClosedAtFrame < 0) {
         ringMaxBeforeCloseM = Math.max(ringMaxBeforeCloseM, ringLenM());
         if (state === "S2" || state === "S3" || state === "DONE") {
@@ -863,6 +897,30 @@ const result = runDressing(
       return `링상한 ${Number.isFinite(ringLimitNow) ? ringLimitNow.toFixed(4) : "∞(일반 상한 위임)"}${Math.abs(ringLimitNow - COLLAR_STRAIN_LIMIT) < 1e-9 ? "(완전 발동)" : ""} · 앵커강도 ${anchorStrength.toFixed(3)}(게이트: seamGap ${(maxSeamGapM() * 1000).toFixed(1)}mm vs 해제창 ${(target * 1000).toFixed(1)}~${(thresh * 1000).toFixed(1)}mm)`;
     },
     onFrame: (frame, state) => {
+      if (probeArmed && probeLog.length > 0) {
+        const restM = ringRestConfirmedM;
+        const lines: string[] = [`  [31계기·패스별 링 길이] ${probeFrameLabel} · rest ${cm(restM)}cm · 서브스텝 ${probeSub}개`];
+        let prev = -1;
+        for (let k = 0; k < probeLog.length; k++) {
+          const q = probeLog[k];
+          const d = k === 0 ? 0 : q.L - probeLog[k - 1].L;
+          if (q.sub !== prev) { lines.push(`    ── 서브스텝 ${q.sub}`); prev = q.sub; }
+          lines.push(`      ${q.label.padEnd(34)} ${cm(q.L).padStart(7)}cm (${(q.L / restM).toFixed(3)}배)  Δ${(d * 100 >= 0 ? "+" : "")}${(d * 100).toFixed(2)}cm`);
+        }
+        // 패스별 기여 합계 — 라벨별로 Δ를 모은다.
+        const byPass = new Map<string, number>();
+        for (let k = 1; k < probeLog.length; k++) {
+          const q = probeLog[k];
+          byPass.set(q.label, (byPass.get(q.label) ?? 0) + (q.L - probeLog[k - 1].L));
+        }
+        const totalUp = [...byPass.values()].filter((v) => v > 0).reduce((a, b) => a + b, 0);
+        lines.push(`    [기여 합계] 프레임 순변화 ${((probeLog[probeLog.length - 1].L - probeLog[0].L) * 100).toFixed(2)}cm · 양의 기여 총합 ${(totalUp * 100).toFixed(2)}cm`);
+        for (const [lab, v] of [...byPass].sort((a, b) => b[1] - a[1])) {
+          lines.push(`      ${lab.padEnd(34)} ${(v * 100 >= 0 ? "+" : "")}${(v * 100).toFixed(2)}cm ${v > 0 ? `(양의 기여의 ${(100 * v / Math.max(1e-9, totalUp)).toFixed(1)}%)` : ""}`);
+        }
+        probeReports.push(lines.join("\n"));
+        probeArmed = false;
+      }
       // ── 링 총 길이 사후 투영(위 설계 문단). 무게중심 기준 등방 축소 1회.
       // 핀 걸린 정점은 못 움직이므로 제외하고, 그만큼 배율을 나머지에 싣는다.
       {
@@ -1153,6 +1211,8 @@ console.log(`  자기교차(엣지-삼각형 · 게이트): ${xsec.count}건 (�
   const ringN = ringVertexSet.size;
   let shoulderN = 0;
   for (let i = 0; i < g.panelStarts[2]; i++) if (!ringVertexSet.has(i) && g.pos2[i * 2 + 1] <= 0.03) shoulderN++;
+  for (const rep of probeReports) console.log(rep);
+
   // ── 30계기 B: 목선 대역 제약 잔차. `limitStrain`이 집행하는 상한은
   //    clothPhysics 안의 **maxStretch = 1.2**이고 `clampInSubstep: true`로
   //    매 서브스텝 호출된다(2패스). 잔차 = 그 상한을 넘어 남은 길이.
