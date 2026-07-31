@@ -751,6 +751,13 @@ const restMap = (label: string): string => {
   }
   worst.sort((x, y) => y.r - x.r);
   const pn = (i: number): string => (i < g.panelStarts[1] ? "앞판" : i < g.panelStarts[2] ? "뒤판" : "소매");
+  {
+    const w = worst[0];
+    const P = (i: number) => `#${i}[${i < g.panelStarts[1] ? "앞" : i < g.panelStarts[2] ? "뒤" : "소매"}] 2D(${cm(g.pos2[i*2])},${cm(g.pos2[i*2+1])}) 3D(${cm(sim.positions[i*3])},${cm(sim.positions[i*3+1])},${cm(sim.positions[i*3+2])})`;
+    const c = [...sim.constraintPairs].find((q) => q.a === w.a && q.b === w.b);
+    lines.push(`    [배치 상수] panelStarts ${g.panelStarts.join(",")} · topY(meta neckPointY) ${cm(g.meta.neckPointY)} · centerZ ${cm(collision.centerZ)} · torsoOffset 앞 ${cm(g.meta.torsoOffsetFrontM)} 뒤 ${cm(g.meta.torsoOffsetBackM)} · 앞판면 z ${cm(collision.centerZ + g.meta.torsoOffsetFrontM)} · 뒤판면 z ${cm(collision.centerZ - g.meta.torsoOffsetBackM)}`);
+    lines.push(`    [최악 1 해부] ${P(w.a)} ↔ ${P(w.b)} · restLength ${((c?.restLength ?? 0)*1000).toFixed(2)}mm · 2D거리 ${(Math.hypot(g.pos2[w.b*2]-g.pos2[w.a*2], g.pos2[w.b*2+1]-g.pos2[w.a*2+1])*1000).toFixed(2)}mm · 3D거리 ${(Math.hypot(sim.positions[w.b*3]-sim.positions[w.a*3], sim.positions[w.b*3+1]-sim.positions[w.a*3+1], sim.positions[w.b*3+2]-sim.positions[w.a*3+2])*1000).toFixed(2)}mm`);
+  }
   lines.push(`    최악 6: ${worst.slice(0, 6).map((w) => `${w.r.toFixed(1)}배 ${pn(w.a)}(${cm(g.pos2[w.a * 2])},${cm(g.pos2[w.a * 2 + 1])})→(${cm(g.pos2[w.b * 2])},${cm(g.pos2[w.b * 2 + 1])}) rest ${(Math.hypot(g.pos2[w.b * 2] - g.pos2[w.a * 2], g.pos2[w.b * 2 + 1] - g.pos2[w.a * 2 + 1]) * 1000).toFixed(1)}mm`).join(" · ")}`);
   totals.clear();
   return lines.join("\n");
