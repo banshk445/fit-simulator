@@ -287,6 +287,21 @@ console.log("[dress] 알려진 이탈: 질량 균일(§3.3은 Voronoi 면적 비
 let ringRestM = 0;
 let ringLimitNow = COLLAR_STRAIN_LIMIT;
 let ringFullyEngagedAt = -1;
+// 21회차 — 링 제약의 **시점 분리**. 아래 beforeStep 주석 참고.
+let seamClosedAtFrame = -1;
+let ringLimitStart = COLLAR_STRAIN_LIMIT;
+let ringMaxBeforeCloseM = 0;
+const ringLenM = (): number => {
+  let l = 0;
+  for (const e of g.necklineRing) {
+    l += Math.hypot(
+      sim.positions[e.b * 3] - sim.positions[e.a * 3],
+      sim.positions[e.b * 3 + 1] - sim.positions[e.a * 3 + 1],
+      sim.positions[e.b * 3 + 2] - sim.positions[e.a * 3 + 2],
+    );
+  }
+  return l;
+};
 
 // ── 넥밴드 원주 제약 (2회차 단일 변경) — v1 칼라 기계를 패턴 목선 링에 배선.
 // 실물 부품(리브)이고 보조 힘이 아니다. clothPhysics는 이 기계를 이미 갖고
@@ -647,21 +662,49 @@ const result = runDressing(
     maxSeamGapM,
     maxDelta20Mm,
     setAnchorHard,
+    // ── 링 원주 제약의 **시점 분리**(21회차 단일 변경 · §3.3.1/§4 등재)
+    //
+    // 넥밴드는 **봉제 완료된 옷의 부품**이다. 착장 중의 유지력은 하드 핀이
+    // 담당하고(잔차 0.00mm 실증, 19·20회차 6회씩), 링이 조여 있을 이유가 없다.
+    // 20회차 실측이 그 대가를 보여줬다 — 링 42쌍 전 엣지가 **매 프레임 상한**
+    // (발화 58.9/프레임)이라 뒤 목점이 시접 쪽으로 더 못 당겨지고, 어깨 시접
+    // 2쌍이 27.8mm에서 정체했다. 3회차 slack 스케줄의 완전판이고, 이번에는
+    // 승모근 교착이 해소된 상태(20회차: 중점이 몸 밖 1.22cm)라 조건이 다르다.
+    //
+    // 봉합 완료 전: **원단 일반 상한에 위임**한다(완전 off가 아니다). 링 전용
+    // 상한만 풀고 `clothPhysics.limitStrain`의 전 제약 상한(1.2)이 과신장을
+    // 계속 막는다 — 그래서 여기서 1.2를 다시 적으면 함정 12(계기 하드코딩)다.
+    // 봉합 완료 판정은 **S1→S2 전이식 그대로**(gap ≤ target + seamSlack).
+    // 완료 후에는 그 시점 실측 신장에서 1.02까지 smoothstep으로 램프한다
+    // (급조임 방지 · 램프 길이는 기존 rampFrames 재사용, 새 상수 0).
     beforeStep: (_frame, state) => {
       const target = Math.max(...g.seams.map((s) => s.targetM));
-      const slack = Math.max(0, maxSeamGapM() - target);
-      const relaxed = 1 + slack / Math.max(1e-6, ringRestM);
-      // S3·DONE에서는 완전 발동으로 고정(상태 기반 클램프).
-      ringLimitNow = state === "S3" || state === "DONE"
-        ? COLLAR_STRAIN_LIMIT
-        : Math.max(COLLAR_STRAIN_LIMIT, relaxed);
+      const closed = maxSeamGapM() <= target + 0.01; // = cfg.seamSlackM
+      if (seamClosedAtFrame < 0) {
+        ringMaxBeforeCloseM = Math.max(ringMaxBeforeCloseM, ringLenM());
+        if (closed) {
+          seamClosedAtFrame = _frame;
+          ringLimitStart = Math.max(COLLAR_STRAIN_LIMIT, ringLenM() / Math.max(1e-6, ringRestM));
+          console.log(`  [링·시점분리] f=${_frame} 봉합 완료 판정 → 상한 램프 시작 ${ringLimitStart.toFixed(4)} → ${COLLAR_STRAIN_LIMIT} (${120}프레임 smoothstep) · 봉합 전 링 최대 ${cm(ringMaxBeforeCloseM)}cm`);
+        }
+      }
+      if (state === "S3" || state === "DONE") {
+        ringLimitNow = COLLAR_STRAIN_LIMIT;
+      } else if (seamClosedAtFrame < 0) {
+        // 링 전용 상한 해제 — 원단 일반 상한(limitStrain)이 계속 방어한다.
+        ringLimitNow = Number.POSITIVE_INFINITY;
+      } else {
+        const t = Math.min(1, Math.max(0, (_frame - seamClosedAtFrame) / 120));
+        const sm = t * t * (3 - 2 * t); // dressingMachine의 램프와 같은 식
+        ringLimitNow = ringLimitStart + (COLLAR_STRAIN_LIMIT - ringLimitStart) * sm;
+      }
       if (ringFullyEngagedAt < 0 && Math.abs(ringLimitNow - COLLAR_STRAIN_LIMIT) < 1e-9) ringFullyEngagedAt = _frame;
       (env as { collarStrainLimit?: number }).collarStrainLimit = ringLimitNow;
     },
     stateNote: () => {
       const target = Math.max(...g.seams.map((x) => x.targetM));
       const thresh = target + 0.01;
-      return `링상한 ${ringLimitNow.toFixed(4)}${Math.abs(ringLimitNow - COLLAR_STRAIN_LIMIT) < 1e-9 ? "(완전 발동)" : "(완화)"} · 앵커강도 ${anchorStrength.toFixed(3)}(게이트: seamGap ${(maxSeamGapM() * 1000).toFixed(1)}mm vs 해제창 ${(target * 1000).toFixed(1)}~${(thresh * 1000).toFixed(1)}mm)`;
+      return `링상한 ${Number.isFinite(ringLimitNow) ? ringLimitNow.toFixed(4) : "∞(일반 상한 위임)"}${Math.abs(ringLimitNow - COLLAR_STRAIN_LIMIT) < 1e-9 ? "(완전 발동)" : ""} · 앵커강도 ${anchorStrength.toFixed(3)}(게이트: seamGap ${(maxSeamGapM() * 1000).toFixed(1)}mm vs 해제창 ${(target * 1000).toFixed(1)}~${(thresh * 1000).toFixed(1)}mm)`;
     },
     onFrame: (frame, state) => {
       // 배선 검증(항상) — 하드 핀이 좌표를 잡고 있는가. 6회차는 이 값이
@@ -683,7 +726,7 @@ const result = runDressing(
           `  [diag·y] f=${String(frame).padStart(4)} 어깨시접 ${(meanY(shoulderIdx) * 100).toFixed(1)}cm(배치 ${(g.draft.dims.ridgeAnchorY * 100).toFixed(1)}) · 밑단 ${(meanY(hemIdx) * 100).toFixed(1)}cm · 소매 ${(meanY(sleeveIdx) * 100).toFixed(1)}cm`,
         );
         console.log(
-          `  [diag] f=${String(frame).padStart(4)} ${state} 앵커 ${anchorStrength.toFixed(3)} 링상한 ${ringLimitNow.toFixed(3)} seamGap ${(maxSeamGapM() * 1000).toFixed(1)}mm Δ20 ${maxDelta20Mm().toFixed(2)}mm strain ${st.v.toFixed(2)}@${PANEL_NAME[panelOfIdx(st.at)]} prox ${proximityPairs()} 관통 ${countInside(sim.positions, total, insideParity)} 칼라발화 ${collarFired}`,
+          `  [diag] f=${String(frame).padStart(4)} ${state} 앵커 ${anchorStrength.toFixed(3)} 링상한 ${Number.isFinite(ringLimitNow) ? ringLimitNow.toFixed(3) : "∞"} seamGap ${(maxSeamGapM() * 1000).toFixed(1)}mm Δ20 ${maxDelta20Mm().toFixed(2)}mm strain ${st.v.toFixed(2)}@${PANEL_NAME[panelOfIdx(st.at)]} prox ${proximityPairs()} 관통 ${countInside(sim.positions, total, insideParity)} 칼라발화 ${collarFired}`,
         );
       }
       // 관측(손잡이 금지·기록만) — 뒤판 상단 들림. 뒤판의 목선·어깨 대역
@@ -879,7 +922,7 @@ console.log(
   `  proximityPairs(기록 채널 · 문턱 ${(g.selfCollisionMinDistM * 1000).toFixed(2)}mm · 게이트 아님 — 뭉친 폴드의 정상 접촉을 센다): ${prox}쌍`,
 );
 console.log(`  자기교차(엣지-삼각형 · 게이트): ${xsec.count}건 (배치 t=0 기준선 3건 = S0 투영 교정 산출물)`);
-console.log(`  넥밴드 원주 제약 발화 누적: ${collarFired}회 = ${(collarFired / Math.max(1, result.frames)).toFixed(1)}/프레임 (링 42쌍 — 전 엣지가 매 프레임 상한에 걸림 = 상시 하중 지지)`);
+console.log(`  넥밴드 원주 제약 발화 누적: ${collarFired}회 = ${(collarFired / Math.max(1, result.frames)).toFixed(1)}/프레임 · 봉합 완료 f=${seamClosedAtFrame < 0 ? "미도달" : seamClosedAtFrame}(그 전까지 링 전용 상한은 일반 상한에 위임) · 링 원주 봉합 전 최대 ${cm(ringMaxBeforeCloseM)}cm → 최종 ${cm(ringLenM())}cm (rest ${cm(ringRestM)}cm)`);
 console.log(`  관통(레이 패리티·비수밀 근사): 배치 후 ${penAfterPlace} → 정착 후 ${penEnd} / ${total}`);
 console.log(`  정착 프레임 ${settleFrame} · 물리 ${(elapsedS * 1000 / Math.max(1, result.frames)).toFixed(1)}ms/프레임`);
 if (result.failure) console.log(`  발산/중단: 상태 ${result.failure.state} · 프레임 ${result.failure.frame} · ${result.failure.reason}`);

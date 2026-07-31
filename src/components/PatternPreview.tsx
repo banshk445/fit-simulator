@@ -192,10 +192,12 @@ export function PatternPreview(): React.JSX.Element | null {
         </mesh>
       ))}
       {/* 브리지는 체커 텍스처를 안 쓴다 — UV가 없고(띠는 패널 UV 밖이다), 시접이
-          어디를 메웠는지 눈으로 구분되는 게 이 단계의 목적이다. */}
+          어디를 메웠는지 눈으로 구분되는 게 이 단계의 목적이다.
+          색은 저채도 회청(21회차) — 전에는 주황(#c8641e)이라 채도가 높아 화면
+          판정에서 천보다 먼저 눈에 들어왔다. 렌더 전용이라 물리·게이트는 무관. */}
       {bridgeGeo && (
         <mesh geometry={bridgeGeo} frustumCulled={false}>
-          <meshStandardMaterial key="pattern-seam-bridge" color="#c8641e" side={THREE.DoubleSide} roughness={0.85} />
+          <meshStandardMaterial key="pattern-seam-bridge" color="#6b7f8c" side={THREE.DoubleSide} roughness={0.85} />
         </mesh>
       )}
     </group>
