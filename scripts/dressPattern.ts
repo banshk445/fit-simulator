@@ -415,7 +415,8 @@ const ringClosed = [...g.necklineRing, ...ringJoinPairs.map((sm) => ({ a: sm.a, 
     );
   }
   ringRestM = ringM + 2 * Math.max(...g.seams.map((sm) => sm.targetM));
-  ringTotalMaxM = headGirthM;
+  // RINGTOTAL=0 — 26회차 총 길이 상한 제거(= 25회차 상태 재현). 계기용 ablation.
+  ringTotalMaxM = process.env.RINGTOTAL === "0" ? 0 : headGirthM;
   console.log(
     `[dress] 링 **총 길이** 상한: ${cm(ringTotalMaxM)}cm = 머리 최대 둘레(목 최소 단면 위 슬라이스 최대) · rest ${cm(ringRestM)}cm 대비 계수 **${(ringTotalMaxM / Math.max(1e-9, ringRestM)).toFixed(3)}**(도출) · 적용 = step 직후 무게중심 등방 축소 1회/프레임(상시) · 엣지별 상한은 병존`,
   );
@@ -515,6 +516,9 @@ const shrinkWorkSeries: number[] = [];
 //     대역별로 합하면 "옷을 무엇이 들고 있는가"가 나온다(접촉력 계기가 없어도
 //     운동학에서 도출된다 — clothPhysics 무수정).
 const holdSeries: { ring: number; shoulder: number; other: number }[] = [];
+// 29회차 계기 — 링 중심 y와 링 길이의 시계열. 지지 실패(미끄러져 내려감)와
+// 인장(제자리에서 벌어짐)을 **가르는** 채널이다. 둘은 같은 "링이 크다"로 보인다.
+const ringYSeries: { f: number; st: string; y: number; top: number; bot: number; L: number }[] = [];
 let prevPos: Float32Array | null = null;
 const ringVertexSet = new Set<number>(ringClosed.flatMap((e) => [e.a, e.b]));
 
@@ -877,6 +881,18 @@ const result = runDressing(
           }
         }
       }
+      {
+        // 중심 y만으로는 판정이 안 된다 — 목선은 **곡선**이라 배치 시점부터
+        // 중심이 목점보다 앞목/뒤목 깊이만큼 아래다. "미끄러졌는가"를 재는 건
+        // 링 **최상점**(= 목점·어깨 이음선 쪽)이다. 둘 다 남긴다.
+        const idx = [...new Set(ringClosed.flatMap((e) => [e.a, e.b]))];
+        let cy = 0, top = -Infinity, bot = Infinity;
+        for (const i of idx) {
+          const yv = sim.positions[i * 3 + 1];
+          cy += yv; if (yv > top) top = yv; if (yv < bot) bot = yv;
+        }
+        ringYSeries.push({ f: frame, st: state, y: cy / idx.length, top, bot, L: ringLenM() });
+      }
       // 배선 검증(항상) — 하드 핀이 좌표를 잡고 있는가. 6회차는 이 값이
       // 목표 6.26cm에서 10.5cm로 밀렸다(잔차 42mm).
       if (state === "S1" && frame % 60 === 0) {
@@ -1131,6 +1147,21 @@ console.log(`  자기교차(엣지-삼각형 · 게이트): ${xsec.count}건 (�
   const ringN = ringVertexSet.size;
   let shoulderN = 0;
   for (let i = 0; i < g.panelStarts[2]; i++) if (!ringVertexSet.has(i) && g.pos2[i * 2 + 1] <= 0.03) shoulderN++;
+  // ── 29계기: 링 y 시계열. 지지 실패(내려감)와 인장(제자리에서 벌어짐)의 분리.
+  {
+    const ridgeTopY = Math.max(...body.ridge.map((r) => r.topY));
+    const step = Math.max(1, Math.round(ringYSeries.length / 12));
+    const line = ringYSeries.filter((_, i) => i % step === 0 || i === ringYSeries.length - 1)
+      .map((r) => `f${r.f}/${r.st} 정${cm(r.top)}/중${cm(r.y)} L${cm(r.L)}`).join(" · ");
+    const y0 = ringYSeries[0]?.y ?? 0, yN = ringYSeries[ringYSeries.length - 1]?.y ?? 0;
+    const t0 = ringYSeries[0]?.top ?? 0, tN = ringYSeries[ringYSeries.length - 1]?.top ?? 0;
+    const yMin = Math.min(...ringYSeries.map((r) => r.y));
+    console.log(`  [29계기·링 y 시계열] 기준선 — 목밑점 y ${cm(body.neckBaseY)} · 어깨 능선 최상단 y ${cm(ridgeTopY)} · 어깨 관절 y ${cm(body.shoulderJointY)}`);
+    console.log(`    ${line}`);
+    console.log(`    [최상점] 시작 ${cm(t0)} → 최종 ${cm(tN)} (낙차 ${cm(t0 - tN)}cm) · 목밑점 대비 ${cm(tN - body.neckBaseY)}cm · 능선 최상단 대비 ${cm(tN - ridgeTopY)}cm · 어깨관절 대비 ${cm(tN - body.shoulderJointY)}cm`);
+    console.log(`    [중심]   시작 ${cm(y0)} → 최종 ${cm(yN)} (낙차 ${cm(y0 - yN)}cm) · 최저 ${cm(yMin)} — 목선이 곡선이라 중심은 배치 시점부터 목점보다 앞목/뒤목 깊이만큼 아래다(제도 앞목 ${cm(g.draft.dims.frontNeckDropM)} 뒤목 ${cm(g.draft.dims.backNeckDropM)})`);
+    console.log(`  [29계기·자유 평형 대조] 링 최종 길이 ${cm(ringLenM())}cm · 상한 ${ringTotalMaxM > 0 ? cm(ringTotalMaxM) + "cm" : "없음(RINGTOTAL=0)"} · **어깨 통과 둘레 ${cm(body.shoulderPassGirthM)}cm @ y${cm(body.shoulderJointY)} 단면**(2a 통과 조건의 그 값) · 링/어깨통과 ${(ringLenM() / body.shoulderPassGirthM).toFixed(3)}배`);
+  }
   console.log(`  [27계기·축소 잔여 일량] 정착 60프레임 평균 ${(swMean * 100).toFixed(3)}cm · 최대 ${(Math.max(0, ...sw) * 100).toFixed(3)}cm · 전 구간 최대 ${(Math.max(0, ...shrinkWorkSeries) * 100).toFixed(2)}cm`);
   console.log(`  [27계기·하중 배분] 정착 60프레임 받쳐진 양 — 링 ${(100 * hb.ring / tot).toFixed(1)}%(정점 ${ringN}) · 어깨대역 ${(100 * hb.shoulder / tot).toFixed(1)}%(정점 ${shoulderN}) · 나머지 ${(100 * hb.other / tot).toFixed(1)}%(정점 ${total - ringN - shoulderN}) · **중량 대비**(정점당) 링 ${((hb.ring / ringN) / (tot / total)).toFixed(2)}배 · 어깨 ${((hb.shoulder / Math.max(1, shoulderN)) / (tot / total)).toFixed(2)}배`);
   const st: { v: number; i: number }[] = [];
