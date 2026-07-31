@@ -717,6 +717,7 @@ const PROBE_FRAMES = new Set<number>((process.env.PROBE ?? "1,2,3,4,8,62,280").s
 const JOIN_FRAMES = new Set<number>([0, 1, 2, 4, 8, 62, 110, 117]);
 // 39회차 — 계기 D(링 형상) · 계기 B(성분 3분리 · 순차 in-situ) 무장 프레임.
 const SHAPE_FRAMES = new Set<number>([0, 1, 2, 3, 4, 8, 62]);
+// 40회차 계기 E는 f1·f2·f4·f8을 요구한다 — f3(=_frame 2)도 이미 무장돼 있어 그대로 둔다.
 const COMP_FRAMES = new Set<number>([0, 1, 2, 3, 7]); // f1·f2·f3·f4·f8 직전
 const probeReports: string[] = [];
 const probeLog: { sub: number; label: string; L: number; J: number }[] = [];
@@ -786,7 +787,10 @@ const snapB = new Float32Array(sim.positions.length);
 // 캡슐 축(fixture capsule[0])에서의 반경 — 계기 D·B가 공유한다.
 const CAP0 = collision.capsules[0];
 const capRadiusOf = (x: number, z: number): number => Math.hypot(x - CAP0.top.x, z - CAP0.top.z);
-const CAP0_PUSH_R = CAP0.radius + COLLISION_MARGIN; // 17.42cm — 캡슐이 밀어내는 반경
+const CAP0_PUSH_R = CAP0.radius + COLLISION_MARGIN; // 캡슐이 밀어내는 반경(현행 기하)
+// 39회차 실측 시점의 값(0.159155 + 0.015). 계기 D의 `r≥` 열을 여기 동결해 회차 간
+// 대조를 지킨다 — 캡슐 기하가 바뀌어도 같은 이름의 열이 같은 대상을 재게 한다.
+const R39_BASELINE = 0.15915494309189535 + 0.015;
 // 순차 in-situ 3구간: [before] → mesh → [snapA] → 몸통 캡슐 → [snapB] → 팔 캡슐 → [after]
 const compSequential = (): { mesh: Float32Array; torso: Float32Array; arm: Float32Array } => {
   compScratch.set(sim.positions);
@@ -849,16 +853,24 @@ const compReport = (label: string): string => {
   lines.push(`    [고정점] r* = (0.4·R_mesh + 0.35×${cm(CAP0_PUSH_R)}) / 0.75 = **${cm(rStar)}cm** → 원 둘레 환산 ${cm(2 * Math.PI * rStar)}cm`);
   // ── 계기 E — 후보 1 판별. mesh 표적점을 **ringOrder 순서로** 이은 다각형 길이.
   {
-    let L = 0;
+    // 40회차 정의역 정정(39회차 §8-2) — 링60과 **같은 집합**으로 다시 낸다.
+    // 39회차 E는 폐곡선 62엣지 합이라 링60(60엣지)과 나란히 놓을 수 없었다.
+    // 접합 2엣지는 `ringJoinPairs`이므로 순회에서 그 두 엣지만 건너뛴다.
+    const joinKeys = new Set(ringJoinPairs.map((sm) => (sm.a < sm.b ? `${sm.a}_${sm.b}` : `${sm.b}_${sm.a}`)));
+    const T = (v: number, c: number): number => sim.positions[v * 3 + c] + (mesh[v * 3 + c] - sim.positions[v * 3 + c]) / 0.4;
+    let L62 = 0, L60 = 0, skipped = 0;
     for (let k = 0; k < ringOrder.length; k++) {
       const i = ringOrder[k], j = ringOrder[(k + 1) % ringOrder.length];
-      const T = (v: number, c: number): number => sim.positions[v * 3 + c] + (mesh[v * 3 + c] - sim.positions[v * 3 + c]) / 0.4;
-      L += Math.hypot(T(j, 0) - T(i, 0), T(j, 1) - T(i, 1), T(j, 2) - T(i, 2));
+      const d = Math.hypot(T(j, 0) - T(i, 0), T(j, 1) - T(i, 1), T(j, 2) - T(i, 2));
+      L62 += d;
+      if (joinKeys.has(i < j ? `${i}_${j}` : `${j}_${i}`)) { skipped++; continue; }
+      L60 += d;
     }
-    // 라벨 정정(39회차): 이 블록은 step **직전**이라 여기 실측은 **직전 프레임 종료값**이다.
-    // 블록 이름(f_n)의 종료값이 아니다 — 함정13 "시점".
-    lines.push(`    [39계기E·mesh 표적 다각형] Σ|T_{i+1}−T_i| (**ringOrder 폐곡선 62엣지** — 링60과 정의역 다름) = **${cm(L)}cm` +
-      `** · 이 시점(직전 프레임 종료) 실측 링60 ${cm(ringLenM())}cm · 폐곡선 실측 ${cm(ringLenM() + joinLenM())}cm`);
+    // 시점 명기(39회차 §8-2 · 함정13 "시점"): 이 블록은 `beforeStep`에서 도므로
+    // **step 직전 = 직전 프레임 종료 상태**다. 블록 이름(f_n)의 종료값이 아니다.
+    lines.push(`    [40계기E·mesh 표적 다각형 · **step 직전(=직전 프레임 종료 상태)**]` +
+      ` **링60 사슬 ${cm(L60)}cm**(건너뛴 접합 ${skipped}엣지) vs 같은 시점 실측 링60 ${cm(ringLenM())}cm` +
+      ` │ 참고 폐곡선 62엣지 ${cm(L62)}cm vs 폐곡선 실측 ${cm(ringLenM() + joinLenM())}cm`);
   }
   return lines.join("\n");
 };
@@ -870,8 +882,12 @@ const ringShapeReport = (label: string): string => {
     const rs = idx.map((i) => capRadiusOf(sim.positions[i * 3], sim.positions[i * 3 + 2])).sort((a, b) => a - b);
     const mean = rs.reduce((a, b) => a + b, 0) / rs.length;
     const varc = rs.reduce((a, b) => a + (b - mean) * (b - mean), 0) / rs.length;
-    const over = rs.filter((r) => r >= CAP0_PUSH_R - 1e-6).length;
-    return `${nm} n=${idx.length} 중앙 ${cm(rs[Math.floor(rs.length / 2)])} 최소 ${cm(rs[0])} 최대 ${cm(rs[rs.length - 1])} 표준편차 ${(Math.sqrt(varc) * 100).toFixed(2)}cm · r≥17.42 ${over}/${idx.length}`;
+    // 40회차 정정 — 이 열의 비교 상수를 **39회차 값에 동결**한다. `CAP0_PUSH_R`을 그대로
+    // 쓰면 캡슐 기하를 바꾸는 순간 같은 이름의 열이 다른 대상을 재서 회차 간 대조가
+    // 끊긴다(함정 13). 살아 있는 값은 오른쪽에 따로 병기한다.
+    const over = rs.filter((r) => r >= R39_BASELINE - 1e-6).length;
+    const overLive = rs.filter((r) => r >= CAP0_PUSH_R - 1e-6).length;
+    return `${nm} n=${idx.length} 중앙 ${cm(rs[Math.floor(rs.length / 2)])} 최소 ${cm(rs[0])} 최대 ${cm(rs[rs.length - 1])} 표준편차 ${(Math.sqrt(varc) * 100).toFixed(2)}cm · r≥${cm(R39_BASELINE)}(39회차 동결) ${over}/${idx.length}${Math.abs(CAP0_PUSH_R - R39_BASELINE) > 1e-9 ? ` · r≥${cm(CAP0_PUSH_R)}(현행) ${overLive}/${idx.length}` : ""}`;
   };
   const front = ringOrder.filter((i) => i < g.panelStarts[1]);
   const back = ringOrder.filter((i) => i >= g.panelStarts[1]);
@@ -881,7 +897,13 @@ const ringShapeReport = (label: string): string => {
     `    캡슐축(x ${cm(CAP0.top.x)}, z ${cm(CAP0.top.z)}) 기준 반경(cm): ${stat(ringOrder, "전체")}`,
     `      ${stat(front, "앞판")}`,
     `      ${stat(back, "뒤판")}`,
-    `    대조: 캡슐 밀어내기 반경 ${cm(CAP0_PUSH_R)}cm(원 둘레 ${cm(2 * Math.PI * CAP0_PUSH_R)}cm) · 실제 목밑 반경 ${cm(body.neckBaseGirthM / (2 * Math.PI))}cm`,
+    // 40회차 라벨 정정 — 이 두 값은 **링 대역의 몸 반경이 아니다**.
+    //  · `neckBaseGirthM/(2π)`는 **y145.23 한 높이의 등방 등가반경**인데 위 링 반경은
+    //    링이 실제로 있는 y(정착 131.85~140.86)에서 잰다. 높이가 4~13cm 다르다.
+    //  · 몸 단면은 비등방이라(뒤 3.4~7.8 / 앞 7.2~14.8 / 옆 9~26cm) 등가반경 하나로
+    //    "관통했는가"를 판정할 수 없다. 관통은 레이 패리티 채널이 따로 센다.
+    // 이 줄은 **참고 상수**이고 판정 채널이 아니다. (함정 13 "시점·집합" · 함정 14)
+    `    참고 상수(판정 채널 아님): 캡슐 밀어내기 반경 ${cm(CAP0_PUSH_R)}cm(원 둘레 ${cm(2 * Math.PI * CAP0_PUSH_R)}cm) · 목밑 등가반경 **@y${cm(body.neckBaseY)}만** ${cm(body.neckBaseGirthM / (2 * Math.PI))}cm(등방 환산 · 링 대역 몸 반경 아님)`,
   ].join("\n");
 };
 // 몸 부위 분류 — 전부 `bodyMeasure` 실측 랜드마크에서 도출한다(새 상수 0).
