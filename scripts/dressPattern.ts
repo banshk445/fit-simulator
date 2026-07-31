@@ -720,7 +720,7 @@ const result = runDressing(
       }
       // 전이 근방 프레임별 진단(상시) — 22회차가 S2 진입 **다음 프레임**에
       // 봉합 이탈했다. 60프레임 간격 로그로는 그 한 프레임이 안 보인다.
-      if (seamClosedAtFrame >= 0 && frame >= seamClosedAtFrame - 3 && frame <= seamClosedAtFrame + 6) {
+      if (seamClosedAtFrame >= 0 && frame >= seamClosedAtFrame - 6 && frame <= seamClosedAtFrame + 20) {
         const worst = g.seams.reduce((acc, sm) => {
           const d = Math.hypot(
             sim.positions[sm.b * 3] - sim.positions[sm.a * 3],

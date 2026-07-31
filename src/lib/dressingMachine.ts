@@ -118,6 +118,8 @@ export function runDressing(
   let settleRun = 0;
   let bestGap = Infinity;
   let stallFrame = 0;
+  // S2 연속 램프아웃의 시작값 — S1이 마지막으로 쓴 강도.
+  let anchorAtS2Entry = 0;
 
   // TS는 클로저 안의 대입을 CFA에 반영하지 않아 `state`가 "S0"로 좁혀진다.
   // 선언 타입으로 되읽는 접근자 하나로 우회한다(런타임 동작 무관).
@@ -192,7 +194,22 @@ export function runDressing(
       // 핀을 풀고 같은 closure로 강도를 1→0 램프아웃한다 — 해제 문턱과
       // 램프 폭이 하나의 양(봉합 진행)에서 나오므로 새 상수가 없다.
       hooks.setAnchorHard?.(closure <= 0);
-      setAnchorStrength(1 - smoothstep(closure));
+      anchorAtS2Entry = 1 - smoothstep(closure);
+      setAnchorStrength(anchorAtS2Entry);
+    } else if (cur() === "S2") {
+      setRest(sim, seams, startRest, 1);
+      // **S2 진입의 즉시 해제는 §4 "램프는 연속 함수로만" 위반이었다**(함정 7).
+      // 22회차 실측: f=120 전이(seamGap 10.0mm) 다음 프레임에 앵커가 0.380 → 0
+      // 으로 떨어지며 앞판 목점이 목표에서 **8.87cm 튕겼고**(핀 잔차 88.70mm)
+      // 그 목점이 곧 최대 갭 시접이 되어 S2 봉합 이탈(25.6mm)로 이어졌다.
+      // 여기서는 S2 진입 시점 강도에서 0까지 **연속으로** 뺀다 — 길이는 기존
+      // rampFrames, 곡선은 같은 smoothstep이고 새 상수는 없다.
+      const k = anchorAtS2Entry * (1 - smoothstep(stateFrame / rampFrames));
+      setAnchorStrength(k);
+      // pinned는 강도보다 먼저 풀리지 않는다. S1의 해제창에서 이미 풀려 있고
+      // (closure > 0 → hard=false), 여기서 다시 잡지 않는다 — 강도>0인데
+      // pinned가 토글되면 같은 계단이 되돌아온다.
+      hooks.setAnchorHard?.(false);
     } else {
       setRest(sim, seams, startRest, 1);
       hooks.setAnchorHard?.(false);
