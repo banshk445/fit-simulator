@@ -509,6 +509,10 @@ const meshResolver = createPanelSplitResolver(
   ],
   g.panelCounts,
 );
+// 39회차 ablation 스위치(**진단 전용 · 기본 on**) — 몸통 캡슐만 끈다.
+// 함정16 규범("근접을 기전으로 승격하려면 ablation으로 흔들어라")의 이행 수단이다.
+// 처방이 아니다: 관통·cov 붕괴는 예상된 부작용이고 판정 대상이 아니다.
+const TORSOCAP = process.env.TORSOCAP !== "0";
 const unified = (positions: Float32Array, pinned: Uint8Array, n: number): void => {
   meshResolver(positions, pinned, n);
   let offset = 0;
@@ -516,7 +520,7 @@ const unified = (positions: Float32Array, pinned: Uint8Array, n: number): void =
     const count = g.panelCounts[p];
     const pos = positions.subarray(offset * 3, (offset + count) * 3);
     const pin = pinned.subarray(offset, offset + count);
-    if (p === PANEL_PAT_FRONT || p === PANEL_PAT_BACK) {
+    if (TORSOCAP && (p === PANEL_PAT_FRONT || p === PANEL_PAT_BACK)) {
       applyCapsuleCollision(pos, pin, count, collision.capsules, COLLISION_MARGIN);
     }
     applyCapsuleCollision(pos, pin, count, armCapsules, 0.006);
@@ -706,9 +710,14 @@ const selfCollision = new SelfCollision(
 let probeArmed = false;
 let probeSub = 0;
 let probeFrameLabel = "";
-const PROBE_FRAMES = new Set<number>((process.env.PROBE ?? "1,8,62,280").split(",").map(Number));
+// 39회차 필수 조건 ③ — 기본값 1,8,62,280은 표적 수량의 **65.7%**(f2~f4 +22.25cm)를
+// 통과시켰다(38회차). `probeArmed`는 로깅 게이트일 뿐이라 프레임 추가는 물리 불변이다.
+const PROBE_FRAMES = new Set<number>((process.env.PROBE ?? "1,2,3,4,8,62,280").split(",").map(Number));
 // 38회차 계기 A — 접합 실거리를 찍을 프레임(회차 프롬프트 지정 + 정착은 종료 후 별도).
 const JOIN_FRAMES = new Set<number>([0, 1, 2, 4, 8, 62, 110, 117]);
+// 39회차 — 계기 D(링 형상) · 계기 B(성분 3분리 · 순차 in-situ) 무장 프레임.
+const SHAPE_FRAMES = new Set<number>([0, 1, 2, 3, 4, 8, 62]);
+const COMP_FRAMES = new Set<number>([0, 1, 2, 3, 7]); // f1·f2·f3·f4·f8 직전
 const probeReports: string[] = [];
 const probeLog: { sub: number; label: string; L: number; J: number }[] = [];
 // 38회차 계기 A — **접합 2엣지 실거리 합**. 링 60엣지와 같은 패스 경계에서 읽어
@@ -760,58 +769,120 @@ const adsorbRun = (): void => {
   adsorbScratch.set(sim.positions);
   unified(adsorbScratch, adsorbNoPin, total);
 };
-// ── 38회차 계기 B — 흡착 Δ의 **성분 3분리**(37회차 D3·E2c).
-// 35회차 Δ는 `unified` 합성값이었다. 뒤판 링은 메시(안으로)와 몸통 캡슐(밖으로)이
-// **반대 방향**이라 합성값으로는 해석이 안 된다. 세 기계를 각각 단독으로 돌린다 —
-// 리졸버를 재구현하지 않고 `unified`가 부르는 것과 **같은 함수**를 같은 인자로 부른다.
+// ── 39회차 계기 B **재구현** — 흡착 Δ의 성분 3분리를 **순차 in-situ**로 잰다.
+//
+// 38회차 구현은 성분마다 사본을 `sim.positions`로 되돌렸다. 그런데 `unified`는
+// mesh를 **먼저** 돌려 정점을 캡슐 반경 안으로 넣은 **뒤** 캡슐을 부른다. 그래서
+// 앞판 캡슐 성분이 구조적으로 0으로 나왔다 — 실측이 아니라 설계 인공물이었다
+// (38회차 §5 결함 ①). 여기서는 **한 사본**에 실제 순서대로 3구간 스냅샷을 뜬다.
+//
+// **단위(필수 조건 ②)**: 이 계기는 충돌 **1회 호출분**이다. 실제 서브스텝은
+// 반복 18 · `collisionEvery` 6이라 충돌이 **4회** 돈다(iter 0·6·12·17,
+// clothPhysics.ts:479). 패스표의 `1a.흡착`은 그 4회 in-situ 합이므로
+// **이 표의 값과 같은 축에 놓지 않는다.**
 const compScratch = new Float32Array(sim.positions.length);
-const compRun = (which: "mesh" | "torso" | "arm"): Float32Array => {
+const snapA = new Float32Array(sim.positions.length);
+const snapB = new Float32Array(sim.positions.length);
+// 캡슐 축(fixture capsule[0])에서의 반경 — 계기 D·B가 공유한다.
+const CAP0 = collision.capsules[0];
+const capRadiusOf = (x: number, z: number): number => Math.hypot(x - CAP0.top.x, z - CAP0.top.z);
+const CAP0_PUSH_R = CAP0.radius + COLLISION_MARGIN; // 17.42cm — 캡슐이 밀어내는 반경
+// 순차 in-situ 3구간: [before] → mesh → [snapA] → 몸통 캡슐 → [snapB] → 팔 캡슐 → [after]
+const compSequential = (): { mesh: Float32Array; torso: Float32Array; arm: Float32Array } => {
   compScratch.set(sim.positions);
-  if (which === "mesh") {
-    meshResolver(compScratch, adsorbNoPin, total);
-  } else {
-    let offset = 0;
-    for (let p = 0; p < g.panelCounts.length; p++) {
-      const count = g.panelCounts[p];
-      const pos = compScratch.subarray(offset * 3, (offset + count) * 3);
-      const pin = adsorbNoPin.subarray(offset, offset + count);
-      if (which === "torso") {
-        if (p === PANEL_PAT_FRONT || p === PANEL_PAT_BACK) applyCapsuleCollision(pos, pin, count, collision.capsules, COLLISION_MARGIN);
-      } else {
-        applyCapsuleCollision(pos, pin, count, armCapsules, 0.006);
-      }
-      offset += count;
+  meshResolver(compScratch, adsorbNoPin, total);
+  snapA.set(compScratch);
+  let offset = 0;
+  for (let p = 0; p < g.panelCounts.length; p++) {
+    const count = g.panelCounts[p];
+    // **ablation 게이트**(39회차 정정): TORSOCAP=0이면 `unified`가 이 리졸버를 부르지
+    // 않으므로 계기도 부르면 안 된다. 안 그러면 "실행되지 않은 리졸버의 가정 프로브"를
+    // 실측처럼 인쇄한다 — 39회차 ablation 로그의 몸통 캡슐 행이 그랬다.
+    if (TORSOCAP && (p === PANEL_PAT_FRONT || p === PANEL_PAT_BACK)) {
+      applyCapsuleCollision(compScratch.subarray(offset * 3, (offset + count) * 3), adsorbNoPin.subarray(offset, offset + count), count, collision.capsules, COLLISION_MARGIN);
     }
+    offset += count;
   }
-  return compScratch;
+  snapB.set(compScratch);
+  offset = 0;
+  for (let p = 0; p < g.panelCounts.length; p++) {
+    const count = g.panelCounts[p];
+    applyCapsuleCollision(compScratch.subarray(offset * 3, (offset + count) * 3), adsorbNoPin.subarray(offset, offset + count), count, armCapsules, 0.006);
+    offset += count;
+  }
+  return { mesh: snapA, torso: snapB, arm: compScratch };
 };
 const compReport = (label: string): string => {
   const front = ringOrder.filter((i) => i < g.panelStarts[1]);
   const back = ringOrder.filter((i) => i >= g.panelStarts[1]);
-  const lines = [`  [38계기B·흡착 성분 3분리] ${label} · 앞판 링 ${front.length} / 뒤판 링 ${back.length}`];
-  for (const which of ["mesh", "torso", "arm"] as const) {
-    const s = compRun(which);
-    const stat = (idx: number[]): string => {
-      const mags = idx.map((i) => Math.hypot(s[i * 3] - sim.positions[i * 3], s[i * 3 + 1] - sim.positions[i * 3 + 1], s[i * 3 + 2] - sim.positions[i * 3 + 2]) * 1000);
-      const fired = mags.filter((m) => m > 1e-6).length;
-      const sorted = [...mags].sort((a, b) => a - b);
-      // z 성분 부호별 총량 — 앞판면 z+17.07 / 뒤판면 z−13.98이므로 z가 방향을 가른다.
-      let zPos = 0, zNeg = 0;
-      for (const i of idx) { const dz = (s[i * 3 + 2] - sim.positions[i * 3 + 2]) * 1000; if (dz > 0) zPos += dz; else zNeg += dz; }
-      return `발화 ${fired}/${idx.length} · |Δ| 중앙 ${sorted[Math.floor(sorted.length * 0.5)].toFixed(2)} 최대 ${sorted[sorted.length - 1].toFixed(2)}mm · Δz 총 +${zPos.toFixed(1)}/${zNeg.toFixed(1)}mm`;
-    };
-    const nm = which === "mesh" ? "meshResolver" : which === "torso" ? "몸통 캡슐(15mm)" : "팔 캡슐(6mm)";
-    lines.push(`    ${nm.padEnd(16)} 앞판 ${stat(front)}`);
-    lines.push(`    ${"".padEnd(16)} 뒤판 ${stat(back)}`);
+  const { mesh, torso, arm } = compSequential();
+  const lines = [`  [39계기B·흡착 성분 3분리 · **순차 in-situ**] ${label} · 앞판 링 ${front.length} / 뒤판 링 ${back.length} · **충돌 1회 호출분**(실제 서브스텝은 4회 — 패스표와 단위 다름)`];
+  const seg = (from: Float32Array | null, to: Float32Array, idx: number[]): string => {
+    const base = (i: number, k: number): number => (from ? from[i * 3 + k] : sim.positions[i * 3 + k]);
+    const mags = idx.map((i) => Math.hypot(to[i * 3] - base(i, 0), to[i * 3 + 1] - base(i, 1), to[i * 3 + 2] - base(i, 2)) * 1000);
+    const fired = mags.filter((m) => m > 1e-6).length;
+    const sorted = [...mags].sort((a, b) => a - b);
+    let zPos = 0, zNeg = 0;
+    for (const i of idx) { const dz = (to[i * 3 + 2] - base(i, 2)) * 1000; if (dz > 0) zPos += dz; else zNeg += dz; }
+    return `발화 ${fired}/${idx.length} · |Δ| 중앙 ${sorted[Math.floor(sorted.length * 0.5)].toFixed(2)} 최대 ${sorted[sorted.length - 1].toFixed(2)}mm · Δz 총 +${zPos.toFixed(1)}/${zNeg.toFixed(1)}mm`;
+  };
+  const rows: [string, Float32Array | null, Float32Array][] = [
+    ["meshResolver", null, mesh], ["몸통 캡슐(15mm)", mesh, torso], ["팔 캡슐(6mm)", torso, arm],
+  ];
+  for (const [nm, from, to] of rows) {
+    lines.push(`    ${nm.padEnd(16)} 앞판 ${seg(from, to, front)}`);
+    lines.push(`    ${"".padEnd(16)} 뒤판 ${seg(from, to, back)}`);
   }
-  // 35회차 "목표 부위 등 25"가 캡슐 목표였는지 — 뒤판 링의 캡슐 단독 함의 목표 z.
+  // ── R_mesh — mesh 표적의 캡슐축 기준 반경 중앙값. 고정점 식의 입력이다.
+  //    T_i = p_i + Δ_mesh/0.4 (PUSH_RELAXATION 역산)
+  const rmesh = (idx: number[]): number[] =>
+    idx.map((i) => capRadiusOf(
+      sim.positions[i * 3] + (mesh[i * 3] - sim.positions[i * 3]) / 0.4,
+      sim.positions[i * 3 + 2] + (mesh[i * 3 + 2] - sim.positions[i * 3 + 2]) / 0.4,
+    )).sort((a, b) => a - b);
+  const all = rmesh(ringOrder), fr = rmesh(front), bk = rmesh(back);
+  const med = (a: number[]): number => a[Math.floor(a.length / 2)];
+  const Rm = med(all);
+  // 고정점: mesh가 R_mesh로 0.4씩 당기고 캡슐이 17.4155로 0.35씩 밀 때의 평형
+  const rStar = (0.4 * Rm + 0.35 * CAP0_PUSH_R) / 0.75;
+  lines.push(`    [R_mesh] mesh 표적 반경 중앙 전체 ${cm(Rm)}cm(앞판 ${cm(med(fr))} / 뒤판 ${cm(med(bk))}) · 범위 ${cm(all[0])}~${cm(all[all.length - 1])}cm`);
+  lines.push(`    [고정점] r* = (0.4·R_mesh + 0.35×${cm(CAP0_PUSH_R)}) / 0.75 = **${cm(rStar)}cm** → 원 둘레 환산 ${cm(2 * Math.PI * rStar)}cm`);
+  // ── 계기 E — 후보 1 판별. mesh 표적점을 **ringOrder 순서로** 이은 다각형 길이.
   {
-    const s = compRun("torso");
-    const back = ringOrder.filter((i) => i >= g.panelStarts[1]);
-    const zs = back.map((i) => sim.positions[i * 3 + 2] + (s[i * 3 + 2] - sim.positions[i * 3 + 2]) / 0.35).sort((a, b) => a - b);
-    lines.push(`    [35회차 대조] 뒤판 링 캡슐 단독 함의 목표 z(완화 0.35 역산) 중앙 ${cm(zs[Math.floor(zs.length / 2)])}cm · 범위 ${cm(zs[0])}~${cm(zs[zs.length - 1])}cm — 35회차가 "등"으로 분류한 목표 z≈−20.2cm와 대조`);
+    let L = 0;
+    for (let k = 0; k < ringOrder.length; k++) {
+      const i = ringOrder[k], j = ringOrder[(k + 1) % ringOrder.length];
+      const T = (v: number, c: number): number => sim.positions[v * 3 + c] + (mesh[v * 3 + c] - sim.positions[v * 3 + c]) / 0.4;
+      L += Math.hypot(T(j, 0) - T(i, 0), T(j, 1) - T(i, 1), T(j, 2) - T(i, 2));
+    }
+    // 라벨 정정(39회차): 이 블록은 step **직전**이라 여기 실측은 **직전 프레임 종료값**이다.
+    // 블록 이름(f_n)의 종료값이 아니다 — 함정13 "시점".
+    lines.push(`    [39계기E·mesh 표적 다각형] Σ|T_{i+1}−T_i| (**ringOrder 폐곡선 62엣지** — 링60과 정의역 다름) = **${cm(L)}cm` +
+      `** · 이 시점(직전 프레임 종료) 실측 링60 ${cm(ringLenM())}cm · 폐곡선 실측 ${cm(ringLenM() + joinLenM())}cm`);
   }
   return lines.join("\n");
+};
+// ── 39회차 계기 D — 링 형상 채널(38회차 §6 "확인 불가" 해소).
+// 반경으로 부푼 원인가, 제자리에서 물결친 곡선인가. 캡슐축 기준 반경의 분포를 본다.
+const ringShapeReport = (label: string): string => {
+  const stat = (idx: number[], nm: string): string => {
+    if (idx.length === 0) return `${nm} —`;
+    const rs = idx.map((i) => capRadiusOf(sim.positions[i * 3], sim.positions[i * 3 + 2])).sort((a, b) => a - b);
+    const mean = rs.reduce((a, b) => a + b, 0) / rs.length;
+    const varc = rs.reduce((a, b) => a + (b - mean) * (b - mean), 0) / rs.length;
+    const over = rs.filter((r) => r >= CAP0_PUSH_R - 1e-6).length;
+    return `${nm} n=${idx.length} 중앙 ${cm(rs[Math.floor(rs.length / 2)])} 최소 ${cm(rs[0])} 최대 ${cm(rs[rs.length - 1])} 표준편차 ${(Math.sqrt(varc) * 100).toFixed(2)}cm · r≥17.42 ${over}/${idx.length}`;
+  };
+  const front = ringOrder.filter((i) => i < g.panelStarts[1]);
+  const back = ringOrder.filter((i) => i >= g.panelStarts[1]);
+  const ys = ringOrder.map((i) => sim.positions[i * 3 + 1]).sort((a, b) => a - b);
+  return [
+    `  [39계기D·링 형상] ${label} · 링60 ${cm(ringLenM())}cm · 폐곡선 ${cm(ringLenM() + joinLenM())}cm · y ${cm(ys[0])}~${cm(ys[ys.length - 1])}cm`,
+    `    캡슐축(x ${cm(CAP0.top.x)}, z ${cm(CAP0.top.z)}) 기준 반경(cm): ${stat(ringOrder, "전체")}`,
+    `      ${stat(front, "앞판")}`,
+    `      ${stat(back, "뒤판")}`,
+    `    대조: 캡슐 밀어내기 반경 ${cm(CAP0_PUSH_R)}cm(원 둘레 ${cm(2 * Math.PI * CAP0_PUSH_R)}cm) · 실제 목밑 반경 ${cm(body.neckBaseGirthM / (2 * Math.PI))}cm`,
+  ].join("\n");
 };
 // 몸 부위 분류 — 전부 `bodyMeasure` 실측 랜드마크에서 도출한다(새 상수 0).
 //   목 기둥 = 목밑둘레 높이 위 · 어깨 능선 = 그 |x|의 최상단 표면점 근방(margin)
@@ -1267,7 +1338,10 @@ const result = runDressing(
         });
         probeReports.push(`  [38계기A·접합 실거리] f=${String(_frame).padStart(3)} 링60 ${cm(ringLenM())}cm · 접합합 실거리 ${cm(joinLenM())}cm rest ${cm(joinDistRestSumM())}cm · ${rows.join(" · ")}`);
       }
-      if (_frame === 0 || _frame === 7) probeReports.push(compReport(`f${_frame + 1}`));
+      // 39회차 계기 D(형상) · B(성분 3분리) — f1·f2·f3·f4·f8 + f62. beforeStep은 step 직전이라
+      // 여기 값은 "f=_frame 종료 상태". D는 t=0(=f0)도 찍는다.
+      if (SHAPE_FRAMES.has(_frame)) probeReports.push(ringShapeReport(`f=${_frame}`));
+      if (COMP_FRAMES.has(_frame)) probeReports.push(compReport(`f${_frame + 1} 직전(=f${_frame} 종료 상태)`));
       // ── 35회차 계기. beforeStep(_frame)은 f=_frame+1을 만드는 step **직전**이다.
       if (_frame === 0 || _frame === 7) {
         const fl = `f${_frame + 1}`;
@@ -1650,6 +1724,8 @@ console.log(`  maxStrain ${strain.v.toFixed(3)} (정점 ${strain.at}) · maxSeam
   });
   console.log(`  [38계기A·접합 실거리] 정착 링60 ${cm(ringLenM())}cm · 접합합 실거리 ${cm(joinLenM())}cm rest ${cm(joinDistRestSumM())}cm · ${rows.join(" · ")}`);
   console.log(`    폐곡선(링60+접합) 실측 ${cm(ringLenM() + joinLenM())}cm · 폐곡선 rest(거리 제약 기준) ${cm(ringRestConfirmedM + joinDistRestSumM())}cm`);
+  console.log(ringShapeReport("정착"));
+  console.log(`  [39·ablation 상태] 몸통 캡슐 ${TORSOCAP ? "**on**(기본)" : "**OFF**(TORSOCAP=0 · 진단 전용)"}`);
 }
 // ── 35계기 6번: maxSeamGap의 **공간 분포**. 어느 종류·어느 자리가 벌어졌는가.
 {
