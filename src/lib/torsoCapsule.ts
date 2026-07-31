@@ -56,6 +56,15 @@ export function applyCapsuleCollision(
   margin: number,
   skipLocalStart?: number,
   skipLocalEndExclusive?: number,
+  // 42회차(v2 전용 · 기본 false = 기존 동작 비트 동일) — **정점당 1개 캡슐만 적용.**
+  // 기본 경로는 캡슐마다 in-situ로 `PUSH_RELAXATION`을 다시 적용하는 Gauss–Seidel이라,
+  // 캡슐이 2개일 땐 링 밴드에서 1개만 발화해 실효 완화가 설계값 0.35 그대로였다.
+  // 41회차가 19단 스택을 넣자 한 정점이 4~7개를 동시에 발화시켜 **실효 완화가
+  // 0.76~0.83으로 2.4배 약해졌고**(순서 역전 안전장치 무력화), 기준선엔 없던
+  // **축(y) 방향 성분**이 ±0.8~1.2cm/호출로 생겼다(기준선은 Δy ≡ 0.00).
+  // 이 플래그는 "가장 깊이 파묻힌 캡슐 하나"만 골라 한 번 민다 — 완화가 설계값으로
+  // 돌아오고 캡슐 배열 순서 의존도 사라진다.
+  singleDeepest?: boolean,
 ): void {
   for (let i = 0; i < n; i++) {
     if (pinned[i]) continue;
@@ -63,6 +72,40 @@ export function applyCapsuleCollision(
       continue;
     }
     const ix = i * 3;
+
+    if (singleDeepest) {
+      // 1패스: 침투 깊이(r − dist)가 최대인 캡슐 하나를 고른다. 좌표는 안 건드린다.
+      let best: Capsule | null = null;
+      let bestDepth = 0;
+      for (const capsule of capsules) {
+        const a = capsule.top, b = capsule.bottom;
+        const abx = b.x - a.x, aby = b.y - a.y, abz = b.z - a.z;
+        const abLenSq = abx * abx + aby * aby + abz * abz;
+        const r = capsule.radius + margin;
+        scratchAP.set(positions[ix] - a.x, positions[ix + 1] - a.y, positions[ix + 2] - a.z);
+        const t = abLenSq > 1e-9 ? THREE.MathUtils.clamp((scratchAP.x * abx + scratchAP.y * aby + scratchAP.z * abz) / abLenSq, 0, 1) : 0;
+        const dx = positions[ix] - (a.x + abx * t), dy = positions[ix + 1] - (a.y + aby * t), dz = positions[ix + 2] - (a.z + abz * t);
+        const dist = Math.sqrt(dx * dx + dy * dy + dz * dz);
+        const depth = r - dist;
+        if (depth > bestDepth) { bestDepth = depth; best = capsule; }
+      }
+      if (!best) continue;
+      // 2패스: 고른 캡슐 하나만 적용(기본 경로와 같은 식·같은 완화).
+      const a = best.top, b = best.bottom;
+      const abx = b.x - a.x, aby = b.y - a.y, abz = b.z - a.z;
+      const abLenSq = abx * abx + aby * aby + abz * abz;
+      const r = best.radius + margin;
+      scratchAP.set(positions[ix] - a.x, positions[ix + 1] - a.y, positions[ix + 2] - a.z);
+      const t = abLenSq > 1e-9 ? THREE.MathUtils.clamp((scratchAP.x * abx + scratchAP.y * aby + scratchAP.z * abz) / abLenSq, 0, 1) : 0;
+      const cx = a.x + abx * t, cy = a.y + aby * t, cz = a.z + abz * t;
+      const dx = positions[ix] - cx, dy = positions[ix + 1] - cy, dz = positions[ix + 2] - cz;
+      const dist = Math.sqrt(dx * dx + dy * dy + dz * dz) || 1e-6;
+      const scale = r / dist;
+      positions[ix] += (cx + dx * scale - positions[ix]) * PUSH_RELAXATION;
+      positions[ix + 1] += (cy + dy * scale - positions[ix + 1]) * PUSH_RELAXATION;
+      positions[ix + 2] += (cz + dz * scale - positions[ix + 2]) * PUSH_RELAXATION;
+      continue;
+    }
 
     for (const capsule of capsules) {
       const a = capsule.top;

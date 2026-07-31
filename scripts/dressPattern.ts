@@ -594,7 +594,11 @@ const unified = (positions: Float32Array, pinned: Uint8Array, n: number): void =
     const pos = positions.subarray(offset * 3, (offset + count) * 3);
     const pin = pinned.subarray(offset, offset + count);
     if (TORSOCAP && (p === PANEL_PAT_FRONT || p === PANEL_PAT_BACK)) {
-      applyCapsuleCollision(pos, pin, count, collision.capsules, COLLISION_MARGIN);
+      // 42회차 P2 재시도 — **정점당 캡슐 1개만**(가장 깊이 파묻힌 것). 사전 반증 (a) 참:
+      // 19단 스택에서 한 정점이 4~7개를 동시 발화시켜 실효 완화가 0.35 → 0.76~0.83으로
+      // 2.4배 약해지고 축(y) 성분이 새로 생겼다. 캡슐 2개인 기준선에선 링 밴드에서
+      // 1개만 발화하므로 이 플래그가 켜져도 **거동이 같다**(비트 동일 확인 대상).
+      applyCapsuleCollision(pos, pin, count, collision.capsules, COLLISION_MARGIN, undefined, undefined, true);
     }
     applyCapsuleCollision(pos, pin, count, armCapsules, 0.006);
     offset += count;
@@ -876,7 +880,8 @@ const compSequential = (): { mesh: Float32Array; torso: Float32Array; arm: Float
     // 않으므로 계기도 부르면 안 된다. 안 그러면 "실행되지 않은 리졸버의 가정 프로브"를
     // 실측처럼 인쇄한다 — 39회차 ablation 로그의 몸통 캡슐 행이 그랬다.
     if (TORSOCAP && (p === PANEL_PAT_FRONT || p === PANEL_PAT_BACK)) {
-      applyCapsuleCollision(compScratch.subarray(offset * 3, (offset + count) * 3), adsorbNoPin.subarray(offset, offset + count), count, collision.capsules, COLLISION_MARGIN);
+      // 계기도 물리와 **같은 인자**로 부른다 — 안 그러면 계기가 다른 대상을 잰다(함정 19).
+      applyCapsuleCollision(compScratch.subarray(offset * 3, (offset + count) * 3), adsorbNoPin.subarray(offset, offset + count), count, collision.capsules, COLLISION_MARGIN, undefined, undefined, true);
     }
     offset += count;
   }
