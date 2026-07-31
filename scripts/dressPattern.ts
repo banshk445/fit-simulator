@@ -674,18 +674,22 @@ const result = runDressing(
     // 봉합 완료 전: **원단 일반 상한에 위임**한다(완전 off가 아니다). 링 전용
     // 상한만 풀고 `clothPhysics.limitStrain`의 전 제약 상한(1.2)이 과신장을
     // 계속 막는다 — 그래서 여기서 1.2를 다시 적으면 함정 12(계기 하드코딩)다.
-    // 봉합 완료 판정은 **S1→S2 전이식 그대로**(gap ≤ target + seamSlack).
-    // 완료 후에는 그 시점 실측 신장에서 1.02까지 smoothstep으로 램프한다
-    // (급조임 방지 · 램프 길이는 기존 rampFrames 재사용, 새 상수 0).
+    // 조이기 시작 시점은 **상태기계의 S2 진입**이다(22회차 1줄 정정).
+    // 21회차는 자체 판정식(gap ≤ target + seamSlack)이 참이 된 순간 조이기
+    // 시작했는데, S1→S2 전이는 그것과 `stateFrame ≥ rampFrames`의 **AND**라
+    // 아직 전이 전이었다. 조이자 갭이 24.9mm로 되열려 전이 자체를 막았다
+    // (f=110 봉합 → f=171 정체 → ABORT · **10프레임 차**).
+    // **봉합은 판정되는 순간이 아니라 상태로 확정된 뒤에 조인다.** 전이 신호는
+    // 상태기계가 이미 관리하므로 `state`를 구독만 한다(새 조건식 금지 —
+    // S1→S2의 AND 조건이 진실의 단일 출처다).
+    // 램프는 그 시점 실측 신장에서 1.02까지 smoothstep(길이 = 기존 rampFrames).
     beforeStep: (_frame, state) => {
-      const target = Math.max(...g.seams.map((s) => s.targetM));
-      const closed = maxSeamGapM() <= target + 0.01; // = cfg.seamSlackM
       if (seamClosedAtFrame < 0) {
         ringMaxBeforeCloseM = Math.max(ringMaxBeforeCloseM, ringLenM());
-        if (closed) {
+        if (state === "S2" || state === "S3" || state === "DONE") {
           seamClosedAtFrame = _frame;
           ringLimitStart = Math.max(COLLAR_STRAIN_LIMIT, ringLenM() / Math.max(1e-6, ringRestM));
-          console.log(`  [링·시점분리] f=${_frame} 봉합 완료 판정 → 상한 램프 시작 ${ringLimitStart.toFixed(4)} → ${COLLAR_STRAIN_LIMIT} (${120}프레임 smoothstep) · 봉합 전 링 최대 ${cm(ringMaxBeforeCloseM)}cm`);
+          console.log(`  [링·시점분리] f=${_frame} **S2 진입**(상태기계 전이) → 상한 램프 시작 ${ringLimitStart.toFixed(4)} → ${COLLAR_STRAIN_LIMIT} (${120}프레임 smoothstep) · 봉합 전 링 최대 ${cm(ringMaxBeforeCloseM)}cm · seamGap ${(maxSeamGapM() * 1000).toFixed(1)}mm`);
         }
       }
       if (state === "S3" || state === "DONE") {
@@ -712,6 +716,21 @@ const result = runDressing(
       if (state === "S1" && frame % 60 === 0) {
         console.log(
           `  [pin·검증] f=${String(frame).padStart(4)} 목점 실측 |x−center| ${cm(Math.abs(sim.positions[neckAnchor.i * 3] - centerX))}cm vs 목표 ${cm(Math.abs(neckAnchor.x - centerX))}cm · 잔차 ${pinResidualMm().toFixed(2)}mm · pinned=${sim.pinned[neckAnchor.i]} · 앵커강도 ${anchorStrength.toFixed(3)}`,
+        );
+      }
+      // 전이 근방 프레임별 진단(상시) — 22회차가 S2 진입 **다음 프레임**에
+      // 봉합 이탈했다. 60프레임 간격 로그로는 그 한 프레임이 안 보인다.
+      if (seamClosedAtFrame >= 0 && frame >= seamClosedAtFrame - 3 && frame <= seamClosedAtFrame + 6) {
+        const worst = g.seams.reduce((acc, sm) => {
+          const d = Math.hypot(
+            sim.positions[sm.b * 3] - sim.positions[sm.a * 3],
+            sim.positions[sm.b * 3 + 1] - sim.positions[sm.a * 3 + 1],
+            sim.positions[sm.b * 3 + 2] - sim.positions[sm.a * 3 + 2],
+          );
+          return d > acc.d ? { d, kind: sm.kind, i: sm.a } : acc;
+        }, { d: 0, kind: "-", i: 0 });
+        console.log(
+          `  [전이근방] f=${String(frame).padStart(4)} ${state} seamGap ${(maxSeamGapM() * 1000).toFixed(1)}mm(최대 ${worst.kind} 패턴 ${cm(g.pos2[worst.i * 2])},${cm(g.pos2[worst.i * 2 + 1])}) · 링상한 ${Number.isFinite(ringLimitNow) ? ringLimitNow.toFixed(4) : "∞"} · 링길이 ${cm(ringLenM())}cm · 앵커 ${anchorStrength.toFixed(3)} pinned=${sim.pinned[neckAnchor.i]} · 핀잔차 ${pinResidualMm().toFixed(2)}mm · 칼라발화누적 ${collarFired}`,
         );
       }
       if (DIAG && frame % 60 === 0) {
