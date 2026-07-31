@@ -306,8 +306,72 @@ const ringLenM = (): number => {
 // ── 넥밴드 원주 제약 (2회차 단일 변경) — v1 칼라 기계를 패턴 목선 링에 배선.
 // 실물 부품(리브)이고 보조 힘이 아니다. clothPhysics는 이 기계를 이미 갖고
 // 있어 수정 0줄.
+// ── 25회차: 링을 **폐곡선**으로 닫는다.
+// 24회차 힘 분해 — `necklineRing`은 앞목·뒤목 **두 개의 열린 사슬**이고 그
+// **끝점이 곧 목점**이라, 각 사슬이 수축하면 앞목점은 앞판 중심으로 뒤목점은
+// 뒤판 중심으로 **서로 반대로** 당겨진다(링 길이 ↔ 목점 갭이 반대 위상 진동).
+// 닫으면 목점 접합 구간이 원주의 일부가 되므로 **수축의 부호가 뒤집힌다** —
+// 같은 힘이 목점을 밀어내는 대신 당긴다.
+//
+// 구현은 ①(목점 쌍을 링 엣지로 추가)이다. ②(제약 없이 수축 적용 범위만 확장)를
+// 선호했으나 `limitCollarStrain`은 **엣지 단위** 기계라 총 원주 항이 없다 —
+// clothPhysics 수정 없이는 불가능하다. 시접과 중복되지만 rest가 같으므로
+// (아래) 그 두 쌍의 강성이 두 배가 되는 것 외의 부작용은 없다.
+//
+// §3.3.1: 예전에 이 접합을 뺀 이유는 rest가 **배치 거리**(31cm)로 굳는다는 것이
+// 었는데, 평면 배치에서는 그 값이 배치가 아니라 **봉제 명세**에서 나온다 —
+// 접합의 rest는 시접 target 그 자체다. 아래에서 그 값을 강제로 심는다
+// (`setCollarRing`이 현재 좌표에서 rest를 뜨므로, 그 두 쌍만 target 거리로
+//  잠깐 옮겼다 되돌린다 — clothPhysics 무수정).
+const ringJoinPairs = (() => {
+  const ringVerts = new Set<number>(g.necklineRing.flatMap((e) => [e.a, e.b]));
+  return g.seams.filter((sm) => sm.kind === "shoulder" && ringVerts.has(sm.a) && ringVerts.has(sm.b));
+})();
+const ringClosed = [...g.necklineRing, ...ringJoinPairs.map((sm) => ({ a: sm.a, b: sm.b }))];
 {
-  sim.setCollarRing(g.necklineRing);
+  const joinRestM = Math.max(...g.seams.map((sm) => sm.targetM));
+  const saved = ringJoinPairs.map((sm) => [
+    sim.positions[sm.b * 3], sim.positions[sm.b * 3 + 1], sim.positions[sm.b * 3 + 2],
+  ] as [number, number, number]);
+  for (const sm of ringJoinPairs) {
+    const dx = sim.positions[sm.b * 3] - sim.positions[sm.a * 3];
+    const dy = sim.positions[sm.b * 3 + 1] - sim.positions[sm.a * 3 + 1];
+    const dz = sim.positions[sm.b * 3 + 2] - sim.positions[sm.a * 3 + 2];
+    const l = Math.hypot(dx, dy, dz) || 1;
+    sim.positions[sm.b * 3] = sim.positions[sm.a * 3] + (dx / l) * joinRestM;
+    sim.positions[sm.b * 3 + 1] = sim.positions[sm.a * 3 + 1] + (dy / l) * joinRestM;
+    sim.positions[sm.b * 3 + 2] = sim.positions[sm.a * 3 + 2] + (dz / l) * joinRestM;
+  }
+  sim.setCollarRing(ringClosed);
+  ringJoinPairs.forEach((sm, k) => {
+    sim.positions[sm.b * 3] = saved[k][0];
+    sim.positions[sm.b * 3 + 1] = saved[k][1];
+    sim.positions[sm.b * 3 + 2] = saved[k][2];
+  });
+  // 배선 검증 — 위상이 실제로 닫혔는가(전 정점 차수 2 · 단일 순환).
+  const deg = new Map<number, number>();
+  const adj = new Map<number, number[]>();
+  for (const e of ringClosed) {
+    for (const [x, y] of [[e.a, e.b], [e.b, e.a]] as const) {
+      deg.set(x, (deg.get(x) ?? 0) + 1);
+      (adj.get(x) ?? adj.set(x, []).get(x)!).push(y);
+    }
+  }
+  const start = ringClosed[0].a;
+  let prev = -1, cur = start, visited = 0;
+  for (let i = 0; i < ringClosed.length + 2; i++) {
+    visited++;
+    const nb = adj.get(cur)!;
+    const nxt = nb.find((v) => v !== prev) ?? nb[0];
+    prev = cur; cur = nxt;
+    if (cur === start) break;
+  }
+  const allDeg2 = [...deg.values()].every((d) => d === 2);
+  console.log(
+    `[dress] 링 폐곡선화: 엣지 ${g.necklineRing.length} + 접합 ${ringJoinPairs.length} = ${ringClosed.length} · 정점 ${deg.size} · 전 정점 차수 2 ${allDeg2 ? "OK" : "**아님**"} · 순회 복귀 ${visited}/${deg.size} ${visited === deg.size ? "OK(단일 순환)" : "**분리됨**"} · 접합 rest ${(joinRestM * 1000).toFixed(1)}mm(= 시접 target)`,
+  );
+}
+{
   let ringM = 0;
   for (const e of g.necklineRing) {
     ringM += Math.hypot(
@@ -316,13 +380,24 @@ const ringLenM = (): number => {
       sim.positions[e.b * 3 + 2] - sim.positions[e.a * 3 + 2],
     );
   }
-  ringRestM = ringM;
+  ringRestM = ringM + 2 * Math.max(...g.seams.map((sm) => sm.targetM));
   const targetM = g.draft.dims.necklineGirthM;
   const errCm = (ringM - targetM) * 100;
   console.log(
     `[dress] 넥밴드 원주 제약: 링 엣지 ${g.necklineRing.length}쌍 · 배치 실측 원주 ${cm(ringM)}cm vs 패턴 목선 ${cm(targetM)}cm (오차 ${errCm.toFixed(3)}cm) · 신장 상한 ${COLLAR_STRAIN_LIMIT}(v1 승계·추정)`,
   );
   if (g.necklineRing.length === 0) throw new Error("넥밴드 링 제약 0쌍 — 배선 실패");
+  {
+    let joinM = 0;
+    for (const sm of ringJoinPairs) {
+      joinM += Math.hypot(
+        sim.positions[sm.b * 3] - sim.positions[sm.a * 3],
+        sim.positions[sm.b * 3 + 1] - sim.positions[sm.a * 3 + 1],
+        sim.positions[sm.b * 3 + 2] - sim.positions[sm.a * 3 + 2],
+      );
+    }
+    console.log(`  [링·폐곡선 실측] 앞목+뒤목 ${cm(ringM)}cm + 접합 2구간 ${cm(joinM)}cm(배치 거리) = ${cm(ringM + joinM)}cm · rest 기준 접합은 ${(2 * Math.max(...g.seams.map((sm) => sm.targetM)) * 100).toFixed(2)}cm`);
+  }
   if (Math.abs(errCm) > 0.05) {
     console.log(`[dress] **경고** 링 원주가 패턴 목선과 ${errCm.toFixed(3)}cm 어긋난다 — rest가 패턴이 아닌 것을 굳혔을 수 있다`);
   }
