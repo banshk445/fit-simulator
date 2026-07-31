@@ -986,10 +986,13 @@ const capsuleCountReport = (label: string): string => {
   const hist = new Map<number, number>();
   for (const v of rows) hist.set(v, (hist.get(v) ?? 0) + 1);
   const zero = rows.filter((v) => v === 0).length;
-  return `  [43계기·정점당 캡슐 수] ${label} · 링 ${rows.length}정점 · 캡슐 총 ${collision.capsules.length}개 · singleDeepest ${SINGLE_DEEPEST ? "on" : "off"}` +
+  // 44회차 정정 — **TORSOCAP 게이트**. 캡슐이 꺼져 있으면 이 채널은 "실행되지 않은
+  // 리졸버의 가정 프로브"다(39회차 계기 B와 같은 결함의 재발 · 함정 13).
+  const gate = TORSOCAP ? "" : " · **[가정 프로브 — TORSOCAP=0이라 이 캡슐들은 실행되지 않는다]**";
+  return `  [43계기·정점당 캡슐 수] ${label}${gate} · 링 ${rows.length}정점 · 캡슐 총 ${collision.capsules.length}개 · singleDeepest ${SINGLE_DEEPEST ? "on" : "off"}` +
     ` · 중앙 ${rows[Math.floor(rows.length / 2)]} 최대 ${rows[rows.length - 1]} · 0개(캡슐 밖) ${zero}` +
     ` · 히스토그램 ${[...hist].sort((a, b) => a[0] - b[0]).map(([k, v]) => `${k}개:${v}`).join(" ")}` +
-    ` · **밀어내기 적용 수 = ${SINGLE_DEEPEST ? "정점당 1(가장 깊은 것)" : "위 개수 그대로(in-situ 누적)"}**`;
+    ` · **밀어내기 적용 수 = ${!TORSOCAP ? "0(캡슐 off)" : SINGLE_DEEPEST ? "정점당 1(가장 깊은 것)" : "위 개수 그대로(in-situ 누적)"}**`;
 };
 const ringShapeReport = (label: string): string => {
   const stat = (idx: number[], nm: string): string => {
@@ -2051,16 +2054,25 @@ if (DIAG) {
     }
   }
   // 관통 정점의 패널·대역 분포.
+  // 44회차 정정 2건:
+  //  ① bin이 **10cm였다** — `positions`는 **미터**인데 `*10`으로 반올림했다(라벨 `y1.2`도 미터).
+  //     y124~129의 6cm 띠를 원리적으로 못 갈랐다. **1cm(=`*100`)로 고친다.**
+  //  ② 대역 귀속을 y bin이 아니라 **캡슐 소속**으로도 낸다 — `capsuleHitCount`가 리졸버와
+  //     같은 판정식(축선분 거리 < radius+margin)을 쓰므로 y 경계의 임의성을 우회한다
+  //     (43회차 (a)가 지적한 임의성 4곳을 안 만든다). 캡슐이 꺼져 있어도 순수 기하로 계산된다.
   {
     const per = [0, 0, 0, 0];
     const yBand: Record<string, number> = {};
+    let inCapsule = 0, outCapsule = 0;
     for (let i = 0; i < total; i++) {
       if (!insideParity(sim.positions[i * 3], sim.positions[i * 3 + 1], sim.positions[i * 3 + 2])) continue;
       per[panelOfIdx(i)]++;
-      const yc = Math.round(sim.positions[i * 3 + 1] * 10) / 10;
-      yBand[`y${yc.toFixed(1)}`] = (yBand[`y${yc.toFixed(1)}`] ?? 0) + 1;
+      const yc = Math.round(sim.positions[i * 3 + 1] * 100);
+      yBand[`y${yc}`] = (yBand[`y${yc}`] ?? 0) + 1;
+      if (capsuleHitCount(i) > 0) inCapsule++; else outCapsule++;
     }
-    console.log(`[dress·diag] 관통 패널별: ${PANEL_NAME.map((n, i) => `${n} ${per[i]}`).join(" / ")} · 높이대역 ${JSON.stringify(yBand)}`);
+    console.log(`[dress·diag] 관통 패널별: ${PANEL_NAME.map((n, i) => `${n} ${per[i]}`).join(" / ")} · 높이대역(1cm bin) ${JSON.stringify(yBand)}`);
+    console.log(`[dress·diag] 관통 정점의 **캡슐 소속**(y bin 임의성 없는 귀속 · TORSOCAP ${TORSOCAP ? "on" : "off"}): 캡슐 안 ${inCapsule} / 밖 ${outCapsule}`);
   }
   // 문턱 위반 쌍의 패널 조합 분포 — "폴드 접촉"인지 "패널 관통"인지 가른다.
   {
