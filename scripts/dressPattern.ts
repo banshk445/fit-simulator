@@ -507,6 +507,16 @@ const cachedFric = createCachedSdfIterationFriction(() => sdfField, {
 let anchorStrength = 0;
 let collarFired = 0;
 let ringTotalFired = 0;
+// ── 27회차 계기(기록 전용 · 물리 0줄)
+// (1) 축소 잔여 일량 = 축소 전 총 길이 − 상한. 링이 "아직 일하고 있나"의 직접 채널.
+const shrinkWorkSeries: number[] = [];
+// (2) 하중 배분 — 균일 질량이므로 중량은 정점 수에 비례한다. 프레임마다
+//     자유낙하 예상 Δy(중력만 받았을 때)와 실제 Δy의 차 = 그 정점이 **받쳐진 양**이다.
+//     대역별로 합하면 "옷을 무엇이 들고 있는가"가 나온다(접촉력 계기가 없어도
+//     운동학에서 도출된다 — clothPhysics 무수정).
+const holdSeries: { ring: number; shoulder: number; other: number }[] = [];
+let prevPos: Float32Array | null = null;
+const ringVertexSet = new Set<number>(ringClosed.flatMap((e) => [e.a, e.b]));
 
 // 목점(어깨 시접의 첫 쌍) 전역 인덱스 — 닫힘 시점 기록용.
 const neckPointPairs = g.seams.filter((x) => x.kind === "shoulder")
@@ -846,6 +856,10 @@ const result = runDressing(
       // ── 링 총 길이 사후 투영(위 설계 문단). 무게중심 기준 등방 축소 1회.
       // 핀 걸린 정점은 못 움직이므로 제외하고, 그만큼 배율을 나머지에 싣는다.
       {
+        const L0 = ringLenM();
+        if (ringTotalMaxM > 0) shrinkWorkSeries.push(Math.max(0, L0 - ringTotalMaxM));
+      }
+      {
         const L = ringLenM();
         if (ringTotalMaxM > 0 && L > ringTotalMaxM) {
           const idx = [...new Set(ringClosed.flatMap((e) => [e.a, e.b]))].filter((i) => !sim.pinned[i]);
@@ -870,6 +884,21 @@ const result = runDressing(
           `  [pin·검증] f=${String(frame).padStart(4)} 목점 실측 |x−center| ${cm(Math.abs(sim.positions[neckAnchor.i * 3] - centerX))}cm vs 목표 ${cm(Math.abs(neckAnchor.x - centerX))}cm · 잔차 ${pinResidualMm().toFixed(2)}mm · pinned=${sim.pinned[neckAnchor.i]} · 앵커강도 ${anchorStrength.toFixed(3)}`,
         );
       }
+      // (2) 하중 배분 — 정착 구간(마지막 60프레임)만 누적한다.
+      if (prevPos) {
+        const gdt2 = 9.81 * SUBSTEP_DT * SUBSTEP_DT;
+        const rec = { ring: 0, shoulder: 0, other: 0 };
+        for (let i = 0; i < total; i++) {
+          const held = (sim.positions[i * 3 + 1] - prevPos[i * 3 + 1]) + gdt2;
+          if (held <= 0) continue;
+          if (ringVertexSet.has(i)) rec.ring += held;
+          else if (i < g.panelStarts[2] && g.pos2[i * 2 + 1] <= 0.03) rec.shoulder += held;
+          else rec.other += held;
+        }
+        holdSeries.push(rec);
+      }
+      if (!prevPos) prevPos = new Float32Array(total * 3);
+      prevPos.set(sim.positions.subarray(0, total * 3));
       // 전이 근방 프레임별 진단(상시) — 22회차가 S2 진입 **다음 프레임**에
       // 봉합 이탈했다. 60프레임 간격 로그로는 그 한 프레임이 안 보인다.
       if (seamClosedAtFrame >= 0 && frame >= seamClosedAtFrame - 6 && frame <= seamClosedAtFrame + 20) {
@@ -1093,6 +1122,27 @@ console.log(
   `  proximityPairs(기록 채널 · 문턱 ${(g.selfCollisionMinDistM * 1000).toFixed(2)}mm · 게이트 아님 — 뭉친 폴드의 정상 접촉을 센다): ${prox}쌍`,
 );
 console.log(`  자기교차(엣지-삼각형 · 게이트): ${xsec.count}건 (배치 t=0 기준선 3건 = S0 투영 교정 산출물)`);
+{
+  const tail = <T,>(a: T[]): T[] => a.slice(Math.max(0, a.length - 60));
+  const sw = tail(shrinkWorkSeries);
+  const swMean = sw.reduce((a, b) => a + b, 0) / Math.max(1, sw.length);
+  const hb = tail(holdSeries).reduce((a, r) => ({ ring: a.ring + r.ring, shoulder: a.shoulder + r.shoulder, other: a.other + r.other }), { ring: 0, shoulder: 0, other: 0 });
+  const tot = hb.ring + hb.shoulder + hb.other || 1;
+  const ringN = ringVertexSet.size;
+  let shoulderN = 0;
+  for (let i = 0; i < g.panelStarts[2]; i++) if (!ringVertexSet.has(i) && g.pos2[i * 2 + 1] <= 0.03) shoulderN++;
+  console.log(`  [27계기·축소 잔여 일량] 정착 60프레임 평균 ${(swMean * 100).toFixed(3)}cm · 최대 ${(Math.max(0, ...sw) * 100).toFixed(3)}cm · 전 구간 최대 ${(Math.max(0, ...shrinkWorkSeries) * 100).toFixed(2)}cm`);
+  console.log(`  [27계기·하중 배분] 정착 60프레임 받쳐진 양 — 링 ${(100 * hb.ring / tot).toFixed(1)}%(정점 ${ringN}) · 어깨대역 ${(100 * hb.shoulder / tot).toFixed(1)}%(정점 ${shoulderN}) · 나머지 ${(100 * hb.other / tot).toFixed(1)}%(정점 ${total - ringN - shoulderN}) · **중량 대비**(정점당) 링 ${((hb.ring / ringN) / (tot / total)).toFixed(2)}배 · 어깨 ${((hb.shoulder / Math.max(1, shoulderN)) / (tot / total)).toFixed(2)}배`);
+  const st: { v: number; i: number }[] = [];
+  for (const e of g.edgePairs) {
+    const rest = Math.hypot(g.pos2[e.b * 2] - g.pos2[e.a * 2], g.pos2[e.b * 2 + 1] - g.pos2[e.a * 2 + 1]);
+    if (rest < 1e-6) continue;
+    const d = Math.hypot(sim.positions[e.b * 3] - sim.positions[e.a * 3], sim.positions[e.b * 3 + 1] - sim.positions[e.a * 3 + 1], sim.positions[e.b * 3 + 2] - sim.positions[e.a * 3 + 2]);
+    st.push({ v: d / rest, i: e.a });
+  }
+  st.sort((a, b) => b.v - a.v);
+  console.log(`  [27계기·strain 상위 11] ${st.slice(0, 11).map((q) => `${q.v.toFixed(2)}@${PANEL_NAME[panelOfIdx(q.i)]}(${cm(g.pos2[q.i * 2])},${cm(g.pos2[q.i * 2 + 1])})`).join(" · ")}`);
+}
 console.log(`  링 총 길이 상한 발화: ${ringTotalFired}회 = ${(ringTotalFired / Math.max(1, result.frames)).toFixed(2)}/프레임 · 상한 ${cm(ringTotalMaxM)}cm(계수 ${(ringTotalMaxM / Math.max(1e-9, ringRestM)).toFixed(3)})\n  넥밴드 원주 제약 발화 누적: ${collarFired}회 = ${(collarFired / Math.max(1, result.frames)).toFixed(1)}/프레임 · 봉합 완료 f=${seamClosedAtFrame < 0 ? "미도달" : seamClosedAtFrame}(그 전까지 링 전용 상한은 일반 상한에 위임) · 링 원주 봉합 전 최대 ${cm(ringMaxBeforeCloseM)}cm → 최종 ${cm(ringLenM())}cm (rest ${cm(ringRestM)}cm)`);
 console.log(`  관통(레이 패리티·비수밀 근사): 배치 후 ${penAfterPlace} → 정착 후 ${penEnd} / ${total}`);
 console.log(`  정착 프레임 ${settleFrame} · 물리 ${(elapsedS * 1000 / Math.max(1, result.frames)).toFixed(1)}ms/프레임`);
