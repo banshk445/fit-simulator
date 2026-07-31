@@ -71,7 +71,12 @@ const CAPTURE_VIEWS: Record<string, { pos: [number, number, number]; target: [nu
   back: { pos: [0, 1.3, -3], target: [0, 1, 0] },
   neck: { pos: [0, 1.5, 1.0], target: [0, 1.38, 0], fov: 35 },
   neckback: { pos: [0, 1.5, -1.0], target: [0, 1.38, 0], fov: 35 },
-  cuff: { pos: [0, 1.25, 1.6], target: [0, 1.15, 0], fov: 35 },
+  // 27회차 정정: 기존 cuff는 target이 몸통 중심(0,1.15,0)이라 **몸통 원경**이
+  // 잡혔다(26회차 캡처가 그래서 V3 판정 불가였다). 소맷부리는 팔 축 끝이므로
+  // 오른팔 커프 근방을 직접 겨눈다.
+  cuff: { pos: [0.30, 1.30, 0.75], target: [0.27, 1.20, 0], fov: 30 },
+  // 밑단 프릴 대조용(회차 간 같은 구도).
+  hem: { pos: [0, 0.95, 1.5], target: [0, 0.82, 0], fov: 35 },
 };
 
 export function FitCanvas() {
