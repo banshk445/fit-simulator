@@ -325,6 +325,8 @@ let ringMaxBeforeCloseM = 0;
 //  실측으로 확정된 것이 아니다 — Stage 2c 체형 일반화에서 확인할 것.)
 const headGirthM = body.slices.reduce((m, sl) => (sl.y > body.neckY && sl.girthM > m ? sl.girthM : m), 0);
 let ringTotalMaxM = 0;
+let ringRestConfirmedM = 0;
+let ringPlacedM = 0;
 const ringLenM = (): number => {
   let l = 0;
   for (const e of g.necklineRing) {
@@ -415,6 +417,10 @@ const ringClosed = [...g.necklineRing, ...ringJoinPairs.map((sm) => ({ a: sm.a, 
     );
   }
   ringRestM = ringM + 2 * Math.max(...g.seams.map((sm) => sm.targetM));
+  // 29회차 확정 — 제약이 순회하는 집합(necklineRing)에서 직접 뜬 rest.
+  // ringRestM(하네스 재구성분)은 ringLimitStart 배선 때문에 이번 회차엔 못 고친다.
+  ringRestConfirmedM = ringM;
+  ringPlacedM = ringM;
   // RINGTOTAL=0 — 26회차 총 길이 상한 제거(= 25회차 상태 재현). 계기용 ablation.
   ringTotalMaxM = process.env.RINGTOTAL === "0" ? 0 : headGirthM;
   console.log(
@@ -1147,7 +1153,63 @@ console.log(`  자기교차(엣지-삼각형 · 게이트): ${xsec.count}건 (�
   const ringN = ringVertexSet.size;
   let shoulderN = 0;
   for (let i = 0; i < g.panelStarts[2]; i++) if (!ringVertexSet.has(i) && g.pos2[i * 2 + 1] <= 0.03) shoulderN++;
-  // ── 29계기: 링 y 시계열. 지지 실패(내려감)와 인장(제자리에서 벌어짐)의 분리.
+  // ── 30계기 B: 목선 대역 제약 잔차. `limitStrain`이 집행하는 상한은
+  //    clothPhysics 안의 **maxStretch = 1.2**이고 `clampInSubstep: true`로
+  //    매 서브스텝 호출된다(2패스). 잔차 = 그 상한을 넘어 남은 길이.
+  //    크면 "못 지킨다"(수렴 부족), 0에 가까우면 "제약이 그 값을 허용한다".
+  {
+    const ENFORCED = 1.2; // clothPhysics.limitStrain의 하드코딩 상한
+    // 목선 대역 = 몸판 정점 중 패턴 y가 앞목 깊이 이내(도출: 목선 곡선이
+    // 차지하는 세로 대역). 상수 신설 없음.
+    const bandY = g.draft.dims.frontNeckDropM;
+    const inBand = (i: number): boolean => i < g.panelStarts[2] && g.pos2[i * 2 + 1] <= bandY;
+    const rows: { ratio: number; overMm: number; a: number; b: number; pinned: boolean }[] = [];
+    let allMax = 0, allMaxAt = -1;
+    for (const c of sim.constraintPairs) {
+      if (c.restLength <= 0) continue;
+      const dd = Math.hypot(
+        sim.positions[c.b * 3] - sim.positions[c.a * 3],
+        sim.positions[c.b * 3 + 1] - sim.positions[c.a * 3 + 1],
+        sim.positions[c.b * 3 + 2] - sim.positions[c.a * 3 + 2],
+      );
+      const ratio = dd / c.restLength;
+      if (ratio > allMax) { allMax = ratio; allMaxAt = c.a; }
+      if (!inBand(c.a) || !inBand(c.b)) continue;
+      rows.push({ ratio, overMm: Math.max(0, dd - c.restLength * ENFORCED) * 1000, a: c.a, b: c.b, pinned: !!(sim.pinned[c.a] && sim.pinned[c.b]) });
+    }
+    rows.sort((x, y) => x.ratio - y.ratio);
+    const q = (f: number): { ratio: number; overMm: number } => rows[Math.min(rows.length - 1, Math.floor(f * rows.length))] ?? { ratio: 0, overMm: 0 };
+    const worst = rows[rows.length - 1];
+    const over = rows.filter((x) => x.overMm > 1e-6).length;
+    const pinnedExempt = rows.filter((x) => x.pinned).length;
+    console.log(`  [30계기·목선 대역 잔차] 집행 상한 **${ENFORCED}**(clothPhysics.limitStrain 하드코딩 · clampInSubstep=true 2패스) · 대역 = 몸판 패턴 y ≤ 앞목 ${cm(bandY)}cm · 제약 ${rows.length}개(양끝 핀 면제 ${pinnedExempt})`);
+    console.log(`    신장비 중앙값 ${q(0.5).ratio.toFixed(3)} · p99 ${q(0.99).ratio.toFixed(3)} · 최대 ${worst ? worst.ratio.toFixed(3) : "-"}@정점${worst?.a}(패턴 ${worst ? cm(g.pos2[worst.a * 2]) : "-"},${worst ? cm(g.pos2[worst.a * 2 + 1]) : "-"})`);
+    console.log(`    상한 초과 잔차 — 위반 ${over}/${rows.length}개 · 중앙값 ${q(0.5).overMm.toFixed(2)}mm · p99 ${q(0.99).overMm.toFixed(2)}mm · 최대 ${worst ? worst.overMm.toFixed(2) : "-"}mm`);
+    console.log(`    전 메시 최대 신장비 ${allMax.toFixed(3)}@정점${allMaxAt} — **집행 상한 ${ENFORCED}의 ${(allMax / ENFORCED).toFixed(1)}배**`);
+  }
+
+  // ── 30계기 A: 링 길이 단계별 분해.  // ── 30계기 A: 링 길이 단계별 분해. 신장이 (i)배치 (ii)봉합 (iii)정착 중
+  //    어디서 생겼는지 가른다. 배율 기준은 **확정 rest 48.24cm**(29회차).
+  {
+    const restM = ringRestConfirmedM;
+    const r = (L: number): string => `${cm(L)}cm(${(L / restM).toFixed(3)}배)`;
+    const byState = new Map<string, { first: number; last: number; max: number; maxF: number; n: number }>();
+    for (const q of ringYSeries) {
+      const e = byState.get(q.st) ?? { first: q.L, last: q.L, max: -1, maxF: -1, n: 0 };
+      e.last = q.L; e.n++;
+      if (q.L > e.max) { e.max = q.L; e.maxF = q.f; }
+      byState.set(q.st, e);
+    }
+    console.log(`  [30계기·링 길이 단계 분해] rest(확정) ${cm(restM)}cm · 배치 t=0 ${r(ringPlacedM)}`);
+    for (const [st, e] of byState) {
+      console.log(`    ${st.padEnd(3)} 진입 ${r(e.first)} → 이탈 ${r(e.last)} · 구간 최대 ${r(e.max)}@f${e.maxF} · ${e.n}프레임`);
+    }
+    console.log(`    초반 정밀: ${ringYSeries.slice(0, 8).map((q) => `f${q.f} ${r(q.L)}`).join(" · ")}`);
+    const gmax = ringYSeries.reduce((b, q) => (q.L > b.L ? q : b), ringYSeries[0]);
+    console.log(`    전 구간 최대 ${r(gmax.L)} @f${gmax.f}/${gmax.st} · 최종 ${r(ringYSeries[ringYSeries.length - 1].L)} · 봉합 완료 f=${seamClosedAtFrame}`);
+  }
+
+  // ── 29계기: 링 y 시계열.  // ── 29계기: 링 y 시계열. 지지 실패(내려감)와 인장(제자리에서 벌어짐)의 분리.
   {
     const ridgeTopY = Math.max(...body.ridge.map((r) => r.topY));
     const step = Math.max(1, Math.round(ringYSeries.length / 12));
@@ -1303,4 +1365,43 @@ const fails = hard.filter((h) => !h.ok);
 console.log(
   `\n[dress] 판정: ${fails.length === 0 ? "통과 — v2 잠정 기준선 후보" : `실패 ${fails.length}건 — ${fails.map((h) => h.name).join(", ")}`} · 경과 ${elapsedS.toFixed(1)}s`,
 );
+
+// ── 30계기 C: **중력 0 ablation**(one-shot). 정착 도달 후 중력만 끄고 추가
+// 300프레임. 링이 rest 쪽으로 회수되면 "붙잡는 것 없음(하중 하 연성 평형)",
+// 유지되면 "무언가 능동적으로 벌리고 있음". 모든 판정·측정이 끝난 뒤에만
+// 돌린다 — sim을 변형하므로 위 수치를 오염시키면 안 된다.
+if (process.env.GRAV0 !== "0") {
+  const zero = new THREE.Vector3(0, 0, 0);
+  const L0 = ringLenM();
+  const before = { y: 0, n: 0 };
+  {
+    const idx = [...new Set(ringClosed.flatMap((e) => [e.a, e.b]))];
+    for (const i of idx) before.y += sim.positions[i * 3 + 1];
+    before.n = idx.length; before.y /= idx.length;
+  }
+  const track: { f: number; L: number }[] = [];
+  for (let k = 1; k <= 300; k++) {
+    session.step(SUBSTEP_DT, zero, preset, frameLayout, framePose);
+    if (k % 30 === 0 || k === 1) track.push({ f: k, L: ringLenM() });
+  }
+  const L1 = ringLenM();
+  let afterY = 0;
+  {
+    const idx = [...new Set(ringClosed.flatMap((e) => [e.a, e.b]))];
+    for (const i of idx) afterY += sim.positions[i * 3 + 1];
+    afterY /= idx.length;
+  }
+  const restM = ringRestConfirmedM;
+  const recovered = (L0 - L1) / Math.max(1e-9, L0 - restM);
+  console.log(`\n[dress] [30계기·중력 0 ablation] 정착 후 중력만 0으로 300프레임 (상한 상태: ${ringTotalMaxM > 0 ? "총길이 상한 on" : "RINGTOTAL=0"})`);
+  console.log(`  링 ${cm(L0)}cm(${(L0 / restM).toFixed(3)}배) → ${cm(L1)}cm(${(L1 / restM).toFixed(3)}배) · rest ${cm(restM)}cm`);
+  console.log(`  **회수율 ${(recovered * 100).toFixed(1)}%** (여분 ${cm(L0 - restM)}cm 중 ${cm(L0 - L1)}cm 회수) · 링 중심 y ${cm(before.y)} → ${cm(afterY)}`);
+  console.log(`  경과: ${track.map((t) => `f+${t.f} ${cm(t.L)}`).join(" · ")}`);
+  // 링이 감고 있는 몸의 굵기 — "회수 못 함"이 능동 힘인지 **기하 하한**인지의 입력.
+  const sliceAt = (h: number) => body.slices.reduce((b, sl) => (Math.abs(sl.y - h) < Math.abs(b.y - h) ? sl : b), body.slices[0]);
+  let topY = -Infinity;
+  for (const i of [...new Set(ringClosed.flatMap((e) => [e.a, e.b]))]) topY = Math.max(topY, sim.positions[i * 3 + 1]);
+  const sc = sliceAt(afterY), st2 = sliceAt(topY);
+  console.log(`  링이 감은 몸 굵기 — 중심 y${cm(afterY)} 단면 ${cm(sc.girthM)}cm(링/몸 ${(L1 / sc.girthM).toFixed(3)}배) · 최상점 y${cm(topY)} 단면 ${cm(st2.girthM)}cm(${(L1 / st2.girthM).toFixed(3)}배) · 어깨 통과 ${cm(body.shoulderPassGirthM)}cm@y${cm(body.shoulderJointY)}`);
+}
 process.exit(fails.length === 0 ? 0 : 1);
