@@ -291,6 +291,40 @@ let ringFullyEngagedAt = -1;
 let seamClosedAtFrame = -1;
 let ringLimitStart = COLLAR_STRAIN_LIMIT;
 let ringMaxBeforeCloseM = 0;
+// ── 26회차: **링 총 길이 상한**.
+//
+// 표적은 한 줄이다 — 링이 rest로 수렴하지 않는다(25회차 최종 104.54cm vs
+// rest 49.44cm = 2.11배). 21회차가 그 원인을 실측했다: `limitCollarStrain`은
+// **엣지별** 상한이라 각 엣지가 1.2배씩 늘면 총 길이는 누적으로 2.7배가 된다.
+// **엣지별 상한 강화로는 대체할 수 없다**(21회차가 그 경로의 실패를 이미 쟀다).
+//
+// ## 적용 방식 (구현 전 명시)
+// 총 길이는 링 전체에 걸린 **전역 양**이라 PBD 반복 안의 국소 제약으로
+// 표현되지 않는다. clothPhysics를 건드리지 않으려면 솔버 **밖에서** 한 번
+// 투영하는 것이 유일한 경로이므로, `session.step` 직후(`onFrame`)에
+// **매 프레임 1회 사후 투영**한다. 투영은 링 무게중심 기준 **등방 축소**다 —
+// 모든 현이 같은 배율로 줄어 총 길이가 정확히 상한이 되므로 반복이 필요 없다.
+// **상시**로 건다(착장 단계 조건부로 하면 21·22회차처럼 전이 타이밍이 새 변수가 된다).
+//
+// ## 기존 스택과의 상호작용
+//  (i)  엣지별 칼라 상한은 **그대로 둔다** — 총 길이가 맞아도 한 엣지에 몰리는
+//       것을 막는 상보 제약이다.
+//  (ii) 시접은 링 정점 중 목점 2개에만 걸리는데, 축소가 그 둘을 **같은 배율**로
+//       옮기므로 갭이 배율만큼 줄어든다(벌리지 않는다).
+//  (iii) 핀은 링 정점에 하나도 안 걸린다(24회차에 목점을 앵커에서 뺐다) —
+//       축소가 핀과 싸우지 않는다.
+//  (iv) 축소는 링을 몸 쪽으로 당기고 충돌 해소가 반작용으로 밀어낸다. 그
+//       균형점이 목선의 안착 위치가 된다.
+//
+// ## 계수 — **재단/착용 근거에서 도출**(화면 보고 내리는 튜닝 금지)
+// 풀오버의 목선이 설계상 늘어나야 하는 최대치는 **머리가 통과할 때**다. 그
+// 이상은 착용이 아니라 손상이다. 그래서 상한 = 머리 최대 둘레로 잡고, 계수는
+// 그것을 링 rest로 나눈 **도출값**이다(체형이 바뀌면 따라 움직인다).
+// 머리 대역은 목 최소 단면(neckY) **위** 슬라이스이고 둘레 계기는 몸통과 같다.
+// (추정: "머리 통과 이상은 필요 없다"는 재단 관행의 해석이고 이 저장소의
+//  실측으로 확정된 것이 아니다 — Stage 2c 체형 일반화에서 확인할 것.)
+const headGirthM = body.slices.reduce((m, sl) => (sl.y > body.neckY && sl.girthM > m ? sl.girthM : m), 0);
+let ringTotalMaxM = 0;
 const ringLenM = (): number => {
   let l = 0;
   for (const e of g.necklineRing) {
@@ -381,6 +415,10 @@ const ringClosed = [...g.necklineRing, ...ringJoinPairs.map((sm) => ({ a: sm.a, 
     );
   }
   ringRestM = ringM + 2 * Math.max(...g.seams.map((sm) => sm.targetM));
+  ringTotalMaxM = headGirthM;
+  console.log(
+    `[dress] 링 **총 길이** 상한: ${cm(ringTotalMaxM)}cm = 머리 최대 둘레(목 최소 단면 위 슬라이스 최대) · rest ${cm(ringRestM)}cm 대비 계수 **${(ringTotalMaxM / Math.max(1e-9, ringRestM)).toFixed(3)}**(도출) · 적용 = step 직후 무게중심 등방 축소 1회/프레임(상시) · 엣지별 상한은 병존`,
+  );
   const targetM = g.draft.dims.necklineGirthM;
   const errCm = (ringM - targetM) * 100;
   console.log(
@@ -468,6 +506,7 @@ const cachedFric = createCachedSdfIterationFriction(() => sdfField, {
 
 let anchorStrength = 0;
 let collarFired = 0;
+let ringTotalFired = 0;
 
 // 목점(어깨 시접의 첫 쌍) 전역 인덱스 — 닫힘 시점 기록용.
 const neckPointPairs = g.seams.filter((x) => x.kind === "shoulder")
@@ -804,6 +843,26 @@ const result = runDressing(
       return `링상한 ${Number.isFinite(ringLimitNow) ? ringLimitNow.toFixed(4) : "∞(일반 상한 위임)"}${Math.abs(ringLimitNow - COLLAR_STRAIN_LIMIT) < 1e-9 ? "(완전 발동)" : ""} · 앵커강도 ${anchorStrength.toFixed(3)}(게이트: seamGap ${(maxSeamGapM() * 1000).toFixed(1)}mm vs 해제창 ${(target * 1000).toFixed(1)}~${(thresh * 1000).toFixed(1)}mm)`;
     },
     onFrame: (frame, state) => {
+      // ── 링 총 길이 사후 투영(위 설계 문단). 무게중심 기준 등방 축소 1회.
+      // 핀 걸린 정점은 못 움직이므로 제외하고, 그만큼 배율을 나머지에 싣는다.
+      {
+        const L = ringLenM();
+        if (ringTotalMaxM > 0 && L > ringTotalMaxM) {
+          const idx = [...new Set(ringClosed.flatMap((e) => [e.a, e.b]))].filter((i) => !sim.pinned[i]);
+          if (idx.length > 0) {
+            let cx0 = 0, cy0 = 0, cz0 = 0;
+            for (const i of idx) { cx0 += sim.positions[i * 3]; cy0 += sim.positions[i * 3 + 1]; cz0 += sim.positions[i * 3 + 2]; }
+            cx0 /= idx.length; cy0 /= idx.length; cz0 /= idx.length;
+            const k = ringTotalMaxM / L;
+            for (const i of idx) {
+              sim.positions[i * 3] = cx0 + (sim.positions[i * 3] - cx0) * k;
+              sim.positions[i * 3 + 1] = cy0 + (sim.positions[i * 3 + 1] - cy0) * k;
+              sim.positions[i * 3 + 2] = cz0 + (sim.positions[i * 3 + 2] - cz0) * k;
+            }
+            ringTotalFired++;
+          }
+        }
+      }
       // 배선 검증(항상) — 하드 핀이 좌표를 잡고 있는가. 6회차는 이 값이
       // 목표 6.26cm에서 10.5cm로 밀렸다(잔차 42mm).
       if (state === "S1" && frame % 60 === 0) {
@@ -1034,7 +1093,7 @@ console.log(
   `  proximityPairs(기록 채널 · 문턱 ${(g.selfCollisionMinDistM * 1000).toFixed(2)}mm · 게이트 아님 — 뭉친 폴드의 정상 접촉을 센다): ${prox}쌍`,
 );
 console.log(`  자기교차(엣지-삼각형 · 게이트): ${xsec.count}건 (배치 t=0 기준선 3건 = S0 투영 교정 산출물)`);
-console.log(`  넥밴드 원주 제약 발화 누적: ${collarFired}회 = ${(collarFired / Math.max(1, result.frames)).toFixed(1)}/프레임 · 봉합 완료 f=${seamClosedAtFrame < 0 ? "미도달" : seamClosedAtFrame}(그 전까지 링 전용 상한은 일반 상한에 위임) · 링 원주 봉합 전 최대 ${cm(ringMaxBeforeCloseM)}cm → 최종 ${cm(ringLenM())}cm (rest ${cm(ringRestM)}cm)`);
+console.log(`  링 총 길이 상한 발화: ${ringTotalFired}회 = ${(ringTotalFired / Math.max(1, result.frames)).toFixed(2)}/프레임 · 상한 ${cm(ringTotalMaxM)}cm(계수 ${(ringTotalMaxM / Math.max(1e-9, ringRestM)).toFixed(3)})\n  넥밴드 원주 제약 발화 누적: ${collarFired}회 = ${(collarFired / Math.max(1, result.frames)).toFixed(1)}/프레임 · 봉합 완료 f=${seamClosedAtFrame < 0 ? "미도달" : seamClosedAtFrame}(그 전까지 링 전용 상한은 일반 상한에 위임) · 링 원주 봉합 전 최대 ${cm(ringMaxBeforeCloseM)}cm → 최종 ${cm(ringLenM())}cm (rest ${cm(ringRestM)}cm)`);
 console.log(`  관통(레이 패리티·비수밀 근사): 배치 후 ${penAfterPlace} → 정착 후 ${penEnd} / ${total}`);
 console.log(`  정착 프레임 ${settleFrame} · 물리 ${(elapsedS * 1000 / Math.max(1, result.frames)).toFixed(1)}ms/프레임`);
 if (result.failure) console.log(`  발산/중단: 상태 ${result.failure.state} · 프레임 ${result.failure.frame} · ${result.failure.reason}`);
