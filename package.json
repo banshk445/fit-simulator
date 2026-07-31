@@ -21,7 +21,8 @@
     "spike:dressing": "tsx scripts/spikeDressing.ts",
     "check:pattern": "tsx scripts/checkPattern.ts",
     "check:outline": "tsx scripts/checkOutline.ts",
-    "dress:pattern": "tsx scripts/dressPattern.ts"
+    "dress:pattern": "tsx scripts/dressPattern.ts",
+    "check:boundary": "tsx scripts/checkBoundary.ts"
   },
   "build": {
     "appId": "com.fitsimulator.app",

@@ -50,7 +50,7 @@ const ARMHOLE_DEPTH_EASE_M = 0.030;
 // 소매산 이즈 3cm — pattern-redesign 1번 조사의 채택값 그대로 승계
 // (우븐 1.5~2.5 / 니트 0.5~1.5 / 핏된 소매 3~4.5 중 우븐 평균). 원단별
 // 분기는 이 단계 범위 밖. (추정, 조사 근거 있음)
-const SLEEVE_CAP_EASE_M = 0.030;
+export const SLEEVE_CAP_EASE_M = 0.030;
 // 암홀 둘레 하한 = 팔 둘레 + 이 값(팔이 통과할 최소 여유). (추정)
 export const ARMHOLE_ARM_CLEARANCE_M = 0.020;
 // 암홀 곡선 형상 — 어깨점에서 **어깨선에 수직**으로 출발(암홀은 어깨
