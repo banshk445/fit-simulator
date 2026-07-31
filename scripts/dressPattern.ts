@@ -327,6 +327,8 @@ const headGirthM = body.slices.reduce((m, sl) => (sl.y > body.neckY && sl.girthM
 let ringTotalMaxM = 0;
 let ringRestConfirmedM = 0;
 let ringPlacedM = 0;
+// 38회차 계기 C — 폐곡선 순회 순서(정점 인덱스). 위 검증 블록이 만들어 내보낸다.
+let ringOrder: number[] = [];
 const ringLenM = (): number => {
   let l = 0;
   for (const e of g.necklineRing) {
@@ -406,6 +408,43 @@ const ringClosed = [...g.necklineRing, ...ringJoinPairs.map((sm) => ({ a: sm.a, 
   console.log(
     `[dress] 링 폐곡선화: 엣지 ${g.necklineRing.length} + 접합 ${ringJoinPairs.length} = ${ringClosed.length} · 정점 ${deg.size} · 전 정점 차수 2 ${allDeg2 ? "OK" : "**아님**"} · 순회 복귀 ${visited}/${deg.size} ${visited === deg.size ? "OK(단일 순환)" : "**분리됨**"} · 접합 rest ${(joinRestM * 1000).toFixed(1)}mm(= 시접 target)`,
   );
+  // ── 38회차 계기 C — 정의역 확정(37회차 A1·B1). 순회를 **버리지 않고** 내보낸다.
+  // 37회차 B1: 이 블록이 adj/deg를 만들어 검증만 하고 블록 스코프로 폐기했다.
+  ringOrder = (() => {
+    const out: number[] = [];
+    let p = -1, c = ringClosed[0].a;
+    for (let i = 0; i < deg.size; i++) {
+      out.push(c);
+      const nb = adj.get(c)!;
+      const nxt = nb.find((v) => v !== p) ?? nb[0];
+      p = c; c = nxt;
+    }
+    return out;
+  })();
+  // 사슬 분할 — necklineRing은 **열린 사슬 2개**(앞판 1 · 뒤판 1)다. 37회차 A1이
+  // "앞/뒤 30/30인지 미인쇄 = 확인 불가"로 남긴 항목을 런타임에서 뽑는다.
+  {
+    const chain = (lo: number, hi: number) => {
+      const es = g.necklineRing.filter((e) => e.a >= lo && e.a < hi);
+      const vs = new Set<number>(es.flatMap((e) => [e.a, e.b]));
+      let rest = 0;
+      for (const e of es) rest += Math.hypot(g.pos2[e.b * 2] - g.pos2[e.a * 2], g.pos2[e.b * 2 + 1] - g.pos2[e.a * 2 + 1]);
+      return { n: es.length, v: vs.size, rest };
+    };
+    const f = chain(0, g.panelStarts[1]), b = chain(g.panelStarts[1], g.panelStarts[2]);
+    console.log(
+      `  [38계기C·사슬 분할] 앞판 사슬 엣지 ${f.n}·정점 ${f.v}·rest ${cm(f.rest)}cm · 뒤판 사슬 엣지 ${b.n}·정점 ${b.v}·rest ${cm(b.rest)}cm · 합 엣지 ${f.n + b.n}·rest ${cm(f.rest + b.rest)}cm`,
+    );
+    console.log(`  [38계기C·순회 순서] 폐곡선 정점 ${ringOrder.length}개 · 앞판 ${ringOrder.filter((i) => i < g.panelStarts[1]).length} / 뒤판 ${ringOrder.filter((i) => i >= g.panelStarts[1]).length} · 시작 #${ringOrder[0]} → ${ringOrder.slice(0, 8).map((i) => `#${i}`).join("→")}…`);
+    // rest 3종 구분(37회차 A3 — 셋을 한 이름으로 부르면 함정13)
+    const distRest = ringJoinPairs.map((sm) => {
+      const c = [...sim.constraintPairs].find((q) => (q.a === sm.a && q.b === sm.b) || (q.a === sm.b && q.b === sm.a));
+      return c?.restLength ?? NaN;
+    });
+    console.log(
+      `  [38계기C·접합 rest 3종] ① 거리 제약 rest ${distRest.map((v) => cm(v)).join(" / ")}cm(엣지별 · buildPatternSim이 배치 3D 갭에서 등록) · ② collarRing rest ${(joinRestM * 1000).toFixed(1)}mm(setCollarRing · S1 내내 미발화) · ③ 시접 target ${(joinRestM * 1000).toFixed(1)}mm(램프 도착점) — **서로 다른 값이다**`,
+    );
+  }
 }
 {
   let ringM = 0;
@@ -668,12 +707,34 @@ let probeArmed = false;
 let probeSub = 0;
 let probeFrameLabel = "";
 const PROBE_FRAMES = new Set<number>((process.env.PROBE ?? "1,8,62,280").split(",").map(Number));
+// 38회차 계기 A — 접합 실거리를 찍을 프레임(회차 프롬프트 지정 + 정착은 종료 후 별도).
+const JOIN_FRAMES = new Set<number>([0, 1, 2, 4, 8, 62, 110, 117]);
 const probeReports: string[] = [];
-const probeLog: { sub: number; label: string; L: number }[] = [];
+const probeLog: { sub: number; label: string; L: number; J: number }[] = [];
+// 38회차 계기 A — **접합 2엣지 실거리 합**. 링 60엣지와 같은 패스 경계에서 읽어
+// 같은 표에 놓는다(37회차 C3: 이 시계열을 찍는 코드가 없었다).
+const joinLenM = (): number => {
+  let l = 0;
+  for (const sm of ringJoinPairs) {
+    l += Math.hypot(
+      sim.positions[sm.b * 3] - sim.positions[sm.a * 3],
+      sim.positions[sm.b * 3 + 1] - sim.positions[sm.a * 3 + 1],
+      sim.positions[sm.b * 3 + 2] - sim.positions[sm.a * 3 + 2],
+    );
+  }
+  return l;
+};
+// 접합 2엣지의 **거리 제약 rest**(제약이 실제로 순회하는 집합에서 직접 뜬다 — 함정 12).
+// collarRing rest(6.0mm)도 시접 target(6.0mm)도 아니다 — 37회차 A3.
+const joinConstraints = ringJoinPairs.map((sm) =>
+  [...sim.constraintPairs].find((q) => (q.a === sm.a && q.b === sm.b) || (q.a === sm.b && q.b === sm.a)),
+);
+// 이름 주의: 위 폐곡선화 블록의 블록 스코프 `joinRestM`(= 시접 target 6.0mm)과 **다른 값**이다.
+const joinDistRestSumM = (): number => joinConstraints.reduce((s, c) => s + (c?.restLength ?? 0), 0);
 const probe = (label: string): void => {
   if (!probeArmed) return;
   if (label.startsWith("0.")) probeSub++;
-  probeLog.push({ sub: probeSub, label, L: ringLenM() });
+  probeLog.push({ sub: probeSub, label, L: ringLenM(), J: joinLenM() });
 };
 // sim.step 내부 분해 — 충돌(흡착)과 반복 안 마찰만 하네스에서 감쌀 수 있다.
 // 앵커(`sim.applyAnchors`)와 거리 제약은 garmentFrame이 만든 iterExtra 안이라
@@ -698,6 +759,59 @@ const adsorbNoPin = new Uint8Array(total);
 const adsorbRun = (): void => {
   adsorbScratch.set(sim.positions);
   unified(adsorbScratch, adsorbNoPin, total);
+};
+// ── 38회차 계기 B — 흡착 Δ의 **성분 3분리**(37회차 D3·E2c).
+// 35회차 Δ는 `unified` 합성값이었다. 뒤판 링은 메시(안으로)와 몸통 캡슐(밖으로)이
+// **반대 방향**이라 합성값으로는 해석이 안 된다. 세 기계를 각각 단독으로 돌린다 —
+// 리졸버를 재구현하지 않고 `unified`가 부르는 것과 **같은 함수**를 같은 인자로 부른다.
+const compScratch = new Float32Array(sim.positions.length);
+const compRun = (which: "mesh" | "torso" | "arm"): Float32Array => {
+  compScratch.set(sim.positions);
+  if (which === "mesh") {
+    meshResolver(compScratch, adsorbNoPin, total);
+  } else {
+    let offset = 0;
+    for (let p = 0; p < g.panelCounts.length; p++) {
+      const count = g.panelCounts[p];
+      const pos = compScratch.subarray(offset * 3, (offset + count) * 3);
+      const pin = adsorbNoPin.subarray(offset, offset + count);
+      if (which === "torso") {
+        if (p === PANEL_PAT_FRONT || p === PANEL_PAT_BACK) applyCapsuleCollision(pos, pin, count, collision.capsules, COLLISION_MARGIN);
+      } else {
+        applyCapsuleCollision(pos, pin, count, armCapsules, 0.006);
+      }
+      offset += count;
+    }
+  }
+  return compScratch;
+};
+const compReport = (label: string): string => {
+  const front = ringOrder.filter((i) => i < g.panelStarts[1]);
+  const back = ringOrder.filter((i) => i >= g.panelStarts[1]);
+  const lines = [`  [38계기B·흡착 성분 3분리] ${label} · 앞판 링 ${front.length} / 뒤판 링 ${back.length}`];
+  for (const which of ["mesh", "torso", "arm"] as const) {
+    const s = compRun(which);
+    const stat = (idx: number[]): string => {
+      const mags = idx.map((i) => Math.hypot(s[i * 3] - sim.positions[i * 3], s[i * 3 + 1] - sim.positions[i * 3 + 1], s[i * 3 + 2] - sim.positions[i * 3 + 2]) * 1000);
+      const fired = mags.filter((m) => m > 1e-6).length;
+      const sorted = [...mags].sort((a, b) => a - b);
+      // z 성분 부호별 총량 — 앞판면 z+17.07 / 뒤판면 z−13.98이므로 z가 방향을 가른다.
+      let zPos = 0, zNeg = 0;
+      for (const i of idx) { const dz = (s[i * 3 + 2] - sim.positions[i * 3 + 2]) * 1000; if (dz > 0) zPos += dz; else zNeg += dz; }
+      return `발화 ${fired}/${idx.length} · |Δ| 중앙 ${sorted[Math.floor(sorted.length * 0.5)].toFixed(2)} 최대 ${sorted[sorted.length - 1].toFixed(2)}mm · Δz 총 +${zPos.toFixed(1)}/${zNeg.toFixed(1)}mm`;
+    };
+    const nm = which === "mesh" ? "meshResolver" : which === "torso" ? "몸통 캡슐(15mm)" : "팔 캡슐(6mm)";
+    lines.push(`    ${nm.padEnd(16)} 앞판 ${stat(front)}`);
+    lines.push(`    ${"".padEnd(16)} 뒤판 ${stat(back)}`);
+  }
+  // 35회차 "목표 부위 등 25"가 캡슐 목표였는지 — 뒤판 링의 캡슐 단독 함의 목표 z.
+  {
+    const s = compRun("torso");
+    const back = ringOrder.filter((i) => i >= g.panelStarts[1]);
+    const zs = back.map((i) => sim.positions[i * 3 + 2] + (s[i * 3 + 2] - sim.positions[i * 3 + 2]) / 0.35).sort((a, b) => a - b);
+    lines.push(`    [35회차 대조] 뒤판 링 캡슐 단독 함의 목표 z(완화 0.35 역산) 중앙 ${cm(zs[Math.floor(zs.length / 2)])}cm · 범위 ${cm(zs[0])}~${cm(zs[zs.length - 1])}cm — 35회차가 "등"으로 분류한 목표 z≈−20.2cm와 대조`);
+  }
+  return lines.join("\n");
 };
 // 몸 부위 분류 — 전부 `bodyMeasure` 실측 랜드마크에서 도출한다(새 상수 0).
 //   목 기둥 = 목밑둘레 높이 위 · 어깨 능선 = 그 |x|의 최상단 표면점 근방(margin)
@@ -1137,6 +1251,23 @@ const result = runDressing(
       // "t=0(배치 직후)"라고 부른 지도는 **핀이 이미 돈 뒤**의 지도다.
       // 진짜 배치 직후는 `placementRestGate("(i) …")`가 잰다.
       if (_frame === 0) probeReports.push(restMap("f0 beforeStep (**핀 발화 직후** · 첫 적분 전) — 32회차가 't=0'이라 부른 시점"));
+      // ── 38회차 계기 A — 접합 실거리 시계열(37회차 C3). beforeStep은 step 직전이라
+      // 여기 값이 "f=_frame 종료 상태 = f=_frame+1 시작 상태"다. 라벨을 그렇게 붙인다.
+      if (JOIN_FRAMES.has(_frame)) {
+        const rows = ringJoinPairs.map((sm, k) => {
+          const d = Math.hypot(
+            sim.positions[sm.b * 3] - sim.positions[sm.a * 3],
+            sim.positions[sm.b * 3 + 1] - sim.positions[sm.a * 3 + 1],
+            sim.positions[sm.b * 3 + 2] - sim.positions[sm.a * 3 + 2],
+          );
+          const r = joinConstraints[k]?.restLength ?? NaN;
+          // 부호 규약: rest−실거리 > 0 = **압축**(제약이 두 목점을 밀어낸다)
+          //           rest−실거리 < 0 = **신장**(제약이 두 목점을 당긴다)
+          return `#${sm.a}↔#${sm.b} 실거리 ${cm(d)} rest ${cm(r)} (rest−실) ${((r - d) * 100 >= 0 ? "+" : "")}${((r - d) * 100).toFixed(2)}cm ${r > d ? "**압축→밀어냄**" : "신장→당김"}`;
+        });
+        probeReports.push(`  [38계기A·접합 실거리] f=${String(_frame).padStart(3)} 링60 ${cm(ringLenM())}cm · 접합합 실거리 ${cm(joinLenM())}cm rest ${cm(joinDistRestSumM())}cm · ${rows.join(" · ")}`);
+      }
+      if (_frame === 0 || _frame === 7) probeReports.push(compReport(`f${_frame + 1}`));
       // ── 35회차 계기. beforeStep(_frame)은 f=_frame+1을 만드는 step **직전**이다.
       if (_frame === 0 || _frame === 7) {
         const fl = `f${_frame + 1}`;
@@ -1206,7 +1337,8 @@ const result = runDressing(
           const q = probeLog[k];
           const d = k === 0 ? 0 : q.L - probeLog[k - 1].L;
           if (q.sub !== prev) { lines.push(`    ── 서브스텝 ${q.sub}`); prev = q.sub; }
-          lines.push(`      ${q.label.padEnd(34)} ${cm(q.L).padStart(7)}cm (${(q.L / restM).toFixed(3)}배)  Δ${(d * 100 >= 0 ? "+" : "")}${(d * 100).toFixed(2)}cm`);
+          const dJ = k === 0 ? 0 : q.J - probeLog[k - 1].J;
+          lines.push(`      ${q.label.padEnd(34)} 링60 ${cm(q.L).padStart(7)}cm (${(q.L / restM).toFixed(3)}배)  Δ${(d * 100 >= 0 ? "+" : "")}${(d * 100).toFixed(2)}cm │ 접합 ${cm(q.J).padStart(7)}cm  Δ${(dJ * 100 >= 0 ? "+" : "")}${(dJ * 100).toFixed(2)}cm`);
         }
         // 패스별 기여 합계 — 라벨별로 Δ를 모은다.
         const byPass = new Map<string, number>();
@@ -1216,6 +1348,12 @@ const result = runDressing(
         }
         const totalUp = [...byPass.values()].filter((v) => v > 0).reduce((a, b) => a + b, 0);
         lines.push(`    [기여 합계] 프레임 순변화 ${((probeLog[probeLog.length - 1].L - probeLog[0].L) * 100).toFixed(2)}cm · 양의 기여 총합 ${(totalUp * 100).toFixed(2)}cm`);
+        // 38회차 계기 A — 같은 패스 경계에서 **접합 2엣지**의 기여도 가른다.
+        {
+          const byPassJ = new Map<string, number>();
+          for (let k = 1; k < probeLog.length; k++) byPassJ.set(probeLog[k].label, (byPassJ.get(probeLog[k].label) ?? 0) + (probeLog[k].J - probeLog[k - 1].J));
+          lines.push(`    [접합 기여] 프레임 순변화 ${((probeLog[probeLog.length - 1].J - probeLog[0].J) * 100).toFixed(2)}cm · ${[...byPassJ].filter(([, v]) => Math.abs(v) > 1e-6).sort((a, b) => Math.abs(b[1]) - Math.abs(a[1])).map(([l, v]) => `${l} ${(v * 100 >= 0 ? "+" : "")}${(v * 100).toFixed(2)}cm`).join(" · ")}`);
+        }
         for (const [lab, v] of [...byPass].sort((a, b) => b[1] - a[1])) {
           lines.push(`      ${lab.padEnd(34)} ${(v * 100 >= 0 ? "+" : "")}${(v * 100).toFixed(2)}cm ${v > 0 ? `(양의 기여의 ${(100 * v / Math.max(1e-9, totalUp)).toFixed(1)}%)` : ""}`);
         }
@@ -1499,6 +1637,20 @@ console.log(`  covShoulder 버킷: ${JSON.stringify(Object.fromEntries(Object.en
 console.log(`  shoulderHover top-front: hit ${tf.hit.toFixed(3)} / hover ${tf.mean.toFixed(2)}|${tf.max.toFixed(2)}mm`);
 console.log(`  shoulderHover top-back : hit ${tb.hit.toFixed(3)} / hover ${tb.mean.toFixed(2)}|${tb.max.toFixed(2)}mm`);
 console.log(`  maxStrain ${strain.v.toFixed(3)} (정점 ${strain.at}) · maxSeamGap ${(maxSeamGapM() * 1000).toFixed(2)}mm · Δ20 ${maxDelta20Mm().toFixed(2)}mm`);
+// ── 38계기 A: 정착 시점 접합 실거리(시계열의 마지막 행).
+{
+  const rows = ringJoinPairs.map((sm, k) => {
+    const d = Math.hypot(
+      sim.positions[sm.b * 3] - sim.positions[sm.a * 3],
+      sim.positions[sm.b * 3 + 1] - sim.positions[sm.a * 3 + 1],
+      sim.positions[sm.b * 3 + 2] - sim.positions[sm.a * 3 + 2],
+    );
+    const r = joinConstraints[k]?.restLength ?? NaN;
+    return `#${sm.a}↔#${sm.b} 실거리 ${cm(d)} rest ${cm(r)} (rest−실) ${((r - d) * 100 >= 0 ? "+" : "")}${((r - d) * 100).toFixed(2)}cm ${r > d ? "**압축→밀어냄**" : "신장→당김"}`;
+  });
+  console.log(`  [38계기A·접합 실거리] 정착 링60 ${cm(ringLenM())}cm · 접합합 실거리 ${cm(joinLenM())}cm rest ${cm(joinDistRestSumM())}cm · ${rows.join(" · ")}`);
+  console.log(`    폐곡선(링60+접합) 실측 ${cm(ringLenM() + joinLenM())}cm · 폐곡선 rest(거리 제약 기준) ${cm(ringRestConfirmedM + joinDistRestSumM())}cm`);
+}
 // ── 35계기 6번: maxSeamGap의 **공간 분포**. 어느 종류·어느 자리가 벌어졌는가.
 {
   const rows = g.seams.map((sm) => ({
