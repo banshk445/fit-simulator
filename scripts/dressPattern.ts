@@ -1003,6 +1003,133 @@ const capsuleCountReport = (label: string): string => {
     ` · 히스토그램 ${[...hist].sort((a, b) => a[0] - b[0]).map(([k, v]) => `${k}개:${v}`).join(" ")}` +
     ` · **밀어내기 적용 수 = ${!TORSOCAP ? "0(캡슐 off)" : SINGLE_DEEPEST ? "정점당 1(가장 깊은 것)" : "위 개수 그대로(in-situ 누적)"}**`;
 };
+// ══ 48회차 계기 — 밑단 사슬 형상(프릴/말림) ══════════════════════════════════
+// 규칙 노트 `밑단형상계기-체크리스트` 이행. **정의역은 이미 코드에 있는 술어를 재사용**한다
+// (dressPattern `[diag·y]`의 hemIdx와 같은 식) — 두 번째 정의를 만들지 않는다(함정 12).
+//
+// **"요동"의 식 재도출(체크리스트 C)**: 축 기준 반경을 쓰지 않는다 — 밑단 높이의 몸 단면은
+// 원이 아니고 가랑이 아래에선 닫힌 곡선조차 아니다(35회차 반경 분해 실패의 재현 조건).
+// 기준선은 **사슬 자신의 고정 호장 창 저역통과**이고, 진폭은 평활 곡선의 **수평면 단위
+// 법선** 성분이다(프릴). 수직 성분은 따로 낸다(말림) — 다른 현상이다.
+const HEM_STRICT = 1e-9;
+const hemChain = (() => {
+  const lenM = g.draft.dims.lengthM;
+  const loose: number[] = [], strict: number[] = [];
+  for (let i = 0; i < g.panelStarts[2]; i++) {
+    const y = g.pos2[i * 2 + 1];
+    if (y > lenM - 0.01) loose.push(i);
+    if (Math.abs(y - lenM) < HEM_STRICT + 1e-6) strict.push(i);
+  }
+  // 사슬은 패널별로 나누고 **패턴 x 정렬 = 호장 순서**(밑단은 제도상 직선이다).
+  const chainOf = (lo: number, hi: number): number[] =>
+    strict.filter((i) => i >= lo && i < hi).sort((a, b) => g.pos2[a * 2] - g.pos2[b * 2]);
+  const front = chainOf(0, g.panelStarts[1]), back = chainOf(g.panelStarts[1], g.panelStarts[2]);
+  // 검증: 연속 쌍이 실제 메시 엣지인가(체크리스트 B). 아니면 그 사슬은 물리 경계가 아니다.
+  const edgeKey = new Set<number>(g.edgePairs.map((e) => Math.min(e.a, e.b) * 1e6 + Math.max(e.a, e.b)));
+  const bad = (c: number[]): number => {
+    let n = 0;
+    for (let k = 1; k < c.length; k++) if (!edgeKey.has(Math.min(c[k - 1], c[k]) * 1e6 + Math.max(c[k - 1], c[k]))) n++;
+    return n;
+  };
+  return { loose, strict, front, back, badFront: bad(front), badBack: bad(back) };
+})();
+// 사슬 하나의 요동 채널. `pos`는 좌표 소스(자기검사에서 합성 사슬을 넣는다).
+const hemWobble = (chain: number[], W: number, pos: Float32Array): {
+  L: number; amp: number[]; vert: number[]; lam: number; perLam: number; edge: number;
+} => {
+  const n = chain.length;
+  const P = (k: number, c: number): number => pos[chain[k] * 3 + c];
+  // 호장
+  const sArr = new Float64Array(n);
+  for (let k = 1; k < n; k++) sArr[k] = sArr[k - 1] + Math.hypot(P(k, 0) - P(k - 1, 0), P(k, 1) - P(k - 1, 1), P(k, 2) - P(k - 1, 2));
+  const L = sArr[n - 1];
+  // 고정 호장 창 저역통과(정점 개수 창 금지 — 간격이 변한다)
+  const sm = new Float64Array(n * 3);
+  for (let k = 0; k < n; k++) {
+    let wx = 0, wy = 0, wz = 0, cnt = 0;
+    for (let j = 0; j < n; j++) if (Math.abs(sArr[j] - sArr[k]) <= W / 2) { wx += P(j, 0); wy += P(j, 1); wz += P(j, 2); cnt++; }
+    sm[k * 3] = wx / cnt; sm[k * 3 + 1] = wy / cnt; sm[k * 3 + 2] = wz / cnt;
+  }
+  const amp: number[] = [], vert: number[] = [];
+  // **경계 제외**: 이동평균 창이 한쪽만 차는 양 끝 W/2 구간은 기준선이 편향된다
+  // (48회차 자기검사가 이 편향을 진폭 1.55배로 잡아냈다). 통계에서 뺀다.
+  const interior = (k: number): boolean => sArr[k] >= W / 2 && sArr[k] <= L - W / 2;
+  for (let k = 0; k < n; k++) {
+    if (!interior(k)) continue;
+    const a = Math.max(0, k - 1), b = Math.min(n - 1, k + 1);
+    // 평활 곡선의 접선 → 수평면 단위 법선(프릴 방향). 수직은 y 성분으로 따로.
+    const tx = sm[b * 3] - sm[a * 3], tz = sm[b * 3 + 2] - sm[a * 3 + 2];
+    const tl = Math.hypot(tx, tz) || 1;
+    const nx = -tz / tl, nz = tx / tl;
+    amp.push(((P(k, 0) - sm[k * 3]) * nx + (P(k, 2) - sm[k * 3 + 2]) * nz) * 1000);
+    vert.push((P(k, 1) - sm[k * 3 + 1]) * 1000);
+  }
+  let flips = 0;
+  for (let k = 1; k < amp.length; k++) if (amp[k - 1] * amp[k] < 0) flips++;
+  // 파장은 **부호변화를 센 그 구간의 호장**으로 낸다. 전체 L을 쓰면 내부만 센 flips와
+  // 정의역이 어긋나 파장이 부풀려진다(48회차 자기검사가 12.21 vs 8.00으로 잡았다).
+  let lo = -1, hi = -1;
+  for (let k = 0; k < n; k++) if (sArr[k] >= W / 2 && sArr[k] <= L - W / 2) { if (lo < 0) lo = k; hi = k; }
+  const Lint = lo >= 0 && hi > lo ? sArr[hi] - sArr[lo] : L;
+  const lam = flips > 0 ? (2 * Lint) / flips : Infinity;
+  const edge = amp.length > 1 ? Lint / (amp.length - 1) : 0;
+  return { L, amp, vert, lam, perLam: edge > 0 ? lam / edge : 0, edge };
+};
+// 밑단 형상 보고 + **합성 주입 자기검사**(체크리스트 E) — 프릴을 재는 식이 프릴을 재는지의
+// 유일한 직접 증거다. 실패하면 그 회차 수치를 쓰지 않는다.
+const hemSelfTest = (): string => {
+  const c = hemChain.front;
+  if (c.length < 8) return "  [48계기·자기검사] 사슬 길이 부족 — **산출 불가**";
+  // 합성: 실제 사슬 위치를 x축 직선으로 놓고 z에 λ=8cm·A=1cm 사인파를 주입한다.
+  const fake = new Float32Array(sim.positions.length);
+  const step = 0.016; // 밑단 국소 엣지(설계 16mm)
+  for (let k = 0; k < c.length; k++) {
+    fake[c[k] * 3] = k * step;
+    fake[c[k] * 3 + 1] = 0.75;
+    fake[c[k] * 3 + 2] = 0.01 * Math.sin((2 * Math.PI * (k * step)) / 0.08);
+  }
+  const r = hemWobble(c, 0.16, fake);
+  const A = Math.max(...r.amp.map(Math.abs));
+  const okL = Number.isFinite(r.lam) && Math.abs(r.lam - 0.08) < 0.01;
+  const okA = Math.abs(A - 10) < 1.0;
+  return `  [48계기·자기검사] 주입 λ=8.00cm A=10.0mm → 측정 λ=${Number.isFinite(r.lam) ? cm(r.lam) : "∞"}cm A=${A.toFixed(1)}mm · λ ${okL ? "OK" : "**실패**"} · A ${okA ? "OK" : "**실패**"} → ${okL && okA ? "계기 유효" : "**계기 무효 — 이번 회차 밑단 수치를 쓰지 않는다**"}`;
+};
+const hemReport = (label: string): string => {
+  const lines = [`  [48계기·밑단 형상] ${label} · 정의역 loose(1cm) ${hemChain.loose.length} / **strict ${hemChain.strict.length}** · 앞판 사슬 ${hemChain.front.length} 뒤판 ${hemChain.back.length} · 사슬 연속쌍 비-엣지 앞 ${hemChain.badFront} 뒤 ${hemChain.badBack}`];
+  for (const [nm, c] of [["앞판", hemChain.front], ["뒤판", hemChain.back]] as const) {
+    if (c.length < 8) { lines.push(`    ${nm} — 사슬 8정점 미만, 산출 불가`); continue; }
+    for (const W of [0.08, 0.16]) {
+      const r = hemWobble(c, W, sim.positions);
+      const abs = r.amp.map(Math.abs).sort((a, b) => a - b);
+      const maxAt = r.amp.reduce((m, v, i) => (Math.abs(v) > Math.abs(r.amp[m]) ? i : m), 0);
+      const pos = r.amp.filter((v) => v > 0).reduce((a, b) => a + b, 0);
+      const neg = r.amp.filter((v) => v < 0).reduce((a, b) => a + b, 0);
+      const vAbs = r.vert.map(Math.abs).sort((a, b) => a - b);
+      // 파장당 표본 < 4면 Nyquist 근방 — 숫자를 쓰지 않는다(체크리스트 C).
+      const nyq = r.perLam < 4;
+      lines.push(
+        `    ${nm} W=${cm(W)}cm · 사슬 ${cm(r.L)}cm(엣지 ${(r.edge * 1000).toFixed(1)}mm) · **프릴(수평법선)** 중앙 ${abs[Math.floor(abs.length / 2)].toFixed(2)} p99 ${abs[Math.floor(abs.length * 0.99)].toFixed(2)} 최대 ${abs[abs.length - 1].toFixed(2)}mm@#${c[maxAt]} · 양총 +${pos.toFixed(0)}/음총 ${neg.toFixed(0)}mm` +
+        ` · **말림(수직)** 중앙 ${vAbs[Math.floor(vAbs.length / 2)].toFixed(2)} 최대 ${vAbs[vAbs.length - 1].toFixed(2)}mm` +
+        ` · 파장 ${nyq ? "**산출 불가(파장당 표본 " + r.perLam.toFixed(1) + " < 4 · Nyquist)**" : cm(r.lam) + "cm(엣지 " + r.perLam.toFixed(1) + "배)"}`,
+      );
+    }
+    // 접힘 계수 = 사슬 길이 / (x,z) 투영 볼록껍질 둘레 — 거리 지표가 못 재는 것을 잡는다.
+    const pts = c.map((i) => [sim.positions[i * 3], sim.positions[i * 3 + 2]] as [number, number]).sort((a, b) => a[0] - b[0] || a[1] - b[1]);
+    const cross = (o: number[], a: number[], b: number[]): number => (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0]);
+    const hull: [number, number][] = [];
+    for (const pt of pts) { while (hull.length >= 2 && cross(hull[hull.length - 2], hull[hull.length - 1], pt) <= 0) hull.pop(); hull.push(pt); }
+    const lower = hull.length;
+    for (let i = pts.length - 2; i >= 0; i--) { const pt = pts[i]; while (hull.length > lower && cross(hull[hull.length - 2], hull[hull.length - 1], pt) <= 0) hull.pop(); hull.push(pt); }
+    let hp = 0;
+    for (let i = 1; i < hull.length; i++) hp += Math.hypot(hull[i][0] - hull[i - 1][0], hull[i][1] - hull[i - 1][1]);
+    const r0 = hemWobble(c, 0.16, sim.positions);
+    // 몸까지 부호없는 거리 — 흡착 목표(margin 15mm)에 붙었는지 떠 있는지.
+    const ds = c.map((i) => (wholeMesh.closestPointUnsigned(sim.positions[i * 3], sim.positions[i * 3 + 1], sim.positions[i * 3 + 2], SDF_FAR)?.distance ?? NaN) * 1000)
+      .filter((v) => Number.isFinite(v)).sort((a, b) => a - b);
+    lines.push(`    ${nm} 접힘계수 = 사슬 ${cm(r0.L)} / 투영 볼록껍질 ${cm(hp)} = **${(r0.L / Math.max(1e-9, hp)).toFixed(3)}** · 몸거리 중앙 ${ds.length ? ds[Math.floor(ds.length / 2)].toFixed(1) : "-"} p99 ${ds.length ? ds[Math.floor(ds.length * 0.99)].toFixed(1) : "-"} 최소 ${ds.length ? ds[0].toFixed(1) : "-"}mm (흡착 margin 15.0mm)`);
+  }
+  return lines.join("\n");
+};
 const ringShapeReport = (label: string): string => {
   const stat = (idx: number[], nm: string): string => {
     if (idx.length === 0) return `${nm} —`;
@@ -1500,6 +1627,8 @@ const result = runDressing(
       // 39회차 계기 D(형상) · B(성분 3분리) — f1·f2·f3·f4·f8 + f62. beforeStep은 step 직전이라
       // 여기 값은 "f=_frame 종료 상태". D는 t=0(=f0)도 찍는다.
       if (SHAPE_FRAMES.has(_frame)) { probeReports.push(ringShapeReport(`f=${_frame}`)); probeReports.push(capsuleCountReport(`f=${_frame}`)); }
+      if (_frame === 0 || _frame === 1 || _frame === 8) probeReports.push(hemReport(`f=${_frame}`));
+      if (_frame === 0) probeReports.push(hemSelfTest());
       if (COMP_FRAMES.has(_frame)) probeReports.push(compReport(`f${_frame + 1} 직전(=f${_frame} 종료 상태)`));
       // ── 35회차 계기. beforeStep(_frame)은 f=_frame+1을 만드는 step **직전**이다.
       if (_frame === 0 || _frame === 7) {
@@ -1948,6 +2077,7 @@ console.log(`  maxStrain ${strain.v.toFixed(3)} (정점 ${strain.at}) · maxSeam
   console.log(`    폐곡선(링60+접합) 실측 ${cm(ringLenM() + joinLenM())}cm · 폐곡선 rest(거리 제약 기준) ${cm(ringRestConfirmedM + joinDistRestSumM())}cm`);
   console.log(ringShapeReport("정착"));
   console.log(capsuleCountReport("정착"));
+  console.log(hemReport("정착"));
   console.log(`  [45·기준선 상태] 몸통 캡슐 ${TORSOCAP ? "**on**(TORSOCAP=1 · 43회차 처방 A 복원)" : "**OFF**(기본 — 45회차 승격 기준선)"}`);
 }
 // ── 35계기 6번: maxSeamGap의 **공간 분포**. 어느 종류·어느 자리가 벌어졌는가.

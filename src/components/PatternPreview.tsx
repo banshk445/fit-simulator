@@ -47,6 +47,14 @@ export function PatternPreview(): React.JSX.Element | null {
   // `?patternstate=1` — 2b 하네스가 남긴 최종 상태(시뮬 결과)를 그린다.
   // 없으면 2a 정적 배치를 그린다. 물리는 여전히 여기서 돌지 않는다.
   const useDressState = new URLSearchParams(window.location.search).get("patternstate") === "1";
+  // ── 48회차 `?cleanrender=1` — **캡처 전용 토글 · 기본 off · 물리 무관.**
+  // 47회차 δ가 옆선 세로 결함에 렌더 성분 3종이 항상 얹힌다는 것을 코드에서 확인했다:
+  //  ① 패널마다 따로 `computeVertexNormals()` → 패널 경계에서 법선 불연속
+  //  ② 시접 브리지가 단색 회청 띠(#6b7f8c)로 항상 그려짐
+  //  ③ 패널을 따로 그려 시접 rest 6mm가 세로 틈으로 보임(주석이 이미 등재)
+  // 이 토글은 ①의 법선을 시접 쌍끼리 **평균해 용접**하고 ②를 **숨긴다**.
+  // **정점 위치는 한 좌표도 건드리지 않는다** — 표현만 바꿔 렌더 몫을 분리한다.
+  const cleanRender = new URLSearchParams(window.location.search).get("cleanrender") === "1";
   const [geos, setGeos] = useState<THREE.BufferGeometry[] | null>(null);
   const [bridgeGeo, setBridgeGeo] = useState<THREE.BufferGeometry | null>(null);
   const texture = useMemo(() => makeCheckerTexture(), []);
@@ -144,6 +152,26 @@ export function PatternPreview(): React.JSX.Element | null {
         geo.computeVertexNormals();
         out.push(geo);
       }
+      // 48회차 clean — 시접 쌍의 법선을 평균해 **패널 경계 법선 불연속을 없앤다**.
+      // 위치는 안 건드린다. 패널 로컬 인덱스로 되돌려 써야 한다(geo는 패널별이다).
+      if (cleanRender) {
+        const panelOf = (gi: number): number => {
+          for (let p = 3; p >= 0; p--) if (gi >= g.panelStarts[p]) return p;
+          return 0;
+        };
+        for (const sm of g.seams) {
+          const pa = panelOf(sm.a), pb = panelOf(sm.b);
+          const na = out[pa].getAttribute("normal") as THREE.BufferAttribute;
+          const nb = out[pb].getAttribute("normal") as THREE.BufferAttribute;
+          const ia = sm.a - g.panelStarts[pa], ib = sm.b - g.panelStarts[pb];
+          const x = (na.getX(ia) + nb.getX(ib)) / 2, y = (na.getY(ia) + nb.getY(ib)) / 2, z = (na.getZ(ia) + nb.getZ(ib)) / 2;
+          const l = Math.hypot(x, y, z) || 1;
+          na.setXYZ(ia, x / l, y / l, z / l);
+          nb.setXYZ(ib, x / l, y / l, z / l);
+        }
+        for (const geo of out) (geo.getAttribute("normal") as THREE.BufferAttribute).needsUpdate = true;
+        console.log(`[patternPreview] **cleanrender=1** — 시접 ${g.seams.length}쌍 법선 용접 · 브리지 숨김 · 위치 불변(캡처 전용)`);
+      }
       // ── 시접 브리지 (§3.4) — v1 기계(`seamBridge.ts`)를 **무수정**으로 재사용한다.
       // 패널 4매를 별개 지오메트리로 그리므로 시접 rest 6mm 간격이 화면에 그대로
       // 세로 틈으로 보인다(2b 6·7회차 관측: 물리적으로는 4.9~9.1mm로 닫혀 있다).
@@ -181,7 +209,7 @@ export function PatternPreview(): React.JSX.Element | null {
       );
     })();
     return () => { alive = false; };
-  }, [garmentSize, useDressState]);
+  }, [garmentSize, useDressState, cleanRender]);
 
   if (!geos) return null;
   return (
@@ -195,7 +223,7 @@ export function PatternPreview(): React.JSX.Element | null {
           어디를 메웠는지 눈으로 구분되는 게 이 단계의 목적이다.
           색은 저채도 회청(21회차) — 전에는 주황(#c8641e)이라 채도가 높아 화면
           판정에서 천보다 먼저 눈에 들어왔다. 렌더 전용이라 물리·게이트는 무관. */}
-      {bridgeGeo && (
+      {bridgeGeo && !cleanRender && (
         <mesh geometry={bridgeGeo} frustumCulled={false}>
           <meshStandardMaterial key="pattern-seam-bridge" color="#6b7f8c" side={THREE.DoubleSide} roughness={0.85} />
         </mesh>
