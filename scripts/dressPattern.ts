@@ -245,10 +245,13 @@ const corrected = S0FIX ? correctPlacementPenetration(
 ) : 0;
 const penAfterPlace = countInside(g.positions, total, insideParity);
 console.log(`[dress] S0 배치 관통: ${penBefore} → 교정 ${corrected}정점 → ${penAfterPlace} (패리티 근사)${S0FIX ? "" : " · **교정 off(S0FIX=0)**"}`);
+// 46회차 — t=0 자기교차(정착 분해의 대조 기준).
+let xs0Count = -1;
 // ── t=0 게이트 (§4 S0 개정 — 목 스레딩 배치가 성립했는가)
 const t0Fails: string[] = [];
 {
   const xs0 = countSelfIntersections(g.positions, g.tris, g.edgePairs, 0.03);
+  xs0Count = xs0.count; // 46회차 — 정착 분해에서 t=0 대조로 쓴다
   const ok1 = xs0.count <= 3;
   console.log(`[dress] t=0 자기교차(엣지-삼각형): ${xs0.count}건 (기준선 3 이하 ${ok1 ? "OK" : "**초과**"})`);
   if (!ok1) t0Fails.push("t=0 자기교차 ≤3");
@@ -1799,7 +1802,55 @@ const tb = hoverOf(covSh, ["top-back-left", "top-back-right"]);
 const strain = maxStrain();
 const penEnd = countInside(sim.positions, total, insideParity);
 const prox = proximityPairs();
-const xsec = countSelfIntersections(sim.positions, g.tris, g.edgePairs, 0.03);
+const xsec = countSelfIntersections(sim.positions, g.tris, g.edgePairs, 0.03, 1_000_000);
+// ── 46회차 계기 — **자기교차 위치 분해**(총량만 있고 위치가 한 번도 인쇄된 적 없다).
+// 관통 귀속과 같은 방식: y 1cm bin · 패널 조합 · **옆선 시접 인접 홉수**.
+// 홉수는 `g.edgePairs`(메시 엣지)에서 BFS로 뜬다 — `hopFromRing`과 같은 기계.
+{
+  const sideVerts = new Set<number>(g.seams.filter((sm) => sm.kind === "side").flatMap((sm) => [sm.a, sm.b]));
+  const adj = new Map<number, number[]>();
+  for (const e of g.edgePairs) {
+    (adj.get(e.a) ?? adj.set(e.a, []).get(e.a)!).push(e.b);
+    (adj.get(e.b) ?? adj.set(e.b, []).get(e.b)!).push(e.a);
+  }
+  const hop = new Int32Array(total).fill(-1);
+  let q = [...sideVerts];
+  for (const v of q) hop[v] = 0;
+  for (let d = 1; q.length && d <= 6; d++) {
+    const nx: number[] = [];
+    for (const v of q) for (const w of adj.get(v) ?? []) if (hop[w] < 0) { hop[w] = d; nx.push(w); }
+    q = nx;
+  }
+  const yBin: Record<string, number> = {};
+  const pairKind: Record<string, number> = {};
+  const hopBin: Record<string, number> = {};
+  const triVert = (t: number): number => g.tris[t * 3];
+  for (const ex of xsec.examples) {
+    const [a, b] = ex.edge;
+    const c = triVert(ex.tri);
+    const yc = Math.round(((sim.positions[a * 3 + 1] + sim.positions[b * 3 + 1]) / 2) * 100);
+    yBin[`y${yc}`] = (yBin[`y${yc}`] ?? 0) + 1;
+    const k = [PANEL_NAME[panelOfIdx(a)], PANEL_NAME[panelOfIdx(c)]].sort().join("↔");
+    pairKind[k] = (pairKind[k] ?? 0) + 1;
+    // 엣지 양 끝점 중 옆선 시접에 더 가까운 홉수로 귀속(미도달은 ">6").
+    const h = Math.min(hop[a] < 0 ? 99 : hop[a], hop[b] < 0 ? 99 : hop[b]);
+    const lab = h >= 99 ? ">6홉" : `${h}홉`;
+    hopBin[lab] = (hopBin[lab] ?? 0) + 1;
+  }
+  const total3 = xsec.examples.length;
+  const top = (o: Record<string, number>, n: number): string =>
+    Object.entries(o).sort((x, y) => y[1] - x[1]).slice(0, n).map(([k, v]) => `${k}:${v}(${(100 * v / Math.max(1, total3)).toFixed(1)}%)`).join(" ");
+  console.log(`  [46계기·자기교차 위치] 총 ${xsec.count}건(t=0 ${xs0Count}건 → **전량 런타임 발생**) · 분해 표본 ${total3}건`);
+  console.log(`    패널 조합: ${top(pairKind, 8)}`);
+  console.log(`    옆선 시접 인접(홉): ${top(hopBin, 8)}`);
+  console.log(`    y 1cm bin 상위 12: ${top(yBin, 12)}`);
+  {
+    const band = (lo: number, hi: number): number =>
+      Object.entries(yBin).filter(([k]) => { const y = Number(k.slice(1)); return y >= lo && y <= hi; }).reduce((a, [, v]) => a + v, 0);
+    console.log(`    대역 합산: y70~83 ${band(70, 83)} · y84~93 ${band(84, 93)} · y94~123 ${band(94, 123)} · y124~129 ${band(124, 129)} · **y130~143 ${band(130, 143)}** · 그 외 ${total3 - band(70, 143)}`);
+  }
+  console.log(`    [대역 정의] covShoulder 측정 대역 = yMin ${cm(band.yMin)} ~ yMax ${cm(band.yMax)}cm · 목중심 반경 12.0cm 제외 · 축 ${band.axes.length}종 · 마스크 ${band.mask ? "있음" : "없음"} — **몸 표면 샘플에서 바깥 법선 레이가 옷을 맞히는가**를 센다(옷 정점 집합이 아니다)`);
+}
 const settleFrame = (() => {
   for (const e of result.log) if (e.to === "DONE") return e.frame;
   return -1;
@@ -1915,7 +1966,9 @@ console.log(`    penetrationAxis **미전달** → 관통-only 아님 = **양방
 console.log(
   `  proximityPairs(기록 채널 · 문턱 ${(g.selfCollisionMinDistM * 1000).toFixed(2)}mm · 게이트 아님 — 뭉친 폴드의 정상 접촉을 센다): ${prox}쌍`,
 );
-console.log(`  자기교차(엣지-삼각형 · 게이트): ${xsec.count}건 (배치 t=0 기준선 3건 = S0 투영 교정 산출물)`);
+// 46회차 라벨 정정 — "t=0 기준선 3건"은 **정적 문구**였고 실측과 어긋난다(이번 실행 t=0 0건).
+// 실측값을 그대로 인쇄한다(함정 13 — 문서 숫자를 코드 확인 없이 승격하지 않는다).
+console.log(`  자기교차(엣지-삼각형 · 게이트): ${xsec.count}건 (배치 t=0 **실측 ${xs0Count}건** → 정착분 전량 런타임 발생)`);
 {
   const tail = <T,>(a: T[]): T[] => a.slice(Math.max(0, a.length - 60));
   const sw = tail(shrinkWorkSeries);

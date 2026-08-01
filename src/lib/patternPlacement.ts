@@ -180,6 +180,8 @@ export function countSelfIntersections(
   tris: Uint32Array,
   edges: readonly { a: number; b: number }[],
   cellM: number,
+  // 46회차 — 위치 분해용. 기본 5는 기존 동작 그대로(다른 호출부 비트 동일).
+  maxExamples = 5,
 ): { count: number; examples: { edge: [number, number]; tri: number }[] } {
   const triCount = tris.length / 3;
   const grid = new Map<number, number[]>();
@@ -249,7 +251,7 @@ export function countSelfIntersections(
             const s = (e2x * qx + e2y * qy + e2z * qz) * inv;
             if (s < PARAM_EPS || s > 1 - PARAM_EPS) continue;
             count++;
-            if (examples.length < 5) examples.push({ edge: [e.a, e.b], tri: t });
+            if (examples.length < maxExamples) examples.push({ edge: [e.a, e.b], tri: t });
           }
         }
       }
