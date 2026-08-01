@@ -1774,6 +1774,20 @@ const covArmless = computeBodyCoverage(position, [frontIdx, backIdx], gridView, 
 const covOld = computeBodyCoverage(position, [frontIdx, backIdx], gridView, [], { ...covBand, yMin: hemY }, clothTris);
 const cov = computeBodyCoverage(position, [frontIdx, backIdx], gridView, [], { ...covBand, yMin: hemWorldY }, clothTris);
 const band = deriveShoulderBand(position, wholeIndex, [pose.armLeft, pose.armRight], centerX);
+// ── 47회차 부수 계기 — covShoulder **대역 제한 병기**(정의 변경 아님).
+// 46회차가 대역이 yMin 113.31 ~ yMax 143.71cm로 **겨드랑이 아래까지 내려온다**는 것을
+// 인쇄했다. 화면("back 전부 덮임")과 채널(44.8% 노출)의 불일치가 대역 차이인지 보려면
+// **같은 판정식으로 대역만 y124 이상으로 좁힌 수치**가 필요하다. 원 채널은 그대로 둔다.
+const covShHi = computeBodyCoverage(
+  position, [wholeIndex], gridView, [],
+  {
+    yMin: Math.max(band.yMin, 1.24), yMax: band.yMax,
+    neckCenter, neckRadius: 0.12,
+    centerX, centerZ: collision.centerZ,
+    outwardAxes: band.axes,
+    sampleMask: band.mask,
+  },
+);
 const covSh = computeBodyCoverage(
   position, [wholeIndex], gridView, [],
   {
@@ -1914,6 +1928,7 @@ console.log(
 }
 console.log(`  cov 몸통 버킷: ${JSON.stringify(Object.fromEntries(Object.entries(cov.buckets).map(([k, b]) => [k, `${b.exposed}/${b.samples}`])))}`);
 console.log(`  covShoulder: 노출 ${covSh.exposed}/${covSh.samples} (${(covSh.exposedRatio * 100).toFixed(1)}%)`);
+console.log(`  covShoulder(**병기 · 대역 y124↑ 제한** · 정의 변경 아님): 노출 ${covShHi.exposed}/${covShHi.samples} (${(covShHi.exposedRatio * 100).toFixed(1)}%) — 원 채널 대역은 y${cm(band.yMin)}~${cm(band.yMax)}cm`);
 console.log(`  covShoulder 버킷: ${JSON.stringify(Object.fromEntries(Object.entries(covSh.buckets).map(([k, b]) => [k, `${b.exposed}/${b.samples}`])))}`);
 console.log(`  shoulderHover top-front: hit ${tf.hit.toFixed(3)} / hover ${tf.mean.toFixed(2)}|${tf.max.toFixed(2)}mm`);
 console.log(`  shoulderHover top-back : hit ${tb.hit.toFixed(3)} / hover ${tb.mean.toFixed(2)}|${tb.max.toFixed(2)}mm`);
