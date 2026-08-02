@@ -1140,6 +1140,82 @@ const hemReport = (label: string): string => {
   }
   return lines.join("\n");
 };
+// ══ 50회차 β 채널 (47회차 후보 β 판별자 · 49회차 미이행 이월) ═══════════════
+// β = 흡착 **목표장의 불연속** — ① 앞/뒤 반쪽 시트 절단면(옆선) ② 가랑이 두 다리(밑단).
+// 세 채널: 옆선 ±k홉 요동 · 봉우리와 splitZ 절단 경계의 거리 · 흡착 목표 도약.
+const SPLIT_Z = collision.centerZ; // splitFrontBack의 절단면(무게중심 z 중간면)
+// 옆선 시접에서 k홉인 정점 띠 — 46계기와 같은 BFS 기계(hopFromHem.side)를 **재사용**한다.
+const sideBandIdx = (k: number): number[] => {
+  const out: number[] = [];
+  for (let i = 0; i < g.panelStarts[2]; i++) if (hopFromHem.side[i] === k) out.push(i);
+  return out;
+};
+const betaReport = (label: string): string => {
+  const lines = [`  [50계기·β] ${label} · splitZ ${cm(SPLIT_Z)}cm`];
+  // ── β-1 옆선 ±k홉 띠의 법선 방향 요동.
+  // "요동"의 식은 48계기와 **같은 것**을 쓴다(새 식을 만들지 않는다 — 자기검사가 그 식을
+  // 검증했다). 띠를 패턴 y 순으로 정렬해 사슬로 보고 같은 저역통과를 건다.
+  for (const k of [0, 1, 2]) {
+    const band = sideBandIdx(k);
+    // **좌우를 갈라야 사슬이 된다**(1차 구현은 ±x를 섞어 62정점에 사슬 18m가 나왔다 —
+    // 계기 결함). 옆선은 패널당 좌·우 두 개이고 각각 패턴 y 오름차순이 호장 순서다.
+    for (const sgn of [1, -1]) {
+      const fr = band.filter((i) => i < g.panelStarts[1] && Math.sign(g.pos2[i * 2]) === sgn)
+        .sort((a, b) => g.pos2[a * 2 + 1] - g.pos2[b * 2 + 1]);
+      if (fr.length < 8) { lines.push(`    β-1 옆선 ${k}홉 앞판 x${sgn > 0 ? "+" : "−"} n=${fr.length} — 8정점 미만, 산출 불가`); continue; }
+      const r = hemWobble(fr, 0.16, sim.positions);
+      const abs = r.amp.map(Math.abs).sort((a, b) => a - b);
+      if (abs.length === 0) { lines.push(`    β-1 옆선 ${k}홉 앞판 x${sgn > 0 ? "+" : "−"} — 내부 표본 0, 산출 불가`); continue; }
+      lines.push(`    β-1 옆선 ${k}홉 앞판 x${sgn > 0 ? "+" : "−"} n=${fr.length} · 사슬 ${cm(r.L)}cm · 요동 중앙 ${abs[Math.floor(abs.length / 2)].toFixed(2)} p99 ${abs[Math.floor(abs.length * 0.99)].toFixed(2)} 최대 ${abs[abs.length - 1].toFixed(2)}mm · 파장 ${r.perLam < 4 ? "산출 불가(표본 " + r.perLam.toFixed(1) + "<4)" : cm(r.lam) + "cm"}`);
+    }
+  }
+  // ── β-2 밑단 프릴 봉우리와 splitZ 절단 경계의 거리 분포.
+  // 봉우리 = 48계기 진폭의 국소 극대(|amp|가 이웃 둘보다 큰 정점).
+  for (const [nm, c] of [["앞판", hemChain.front], ["뒤판", hemChain.back]] as const) {
+    if (c.length < 8) continue;
+    const r = hemWobble(c, 0.16, sim.positions);
+    // hemWobble은 내부 구간만 amp를 담는다 — 인덱스 대응을 위해 내부 정점 목록을 다시 만든다.
+    const sArr: number[] = [0];
+    for (let k = 1; k < c.length; k++) sArr.push(sArr[k - 1] + Math.hypot(
+      sim.positions[c[k] * 3] - sim.positions[c[k - 1] * 3],
+      sim.positions[c[k] * 3 + 1] - sim.positions[c[k - 1] * 3 + 1],
+      sim.positions[c[k] * 3 + 2] - sim.positions[c[k - 1] * 3 + 2]));
+    const Ltot = sArr[sArr.length - 1];
+    const inner = c.filter((_, k) => sArr[k] >= 0.08 && sArr[k] <= Ltot - 0.08);
+    const peaks: number[] = [];
+    for (let k = 1; k < r.amp.length - 1; k++) {
+      if (Math.abs(r.amp[k]) > Math.abs(r.amp[k - 1]) && Math.abs(r.amp[k]) > Math.abs(r.amp[k + 1]) && Math.abs(r.amp[k]) > 1.0) peaks.push(k);
+    }
+    if (peaks.length === 0 || inner.length !== r.amp.length) {
+      lines.push(`    β-2 ${nm} 봉우리 ${peaks.length}개 · 인덱스 대응 ${inner.length === r.amp.length ? "OK" : "**깨짐(" + inner.length + " vs " + r.amp.length + ") — 산출 불가**"}`);
+      continue;
+    }
+    const dz = peaks.map((k) => Math.abs(sim.positions[inner[k] * 3 + 2] - SPLIT_Z) * 100).sort((a, b) => a - b);
+    const allz = inner.map((i) => Math.abs(sim.positions[i * 3 + 2] - SPLIT_Z) * 100).sort((a, b) => a - b);
+    lines.push(`    β-2 ${nm} 봉우리 ${peaks.length}개(|amp|>1mm) · **봉우리의 |z−splitZ|** 중앙 ${dz[Math.floor(dz.length / 2)].toFixed(2)} 최소 ${dz[0].toFixed(2)}cm │ **배경(전 정점)** 중앙 ${allz[Math.floor(allz.length / 2)].toFixed(2)} 최소 ${allz[0].toFixed(2)}cm — 봉우리가 경계 근방이면 중앙이 배경보다 작아야 한다`);
+  }
+  // ── β-3 흡착 목표 역산 도약. target = p + Δ/0.4(1회 호출 = 목표까지 40%).
+  // Δ는 **기존 스크래치 리졸버**로 뜬다(BVH 재쿼리 금지 — 38회차 독립 사본 결함).
+  {
+    const { mesh } = compSequential();
+    for (const [nm, c] of [["밑단 앞판", hemChain.front], ["밑단 뒤판", hemChain.back]] as const) {
+      if (c.length < 3) continue;
+      const T = (v: number, k: number): number => sim.positions[v * 3 + k] + (mesh[v * 3 + k] - sim.positions[v * 3 + k]) / 0.4;
+      const jump: number[] = [];
+      for (let k = 1; k < c.length; k++) {
+        const a = c[k - 1], b = c[k];
+        const dT = Math.hypot(T(b, 0) - T(a, 0), T(b, 1) - T(a, 1), T(b, 2) - T(a, 2));
+        const dP = Math.hypot(sim.positions[b * 3] - sim.positions[a * 3], sim.positions[b * 3 + 1] - sim.positions[a * 3 + 1], sim.positions[b * 3 + 2] - sim.positions[a * 3 + 2]);
+        if (dP > 1e-6) jump.push(dT / dP);
+      }
+      jump.sort((a, b) => a - b);
+      if (jump.length === 0) { lines.push(`    β-3 ${nm} — 표본 0, 산출 불가`); continue; }
+      const over3 = jump.filter((v) => v >= 3).length;
+      lines.push(`    β-3 ${nm} 목표 도약비(이웃 목표거리/이웃 정점거리) 중앙 ${jump[Math.floor(jump.length / 2)].toFixed(2)} p99 ${jump[Math.floor(jump.length * 0.99)].toFixed(2)} 최대 ${jump[jump.length - 1].toFixed(2)} · **≥3배 ${over3}/${jump.length}**`);
+    }
+  }
+  return lines.join("\n");
+};
 const ringShapeReport = (label: string): string => {
   const stat = (idx: number[], nm: string): string => {
     if (idx.length === 0) return `${nm} —`;
@@ -1668,7 +1744,7 @@ const result = runDressing(
       // 39회차 계기 D(형상) · B(성분 3분리) — f1·f2·f3·f4·f8 + f62. beforeStep은 step 직전이라
       // 여기 값은 "f=_frame 종료 상태". D는 t=0(=f0)도 찍는다.
       if (SHAPE_FRAMES.has(_frame)) { probeReports.push(ringShapeReport(`f=${_frame}`)); probeReports.push(capsuleCountReport(`f=${_frame}`)); }
-      if (_frame === 0 || _frame === 1 || _frame === 8) probeReports.push(hemReport(`f=${_frame}`));
+      if (_frame === 0 || _frame === 1 || _frame === 8) { probeReports.push(hemReport(`f=${_frame}`)); probeReports.push(betaReport(`f=${_frame}`)); }
       if (_frame === 0) probeReports.push(hemSelfTest());
       if (COMP_FRAMES.has(_frame)) probeReports.push(compReport(`f${_frame + 1} 직전(=f${_frame} 종료 상태)`));
       // ── 35회차 계기. beforeStep(_frame)은 f=_frame+1을 만드는 step **직전**이다.
@@ -2119,6 +2195,7 @@ console.log(`  maxStrain ${strain.v.toFixed(3)} (정점 ${strain.at}) · maxSeam
   console.log(ringShapeReport("정착"));
   console.log(capsuleCountReport("정착"));
   console.log(hemReport("정착"));
+  console.log(betaReport("정착"));
   // 49회차 — **정착 시점 rest 정합 지도**(48회차 미이행 · f8 값을 정착으로 인용하던 금지 해소).
   console.log(restMap("**정착**(49회차 신설 — 이전까지 f0/f1/f8뿐이었다)"));
   console.log(`  [49·ablation 상태] 흡착 ${ADSORB_PENONLY ? "**관통-only**(ADSORB_PENONLY=1 · 진단 전용)" : "**양방향**(기본)"} · 몸통 캡슐 ${TORSOCAP ? "**on**(TORSOCAP=1 · 43회차 처방 A 복원)" : "**OFF**(기본 — 45회차 승격 기준선)"}`);
