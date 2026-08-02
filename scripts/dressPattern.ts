@@ -2196,6 +2196,38 @@ console.log(`  maxStrain ${strain.v.toFixed(3)} (정점 ${strain.at}) · maxSeam
   console.log(capsuleCountReport("정착"));
   console.log(hemReport("정착"));
   console.log(betaReport("정착"));
+  // ── 51회차 진단(처방 아님 · 공유 파일 0줄) — 링·밑단 정점의 **최근접 몸 면 법선 n·ŷ**.
+  // C1 술어("위를 보는 면에서만 자석분 유지")가 어느 대역을 켜고 끄는지 실측한다.
+  // faceNormal은 private이지만 두 public 메서드의 **차**로 복원된다:
+  //   n = closestSurfacePoint(p, margin=1, r) − closestPointUnsigned(p, r)
+  // (bvhFromArrays.ts:99-111 vs :121-128). `bvhFromArrays.ts` 무수정 → 12콤보 불요.
+  {
+    const nyOf = (i: number): number | null => {
+      const x = sim.positions[i * 3], y = sim.positions[i * 3 + 1], z = sim.positions[i * 3 + 2];
+      const sp = wholeMesh.closestSurfacePoint(x, y, z, 1, SDF_FAR);
+      const cp = wholeMesh.closestPointUnsigned(x, y, z, SDF_FAR);
+      if (!sp || !cp) return null;
+      return sp.y - cp.y; // margin=1 이므로 차 = 면 법선(단위) 그대로
+    };
+    const stat = (nm: string, idx: number[]): string => {
+      const v = idx.map(nyOf).filter((q): q is number => q !== null).sort((a, b) => a - b);
+      if (v.length === 0) return `    ${nm} — 산출 불가(표본 0)`;
+      const on = v.filter((q) => q > 0).length;
+      // 도출 문턱(마찰각): μs 0.6 → tanθ=0.6 → cosθ = 1/√(1+0.6²) = 0.857
+      const MU_THRESH = 1 / Math.sqrt(1 + FRICTION_MU_STATIC * FRICTION_MU_STATIC);
+      const onT = v.filter((q) => q >= MU_THRESH).length;
+      return `    ${nm} n=${v.length} · n·ŷ 중앙 ${v[Math.floor(v.length / 2)].toFixed(3)} 최소 ${v[0].toFixed(3)} 최대 ${v[v.length - 1].toFixed(3)}` +
+        ` · **n·ŷ>0 ${on}/${v.length}(${(100 * on / v.length).toFixed(1)}%)** · n·ŷ≥${MU_THRESH.toFixed(3)}(마찰각 도출) ${onT}/${v.length}(${(100 * onT / v.length).toFixed(1)}%)`;
+    };
+    const fr = ringOrder.filter((i) => i < g.panelStarts[1]), bk = ringOrder.filter((i) => i >= g.panelStarts[1]);
+    console.log(`  [51진단·최근접 면 n·ŷ] 정착 · C1 술어가 켜는 집합 실측(처방 미구현 · 진단만)`);
+    console.log(stat("링 앞판", fr));
+    console.log(stat("링 뒤판", bk));
+    console.log(stat("밑단 앞판", hemChain.front));
+    console.log(stat("밑단 뒤판", hemChain.back));
+    const ys = ringOrder.map((i) => sim.positions[i * 3 + 1]).sort((a, b) => a - b);
+    console.log(`    [창 여유] 정착 링 y ${cm(ys[0])}~${cm(ys[ys.length - 1])}cm — 사전 반증 (d)의 "켜짐 창 뒤 y133~146 · 앞 y137~145"와 대조`);
+  }
   // 49회차 — **정착 시점 rest 정합 지도**(48회차 미이행 · f8 값을 정착으로 인용하던 금지 해소).
   console.log(restMap("**정착**(49회차 신설 — 이전까지 f0/f1/f8뿐이었다)"));
   console.log(`  [49·ablation 상태] 흡착 ${ADSORB_PENONLY ? "**관통-only**(ADSORB_PENONLY=1 · 진단 전용)" : "**양방향**(기본)"} · 몸통 캡슐 ${TORSOCAP ? "**on**(TORSOCAP=1 · 43회차 처방 A 복원)" : "**OFF**(기본 — 45회차 승격 기준선)"}`);
