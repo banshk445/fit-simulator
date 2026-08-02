@@ -577,10 +577,20 @@ const backMesh = new ArrayBvhCollision();
 frontMesh.rebuild(position, frontIdx);
 backMesh.rebuild(position, backIdx);
 const armCapsules = [...buildArmCapsules(pose.armLeft), ...buildArmCapsules(pose.armRight)];
+// ── 49회차 P-α1 (진단 전용 · 기본 off · v1 0줄) — **관통-only 흡착**.
+// 47회차 후보 α: 양방향 흡착이 탐지반경 15cm 안 **비관통 정점까지** 표면+margin으로
+// 끌어당겨(서브스텝당 4회 = 목표까지 87.0%) 여분 둘레를 몸에 감고 면내 압축을 만든다.
+// `penetrationAxis`를 넘기면 리졸버가 "표면 밖(d≥0)은 안 건드리고 안쪽만 밀어낸다"로
+// 바뀐다(bvhFromArrays.ts:227-238). 축은 몸통 캡슐 축을 그대로 쓴다(새 상수 0).
+// ※ 이것은 **ablation이지 처방이 아니다** — 47회차가 그렇게 등록했다.
+const ADSORB_PENONLY = process.env.ADSORB_PENONLY === "1";
+const penAxis = ADSORB_PENONLY
+  ? { enabled: true, x: collision.capsules[0].top.x, z: collision.capsules[0].top.z }
+  : undefined;
 const meshResolver = createPanelSplitResolver(
   [
-    frontMesh.createResolver(COLLISION_MARGIN, COLLISION_DETECTION_RADIUS),
-    backMesh.createResolver(COLLISION_MARGIN, COLLISION_DETECTION_RADIUS),
+    frontMesh.createResolver(COLLISION_MARGIN, COLLISION_DETECTION_RADIUS, undefined, undefined, undefined, penAxis),
+    backMesh.createResolver(COLLISION_MARGIN, COLLISION_DETECTION_RADIUS, undefined, undefined, undefined, penAxis),
     null,
     null,
   ],
@@ -1251,8 +1261,39 @@ const hopFromRing = (() => {
   return d;
 })();
 const seamKeyMap = new Set<string>(g.seams.map((sm) => (sm.a < sm.b ? `${sm.a}_${sm.b}` : `${sm.b}_${sm.a}`)));
+// 49회차 — 밑단·옆선 대역을 rest 지도에 신설(48회차 미이행분).
+// 홉 기계는 46계기와 같은 BFS를 쓰되 **시드가 다르다**(밑단 사슬 / 옆선 시접).
+const hopFromHem = (() => {
+  const adj = new Map<number, number[]>();
+  for (const e of g.edgePairs) {
+    (adj.get(e.a) ?? adj.set(e.a, []).get(e.a)!).push(e.b);
+    (adj.get(e.b) ?? adj.set(e.b, []).get(e.b)!).push(e.a);
+  }
+  const mk = (seed: number[]): Int32Array => {
+    const d = new Int32Array(total).fill(-1);
+    let q = [...seed];
+    for (const v of q) d[v] = 0;
+    for (let k = 1; q.length && k <= 4; k++) {
+      const nx: number[] = [];
+      for (const v of q) for (const w of adj.get(v) ?? []) if (d[w] < 0) { d[w] = k; nx.push(w); }
+      q = nx;
+    }
+    return d;
+  };
+  const lenM = g.draft.dims.lengthM;
+  const hemSeed: number[] = [];
+  for (let i = 0; i < g.panelStarts[2]; i++) if (g.pos2[i * 2 + 1] > lenM - 0.01) hemSeed.push(i);
+  const sideSeed = [...new Set(g.seams.filter((sm) => sm.kind === "side").flatMap((sm) => [sm.a, sm.b]))];
+  return { hem: mk(hemSeed), side: mk(sideSeed) };
+})();
 const bandOf = (a: number, b: number): string => {
   if (seamKeyMap.has(a < b ? `${a}_${b}` : `${b}_${a}`)) return "시접 쌍";
+  {
+    const hh = Math.max(hopFromHem.hem[a], hopFromHem.hem[b]);
+    if (hh >= 0 && hh <= 4) return `밑단 ${hh}홉`;
+    const sh = Math.max(hopFromHem.side[a], hopFromHem.side[b]);
+    if (sh >= 0 && sh <= 4) return `옆선 ${sh}홉`;
+  }
   const h = Math.max(hopFromRing[a], hopFromRing[b]);
   if (h >= 0 && h <= 3) return `링 인접 ${h === 0 ? "0(링 자신)" : h}홉`;
   if (a >= g.panelStarts[2]) return "소매";
@@ -1278,7 +1319,7 @@ const restMap = (label: string): string => {
     totals.set(key, t);
   }
   const lines = [`  [32계기·rest 정합 지도] ${label}`];
-  const order = ["링 인접 0(링 자신)", "링 인접 1홉", "링 인접 2홉", "링 인접 3홉", "앞판 내부", "뒤판 내부", "소매", "시접 쌍"];
+  const order = ["링 인접 0(링 자신)", "링 인접 1홉", "링 인접 2홉", "링 인접 3홉", "밑단 0홉", "밑단 1홉", "밑단 2홉", "밑단 3홉", "밑단 4홉", "옆선 0홉", "옆선 1홉", "옆선 2홉", "옆선 3홉", "옆선 4홉", "앞판 내부", "뒤판 내부", "소매", "시접 쌍"];
   for (const k of order) {
     const arr = bands.get(k); if (!arr) continue;
     arr.sort((x, y) => x - y);
@@ -2078,7 +2119,9 @@ console.log(`  maxStrain ${strain.v.toFixed(3)} (정점 ${strain.at}) · maxSeam
   console.log(ringShapeReport("정착"));
   console.log(capsuleCountReport("정착"));
   console.log(hemReport("정착"));
-  console.log(`  [45·기준선 상태] 몸통 캡슐 ${TORSOCAP ? "**on**(TORSOCAP=1 · 43회차 처방 A 복원)" : "**OFF**(기본 — 45회차 승격 기준선)"}`);
+  // 49회차 — **정착 시점 rest 정합 지도**(48회차 미이행 · f8 값을 정착으로 인용하던 금지 해소).
+  console.log(restMap("**정착**(49회차 신설 — 이전까지 f0/f1/f8뿐이었다)"));
+  console.log(`  [49·ablation 상태] 흡착 ${ADSORB_PENONLY ? "**관통-only**(ADSORB_PENONLY=1 · 진단 전용)" : "**양방향**(기본)"} · 몸통 캡슐 ${TORSOCAP ? "**on**(TORSOCAP=1 · 43회차 처방 A 복원)" : "**OFF**(기본 — 45회차 승격 기준선)"}`);
 }
 // ── 35계기 6번: maxSeamGap의 **공간 분포**. 어느 종류·어느 자리가 벌어졌는가.
 {
@@ -2107,7 +2150,7 @@ console.log(`  maxStrain ${strain.v.toFixed(3)} (정점 ${strain.at}) · maxSeam
 // ── 35계기 3번: 흡착 파라미터를 **코드에서** 인쇄한다(문서 인용 금지 — 함정 13).
 console.log(`  [35계기·흡착 파라미터] margin ${(COLLISION_MARGIN * 1000).toFixed(1)}mm(clothConfig · 근거="옷감 두께 근사치" **정성적**) · 탐지반경 ${(COLLISION_DETECTION_RADIUS * 1000).toFixed(1)}mm(근거=관통 파티클 구조 여유 **정성적·수치 도출 없음**) · under-relaxation 0.4(bvhFromArrays PUSH_RELAXATION · 근거=탐지반경 15cm에서 shrink-wrap **실측**) · 검사 주기 ${COLLISION_EVERY}반복마다`);
 console.log(`    표적 선택 = BVH closestPointToPoint(**최근접 삼각형**) → 목표 = hit.point + 그 삼각형 **면 법선** × margin. 법선 방향 제한 **없음**.`);
-console.log(`    penetrationAxis **미전달** → 관통-only 아님 = **양방향 흡착**(탐지반경 안이면 관통 여부 무관하게 항상 표면+margin으로 40%씩 끌어당김). 대상 = 앞/뒤판만(소매는 null 리졸버 + 팔 캡슐).`);
+console.log(`    penetrationAxis ${ADSORB_PENONLY ? "**전달됨(ADSORB_PENONLY=1)** → **관통-only**(표면 밖 정점은 안 건드린다)" : "**미전달** → 관통-only 아님 = **양방향 흡착**"}${ADSORB_PENONLY ? "" : "(탐지반경 안이면 관통 여부 무관하게 항상 표면+margin으로 40%씩 끌어당김)"}. 대상 = 앞/뒤판만(소매는 null 리졸버 + 팔 캡슐).`);
 console.log(
   `  proximityPairs(기록 채널 · 문턱 ${(g.selfCollisionMinDistM * 1000).toFixed(2)}mm · 게이트 아님 — 뭉친 폴드의 정상 접촉을 센다): ${prox}쌍`,
 );
