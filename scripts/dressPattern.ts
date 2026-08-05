@@ -590,7 +590,13 @@ const penAxis = ADSORB_PENONLY
 // 53회차 축① — **거동 무변화 실증용**. `MAGNET=1`이면 국면 판정 경로를 켜되 가중은 w ≡ 1이라
 // 기준선과 **계산 동치**여야 한다(21채널 비트 대조가 그 실증이다). 처방(가중 on)은 54회차.
 const MAGNET_AXIS1 = process.env.MAGNET === "1";
-const magnetArg = MAGNET_AXIS1 ? { w: (): number => 1 } : undefined;
+// ── 54회차 처방 **D0** — 국면1(자석분) 차단. `MAGNET_D0=1` · 기본 off.
+// 축①이 이미 배선했으므로 **공유 파일 추가 수정 0**이고 변수는 가중 `w`뿐이다.
+// D0는 **법선을 쓰지 않는다** — `w`가 `ny`를 무시하는 상수 함수라 얼룩 장·법선 출처
+// 문제가 원천적으로 없다(규범 9: 함수 형태 자유도 0).
+// 국면2(껍질 안착)·국면3(관통 해소)은 **불변**이다.
+const MAGNET_D0 = process.env.MAGNET_D0 === "1";
+const magnetArg = MAGNET_D0 ? { w: (): number => 0 } : MAGNET_AXIS1 ? { w: (): number => 1 } : undefined;
 const meshResolver = createPanelSplitResolver(
   [
     frontMesh.createResolver(COLLISION_MARGIN, COLLISION_DETECTION_RADIUS, undefined, undefined, undefined, penAxis, magnetArg),
@@ -2313,7 +2319,7 @@ console.log(`  maxStrain ${strain.v.toFixed(3)} (정점 ${strain.at}) · maxSeam
   }
   // 49회차 — **정착 시점 rest 정합 지도**(48회차 미이행 · f8 값을 정착으로 인용하던 금지 해소).
   console.log(restMap("**정착**(49회차 신설 — 이전까지 f0/f1/f8뿐이었다)"));
-  console.log(`  [49·ablation 상태] 흡착 ${ADSORB_PENONLY ? "**관통-only**(ADSORB_PENONLY=1 · 진단 전용)" : "**양방향**(기본)"} · 몸통 캡슐 ${TORSOCAP ? "**on**(TORSOCAP=1 · 43회차 처방 A 복원)" : "**OFF**(기본 — 45회차 승격 기준선)"}`);
+  console.log(`  [54·처방 상태] D0(국면1 자석 차단) ${MAGNET_D0 ? "**on**(MAGNET_D0=1)" : MAGNET_AXIS1 ? "off · 축① w≡1(무변화)" : "**off**(기본)"} · 흡착 ${ADSORB_PENONLY ? "**관통-only**(ADSORB_PENONLY=1 · 진단 전용)" : "**양방향**(기본)"} · 몸통 캡슐 ${TORSOCAP ? "**on**(TORSOCAP=1 · 43회차 처방 A 복원)" : "**OFF**(기본 — 45회차 승격 기준선)"}`);
 }
 // ── 35계기 6번: maxSeamGap의 **공간 분포**. 어느 종류·어느 자리가 벌어졌는가.
 {
