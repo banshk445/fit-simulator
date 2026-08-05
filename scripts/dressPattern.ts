@@ -2202,10 +2202,15 @@ console.log(`  maxStrain ${strain.v.toFixed(3)} (정점 ${strain.at}) · maxSeam
   //   n = closestSurfacePoint(p, margin=1, r) − closestPointUnsigned(p, r)
   // (bvhFromArrays.ts:99-111 vs :121-128). `bvhFromArrays.ts` 무수정 → 12콤보 불요.
   {
+    // 52회차 정정 — **리졸버가 보는 메시로 잰다.** 51회차 1차 구현은 `wholeMesh`(전신·팔 포함)를
+    // 썼는데 자석을 만드는 리졸버는 `frontMesh`/`backMesh`(torso-only · z중점 반쪽 시트)에
+    // 질의한다(`:577-578, 592-593`). 삼각형 집합이 다르면 **선택되는 최근접 면이 다르다** —
+    // 밑단 앞 n·ŷ 최소 −0.976(거의 정하방)이 전신 메시의 아랫면을 잡은 신호였다.
     const nyOf = (i: number): number | null => {
       const x = sim.positions[i * 3], y = sim.positions[i * 3 + 1], z = sim.positions[i * 3 + 2];
-      const sp = wholeMesh.closestSurfacePoint(x, y, z, 1, SDF_FAR);
-      const cp = wholeMesh.closestPointUnsigned(x, y, z, SDF_FAR);
+      const m = i < g.panelStarts[1] ? frontMesh : backMesh;
+      const sp = m.closestSurfacePoint(x, y, z, 1, SDF_FAR);
+      const cp = m.closestPointUnsigned(x, y, z, SDF_FAR);
       if (!sp || !cp) return null;
       return sp.y - cp.y; // margin=1 이므로 차 = 면 법선(단위) 그대로
     };
@@ -2220,7 +2225,7 @@ console.log(`  maxStrain ${strain.v.toFixed(3)} (정점 ${strain.at}) · maxSeam
         ` · **n·ŷ>0 ${on}/${v.length}(${(100 * on / v.length).toFixed(1)}%)** · n·ŷ≥${MU_THRESH.toFixed(3)}(마찰각 도출) ${onT}/${v.length}(${(100 * onT / v.length).toFixed(1)}%)`;
     };
     const fr = ringOrder.filter((i) => i < g.panelStarts[1]), bk = ringOrder.filter((i) => i >= g.panelStarts[1]);
-    console.log(`  [51진단·최근접 면 n·ŷ] 정착 · C1 술어가 켜는 집합 실측(처방 미구현 · 진단만)`);
+    console.log(`  [51진단·최근접 면 n·ŷ] 정착 · **52회차 정정: 리졸버 메시(frontMesh/backMesh)로 측정** · 처방 미구현·진단만`);
     console.log(stat("링 앞판", fr));
     console.log(stat("링 뒤판", bk));
     console.log(stat("밑단 앞판", hemChain.front));
