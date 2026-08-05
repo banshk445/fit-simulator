@@ -26,7 +26,7 @@ import { makeOutlineProvider } from "../src/lib/bodyOutline";
 import { buildPatternSim } from "../src/lib/buildPatternSim";
 import { correctPlacementPenetration, countInside, countOpenEdges, countSelfIntersections, makeParityInside } from "../src/lib/patternPlacement";
 import { computeBodyCoverage, deriveShoulderBand } from "../src/lib/coverageMetric";
-import { bakeSdf, createCachedSdfIterationFriction, createSdfFrictionPass, makeRadialSignedSampler } from "../src/lib/sdfCollision";
+import { bakeSdf, createCachedSdfIterationFriction, createSdfFrictionPass, makeRadialSignedSampler, sdfNormal } from "../src/lib/sdfCollision";
 import {
   COLLISION_DETECTION_RADIUS,
   COLLISION_EVERY,
@@ -587,10 +587,14 @@ const ADSORB_PENONLY = process.env.ADSORB_PENONLY === "1";
 const penAxis = ADSORB_PENONLY
   ? { enabled: true, x: collision.capsules[0].top.x, z: collision.capsules[0].top.z }
   : undefined;
+// 53회차 축① — **거동 무변화 실증용**. `MAGNET=1`이면 국면 판정 경로를 켜되 가중은 w ≡ 1이라
+// 기준선과 **계산 동치**여야 한다(21채널 비트 대조가 그 실증이다). 처방(가중 on)은 54회차.
+const MAGNET_AXIS1 = process.env.MAGNET === "1";
+const magnetArg = MAGNET_AXIS1 ? { w: (): number => 1 } : undefined;
 const meshResolver = createPanelSplitResolver(
   [
-    frontMesh.createResolver(COLLISION_MARGIN, COLLISION_DETECTION_RADIUS, undefined, undefined, undefined, penAxis),
-    backMesh.createResolver(COLLISION_MARGIN, COLLISION_DETECTION_RADIUS, undefined, undefined, undefined, penAxis),
+    frontMesh.createResolver(COLLISION_MARGIN, COLLISION_DETECTION_RADIUS, undefined, undefined, undefined, penAxis, magnetArg),
+    backMesh.createResolver(COLLISION_MARGIN, COLLISION_DETECTION_RADIUS, undefined, undefined, undefined, penAxis, magnetArg),
     null,
     null,
   ],
@@ -1136,6 +1140,17 @@ const hemReport = (label: string): string => {
     // 몸까지 부호없는 거리 — 흡착 목표(margin 15mm)에 붙었는지 떠 있는지.
     const ds = c.map((i) => (wholeMesh.closestPointUnsigned(sim.positions[i * 3], sim.positions[i * 3 + 1], sim.positions[i * 3 + 2], SDF_FAR)?.distance ?? NaN) * 1000)
       .filter((v) => Number.isFinite(v)).sort((a, b) => a - b);
+    {
+      const m = c[0] < g.panelStarts[1] ? frontMesh : backMesh;
+      const dv = c.map((i) => m.signedClearance(sim.positions[i * 3], sim.positions[i * 3 + 1], sim.positions[i * 3 + 2], SDF_FAR))
+        .filter((q): q is number => q !== null);
+      if (dv.length > 0) {
+        const p1 = dv.filter((x) => x > COLLISION_MARGIN).length, p2 = dv.filter((x) => x > 0 && x <= COLLISION_MARGIN).length, p3 = dv.filter((x) => x <= 0).length;
+        const so = [...dv].sort((a, b) => a - b);
+        const q = (f: number): string => (so[Math.min(so.length - 1, Math.floor(f * so.length))] * 1000).toFixed(1);
+        lines.push(`    ${nm} **국면**(경계 margin 15.0mm) 1(자석) ${p1}(${(100 * p1 / dv.length).toFixed(1)}%) · 2(안착) ${p2}(${(100 * p2 / dv.length).toFixed(1)}%) · 3(관통) ${p3}(${(100 * p3 / dv.length).toFixed(1)}%) · d(mm) p25 ${q(0.25)} 중앙 ${q(0.5)} p75 ${q(0.75)} p99 ${q(0.99)}`);
+      }
+    }
     lines.push(`    ${nm} 접힘계수 = 사슬 ${cm(r0.L)} / 투영 볼록껍질 ${cm(hp)} = **${(r0.L / Math.max(1e-9, hp)).toFixed(3)}** · 몸거리 중앙 ${ds.length ? ds[Math.floor(ds.length / 2)].toFixed(1) : "-"} p99 ${ds.length ? ds[Math.floor(ds.length * 0.99)].toFixed(1) : "-"} 최소 ${ds.length ? ds[0].toFixed(1) : "-"}mm (흡착 margin 15.0mm)`);
   }
   return lines.join("\n");
@@ -2232,6 +2247,69 @@ console.log(`  maxStrain ${strain.v.toFixed(3)} (정점 ${strain.at}) · maxSeam
     console.log(stat("밑단 뒤판", hemChain.back));
     const ys = ringOrder.map((i) => sim.positions[i * 3 + 1]).sort((a, b) => a - b);
     console.log(`    [창 여유] 정착 링 y ${cm(ys[0])}~${cm(ys[ys.length - 1])}cm — 사전 반증 (d)의 "켜짐 창 뒤 y133~146 · 앞 y137~145"와 대조`);
+
+    // ── 53회차 (c) — **SDF 기울기 n·ŷ**를 BVH 면 법선과 나란히. D2의 (c)(d) 전체가 여기 달렸다.
+    // 필드는 마찰용으로 **이미 굽고 있다**(`sdfField`) → 추가 굽기 0.
+    const gv = { x: 0, y: 0, z: 0 };
+    const sdfNyOf = (i: number): number | null =>
+      sdfNormal(sdfField, sim.positions[i * 3], sim.positions[i * 3 + 1], sim.positions[i * 3 + 2], gv) ? gv.y : null;
+    const sdfStat = (nm: string, idx: number[]): string => {
+      const v = idx.map(sdfNyOf).filter((q): q is number => q !== null).sort((a, b) => a - b);
+      if (v.length === 0) return `    ${nm} — 산출 불가(SDF 표본 0)`;
+      const on = v.filter((q) => q > 0).length;
+      return `    ${nm} n=${v.length} · **SDF ∇d·ŷ** 중앙 ${v[Math.floor(v.length / 2)].toFixed(3)} 최소 ${v[0].toFixed(3)} 최대 ${v[v.length - 1].toFixed(3)} · >0 ${on}/${v.length}(${(100 * on / v.length).toFixed(1)}%)`;
+    };
+    console.log(`  [53계기c·SDF 기울기 n·ŷ] 정착 · 위 BVH 면 법선과 **같은 정점 집합**에서`);
+    console.log(sdfStat("링 앞판", fr)); console.log(sdfStat("링 뒤판", bk));
+    console.log(sdfStat("밑단 앞판", hemChain.front)); console.log(sdfStat("밑단 뒤판", hemChain.back));
+
+    // ── 53회차 (b) — **대역별 몸거리 d의 분위수 + 국면 비율**. D0의 유일한 판별자.
+    // d는 리졸버가 보는 메시의 부호거리(`signedClearance`). 국면 경계는 COLLISION_MARGIN 자체다.
+    const dOf = (i: number): number | null => {
+      const m = i < g.panelStarts[1] ? frontMesh : backMesh;
+      return m.signedClearance(sim.positions[i * 3], sim.positions[i * 3 + 1], sim.positions[i * 3 + 2], SDF_FAR);
+    };
+    const phaseStat = (nm: string, idx: number[]): string => {
+      const v = idx.map(dOf).filter((q): q is number => q !== null).sort((a, b) => a - b);
+      if (v.length === 0) return `    ${nm} — 산출 불가`;
+      const q = (f: number): string => (v[Math.min(v.length - 1, Math.floor(f * v.length))] * 1000).toFixed(1);
+      const p1 = v.filter((x) => x > COLLISION_MARGIN).length;
+      const p2 = v.filter((x) => x > 0 && x <= COLLISION_MARGIN).length;
+      const p3 = v.filter((x) => x <= 0).length;
+      return `    ${nm} n=${v.length} · d(mm) p25 ${q(0.25)} 중앙 ${q(0.5)} p75 ${q(0.75)} p99 ${q(0.99)}` +
+        ` · **국면1(자석 d>15) ${p1}(${(100 * p1 / v.length).toFixed(1)}%) · 국면2(안착 0<d≤15) ${p2}(${(100 * p2 / v.length).toFixed(1)}%) · 국면3(관통 d≤0) ${p3}(${(100 * p3 / v.length).toFixed(1)}%)**`;
+    };
+    console.log(`  [53계기b·몸거리 d 분위수·국면] 정착 · 경계 = COLLISION_MARGIN ${(COLLISION_MARGIN * 1000).toFixed(1)}mm`);
+    console.log(phaseStat("링 앞판", fr)); console.log(phaseStat("링 뒤판", bk));
+    console.log(phaseStat("밑단 앞판", hemChain.front)); console.log(phaseStat("밑단 뒤판", hemChain.back));
+    {
+      const mid: number[] = [];
+      for (let i = g.panelStarts[1]; i < g.panelStarts[2]; i++) {
+        const y = sim.positions[i * 3 + 1];
+        if (y >= 1.10 && y <= 1.25) mid.push(i);
+      }
+      console.log(phaseStat("뒤판 중배부(y110~125)", mid));
+      console.log(sdfStat("뒤판 중배부(y110~125)", mid));
+      console.log(stat("뒤판 중배부(y110~125)", mid));
+    }
+  }
+  // ── 53회차 §3 — 5회차 이월분 2건.
+  {
+    // ① 자기교차 **홉 재집계**(46계기 분해 재사용 · y bin 대신 밑단/옆선 홉으로 귀속)
+    const hb: Record<string, number> = {};
+    for (const ex of xsec.examples) {
+      const [a, b] = ex.edge;
+      const hh = Math.min(hopFromHem.hem[a] < 0 ? 99 : hopFromHem.hem[a], hopFromHem.hem[b] < 0 ? 99 : hopFromHem.hem[b]);
+      const sh = Math.min(hopFromHem.side[a] < 0 ? 99 : hopFromHem.side[a], hopFromHem.side[b] < 0 ? 99 : hopFromHem.side[b]);
+      const k = hh <= 4 ? `밑단${hh}홉` : sh <= 4 ? `옆선${sh}홉` : "그 외";
+      hb[k] = (hb[k] ?? 0) + 1;
+    }
+    const tot = xsec.examples.length;
+    console.log(`  [53계기·자기교차 홉 귀속] 총 ${tot}건 · ${Object.entries(hb).sort((x, y) => y[1] - x[1]).map(([k, v]) => `${k}:${v}(${(100 * v / Math.max(1, tot)).toFixed(1)}%)`).join(" ")}`);
+    // ② sliceOutline 유효성 — 밑단 높이의 몸 단면이 닫힌 곡선인가(28회차 "가랑이 대역" 확인)
+    const hemY0 = hemChain.front.reduce((a, i) => a + sim.positions[i * 3 + 1], 0) / Math.max(1, hemChain.front.length);
+    const sl = body.slices.reduce((m, s) => (Math.abs(s.y - hemY0) < Math.abs(m.y - hemY0) ? s : m), body.slices[0]);
+    console.log(`  [53계기·sliceOutline 유효성] 밑단 평균 y ${cm(hemY0)}cm · 최근접 슬라이스 y ${cm(sl.y)}cm · 둘레 ${cm(sl.girthM)}cm · 폭 ${cm(sl.widthM)} 깊이 ${cm(sl.depthM)} · bins ${sl.bins} — **28회차 등재(y76.11은 두 다리로 갈라져 대역 밖 16.85cm)와 대조**`);
   }
   // 49회차 — **정착 시점 rest 정합 지도**(48회차 미이행 · f8 값을 정착으로 인용하던 금지 해소).
   console.log(restMap("**정착**(49회차 신설 — 이전까지 f0/f1/f8뿐이었다)"));

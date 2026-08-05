@@ -207,6 +207,16 @@ export class ArrayBvhCollision {
     skipLocalEndExclusive?: number,
     columnRange?: ColumnRange,
     penetrationAxis?: { enabled: boolean; x: number; z: number },
+    // ── 53회차 축① (v2 전용 · **미전달이면 기존 경로 그대로**) ──────────────
+    // 이동량은 `Δ·n = margin − d`이므로 **국면이 셋**이다(52회차 §0-가):
+    //   국면1 d > margin   → 안쪽으로 끌어당김 = **자석분**
+    //   국면2 0 < d ≤ margin → 껍질 안착(밖으로 밀어냄 · 관통 아님)
+    //   국면3 d ≤ 0        → 관통 해소
+    // `d`는 **이미 계산된 값들로 복원된다**(새 BVH 질의 0 · 새 상수 0):
+    //   d = (p − hit.point)·n  ← 밀어내는 그 법선과 **같은 법선**이라 자기정합이다.
+    // `w`는 **국면1에만** 곱한다 — 국면2·3은 불변.
+    // w ≡ 1이면 기존 경로와 **계산 동치**여야 한다(축① 무변화 실증의 근거).
+    magnet?: { w: (ny: number) => number },
   ): CollisionResolver {
     return (positions, pinned, n) => {
       const bvh = this.bvh;
@@ -239,9 +249,16 @@ export class ArrayBvhCollision {
         const targetX = hit.point.x + scratchNormal.x * margin;
         const targetY = hit.point.y + scratchNormal.y * margin;
         const targetZ = hit.point.z + scratchNormal.z * margin;
-        positions[ix] += (targetX - positions[ix]) * PUSH_RELAXATION;
-        positions[ix + 1] += (targetY - positions[ix + 1]) * PUSH_RELAXATION;
-        positions[ix + 2] += (targetZ - positions[ix + 2]) * PUSH_RELAXATION;
+        let relax = PUSH_RELAXATION;
+        if (magnet) {
+          // 국면 판정 — `d`를 **밀어내는 그 법선**으로 복원한다(새 질의 0 · 새 상수 0 · 자기정합).
+          const qx = positions[ix] - hit.point.x, qy = positions[ix + 1] - hit.point.y, qz = positions[ix + 2] - hit.point.z;
+          const d = qx * scratchNormal.x + qy * scratchNormal.y + qz * scratchNormal.z;
+          if (d > margin) relax *= magnet.w(scratchNormal.y); // **국면1(자석분)에만**
+        }
+        positions[ix] += (targetX - positions[ix]) * relax;
+        positions[ix + 1] += (targetY - positions[ix + 1]) * relax;
+        positions[ix + 2] += (targetZ - positions[ix + 2]) * relax;
       }
     };
   }
