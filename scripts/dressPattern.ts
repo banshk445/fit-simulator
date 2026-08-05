@@ -1237,6 +1237,29 @@ const betaReport = (label: string): string => {
   }
   return lines.join("\n");
 };
+// ── 55회차 계기 1 — **링·뒤판 중배부 국면 비율을 f1/f8에도**(53계기b는 정착 1회만 인쇄해
+// 54회차가 "f1/f8 산출 불가"로 남겼다). 식은 53계기b와 **같은 것**을 쓴다(새 정의 금지).
+const phaseLine = (nm: string, idx: number[]): string => {
+  const v = idx.map((i) => {
+    const m = i < g.panelStarts[1] ? frontMesh : backMesh;
+    return m.signedClearance(sim.positions[i * 3], sim.positions[i * 3 + 1], sim.positions[i * 3 + 2], SDF_FAR);
+  }).filter((q): q is number => q !== null).sort((a, b) => a - b);
+  if (v.length === 0) return `    ${nm} — 산출 불가`;
+  const q = (f: number): string => (v[Math.min(v.length - 1, Math.floor(f * v.length))] * 1000).toFixed(1);
+  const p1 = v.filter((x) => x > COLLISION_MARGIN).length, p2 = v.filter((x) => x > 0 && x <= COLLISION_MARGIN).length, p3 = v.filter((x) => x <= 0).length;
+  const pc = (n: number): string => (100 * n / v.length).toFixed(1);
+  return `    ${nm} n=${v.length} · d(mm) p25 ${q(0.25)} 중앙 ${q(0.5)} p99 ${q(0.99)} · 국면1 ${p1}(${pc(p1)}%) · 국면2 ${p2}(${pc(p2)}%) · 국면3 ${p3}(${pc(p3)}%)`;
+};
+const ringMidReport = (label: string): string => {
+  const fr = ringOrder.filter((i) => i < g.panelStarts[1]), bk = ringOrder.filter((i) => i >= g.panelStarts[1]);
+  const mid: number[] = [];
+  for (let i = g.panelStarts[1]; i < g.panelStarts[2]; i++) {
+    const y = sim.positions[i * 3 + 1];
+    if (y >= 1.10 && y <= 1.25) mid.push(i);
+  }
+  return [`  [55계기·링/중배부 국면] ${label} · 경계 margin ${(COLLISION_MARGIN * 1000).toFixed(1)}mm`,
+    phaseLine("링 앞판", fr), phaseLine("링 뒤판", bk), phaseLine("뒤판 중배부(y110~125)", mid)].join("\n");
+};
 const ringShapeReport = (label: string): string => {
   const stat = (idx: number[], nm: string): string => {
     if (idx.length === 0) return `${nm} —`;
@@ -1765,7 +1788,7 @@ const result = runDressing(
       // 39회차 계기 D(형상) · B(성분 3분리) — f1·f2·f3·f4·f8 + f62. beforeStep은 step 직전이라
       // 여기 값은 "f=_frame 종료 상태". D는 t=0(=f0)도 찍는다.
       if (SHAPE_FRAMES.has(_frame)) { probeReports.push(ringShapeReport(`f=${_frame}`)); probeReports.push(capsuleCountReport(`f=${_frame}`)); }
-      if (_frame === 0 || _frame === 1 || _frame === 8) { probeReports.push(hemReport(`f=${_frame}`)); probeReports.push(betaReport(`f=${_frame}`)); }
+      if (_frame === 0 || _frame === 1 || _frame === 8) { probeReports.push(hemReport(`f=${_frame}`)); probeReports.push(betaReport(`f=${_frame}`)); probeReports.push(ringMidReport(`f=${_frame}`)); }
       if (_frame === 0) probeReports.push(hemSelfTest());
       if (COMP_FRAMES.has(_frame)) probeReports.push(compReport(`f${_frame + 1} 직전(=f${_frame} 종료 상태)`));
       // ── 35회차 계기. beforeStep(_frame)은 f=_frame+1을 만드는 step **직전**이다.
@@ -2193,7 +2216,11 @@ console.log(
     }
   }
 }
-console.log(`  cov 몸통 버킷: ${JSON.stringify(Object.fromEntries(Object.entries(cov.buckets).map(([k, b]) => [k, `${b.exposed}/${b.samples}`])))}`);
+// 55회차 계기 정정 — 버킷 분모가 **정식 채널과 달랐다**(합 5439 vs 1728).
+// `cov`는 팔 마스크가 없는 집합이고 정식 채널은 `covArmless`다 → **같은 집합으로 맞춘다**.
+// 구 정의(팔 포함) 버킷은 이력 대조용으로 별도 라벨에 병기한다(함정 13 — 이름·대상 일치).
+console.log(`  cov 몸통 버킷(**정식·팔 제외** — 분모 합 = ${covArmless.samples}): ${JSON.stringify(Object.fromEntries(Object.entries(covArmless.buckets).map(([k, b]) => [k, `${b.exposed}/${b.samples}`])))}`);
+console.log(`  cov 버킷(구 정의·팔 포함 · 이력 대조용 · 분모 합 = ${cov.samples}): ${JSON.stringify(Object.fromEntries(Object.entries(cov.buckets).map(([k, b]) => [k, `${b.exposed}/${b.samples}`])))}`);
 console.log(`  covShoulder: 노출 ${covSh.exposed}/${covSh.samples} (${(covSh.exposedRatio * 100).toFixed(1)}%)`);
 console.log(`  covShoulder(**병기 · 대역 y124↑ 제한** · 정의 변경 아님): 노출 ${covShHi.exposed}/${covShHi.samples} (${(covShHi.exposedRatio * 100).toFixed(1)}%) — 원 채널 대역은 y${cm(band.yMin)}~${cm(band.yMax)}cm`);
 console.log(`  covShoulder 버킷: ${JSON.stringify(Object.fromEntries(Object.entries(covSh.buckets).map(([k, b]) => [k, `${b.exposed}/${b.samples}`])))}`);
@@ -2517,6 +2544,29 @@ if (DIAG) {
       if (capsuleHitCount(i) > 0) inCapsule++; else outCapsule++;
     }
     console.log(`[dress·diag] 관통 패널별: ${PANEL_NAME.map((n, i) => `${n} ${per[i]}`).join(" / ")} · 높이대역(1cm bin) ${JSON.stringify(yBand)}`);
+    // 55회차 — **함정22 대조 재료**: 레이 패리티가 "관통"이라 센 정점의 `signedClearance`를
+    // 직접 본다. 두 계기가 같은 정점을 관통이라 하는가, 다른 대역을 가리키는가.
+    {
+      const ds: number[] = [];
+      let neg = 0, inMargin = 0, out = 0;
+      const byPanel: Record<string, number> = {};
+      for (let i = 0; i < total; i++) {
+        if (!insideParity(sim.positions[i * 3], sim.positions[i * 3 + 1], sim.positions[i * 3 + 2])) continue;
+        const m = i < g.panelStarts[1] ? frontMesh : i < g.panelStarts[2] ? backMesh : null;
+        if (!m) { byPanel["소매(리졸버 없음)"] = (byPanel["소매(리졸버 없음)"] ?? 0) + 1; continue; }
+        const d = m.signedClearance(sim.positions[i * 3], sim.positions[i * 3 + 1], sim.positions[i * 3 + 2], SDF_FAR);
+        if (d === null) { byPanel["질의 실패"] = (byPanel["질의 실패"] ?? 0) + 1; continue; }
+        ds.push(d * 1000);
+        if (d <= 0) neg++; else if (d <= COLLISION_MARGIN) inMargin++; else out++;
+      }
+      ds.sort((a, b) => a - b);
+      const q = (f: number): string => (ds.length ? ds[Math.min(ds.length - 1, Math.floor(f * ds.length))].toFixed(1) : "-");
+      console.log(
+        `[dress·diag] **함정22 대조** — 레이 패리티가 관통이라 센 정점의 signedClearance:` +
+        ` n=${ds.length}(+ ${JSON.stringify(byPanel)}) · d(mm) 최소 ${q(0)} p25 ${q(0.25)} 중앙 ${q(0.5)} p99 ${q(0.99)}` +
+        ` · **d≤0(국면3 일치) ${neg} · 0<d≤15(국면2) ${inMargin} · d>15(국면1) ${out}**`,
+      );
+    }
     console.log(`[dress·diag] 관통 정점의 **캡슐 소속**(y bin 임의성 없는 귀속 · TORSOCAP ${TORSOCAP ? "on" : "off"}): 캡슐 안 ${inCapsule} / 밖 ${outCapsule}`);
   }
   // 문턱 위반 쌍의 패널 조합 분포 — "폴드 접촉"인지 "패널 관통"인지 가른다.
