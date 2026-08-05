@@ -2240,6 +2240,30 @@ console.log(`  maxStrain ${strain.v.toFixed(3)} (정점 ${strain.at}) · maxSeam
   });
   console.log(`  [38계기A·접합 실거리] 정착 링60 ${cm(ringLenM())}cm · 접합합 실거리 ${cm(joinLenM())}cm rest ${cm(joinDistRestSumM())}cm · ${rows.join(" · ")}`);
   console.log(`    폐곡선(링60+접합) 실측 ${cm(ringLenM() + joinLenM())}cm · 폐곡선 rest(거리 제약 기준) ${cm(ringRestConfirmedM + joinDistRestSumM())}cm`);
+  // ── 56회차 **0-처방 판별자**(사전 반증 2) — **프레임 끝** 링 per-edge 신장비 분포.
+  // ⓒ("집행이 늦어서 안 잡힌다")와 반증 2("한 스윕이 닫힌 사슬에서 길이를 제거 못 하고
+  // 이웃으로 재분배한다")를 가른다. 발화 카운트는 **방문 시점** 값이라 프레임 끝 위반을
+  // 재지 못한다(함정 1). 여기서는 정착 시점에 **실제로 상한을 넘고 있는 엣지 수**를 센다.
+  {
+    const lim = COLLAR_STRAIN_LIMIT;
+    const rs = ringClosed.map((e) => {
+      const c = [...sim.constraintPairs].find((q) => (q.a === e.a && q.b === e.b) || (q.a === e.b && q.b === e.a));
+      const d = Math.hypot(
+        sim.positions[e.b * 3] - sim.positions[e.a * 3],
+        sim.positions[e.b * 3 + 1] - sim.positions[e.a * 3 + 1],
+        sim.positions[e.b * 3 + 2] - sim.positions[e.a * 3 + 2],
+      );
+      return c && c.restLength > 0 ? d / c.restLength : NaN;
+    }).filter((v) => Number.isFinite(v)).sort((a, b) => a - b);
+    const over = rs.filter((v) => v > lim).length;
+    const q = (f: number): string => rs[Math.min(rs.length - 1, Math.floor(f * rs.length))].toFixed(3);
+    console.log(
+      `  [56판별자·프레임 끝 링 per-edge 신장비] 정착 · 상한 ${lim} · n=${rs.length}` +
+      ` · 중앙 ${q(0.5)} p99 ${q(0.99)} 최대 ${rs[rs.length - 1].toFixed(3)} 최소 ${rs[0].toFixed(3)}` +
+      ` · **상한 초과 ${over}/${rs.length}(${(100 * over / rs.length).toFixed(1)}%)**` +
+      ` — 초과가 0에 가까우면 "집행 위상"(ⓒ), 대부분이면 **"한 스윕이 재분배만 한다"(반증 2)**`,
+    );
+  }
   console.log(ringShapeReport("정착"));
   console.log(capsuleCountReport("정착"));
   console.log(hemReport("정착"));
