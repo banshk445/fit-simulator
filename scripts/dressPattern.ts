@@ -1172,7 +1172,25 @@ const hemRenderReport = (label: string): string => {
   if (dev[dev.length - 1] * dev[0] < 0) flips++;
   const ys = pts.map((p) => p.y).sort((a, b) => a - b);
   const sorted = [...rs].sort((a, b) => a - b);
+  // ── 58회차 §3 — **정의역 확인**(57회차 등재만 3번째). 이 채널을 판정자로 쓰기 전에
+  // 옆선 4곳이 실제로 표본에 있는지 확인한다. 48계기는 정의역이 옆선을 구조적으로
+  // 제외한 채 9회차 인용됐다(함정 19). 옆선 = **사슬 끝점**이다(chainOf가 패턴 x 정렬 → 끝 = 옆선 시접).
+  const deg = (t: number): number => ((t * 180) / Math.PI + 360) % 360;
+  const seamIdx = [hemChain.front[0], hemChain.front[hemChain.front.length - 1], hemChain.back[0], hemChain.back[hemChain.back.length - 1]];
+  const seamAt = seamIdx.map((si) => {
+    const k = pts.findIndex((p) => p.i === si);
+    return k < 0 ? "없음" : `#${k}/${pts.length}@${deg(pts[k].th).toFixed(0)}°`;
+  });
+  // 각도 공백: 표본이 어느 방향에서 비는가(옆선 근방이 비면 그것이 제외의 증거다).
+  let gapMax = 0, gapAt = 0;
+  for (let k = 0; k < pts.length; k++) {
+    const a = pts[k].th, b = k + 1 < pts.length ? pts[k + 1].th : pts[0].th + 2 * Math.PI;
+    if (b - a > gapMax) { gapMax = b - a; gapAt = (a + b) / 2; }
+  }
+  const bins = new Array(12).fill(0);
+  for (const p of pts) bins[Math.min(11, Math.floor(deg(p.th) / 30))]++;
   return `  [57계기B·밑단 폐곡선 반경] ${label} · n=${pts.length}(앞 ${hemChain.front.length}+뒤 ${hemChain.back.length}) · 축(x ${cm(ax)}, z ${cm(az)})` +
+    ` · **정의역** 옆선4 ${seamAt.join(" ")} · 최대 각도공백 ${((gapMax * 180) / Math.PI).toFixed(1)}°@${deg(gapAt).toFixed(0)}° · 30°빈 ${bins.join("/")}` +
     ` · **반경 평균 ${cm(mean)}cm** 중앙 ${cm(sorted[Math.floor(sorted.length / 2)])} 최소 ${cm(sorted[0])} 최대 ${cm(sorted[sorted.length - 1])}` +
     ` · **평균 대비 편차** 중앙 ${absd[Math.floor(absd.length / 2)].toFixed(2)} p99 ${absd[Math.floor(absd.length * 0.99)].toFixed(2)} 최대 ${absd[absd.length - 1].toFixed(2)}mm` +
     ` · 부호변화 ${flips}회(파장 환산 ${flips > 0 ? (360 / flips).toFixed(1) : "∞"}°) · y ${cm(ys[0])}~${cm(ys[ys.length - 1])}cm`;
