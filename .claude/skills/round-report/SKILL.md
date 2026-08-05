@@ -56,3 +56,23 @@ NN회차 <제목> — <상태: 통과|실패·원복|애매·정지|진단only|�
 ## 7. 다음 수 / 정지
 
 정지했으면 **어느 정지 조건인지** 이름으로 적고 대기한다.
+
+## 8. raw 링크 (보고 맨 끝 · 전량)
+
+그 회차가 **만들거나 고친 `.obsidian-log/` 파일 전부 + `docs/metrics-log.md`**를
+**신규 / 수정**으로 갈라, 파일마다 한 줄 요지를 달아 적는다. 회차 노트 1개만
+적지 않는다 — 전략 세션이 볼트를 열지 않고 링크만으로 회차 전량에 닿아야 한다.
+
+URL은 **커밋 SHA 고정**(브랜치 경로 금지 — 함정 20) · 경로는 **퍼센트 인코딩**.
+목록은 손으로 적지 말고 뜬다:
+
+```
+git -c core.quotepath=false show --name-only --format= <노트커밋> <metrics커밋> \
+  | grep -e '^\.obsidian-log' -e '^docs/' | sort -u | python3 -c "
+import sys,urllib.parse
+S='<전체 40자 SHA>'
+for l in sys.stdin:
+    p=l.strip()
+    if p: print('- \`'+p+'\`\n  https://raw.githubusercontent.com/banshk445/fit-simulator/'+S+'/'+urllib.parse.quote(p))
+"
+```
