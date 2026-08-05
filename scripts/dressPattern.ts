@@ -1097,6 +1097,39 @@ const hemWobble = (chain: number[], W: number, pos: Float32Array): {
 };
 // 밑단 형상 보고 + **합성 주입 자기검사**(체크리스트 E) — 프릴을 재는 식이 프릴을 재는지의
 // 유일한 직접 증거다. 실패하면 그 회차 수치를 쓰지 않는다.
+// ── 57회차 계기 A — **부양 상태 자기검사**. 48회차는 A 상태(몸거리 14mm)에서만
+// 통과시켰다. D0는 옷이 39mm 떠 있고(국면1 94.3%) 그 조건에서 계기가 여전히 유효한지
+// 확인된 적이 없다. 두 가지를 잰다:
+//   ① 주입 재검증 — 부양된 사슬에 λ=8cm·A=10mm를 주입하고 복원되는지
+//   ② **부양 대조군** — 주입 없이 부양만(= 가짜 진폭이 생기는가)
+// 부양은 실측 D0 프로파일을 쓴다(중앙 39.0mm · p99 104.7mm = **불균일**).
+const hemLiftTest = (): string => {
+  const c = hemChain.front;
+  if (c.length < 8) return "  [57계기A·부양 자기검사] 사슬 길이 부족 — 산출 불가";
+  const lines: string[] = [];
+  const step = 0.016;
+  // 부양 프로파일: 사슬 위치 s에 따라 중앙 39mm ~ p99 105mm로 변하는 **불균일** 부양.
+  // (균일 평행이동은 이동평균 기준선이 원리적으로 상쇄한다 — 불균일이 관건이다)
+  const liftAt = (k: number, n: number): number => {
+    const t = k / Math.max(1, n - 1);
+    return 0.039 + 0.066 * Math.pow(Math.sin(Math.PI * t), 4); // 39mm → 105mm 봉우리
+  };
+  for (const [nm, amp] of [["① 주입+부양", 0.01], ["② 부양만(대조군)", 0.0]] as const) {
+    const fake = new Float32Array(sim.positions.length);
+    for (let k = 0; k < c.length; k++) {
+      fake[c[k] * 3] = k * step;
+      fake[c[k] * 3 + 1] = 0.75;
+      fake[c[k] * 3 + 2] = liftAt(k, c.length) + amp * Math.sin((2 * Math.PI * (k * step)) / 0.08);
+    }
+    const r = hemWobble(c, 0.16, fake);
+    const A = r.amp.length ? Math.max(...r.amp.map(Math.abs)) : NaN;
+    const med = r.amp.length ? [...r.amp.map(Math.abs)].sort((a, b) => a - b)[Math.floor(r.amp.length / 2)] : NaN;
+    lines.push(`    ${nm} · 주입 A=${(amp * 1000).toFixed(1)}mm λ=8.00cm · 부양 39→105mm(불균일)` +
+      ` → 측정 최대 ${A.toFixed(1)}mm 중앙 ${med.toFixed(1)}mm · λ ${Number.isFinite(r.lam) ? cm(r.lam) + "cm" : "∞"}` +
+      (amp === 0 ? ` — **이 값이 곧 부양이 만드는 가짜 진폭**` : ""));
+  }
+  return [`  [57계기A·부양 자기검사] 48회차 자기검사는 A 상태(몸거리 14mm)에서만 통과했다`, ...lines].join("\n");
+};
 const hemSelfTest = (): string => {
   const c = hemChain.front;
   if (c.length < 8) return "  [48계기·자기검사] 사슬 길이 부족 — **산출 불가**";
@@ -1113,6 +1146,36 @@ const hemSelfTest = (): string => {
   const okL = Number.isFinite(r.lam) && Math.abs(r.lam - 0.08) < 0.01;
   const okA = Math.abs(A - 10) < 1.0;
   return `  [48계기·자기검사] 주입 λ=8.00cm A=10.0mm → 측정 λ=${Number.isFinite(r.lam) ? cm(r.lam) : "∞"}cm A=${A.toFixed(1)}mm · λ ${okL ? "OK" : "**실패**"} · A ${okA ? "OK" : "**실패**"} → ${okL && okA ? "계기 유효" : "**계기 무효 — 이번 회차 밑단 수치를 쓰지 않는다**"}`;
+};
+// ── 57회차 계기 B — **화면 측 정량 채널**(영구). 48계기와 **다른 기준선**을 쓴다.
+// 육안은 밑단을 **폐곡선 하나**로 보고 "원에서 얼마나 벗어났나"를 판단한다.
+// 48계기는 **열린 사슬 2개**를 따로 잡고 **사슬 자신의 이동평균**을 기준선으로 쓴다
+// (= 고역통과. 큰 반경 변화는 기준선이 따라가 버려 잔차에 안 남고, 부양이 불균일하면
+// 그 잔차가 진폭으로 기록된다 — 57계기A가 실측).
+// 여기서는 **폐곡선 + 평균 반경 기준**으로 잰다: 캡슐축에서의 반경을 방위각 순으로 놓고
+// 평균 반경 대비 편차를 본다. 두 채널이 같은 대상을 다르게 재는지 가리는 재료다.
+const hemRenderReport = (label: string): string => {
+  const all = [...hemChain.front, ...hemChain.back];
+  if (all.length < 8) return `  [57계기B·밑단 폐곡선 반경] ${label} — 산출 불가`;
+  const ax = collision.capsules[0].top.x, az = collision.capsules[0].top.z;
+  const pts = all.map((i) => {
+    const x = sim.positions[i * 3] - ax, z = sim.positions[i * 3 + 2] - az;
+    return { i, r: Math.hypot(x, z), th: Math.atan2(z, x), y: sim.positions[i * 3 + 1] };
+  }).sort((a, b) => a.th - b.th);
+  const rs = pts.map((p) => p.r);
+  const mean = rs.reduce((a, b) => a + b, 0) / rs.length;
+  const dev = rs.map((r) => (r - mean) * 1000);
+  const absd = dev.map(Math.abs).sort((a, b) => a - b);
+  let flips = 0;
+  for (let k = 1; k < dev.length; k++) if (dev[k - 1] * dev[k] < 0) flips++;
+  // 폐곡선이므로 마지막↔첫 쌍도 센다.
+  if (dev[dev.length - 1] * dev[0] < 0) flips++;
+  const ys = pts.map((p) => p.y).sort((a, b) => a - b);
+  const sorted = [...rs].sort((a, b) => a - b);
+  return `  [57계기B·밑단 폐곡선 반경] ${label} · n=${pts.length}(앞 ${hemChain.front.length}+뒤 ${hemChain.back.length}) · 축(x ${cm(ax)}, z ${cm(az)})` +
+    ` · **반경 평균 ${cm(mean)}cm** 중앙 ${cm(sorted[Math.floor(sorted.length / 2)])} 최소 ${cm(sorted[0])} 최대 ${cm(sorted[sorted.length - 1])}` +
+    ` · **평균 대비 편차** 중앙 ${absd[Math.floor(absd.length / 2)].toFixed(2)} p99 ${absd[Math.floor(absd.length * 0.99)].toFixed(2)} 최대 ${absd[absd.length - 1].toFixed(2)}mm` +
+    ` · 부호변화 ${flips}회(파장 환산 ${flips > 0 ? (360 / flips).toFixed(1) : "∞"}°) · y ${cm(ys[0])}~${cm(ys[ys.length - 1])}cm`;
 };
 const hemReport = (label: string): string => {
   const lines = [`  [48계기·밑단 형상] ${label} · 정의역 loose(1cm) ${hemChain.loose.length} / **strict ${hemChain.strict.length}** · 앞판 사슬 ${hemChain.front.length} 뒤판 ${hemChain.back.length} · 사슬 연속쌍 비-엣지 앞 ${hemChain.badFront} 뒤 ${hemChain.badBack}`];
@@ -1788,8 +1851,8 @@ const result = runDressing(
       // 39회차 계기 D(형상) · B(성분 3분리) — f1·f2·f3·f4·f8 + f62. beforeStep은 step 직전이라
       // 여기 값은 "f=_frame 종료 상태". D는 t=0(=f0)도 찍는다.
       if (SHAPE_FRAMES.has(_frame)) { probeReports.push(ringShapeReport(`f=${_frame}`)); probeReports.push(capsuleCountReport(`f=${_frame}`)); }
-      if (_frame === 0 || _frame === 1 || _frame === 8) { probeReports.push(hemReport(`f=${_frame}`)); probeReports.push(betaReport(`f=${_frame}`)); probeReports.push(ringMidReport(`f=${_frame}`)); }
-      if (_frame === 0) probeReports.push(hemSelfTest());
+      if (_frame === 0 || _frame === 1 || _frame === 8) { probeReports.push(hemReport(`f=${_frame}`)); probeReports.push(hemRenderReport(`f=${_frame}`)); probeReports.push(betaReport(`f=${_frame}`)); probeReports.push(ringMidReport(`f=${_frame}`)); }
+      if (_frame === 0) { probeReports.push(hemSelfTest()); probeReports.push(hemLiftTest()); }
       if (COMP_FRAMES.has(_frame)) probeReports.push(compReport(`f${_frame + 1} 직전(=f${_frame} 종료 상태)`));
       // ── 35회차 계기. beforeStep(_frame)은 f=_frame+1을 만드는 step **직전**이다.
       if (_frame === 0 || _frame === 7) {
@@ -2267,6 +2330,7 @@ console.log(`  maxStrain ${strain.v.toFixed(3)} (정점 ${strain.at}) · maxSeam
   console.log(ringShapeReport("정착"));
   console.log(capsuleCountReport("정착"));
   console.log(hemReport("정착"));
+  console.log(hemRenderReport("정착"));
   console.log(betaReport("정착"));
   // ── 51회차 진단(처방 아님 · 공유 파일 0줄) — 링·밑단 정점의 **최근접 몸 면 법선 n·ŷ**.
   // C1 술어("위를 보는 면에서만 자석분 유지")가 어느 대역을 켜고 끄는지 실측한다.
