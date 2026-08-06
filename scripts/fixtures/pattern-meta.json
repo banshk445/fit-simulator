@@ -1,5 +1,5 @@
 {
-  "patternHash": "082b88a1a9cd",
+  "patternHash": "9f7ba80b3497",
   "fixtureHash": "9e8b2bf13925",
   "garmentDims": {
     "lengthM": 0.7,
@@ -9,24 +9,24 @@
     "sleeveWidthM": 0.18
   },
   "panelCounts": [
-    2115,
-    2122,
-    485,
-    485
+    2134,
+    2162,
+    474,
+    474
   ],
-  "triangles": 9794,
-  "meshEdges": 14997,
+  "triangles": 9846,
+  "meshEdges": 15086,
   "seamCounts": {
-    "shoulder": 46,
+    "shoulder": 38,
     "side": 62,
-    "armhole": 108,
-    "sleeveUnder": 22
+    "armhole": 124,
+    "sleeveUnder": 16
   },
-  "selfCollisionMinDistMm": 3.201,
+  "selfCollisionMinDistMm": 3.212,
   "dims": {
-    "neckHalfWidthCm": 5.9,
-    "armholeGirthCm": 38.31,
-    "capHeightCm": 7.48,
-    "necklineGirthCm": 33.3
+    "neckHalfWidthCm": 8.12,
+    "armholeGirthCm": 44.39,
+    "capHeightCm": 12.31,
+    "necklineGirthCm": 48.27
   }
 }
