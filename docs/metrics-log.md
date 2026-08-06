@@ -10521,3 +10521,106 @@ maxStrain 2.661@2146 · maxSeamGap 11.14mm · 계기B 13.17/40.37/121.84/4회
   브리지 그룹 경계 미덮개 코너의 화면 크기 · `S3-cuff` 쌍 오염 여부
 
 기점: 9c43473
+
+## 2026-08-06 · 68회차 — 업로드 이미지 배선(v2 렌더러) · **통과**
+
+기점 565b52a · `v2-stage2a` · **물리 0줄 · patternHash 불변 · v1 0줄 · 12콤보 불요**.
+strategist 0회(직전 확인 보고를 근거로 씀) · 직접 실행 A 1회 + 캡처 8장.
+
+### §1 처방 — `PatternPreview.tsx` +31 / −1 (단일 파일)
+```
+checkerTexture  useMemo(makeCheckerTexture, [])        ← 기존(이름만 분리)
+garmentImage    useFitStore((s) => s.garmentImage)     ← 신규 구독
+uploadedTexture useState<THREE.Texture|null>            ← 신규
+useEffect([garmentImage])  new THREE.TextureLoader().load(url, …)
+                onLoad  : alive이면 setState · 아니면 즉시 dispose(누수 방지)
+                onError : setUploadedTexture(null) → **체커 폴백**
+                cleanup : alive=false · 완료분 dispose
+texture = uploadedTexture ?? checkerTexture             ← map 소스
+```
+**표시 파라미터는 v1을 그대로 따랐다 — 임의 값 0.** 근거: v1 `Garment.tsx:303`이 쓰는 drei
+`useTexture`의 구현이 `node_modules/@react-three/drei/core/Texture.js:7-9`에서
+**`useLoader(TextureLoader, url)` + `gl.initTexture`뿐**이고 **colorSpace·flipY·wrap을 하나도
+설정하지 않는다**(three 기본값). 그래서 여기서도 `TextureLoader` 기본값을 그대로 뒀다.
+**ObjectURL은 해제하지 않는다** — store가 소유하고 v1도 같은 문자열을 쓴다. 저장소 전체에
+`revokeObjectURL`이 **0건**이라 해제로 인한 깨진 참조 위험이 없고, 여기서 해제하면 v1이 깨진다.
+물리·지오메트리·UV·`patternstate` 경로는 한 줄도 안 건드렸다.
+
+### §2 검증 — **전부 통과**
+```
+npx tsc -b            통과
+patternHash           **동일**(로그 "vs 커밋본 9f7ba80b3497 … → 동일")
+A 17채널 비트 대조     전부 불변:
+  Δ20 5.16mm · 자기교차 1889 · 관통 50/5244(소매 47 · 94.0%) · cov 118/1728 6.8%
+  maxStrain 2.661@2146 · maxSeamGap 11.14mm · 계기B 정착 13.17/40.37/121.84/4회
+  Δ20 argmax 5.16@f248 정점1947 앞판 내부(앞15/뒤5) · 소매 관여 자기교차 114
+  dress-state md5 14e50b8919a63a7f9799220b86e508a9 (불변)
+```
+예상대로다 — `PatternPreview`는 브라우저 컴포넌트이고 `dressPattern.ts`가 import하지 않는다.
+
+### §3 화면 — 8장(`docs/captures/2b-68-upload/`)
+```
+체커 폴백(업로드 없음)  checker-{front,back,neck,cuff,hem}.png  ← 표준 하네스 5뷰
+업로드 상태             img-{front,back,cuff}.png               ← 수동 절차(아래)
+테스트 이미지           docs/test-assets/uv-test.png  512×512 · md5 2d025d12636922366dad4512b6395813
+                        사분면 색(TL 적 · TR 청 · BL 황 · BR 녹) + 64px 격자 + 위쪽 화살표
+                        → UV 겹침·뒤집힘·회전이 한눈에 보이게 만든 것
+CAPTURE_URL  http://localhost:5173/?patterncore=1&patternstate=1[&view=…]
+dress-state  md5 14e50b89… (A · DONE f=260)
+뷰포트 크롭  Chrome 창 bounds에서 좌 272 · 상 120 제외(capture.ts와 같은 식) · 촬영 전 Chrome 전면화
+```
+
+**표준 캡처 하네스로는 업로드 상태를 찍을 수 없다(신규 발견)**: `capture.ts:92-94`가 뷰마다
+`focusAndNavigate(url(view))`로 **재내비게이션**하는데 `useFitStore`에 **persist가 없다**
+(`localStorage`/`sessionStorage`/`persist` 전부 0건) → **리로드마다 `garmentImage`가 null로
+돌아간다.** 이번에는 뷰별로 「내비게이트 → 재업로드 → 대기 → screencapture」를 수동으로 돌았다.
+
+**대기 시간(신규 발견)**: 업로드 후 **9초로는 부족**했다. 첫 front 촬영(md5 `676f6357…`)이
+체커로 나왔고 같은 페이지를 그대로 두고 재촬영하니 이미지가 나왔다(`2a66eb5f…`).
+`cropToGarmentRegion` 세그멘테이션 + 텍스처 로드가 그 사이에 있다. **16초로 올려 back·cuff를 찍었다.**
+
+### §4 사전 등록 판정
+```
+물리   A 17채널 비트 일치 · 해시 불변                    → **통과**
+폴백   업로드 없는 상태에서 체커 5뷰 정상                → **통과**
+       ※ 과거 캡처와 md5 대조는 **불가**하다 — 렌더가 비트 재현되지 않고
+         2b-45-off는 dress-state가 다르다. 화면 동일성은 전략 세션 판정 몫
+반영   업로드 상태에서 옷에 그 이미지가 보인다            → **통과**
+       R3F 씬 직접 조회로도 확인: 패널 4메시 전부 map = Texture 512×512
+       (체커는 DataTexture 32×32) · 브리지 메시는 map null(#6b7f8c) 그대로
+UV     판정 아님 · 기록 → 아래
+화면   전략 세션 판정 · 자체 선언 없음
+```
+
+### §4 UV 겹침 — **기록**(판정 아님 · T7 실측 근거)
+예상대로 **4패널이 UV 공간 같은 영역을 샘플링한다**. 관측된 그대로:
+```
+img-front  앞판에 512² 이미지 **한 장이 통째로** 들어간다(TL 적 / TR 청 / BL 황 / BR 녹 ·
+           화살표가 가슴 중앙 세로) · **양 소매에도 같은 이미지의 적색 대역**이 반복된다
+img-back   뒤판에 같은 이미지가 **좌우 반전으로** 보인다(청이 좌상 · 녹이 좌하) —
+           뒤에서 보므로 같은 UV가 거울로 읽힌다 · 화살표가 등 중앙 세로
+           소매에 **회색 패치**(옷이 없는 자리)가 보인다
+img-cuff   소맷부리 근방에 적/황 대역 · 격자 축척이 몸판과 다르다
+```
+**즉 "옷 한 벌에 그림 한 장"이 아니라 "패널마다 같은 그림 한 장씩"이다.**
+이것이 `v2-design.md:41`(T7) · `:386-388`의 **패널별 UV 아틀라스 미착수**의 직접 실측이다.
+**이번 회차에서 아틀라스는 손대지 않았다.**
+
+### 자체 진단 오류 1건 (기록)
+중간에 `performance.getEntriesByType('resource')`에 blob 항목이 0개인 것을 보고
+**"텍스처 로더가 한 번도 안 돌았다"**고 추론했다. **틀렸다** — 수동으로 `TextureLoader`를
+성공시킨(512×512 OK) 뒤에도 여전히 0개였다. **resource timing은 `blob:` fetch를 기록하지 않는다.**
+스스로 반증하고 R3F 씬 직접 조회로 갈아탄 뒤 배선이 정상임을 확인했다.
+
+### 등재만 (구현 금지)
+- **`FitCanvas.tsx:103-106`의 경고 문자열이 이제 거짓이다** — 「`?patterncore=1` 이 켜져 있어
+  업로드한 사진은 화면에 안 나온다. 사진을 보려면 patterncore 파라미터를 빼고 열 것」을
+  **매 로드 인쇄**하는데 68회차부터 v2도 사진을 그린다. **함정 13 계열(하드코딩 문장이 코드와 어긋남)**
+- **패널별 UV 아틀라스(T7)** — 위 실측이 필요성의 근거
+- **프로덕션 빌드에서 `?patterncore=1`이 무시된다**(`FitCanvas.tsx:99` `import.meta.env.DEV` 게이트)
+  → v2 화면은 **dev 한정**이다
+- **캡처 하네스가 업로드 상태를 못 찍는다**(재내비게이션 + persist 없음). 수동 절차로 우회함
+- **업로드 후 정착 대기 9초 부족** — 16초 이상
+- 67 §11 캡처 위생: `S3-cuff` 쌍 오염 여부 **미확인** 유지
+
+기점: 565b52a

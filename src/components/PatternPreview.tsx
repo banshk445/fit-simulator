@@ -57,7 +57,37 @@ export function PatternPreview(): React.JSX.Element | null {
   const cleanRender = new URLSearchParams(window.location.search).get("cleanrender") === "1";
   const [geos, setGeos] = useState<THREE.BufferGeometry[] | null>(null);
   const [bridgeGeo, setBridgeGeo] = useState<THREE.BufferGeometry | null>(null);
-  const texture = useMemo(() => makeCheckerTexture(), []);
+  const checkerTexture = useMemo(() => makeCheckerTexture(), []);
+  // ── 68회차 — **업로드 이미지 배선**. 직전 확인: v2 경로에 소비가 **애초에 없었다**
+  // (체커가 무조건 붙고 store를 안 봤다). 캠페인 내내 캡처가 체커였던 이유다.
+  // 표시 파라미터는 **v1 `Garment.tsx`를 그대로 따른다** — v1은 drei `useTexture`를
+  // 쓰는데 그 구현이 `useLoader(TextureLoader, url)` + `gl.initTexture`뿐이라
+  // **colorSpace·flipY·wrap을 하나도 설정하지 않는다**(three 기본값). 그래서 여기서도
+  // `TextureLoader` 기본값을 그대로 둔다 — 임의 값 도입 0.
+  // `garmentImage`는 `blob:`(업로드) 또는 `data:`(?autofit=1) **문자열**이다.
+  // 없거나 로드 실패면 **체커로 폴백**한다(기존 캡처 재현성 보존).
+  // 물리·지오메트리·UV·`patternstate` 경로는 한 줄도 건드리지 않는다.
+  const garmentImage = useFitStore((s) => s.garmentImage);
+  const [uploadedTexture, setUploadedTexture] = useState<THREE.Texture | null>(null);
+  useEffect(() => {
+    if (!garmentImage) { setUploadedTexture(null); return; }
+    let alive = true;
+    let made: THREE.Texture | null = null;
+    new THREE.TextureLoader().load(
+      garmentImage,
+      (tex) => {
+        if (!alive) { tex.dispose(); return; } // 교체가 앞질렀다 — 즉시 해제(누수 방지)
+        made = tex;
+        setUploadedTexture(tex);
+      },
+      undefined,
+      () => { if (alive) setUploadedTexture(null); }, // 실패 → 체커 폴백
+    );
+    return () => { alive = false; if (made) made.dispose(); };
+  }, [garmentImage]);
+  // ObjectURL 자체는 해제하지 않는다 — store가 소유하고 v1도 같은 문자열을 쓴다
+  // (`revokeObjectURL`은 저장소 어디에도 없다). 여기서 해제하면 v1이 깨진다.
+  const texture = uploadedTexture ?? checkerTexture;
 
   useEffect(() => {
     let alive = true;
