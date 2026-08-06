@@ -97,12 +97,13 @@ export function FitCanvas() {
   const shot = view ? CAPTURE_VIEWS[view] : undefined;
   // v2 patternCore — 켜면 v1 옷 대신 패턴 정적 배치만 그린다(물리 없음).
   const patternCore = import.meta.env.DEV && query.get("patterncore") === "1";
-  // 이 플래그가 켜진 URL에서 사진을 올리면 화면에 아무 일도 안 일어난다
-  // (아래에서 `<Garment>`를 마운트하지 않으므로). 실제로 "업로드가 안 된다"로
-  // 한 번 보고됐다 — 조용히 삼키지 말고 콘솔에 이유와 해법을 남긴다.
+  // **68회차 정정**: 이 문장은 원래 "사진이 화면에 안 나온다"였고 그건 그때까지 참이었다
+  // (v2 렌더러가 store를 안 봤다). 68회차가 `PatternPreview`에 배선을 넣어 **v2도 사진을 그린다**.
+  // 경고를 지우지 않고 내용을 바꾼다 — 두 경로의 화면이 서로 다르므로(아래) 지금 무엇을
+  // 보고 있는지는 여전히 알려야 한다.
   if (patternCore && garmentImage) {
     console.warn(
-      "[fit] ?patterncore=1 이 켜져 있어 v1 옷을 그리지 않는다 — 업로드한 사진은 화면에 안 나온다. 사진을 보려면 patterncore 파라미터를 빼고 열 것(http://localhost:5173/).",
+      "[fit] ?patterncore=1 — v2 경로가 업로드 사진을 그린다(68회차 배선). 단 패널 UV가 겹쳐 있어 앞/뒤/소매가 같은 그림을 반복한다(69회차). v1 렌더를 보려면 patterncore 파라미터를 뺄 것(http://localhost:5173/).",
     );
   }
 
