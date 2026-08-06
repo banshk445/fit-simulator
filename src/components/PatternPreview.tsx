@@ -42,6 +42,7 @@ function makeCheckerTexture(): THREE.DataTexture {
   return tex;
 }
 
+let __r74 = 0;
 export function PatternPreview(): React.JSX.Element | null {
   const garmentSize = useFitStore((s) => s.garmentSize);
   // `?patternstate=1` — 2b 하네스가 남긴 최종 상태(시뮬 결과)를 그린다.
@@ -68,8 +69,12 @@ export function PatternPreview(): React.JSX.Element | null {
   // 없거나 로드 실패면 **체커로 폴백**한다(기존 캡처 재현성 보존).
   // 물리·지오메트리·UV·`patternstate` 경로는 한 줄도 건드리지 않는다.
   const garmentImage = useFitStore((s) => s.garmentImage);
+  // ── 74회차 판별 로그 L1/L2/L3 (진단 전용 · console.log만 · 거동 0 · 새 상수 0) ──
+  __r74 += 1;
+  console.log(`[74판별·L1 렌더] #${__r74} garmentImage=${garmentImage === null ? "null" : typeof garmentImage + ":" + String(garmentImage).slice(0, 40)}`);
   const [uploadedTexture, setUploadedTexture] = useState<THREE.Texture | null>(null);
   useEffect(() => {
+    console.log(`[74판별·L2 uploadedTexture effect 진입] garmentImage=${garmentImage === null ? "null" : String(garmentImage).slice(0, 40)}`);
     if (!garmentImage) { setUploadedTexture(null); return; }
     let alive = true;
     let made: THREE.Texture | null = null;
@@ -98,12 +103,15 @@ export function PatternPreview(): React.JSX.Element | null {
   // 합성 실패·업로드 없음이면 **체커 폴백**. 물리·지오메트리·UV는 안 건드린다.
   const [composited, setComposited] = useState<{ tex: THREE.Texture; solid: string } | null>(null);
   useEffect(() => {
+    console.log(`[74판별·L3 composited effect 진입] garmentImage=${garmentImage === null ? "null" : String(garmentImage).slice(0, 40)}`);
     if (!garmentImage) { setComposited(null); return; }
     let alive = true;
     let made: THREE.Texture | null = null;
     void (async () => {
       try {
+        console.log("[74판별·L3a import 직전]");
         const { compositeGarmentTexture } = await import("../lib/garmentTextureComposite");
+        console.log("[74판별·L3b import 직후]");
         const img = new Image();
         img.src = garmentImage;
         // 73회차 정정 — **`decode()`를 기다리면 안 된다.** 탭이 백그라운드면 Chrome이
@@ -119,6 +127,7 @@ export function PatternPreview(): React.JSX.Element | null {
           img.onload = () => res();
           img.onerror = () => res();
         });
+        console.log(`[74판별·L3c 로드 대기 직후] naturalWidth=${img.naturalWidth}`);
         void img.decode().catch(() => {}); // 기다리지 않는다(v1과 같다)
         if (!img.naturalWidth) throw new Error("이미지 로드 실패");
         if (!alive) return;
@@ -132,6 +141,7 @@ export function PatternPreview(): React.JSX.Element | null {
           for (let k = 0; k < uvAttr.count; k++) { const u = uvAttr.getX(k); if (u > m) m = u; }
           if (m > 0) uMax = m;
         }
+        console.log(`[74판별·L3d composite 호출 직전] uMax=${uMax}`);
         const canvas = compositeGarmentTexture(img, {
           uMax,
           onDiag: (d) => {
@@ -145,6 +155,7 @@ export function PatternPreview(): React.JSX.Element | null {
             );
           },
         });
+        console.log(`[74판별·L3e composite 반환] ${canvas.width}x${canvas.height}`);
         if (!alive) return;
         const tex = new THREE.CanvasTexture(canvas);
         made = tex;

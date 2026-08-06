@@ -11176,3 +11176,43 @@ dev 서버 재시작으로도 안 바뀌었으므로 **모듈 그래프 stale �
 - 브라우저 콘솔 리더가 이 탭에서 **계속 빈 결과**를 냈다(인페이지 버퍼로 대체했다)
 
 기점: a609323
+
+## 2026-08-07 · 74회차 — 판별 계기 배선 완료 · **실행 정지(브라우저 부재)**
+
+기점 17fd199 · `v2-stage2a` · **물리 0줄 · 처방 0건 · 새 상수 0**. strategist 0회.
+
+### §1 판별 계기 3지점 — **배선 완료 · `tsc -b` 통과**
+전부 `console.log`만이고 **early return·await보다 앞**에 있다.
+```
+L1  렌더 본문   `[74판별·L1 렌더] #N garmentImage=null | string:<앞 40자>`
+                (모듈 스코프 카운터 `__r74`로 렌더 횟수를 센다)
+L2  uploadedTexture effect 최상단(`if (!garmentImage)` 판정 **앞**)
+                `[74판별·L2 uploadedTexture effect 진입] garmentImage=…`
+L3  composited effect 최상단(판정 앞) + async 본문 각 await 전후
+                L3  진입 · L3a import 직전 · L3b import 직후 ·
+                L3c 로드 대기 직후(naturalWidth) · L3d composite 호출 직전(uMax) ·
+                L3e composite 반환(캔버스 크기)
+```
+→ §3의 3분기(①구독/값 전달 ②effect 미실행 ③특정 await)가 **로그 위치만으로 갈린다.**
+
+### §2 실행 — **불가. 정지.**
+```
+1) 브라우저 확장 연결 끊김 — `tabs_context_mcp` 재시도 포함 2회 모두
+   "Browser extension is not connected"
+2) Chrome 창 없음 — osascript가 `window 1을(를) 가져올 수 없습니다 (-1719)`
+3) 확장 없이 가능한 우회(`?autofit=1`로 파일 입력 없이 garmentImage 주입)도
+   같은 이유로 실행 불가 — 화면 표본은 rgb(45.5,45.5,46.5)로 **창이 없는 상태의 배경**이다
+   (체커 판정이 아니라 **측정 무효**다)
+```
+**따라서 이번 회차는 판별 결과가 없다. 사전 등록 3분기 어디에도 판정하지 않는다.**
+
+### §4 준수
+73회차 정정 2건(실패 경로 인쇄 · decode 대기 제거) **되돌리지 않았다** ·
+`#6b7f8c` 처방 **미집행 유지** · 새 상수 0 · 값 조정 0.
+
+### 다음 실행에 필요한 것
+브라우저 복구 후 **업로드 1회 + 탭을 앞에 둔 채 콘솔 전량**(필터 없이) 캡처.
+`?autofit=1`을 쓰면 파일 입력 없이도 `garmentImage`가 주입되므로
+**확장 없이 화면만으로도 1차 분기**가 가능하다(파랑 단색 = 파이프라인 정상 / 체커 = 구독 층위).
+
+기점: 17fd199
