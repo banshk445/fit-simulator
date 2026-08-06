@@ -228,6 +228,54 @@ console.log(
 const wholeMesh = new ArrayBvhCollision();
 wholeMesh.rebuild(position, wholeIndex);
 const insideParity = makeParityInside(wholeMesh);
+// ── 65회차 §2 **와인딩 실측**(`WINDING=1` · 진단 전용 · 물리 0줄) ────────────────
+// `bvhFromArrays.ts:113-120`이 "이 마네킹은 일부 영역 와인딩이 뒤집혀 있다(M2-3 3연속
+// 실패 원인)"를 명기하는데 **팔 대역을 잰 회차가 없다**(64 §9). 소매 접촉 후보는
+// 전부 "면 법선이 바깥을 향한다"를 전제하므로 이 값이 그 전제의 근거다.
+// 기준 방향은 **골격**이다 — 61·62회차가 라디얼보다 6.5배 정확함을 오라클로 확증했다.
+// 대역 라벨도 골격에서 나온다(최근접 선분이 팔이면 팔 대역) — 새 손 상수 0.
+if (process.env.WINDING === "1" && wholeIndex) {
+  const armSet = new Set(skeleton.arms);
+  type Row = { flipped: boolean; y: number; st: number; arm: boolean; cos: number };
+  const rows: Row[] = [];
+  for (let t = 0; t + 2 < wholeIndex.length; t += 3) {
+    const ia = wholeIndex[t] * 3, ib = wholeIndex[t + 1] * 3, ic = wholeIndex[t + 2] * 3;
+    const ax = position[ia], ay = position[ia + 1], az = position[ia + 2];
+    const e1x = position[ib] - ax, e1y = position[ib + 1] - ay, e1z = position[ib + 2] - az;
+    const e2x = position[ic] - ax, e2y = position[ic + 1] - ay, e2z = position[ic + 2] - az;
+    let nx = e1y * e2z - e1z * e2y, ny = e1z * e2x - e1x * e2z, nz = e1x * e2y - e1y * e2x;
+    const nl = Math.hypot(nx, ny, nz);
+    if (nl < 1e-12) continue; // 퇴화 삼각형 — 방향 미정의. 세지 않는다
+    nx /= nl; ny /= nl; nz /= nl;
+    const cx = (ax + position[ib] + position[ic]) / 3;
+    const cy = (ay + position[ib + 1] + position[ic + 1]) / 3;
+    const cz = (az + position[ib + 2] + position[ic + 2]) / 3;
+    const k = nearestOnSegments(cx, cy, cz, skeleton.segments);
+    let ox = cx - k.x, oy = cy - k.y, oz = cz - k.z;
+    const ol = Math.hypot(ox, oy, oz);
+    if (ol < 1e-9) continue; // 축 위 — 바깥 방향 미정의
+    ox /= ol; oy /= ol; oz /= ol;
+    const cos = nx * ox + ny * oy + nz * oz;
+    const ka = nearestOnSegments(cx, cy, cz, skeleton.arms);
+    const arm = ka.d2 <= k.d2 + 1e-12 && armSet.size > 0; // 최근접이 팔 선분
+    const st = Math.hypot(ka.x - skeleton.arms[0].a.x, ka.y - skeleton.arms[0].a.y, ka.z - skeleton.arms[0].a.z);
+    rows.push({ flipped: cos < 0, y: cy, st, arm, cos });
+  }
+  const q = (a: number[], f: number): string => (a.length ? a[Math.floor(f * (a.length - 1))].toFixed(1) : "-");
+  console.log(`  [65계기·와인딩] 삼각형 ${rows.length}개(퇴화 제외) · 기준 = 골격 바깥 방향(라디얼 아님)`);
+  for (const [nm, set] of [["팔 대역", rows.filter((r) => r.arm)], ["몸통 대역(대조군)", rows.filter((r) => !r.arm)]] as const) {
+    if (set.length === 0) { console.log(`    ${nm} n=0 — 산출 불가`); continue; }
+    const fl = set.filter((r) => r.flipped);
+    const cs = set.map((r) => r.cos).sort((a, b) => a - b);
+    const ys = fl.map((r) => r.y * 100).sort((a, b) => a - b);
+    const sts = fl.map((r) => r.st * 100).sort((a, b) => a - b);
+    console.log(
+      `    ${nm} n=${set.length} · **뒤집힘 ${fl.length} (${((100 * fl.length) / set.length).toFixed(1)}%)**` +
+      ` · cos(법선, 바깥) p10/중앙/p90 ${cs[Math.floor(0.1 * (cs.length - 1))].toFixed(3)}/${cs[Math.floor(0.5 * (cs.length - 1))].toFixed(3)}/${cs[Math.floor(0.9 * (cs.length - 1))].toFixed(3)}` +
+      (fl.length ? ` · 뒤집힘 y p10/중앙/p90 ${q(ys, 0.1)}/${q(ys, 0.5)}/${q(ys, 0.9)}cm · 팔축 station ${q(sts, 0.1)}/${q(sts, 0.5)}/${q(sts, 0.9)}cm` : ""),
+    );
+  }
+}
 const skipKeys = new Set<number>();
 for (const e of [...g.edgePairs, ...g.seams.map((s) => ({ a: s.a, b: s.b }))]) {
   skipKeys.add(Math.min(e.a, e.b) * 1_000_000 + Math.max(e.a, e.b));
@@ -2385,6 +2433,7 @@ const xsec = countSelfIntersections(sim.positions, g.tris, g.edgePairs, 0.03, 1_
   }
   const yBin: Record<string, number> = {};
   const pairKind: Record<string, number> = {};
+  const pairY: Record<string, number> = {};   // 65회차 §3 — 패널조합 × y 교차표
   const hopBin: Record<string, number> = {};
   const triVert = (t: number): number => g.tris[t * 3];
   for (const ex of xsec.examples) {
@@ -2394,6 +2443,15 @@ const xsec = countSelfIntersections(sim.positions, g.tris, g.edgePairs, 0.03, 1_
     yBin[`y${yc}`] = (yBin[`y${yc}`] ?? 0) + 1;
     const k = [PANEL_NAME[panelOfIdx(a)], PANEL_NAME[panelOfIdx(c)]].sort().join("↔");
     pairKind[k] = (pairKind[k] ?? 0) + 1;
+    // 65회차 §3 — **패널조합 × y 교차표**. 64 §9: 두 축을 따로 인쇄해 왔기 때문에
+    // "겨드랑이의 그 픽셀이 소매↔몸판 자기충돌인가"를 기존 로그로 못 갈랐다.
+    // 새 술어 0 · 손 상수 0(위 `k`와 `yBin`이 쓰는 것을 그대로 곱한다).
+    {
+      const yy = Math.round(sim.positions[a * 3 + 1] * 100);
+      const bd = yy >= 130 && yy <= 143 ? "y130~143" : yy >= 124 && yy <= 129 ? "y124~129"
+        : yy >= 94 && yy <= 123 ? "y94~123" : yy >= 70 && yy <= 93 ? "y70~93" : "그외";
+      pairY[`${k}@${bd}`] = (pairY[`${k}@${bd}`] ?? 0) + 1;
+    }
     // 엣지 양 끝점 중 옆선 시접에 더 가까운 홉수로 귀속(미도달은 ">6").
     const h = Math.min(hop[a] < 0 ? 99 : hop[a], hop[b] < 0 ? 99 : hop[b]);
     const lab = h >= 99 ? ">6홉" : `${h}홉`;
@@ -2404,6 +2462,13 @@ const xsec = countSelfIntersections(sim.positions, g.tris, g.edgePairs, 0.03, 1_
     Object.entries(o).sort((x, y) => y[1] - x[1]).slice(0, n).map(([k, v]) => `${k}:${v}(${(100 * v / Math.max(1, total3)).toFixed(1)}%)`).join(" ");
   console.log(`  [46계기·자기교차 위치] 총 ${xsec.count}건(t=0 ${xs0Count}건 → **전량 런타임 발생**) · 분해 표본 ${total3}건`);
   console.log(`    패널 조합: ${top(pairKind, 8)}`);
+  console.log(`    **패널조합 × y 교차표**(65회차 신설): ${top(pairY, 12)}`);
+  {
+    // 겨드랑이 후보 ②를 **직접** 세는 유일한 채널 — 소매가 낀 조합만 y대역별로 뽑는다.
+    const sl = Object.entries(pairY).filter(([kk]) => kk.includes("소매")).sort((x, y) => y[1] - x[1]);
+    const slTot = sl.reduce((a, [, v]) => a + v, 0);
+    console.log(`    **소매 관여 자기교차 ${slTot}건**: ${sl.length ? sl.map(([kk, v]) => `${kk} ${v}`).join(" / ") : "없음"}`);
+  }
   console.log(`    옆선 시접 인접(홉): ${top(hopBin, 8)}`);
   console.log(`    y 1cm bin 상위 12: ${top(yBin, 12)}`);
   {
