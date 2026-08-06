@@ -26,7 +26,7 @@ import { makeOutlineProvider } from "../src/lib/bodyOutline";
 import { buildPatternSim } from "../src/lib/buildPatternSim";
 import { correctPlacementPenetration, countInside, countOpenEdges, countSelfIntersections, makeParityInside } from "../src/lib/patternPlacement";
 import { computeBodyCoverage, deriveShoulderBand } from "../src/lib/coverageMetric";
-import { bakeSdf, createCachedSdfIterationFriction, createSdfFrictionPass, makeRadialSignedSampler, sdfNormal } from "../src/lib/sdfCollision";
+import { bakeSdf, createCachedSdfIterationFriction, createSdfFrictionPass, makeRadialSignedSampler, makeSkeletonSignedSampler, sampleSdf, sdfNormal } from "../src/lib/sdfCollision";
 import {
   COLLISION_DETECTION_RADIUS,
   COLLISION_EVERY,
@@ -675,13 +675,119 @@ for (let i = 0; i < position.length; i += 3) {
 }
 const pad = 0.08;
 const tBake = performance.now();
+// ── 62회차 처방 **S3** — 마찰 SDF 부호 기준 교체(`SKELSIGN=1` · 기본 off) ──────
+// 62회차 §1 오라클이 확증한 것: 구면행진 공 오라클 확정 표본 831개에서
+//   레이패리티 0/831(0.0%) · **골격 31/831(3.7%)** · **라디얼 202/831(24.3%)**
+// 라디얼이 소매 대역에서 24.3% 오분류하고, 골격이 라디얼보다 **6.5배 정확**하다.
+// 오분류 정점은 마찰 `load = 1.0`(최대)을 받아 접선 이동을 잃는다(sdfCollision.ts:232).
+// **기준 교체만 한다 — 값 스윕 없음**(함정 14). `makeSkeletonSignedSampler`는
+// Stage 1a 은행 자산이라 신규 코드 0줄이다.
+// **필드는 전 정점 공유**이므로 몸판 마찰도 함께 바뀐다 — A 17채널의 이동은
+// 예상된 것이고 그 자체는 실패가 아니다(회차 프롬프트 §3 등재).
+const SKELSIGN = process.env.SKELSIGN === "1";
 const sdfField = bakeSdf(
-  makeRadialSignedSampler(wholeMesh, (minX + maxX) / 2, (minZ + maxZ) / 2, SDF_FAR, SDF_FAR),
+  SKELSIGN
+    ? makeSkeletonSignedSampler(wholeMesh, skeleton.segments, SDF_FAR, SDF_FAR)
+    : makeRadialSignedSampler(wholeMesh, (minX + maxX) / 2, (minZ + maxZ) / 2, SDF_FAR, SDF_FAR),
   { x: minX - pad, y: yBot, z: minZ - pad },
   { x: maxX + pad, y: yTop, z: maxZ + pad },
   SDF_VOXEL, SDF_FAR,
 );
 console.log(`[dress] SDF 굽기 ${sdfField.nx}x${sdfField.ny}x${sdfField.nz} elapsedMs ${Math.round(performance.now() - tBake)}`);
+// ── 62회차 §1 **부호 오라클**(진단 전용 · 물리 0줄 · `SLEEVESIGN=1`) ──────────
+// S3(마찰 SDF 부호 기준 교체)의 선행 조건. 61회차가 t=0 소매 948정점에서
+// 라디얼 sd≤0 252(26.6%) vs 레이 패리티 관통 0/948을 실측했는데, **어느 쪽이
+// 옳은지 가릴 판정자가 없었다**. 계기를 계기로 고치는 것을 막는 것이 이 절이다.
+//
+// **은행 SIGNMAP 공 오라클은 방향이 반대다** — `paramSweep.ts:517-520`의 구성은
+// "골격점 a는 내부다 · |p−a| < unsignedDist(a)면 p도 내부"로 **확정 내부만** 증명한다.
+// 소매 정점은 전량 몸 밖에 놓이므로 그 오라클로는 아무것도 확정되지 않는다.
+// 여기서는 **같은 공 논증을 양방향으로** 세운다(레이 패리티 불필요 · 새 상수 0):
+//   확정 내부  |p − a| < unsignedDist(a),  a = 최근접 골격점(축은 내부 · 승인 전제)
+//   확정 외부  |p − q| < unsignedDist(q),  q = bbox 밖 씨앗(자명한 외부)
+// 둘 다 **충분조건**이다 — 확정 못 한 점은 "불명"으로 남기고 추정하지 않는다.
+const SLEEVESIGN = process.env.SLEEVESIGN === "1";
+if (SLEEVESIGN) {
+  const skelSample = makeSkeletonSignedSampler(wholeMesh, skeleton.segments, SDF_FAR, SDF_FAR);
+  const radSample = makeRadialSignedSampler(wholeMesh, (minX + maxX) / 2, (minZ + maxZ) / 2, SDF_FAR, SDF_FAR);
+  const s0 = g.panelStarts[2], s1 = total;
+  const armSegs = skeleton.arms;
+  type Row = { i: number; par: number; ball: number; skel: number; rad: number; baked: number; st: number; inward: boolean; cap: boolean };
+  const rows: Row[] = [];
+  // **확정 외부 — 구면행진(sphere marching).** 단일 공은 원리적으로 못 닿는다:
+  // bbox 밖 씨앗 q에서 |p−q| < d(q)를 요구하면 q가 멀수록 d(q)도 같이 커져
+  // 부등식이 결코 성립하지 않는다(첫 실행 실측: 확정 외부 0/948).
+  // 대신 **밖의 점 x에서 어느 방향으로든 d(x)보다 짧게 움직이면 여전히 밖**이라는
+  // 같은 공 논증을 **사슬로** 잇는다. 표적 p를 향해 반경만큼씩 전진해 p에 닿으면
+  // **p는 확정 외부**다. 레이 캐스팅이 아니므로 패리티 가정(수밀성)이 안 들어간다.
+  // 씨앗은 p를 지나는 **팔축 바깥 방향** 먼 점 — 경로가 몸을 스칠 확률이 가장 낮다.
+  // 닿지 못하면 "불명"으로 남긴다(추정 금지). 이것은 충분조건이지 필요조건이 아니다.
+  const MARCH_MAX = 400;
+  const marchOutside = (px: number, py: number, pz: number, ax: number, ay: number, az: number): boolean => {
+    // 씨앗 = 팔축에서 p 방향으로 3m 밖.
+    let ux = px - ax, uy = py - ay, uz = pz - az;
+    const ul = Math.hypot(ux, uy, uz) || 1e-9;
+    ux /= ul; uy /= ul; uz /= ul;
+    let x = ax + ux * 3.0, y = ay + uy * 3.0, z = az + uz * 3.0;
+    for (let s = 0; s < MARCH_MAX; s++) {
+      const c = wholeMesh.closestPointUnsigned(x, y, z, 1e9);
+      if (!c) return false;
+      const r = c.distance;
+      const dx = px - x, dy = py - y, dz = pz - z;
+      const dl = Math.hypot(dx, dy, dz);
+      if (dl < r) return true; // p가 "밖임이 보장된 공" 안 — 확정 외부
+      const step = r * 0.9; // 보수적으로 반경보다 짧게
+      if (step < 1e-6) return false; // 표면에 붙어 더 못 간다 — 불명
+      x += (dx / dl) * step; y += (dy / dl) * step; z += (dz / dl) * step;
+    }
+    return false;
+  };
+  for (let i = s0; i < s1; i++) {
+    const x = g.positions[i * 3], y = g.positions[i * 3 + 1], z = g.positions[i * 3 + 2];
+    // ① 레이 패리티 — 하네스가 스스로 "비수밀 · 패리티 근사"로 인쇄하는 그 채널.
+    const par = insideParity(x, y, z) ? -1 : 1;
+    // ② 공 오라클(양방향). +1 확정 외부 / −1 확정 내부 / 0 불명.
+    const k = nearestOnSegments(x, y, z, skeleton.segments);
+    const a = wholeMesh.closestPointUnsigned(k.x, k.y, k.z, SDF_FAR);
+    let ball = 0;
+    if (a && Math.sqrt(k.d2) < a.distance) ball = -1;
+    else if (marchOutside(x, y, z, nearestOnSegments(x, y, z, armSegs).x, nearestOnSegments(x, y, z, armSegs).y, nearestOnSegments(x, y, z, armSegs).z)) ball = 1;
+    // ③④⑤ 세 부호 규칙.
+    const skel = skelSample(x, y, z), rad = radSample(x, y, z);
+    const baked = sampleSdf(sdfField, x, y, z);
+    // 위치 라벨 — 팔축 station · 몸통 쪽인가 · 캡 대역인가(새 상수 0).
+    const ka = nearestOnSegments(x, y, z, armSegs);
+    const st = Math.hypot(ka.x - skeleton.arms[0].a.x, ka.y - skeleton.arms[0].a.y, ka.z - skeleton.arms[0].a.z);
+    const inward = (x - ka.x) * (centerX - ka.x) + (z - ka.z) * (collision.centerZ - ka.z) > 0;
+    rows.push({ i, par, ball, skel, rad, baked, st, inward, cap: g.pos2[i * 2 + 1] <= g.draft.dims.capHeightM });
+  }
+  const n = rows.length;
+  const cnt = (f: (r: Row) => boolean): number => rows.filter(f).length;
+  console.log(`  [62오라클·소매 부호] t=0 소매 정점 ${n}개(패널 2·3) · 기준 4종 + 공 오라클`);
+  console.log(
+    `    "몸 안"이라 답한 수 — 레이패리티 ${cnt((r) => r.par < 0)} · **골격 ${cnt((r) => r.skel < 0)}** · **라디얼(해석) ${cnt((r) => r.rad < 0)}** · 라디얼(구운필드) ${cnt((r) => r.baked < 0)}` +
+    ` │ 공 오라클: **확정 내부 ${cnt((r) => r.ball < 0)} · 확정 외부 ${cnt((r) => r.ball > 0)} · 불명 ${cnt((r) => r.ball === 0)}**`,
+  );
+  // 공 오라클이 확정한 표본에서만 오분류를 센다 — 불명은 판정에 안 쓴다.
+  const det = rows.filter((r) => r.ball !== 0);
+  const bad = (f: (r: Row) => number): string => {
+    const b = det.filter((r) => (f(r) < 0 ? -1 : 1) !== r.ball).length; // 안=−1 / 밖=+1 (첫 구현에서 뒤집혀 있었다 — 62회차 자기검사가 잡음)
+    return `${b}/${det.length}${det.length ? ` (${((100 * b) / det.length).toFixed(1)}%)` : ""}`;
+  };
+  console.log(`    **공 오라클 확정 표본 ${det.length}개 대비 오분류** — 레이패리티 ${bad((r) => r.par)} · 골격 ${bad((r) => r.skel)} · 라디얼(해석) ${bad((r) => r.rad)} · 라디얼(구운필드) ${bad((r) => r.baked)}`);
+  // 불일치의 위치 분포 — 61회차가 "전량 몸통 쪽"이라 한 것의 재확인.
+  const rb = rows.filter((r) => r.rad < 0), sb = rows.filter((r) => r.skel < 0);
+  const q = (a: number[], f: number): string => (a.length ? (a[Math.floor(f * (a.length - 1))] * 100).toFixed(1) : "-");
+  for (const [nm, set] of [["라디얼 음수", rb], ["골격 음수", sb]] as const) {
+    const sts = set.map((r) => r.st).sort((a, b) => a - b);
+    console.log(
+      `    ${nm} ${set.length}개 위치 — 몸통 쪽 ${set.filter((r) => r.inward).length} / 바깥 쪽 ${set.filter((r) => !r.inward).length}` +
+      ` · 캡 대역 ${set.filter((r) => r.cap).length} / 하부 ${set.filter((r) => !r.cap).length}` +
+      ` · 팔축 station p10/중앙/p90 ${q(sts, 0.1)}/${q(sts, 0.5)}/${q(sts, 0.9)}cm` +
+      ` · 그중 공 오라클 확정외부 ${set.filter((r) => r.ball > 0).length} 불명 ${set.filter((r) => r.ball === 0).length} 확정내부 ${set.filter((r) => r.ball < 0).length}`,
+    );
+  }
+}
 const cachedFric = createCachedSdfIterationFriction(() => sdfField, {
   contactBand: FRICTION_CONTACT_BAND, muStatic: FRICTION_MU_ITER, muKinetic: FRICTION_MU_ITER, localMuGain: LOCAL_MU_GAIN,
 });
@@ -2510,7 +2616,7 @@ console.log(`  maxStrain ${strain.v.toFixed(3)} (정점 ${strain.at}) · maxSeam
   }
   // 49회차 — **정착 시점 rest 정합 지도**(48회차 미이행 · f8 값을 정착으로 인용하던 금지 해소).
   console.log(restMap("**정착**(49회차 신설 — 이전까지 f0/f1/f8뿐이었다)"));
-  console.log(`  [54·처방 상태] D0(국면1 자석 차단) ${MAGNET_D0 ? "**on**(MAGNET_D0=1)" : MAGNET_AXIS1 ? "off · 축① w≡1(무변화)" : "**off**(기본)"} · 흡착 ${ADSORB_PENONLY ? "**관통-only**(ADSORB_PENONLY=1 · 진단 전용)" : "**양방향**(기본)"} · 몸통 캡슐 ${TORSOCAP ? "**on**(TORSOCAP=1 · 43회차 처방 A 복원)" : "**OFF**(기본 — 45회차 승격 기준선)"} · 밑단 굽힘 ${HEMBEND ? `**H3 대조군 on**(HEMBEND=1 · 대역 ${HEMBEND_BAND_M*100}cm · raw ${HEMBEND_RAW} = 기본 ${STIFFNESS_BEND}의 ${(HEMBEND_RAW/STIFFNESS_BEND).toFixed(0)}배 · **진단 탐침 · 처방 아님 · 승격 금지**)` : "**off**(기본)"}`);
+  console.log(`  [54·처방 상태] D0(국면1 자석 차단) ${MAGNET_D0 ? "**on**(MAGNET_D0=1)" : MAGNET_AXIS1 ? "off · 축① w≡1(무변화)" : "**off**(기본)"} · 흡착 ${ADSORB_PENONLY ? "**관통-only**(ADSORB_PENONLY=1 · 진단 전용)" : "**양방향**(기본)"} · 몸통 캡슐 ${TORSOCAP ? "**on**(TORSOCAP=1 · 43회차 처방 A 복원)" : "**OFF**(기본 — 45회차 승격 기준선)"} · **마찰 SDF 부호 ${SKELSIGN ? "골격(SKELSIGN=1 · 62회차 처방 S3)" : "라디얼(기본)"}** · 밑단 굽힘 ${HEMBEND ? `**H3 대조군 on**(HEMBEND=1 · 대역 ${HEMBEND_BAND_M*100}cm · raw ${HEMBEND_RAW} = 기본 ${STIFFNESS_BEND}의 ${(HEMBEND_RAW/STIFFNESS_BEND).toFixed(0)}배 · **진단 탐침 · 처방 아님 · 승격 금지**)` : "**off**(기본)"}`);
 }
 // ── 35계기 6번: maxSeamGap의 **공간 분포**. 어느 종류·어느 자리가 벌어졌는가.
 {
