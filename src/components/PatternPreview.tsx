@@ -106,7 +106,21 @@ export function PatternPreview(): React.JSX.Element | null {
         const { compositeGarmentTexture } = await import("../lib/garmentTextureComposite");
         const img = new Image();
         img.src = garmentImage;
-        await img.decode(); // v1이 등재한 조건 — 디코드 전에 읽으면 매번 다른 값이 나온다
+        // 73회차 정정 — **`decode()`를 기다리면 안 된다.** 탭이 백그라운드면 Chrome이
+        // decode를 정지시켜 프로미스가 **영영 settle되지 않고**(실측: 8초 타임아웃 ·
+        // 그때 `naturalWidth`는 이미 723) 합성이 통째로 막혀 조용히 체커로 떨어진다.
+        // 71회차 촬영이 통과한 것은 탭이 계속 앞에 있었기 때문이다.
+        // v1은 이 경우를 이미 처리한다 — `Garment.tsx:336` `.catch(() => {})`로
+        // **디코드를 기다리지 않고 진행**한다. 여기서도 v1과 같은 성격으로 맞춘다:
+        // 진행 조건은 **로드 완료**(`complete && naturalWidth > 0`)이고 decode는 시도만 한다.
+        // **새 상수 0**(타임아웃 값을 두지 않는다 — 로드 이벤트가 조건이다).
+        await new Promise<void>((res) => {
+          if (img.complete && img.naturalWidth > 0) { res(); return; }
+          img.onload = () => res();
+          img.onerror = () => res();
+        });
+        void img.decode().catch(() => {}); // 기다리지 않는다(v1과 같다)
+        if (!img.naturalWidth) throw new Error("이미지 로드 실패");
         if (!alive) return;
         // 몸판이 쓰는 u 대역 = 앞판 uv의 최댓값. **실제 속성에서 직접 뜬다**
         // (`patternGarment.ts:236-256`이 만든 값 그대로 · 새 상수·별도 술어 0 — 함정 12).
@@ -137,8 +151,11 @@ export function PatternPreview(): React.JSX.Element | null {
         const ctx = canvas.getContext("2d");
         const px = ctx ? ctx.getImageData(0, 0, 1, 1).data : null;
         setComposited({ tex, solid: px ? `rgb(${px[0]}, ${px[1]}, ${px[2]})` : "#ffffff" });
-      } catch {
-        if (alive) setComposited(null); // 합성 실패 → 아래에서 체커/원본 폴백
+      } catch (e) {
+        // 73회차 — **사유를 인쇄한다.** 71회차에는 조용히 삼켜서 「왜 체커로 떨어졌는가」를
+        // 못 봤다(71회차에 고친 판별자 결함과 같은 계열 — 실패 경로가 말이 없으면 계기가 아니다).
+        console.warn("[71계기·합성 실패 → 체커 폴백]", e);
+        if (alive) setComposited(null);
       }
     })();
     return () => { alive = false; if (made) made.dispose(); };
