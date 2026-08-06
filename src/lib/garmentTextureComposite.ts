@@ -131,6 +131,7 @@ function findPrintBoundingBox(
   srcW: number,
   srcH: number,
   color: { r: number; g: number; b: number },
+  onOversize?: (box: PrintBox) => void,
 ): PrintBox | null {
   const scanCanvas = document.createElement("canvas");
   scanCanvas.width = SCAN_SIZE;
@@ -176,13 +177,37 @@ function findPrintBoundingBox(
     w: (maxX - minX + 1) * scaleX,
     h: (maxY - minY + 1) * scaleY,
   };
-  if (box.w >= srcW * PRINT_MAX_FRAME_FRACTION || box.h >= srcH * PRINT_MAX_FRAME_FRACTION) return null;
+  // 71회차 — 문턱 발동을 **밖에서 구분할 수 있게** 상자를 함께 넘긴다.
+  // (이전에는 "프린트 없음"과 "프레임 초과"가 둘 다 null이라 판별자가 못 갈랐다.)
+  if (box.w >= srcW * PRINT_MAX_FRAME_FRACTION || box.h >= srcH * PRINT_MAX_FRAME_FRACTION) {
+    if (onOversize) onOversize(box);
+    return null;
+  }
   return box;
+}
+
+// ── 71회차 v2 적응 (선택 인자 · **미전달이면 v1과 계산 동치**) ────────────────
+// v1 몸판은 UV u∈[0,1] 전체를 쓰지만 v2 패널은 자기 bbox만 쓴다(69·70회차 실측:
+// 몸판 u∈[0, 55/70 = 0.7857]). 프린트 폭·중심을 그 **`uMax`에서 재도출**한다 —
+// **새 상수 0**이고 `uMax=1`이면 아래 두 식이 기존 값과 정확히 같아진다.
+// `onDiag`는 71회차 §3 거짓-갈래 판별자다(대표색·프린트 bbox·프레임 비율·
+// PRINT_MAX_FRAME_FRACTION 발동 여부). **인쇄만 하고 계산에 관여하지 않는다.**
+export interface CompositeOptions {
+  uMax?: number;
+  onDiag?: (d: {
+    color: { r: number; g: number; b: number };
+    printBox: PrintBox | null;
+    frameFracW: number;
+    frameFracH: number;
+    maxFrameFired: boolean;
+    corner00: { r: number; g: number; b: number } | null;
+  }) => void;
 }
 
 // 몸판 전체를 대표색(테두리 기반)으로 칠하고, 실제 프린트 영역(있다면)만
 // 원본 비율 그대로 가슴 중앙에 합성한 캔버스를 반환한다.
-export function compositeGarmentTexture(image: HTMLImageElement): HTMLCanvasElement {
+export function compositeGarmentTexture(image: HTMLImageElement, opts?: CompositeOptions): HTMLCanvasElement {
+  const uMax = opts?.uMax ?? 1;
   const representativeColor = borderRepresentativeColor(image);
   const canvas = document.createElement("canvas");
   canvas.width = OUTPUT_SIZE;
@@ -198,13 +223,35 @@ export function compositeGarmentTexture(image: HTMLImageElement): HTMLCanvasElem
   const srcH = image.naturalHeight || image.height;
   if (!srcW || !srcH) return canvas;
 
-  const printBox = findPrintBoundingBox(image, srcW, srcH, representativeColor);
+  let oversize: PrintBox | null = null;
+  const printBox = findPrintBoundingBox(image, srcW, srcH, representativeColor, (b) => { oversize = b; });
+  if (opts?.onDiag) {
+    // 판별자 — 문턱 전 상자(`printBox ?? oversize`)로 프레임 비율을 낸다.
+    // `maxFrameFired`는 **문턱이 실제로 걸렸을 때만** 참이다(프린트 없음과 구분된다).
+    const raw: PrintBox | null = printBox ?? oversize;
+    let corner00: { r: number; g: number; b: number } | null = null;
+    try {
+      const d = ctx.getImageData(0, 0, 1, 1).data;
+      corner00 = { r: d[0], g: d[1], b: d[2] };
+    } catch { corner00 = null; }
+    opts.onDiag({
+      color: representativeColor,
+      printBox: raw,
+      frameFracW: raw ? raw.w / srcW : 0,
+      frameFracH: raw ? raw.h / srcH : 0,
+      maxFrameFired: oversize !== null,
+      corner00,
+    });
+  }
   if (!printBox) return canvas;
 
   const printAspect = printBox.w / printBox.h;
-  const destW = OUTPUT_SIZE * PRINT_WIDTH_FRACTION;
+  // v2 적응: 패널이 쓰는 u 대역 [0, uMax]를 기준으로 폭·중심을 잡는다.
+  // uMax=1이면 `OUTPUT_SIZE*PRINT_WIDTH_FRACTION` / `(OUTPUT_SIZE-destW)/2`로 환원된다.
+  const panelW = OUTPUT_SIZE * uMax;
+  const destW = panelW * PRINT_WIDTH_FRACTION;
   const destH = destW / printAspect;
-  const destX = (OUTPUT_SIZE - destW) / 2;
+  const destX = (panelW - destW) / 2;
   const destY = OUTPUT_SIZE * PRINT_TOP_FRACTION;
   ctx.drawImage(image, printBox.x, printBox.y, printBox.w, printBox.h, destX, destY, destW, destH);
 

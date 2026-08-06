@@ -89,6 +89,68 @@ export function PatternPreview(): React.JSX.Element | null {
   // (`revokeObjectURL`은 저장소 어디에도 없다). 여기서 해제하면 v1이 깨진다.
   const texture = uploadedTexture ?? checkerTexture;
 
+  // ── 71회차 **A(프린트 합성) + B(패널별 map 분리)** ────────────────────────────
+  // 68회차 배선은 업로드 이미지 **한 장을 4패널에 그대로** 붙였다. 그래서 앞/뒤/소매가
+  // 같은 그림을 반복했다(69 §5 ②). 여기서 v1 `compositeGarmentTexture`를 재사용해
+  // **앞판 = 원단 대표색 + 가슴 프린트 / 뒤판·소매 = 대표색 단색**으로 가른다.
+  // 상수는 v1에서 **그대로 상속**하고(신규 0) v2 적응(프린트 폭·중심)은 `uMax`에서 도출한다.
+  // `averageGarmentColor`는 쓰지 않는다 — v1이 실패로 등재한 경로다(70 §5-1).
+  // 합성 실패·업로드 없음이면 **체커 폴백**. 물리·지오메트리·UV는 안 건드린다.
+  const [composited, setComposited] = useState<{ tex: THREE.Texture; solid: string } | null>(null);
+  useEffect(() => {
+    if (!garmentImage) { setComposited(null); return; }
+    let alive = true;
+    let made: THREE.Texture | null = null;
+    void (async () => {
+      try {
+        const { compositeGarmentTexture } = await import("../lib/garmentTextureComposite");
+        const img = new Image();
+        img.src = garmentImage;
+        await img.decode(); // v1이 등재한 조건 — 디코드 전에 읽으면 매번 다른 값이 나온다
+        if (!alive) return;
+        // 몸판이 쓰는 u 대역 = 앞판 uv의 최댓값. **실제 속성에서 직접 뜬다**
+        // (`patternGarment.ts:236-256`이 만든 값 그대로 · 새 상수·별도 술어 0 — 함정 12).
+        // 지오메트리가 아직 없으면 1(= v1과 계산 동치)로 둔다.
+        const uvAttr = geos && geos[0] ? geos[0].getAttribute("uv") : null;
+        let uMax = 1;
+        if (uvAttr) {
+          let m = 0;
+          for (let k = 0; k < uvAttr.count; k++) { const u = uvAttr.getX(k); if (u > m) m = u; }
+          if (m > 0) uMax = m;
+        }
+        const canvas = compositeGarmentTexture(img, {
+          uMax,
+          onDiag: (d) => {
+            console.log(
+              `[71계기·합성 판별자] 대표색 rgb(${d.color.r}, ${d.color.g}, ${d.color.b})` +
+              ` · 캔버스(0,0) ${d.corner00 ? `rgb(${d.corner00.r}, ${d.corner00.g}, ${d.corner00.b})` : "읽기 실패"}` +
+              ` · 프린트 bbox ${d.printBox ? `${d.printBox.w.toFixed(0)}×${d.printBox.h.toFixed(0)}px @(${d.printBox.x.toFixed(0)},${d.printBox.y.toFixed(0)})` : "없음"}` +
+              ` · 프레임 비율 ${(d.frameFracW * 100).toFixed(1)}% × ${(d.frameFracH * 100).toFixed(1)}%` +
+              ` · PRINT_MAX_FRAME_FRACTION ${d.maxFrameFired ? "**발동**(프린트 버림)" : "미발동"}` +
+              ` · uMax ${uMax.toFixed(4)}`,
+            );
+          },
+        });
+        if (!alive) return;
+        const tex = new THREE.CanvasTexture(canvas);
+        made = tex;
+        const ctx = canvas.getContext("2d");
+        const px = ctx ? ctx.getImageData(0, 0, 1, 1).data : null;
+        setComposited({ tex, solid: px ? `rgb(${px[0]}, ${px[1]}, ${px[2]})` : "#ffffff" });
+      } catch {
+        if (alive) setComposited(null); // 합성 실패 → 아래에서 체커/원본 폴백
+      }
+    })();
+    return () => { alive = false; if (made) made.dispose(); };
+  }, [garmentImage, geos]);
+
+  // **B** — 패널 인덱스(`patternGarment.ts:39-43` FRONT=0 / BACK=1 / SLEEVE_L=2 / SLEEVE_R=3)를
+  // 그대로 쓴다. 머티리얼 인스턴스는 이미 메시마다 별개다(70 §5-2) — 배선만 바꾼다.
+  const panelSurface = (i: number): { map: THREE.Texture | null; color: string } => {
+    if (composited) return i === 0 ? { map: composited.tex, color: "#ffffff" } : { map: null, color: composited.solid };
+    return { map: texture, color: "#ffffff" }; // 업로드 없음·합성 실패 → 기존 경로 그대로(체커 폴백)
+  };
+
   useEffect(() => {
     let alive = true;
     void (async () => {
@@ -244,11 +306,14 @@ export function PatternPreview(): React.JSX.Element | null {
   if (!geos) return null;
   return (
     <group>
-      {geos.map((geo, i) => (
-        <mesh key={i} geometry={geo}>
-          <meshStandardMaterial map={texture} side={THREE.DoubleSide} roughness={0.85} />
-        </mesh>
-      ))}
+      {geos.map((geo, i) => {
+        const sf = panelSurface(i);
+        return (
+          <mesh key={i} geometry={geo}>
+            <meshStandardMaterial map={sf.map} color={sf.color} side={THREE.DoubleSide} roughness={0.85} />
+          </mesh>
+        );
+      })}
       {/* 브리지는 체커 텍스처를 안 쓴다 — UV가 없고(띠는 패널 UV 밖이다), 시접이
           어디를 메웠는지 눈으로 구분되는 게 이 단계의 목적이다.
           색은 저채도 회청(21회차) — 전에는 주황(#c8641e)이라 채도가 높아 화면
