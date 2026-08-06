@@ -1397,14 +1397,19 @@ const betaReport = (label: string): string => {
     const band = sideBandIdx(k);
     // **좌우를 갈라야 사슬이 된다**(1차 구현은 ±x를 섞어 62정점에 사슬 18m가 나왔다 —
     // 계기 결함). 옆선은 패널당 좌·우 두 개이고 각각 패턴 y 오름차순이 호장 순서다.
+    // 63회차 §3 — **뒤판 행 추가**(62 §8: 앞판만 출력해 대조가 반쪽이었다).
+    // 패널 경계는 기존 `panelStarts`를 그대로 쓴다(새 술어 0). 뒤판은 미러 뒤집기
+    // 대상이 아니므로(소매만 flip) `pos2.x` 부호가 앞판과 같은 의미다.
+    for (const [pn, lo, hi] of [["앞판", 0, g.panelStarts[1]], ["뒤판", g.panelStarts[1], g.panelStarts[2]]] as const) {
     for (const sgn of [1, -1]) {
-      const fr = band.filter((i) => i < g.panelStarts[1] && Math.sign(g.pos2[i * 2]) === sgn)
+      const fr = band.filter((i) => i >= lo && i < hi && Math.sign(g.pos2[i * 2]) === sgn)
         .sort((a, b) => g.pos2[a * 2 + 1] - g.pos2[b * 2 + 1]);
-      if (fr.length < 8) { lines.push(`    β-1 옆선 ${k}홉 앞판 x${sgn > 0 ? "+" : "−"} n=${fr.length} — 8정점 미만, 산출 불가`); continue; }
+      if (fr.length < 8) { lines.push(`    β-1 옆선 ${k}홉 ${pn} x${sgn > 0 ? "+" : "−"} n=${fr.length} — 8정점 미만, 산출 불가`); continue; }
       const r = hemWobble(fr, 0.16, sim.positions);
       const abs = r.amp.map(Math.abs).sort((a, b) => a - b);
-      if (abs.length === 0) { lines.push(`    β-1 옆선 ${k}홉 앞판 x${sgn > 0 ? "+" : "−"} — 내부 표본 0, 산출 불가`); continue; }
-      lines.push(`    β-1 옆선 ${k}홉 앞판 x${sgn > 0 ? "+" : "−"} n=${fr.length} · 사슬 ${cm(r.L)}cm · 요동 중앙 ${abs[Math.floor(abs.length / 2)].toFixed(2)} p99 ${abs[Math.floor(abs.length * 0.99)].toFixed(2)} 최대 ${abs[abs.length - 1].toFixed(2)}mm · 파장 ${r.perLam < 4 ? "산출 불가(표본 " + r.perLam.toFixed(1) + "<4)" : cm(r.lam) + "cm"}`);
+      if (abs.length === 0) { lines.push(`    β-1 옆선 ${k}홉 ${pn} x${sgn > 0 ? "+" : "−"} — 내부 표본 0, 산출 불가`); continue; }
+      lines.push(`    β-1 옆선 ${k}홉 ${pn} x${sgn > 0 ? "+" : "−"} n=${fr.length} · 사슬 ${cm(r.L)}cm · 요동 중앙 ${abs[Math.floor(abs.length / 2)].toFixed(2)} p99 ${abs[Math.floor(abs.length * 0.99)].toFixed(2)} 최대 ${abs[abs.length - 1].toFixed(2)}mm · 파장 ${r.perLam < 4 ? "산출 불가(표본 " + r.perLam.toFixed(1) + "<4)" : cm(r.lam) + "cm"}`);
+    }
     }
   }
   // ── β-2 밑단 프릴 봉우리와 splitZ 절단 경계의 거리 분포.
@@ -1685,6 +1690,32 @@ const restMap = (label: string): string => {
     lines.push(`    [최악 1 해부] ${P(w.a)} ↔ ${P(w.b)} · restLength ${((c?.restLength ?? 0)*1000).toFixed(2)}mm · 2D거리 ${(Math.hypot(g.pos2[w.b*2]-g.pos2[w.a*2], g.pos2[w.b*2+1]-g.pos2[w.a*2+1])*1000).toFixed(2)}mm · 3D거리 ${(Math.hypot(sim.positions[w.b*3]-sim.positions[w.a*3], sim.positions[w.b*3+1]-sim.positions[w.a*3+1], sim.positions[w.b*3+2]-sim.positions[w.a*3+2])*1000).toFixed(2)}mm`);
   }
   lines.push(`    최악 6: ${worst.slice(0, 6).map((w) => `${w.r.toFixed(1)}배 ${pn(w.a)}(${cm(g.pos2[w.a * 2])},${cm(g.pos2[w.a * 2 + 1])})→(${cm(g.pos2[w.b * 2])},${cm(g.pos2[w.b * 2 + 1])}) rest ${(Math.hypot(g.pos2[w.b * 2] - g.pos2[w.a * 2], g.pos2[w.b * 2 + 1] - g.pos2[w.a * 2 + 1]) * 1000).toFixed(1)}mm`).join(" · ")}`);
+  // ── 63회차 §3 — **소매 엣지의 2D 방향별 분해**(61회차는 일회성 프로브였다).
+  // 소매 배치는 원주 방향에만 신장을 넣고(`radius = sleeveRadiusM + COLLISION_MARGIN`)
+  // 축 방향은 `d·yp`로 보존한다 — 단일 중앙값 1.108은 **어느 정점에서도 실현되지 않는
+  // 혼합 중앙값**이다(61회차 반증). 방향을 갈라야 그 사실이 매 실행 보인다(함정 18).
+  {
+    const bin: number[][] = [[], [], [], []];
+    for (const c of sim.constraintPairs) {
+      if (c.restLength <= 0 || c.a < g.panelStarts[2]) continue;
+      const dx = g.pos2[c.b * 2] - g.pos2[c.a * 2], dy = g.pos2[c.b * 2 + 1] - g.pos2[c.a * 2 + 1];
+      if (dx === 0 && dy === 0) continue;
+      // 0° = 원주(패턴 x) · 90° = 축(패턴 y).
+      const ang = (Math.atan2(Math.abs(dy), Math.abs(dx)) * 180) / Math.PI;
+      const dd = Math.hypot(
+        sim.positions[c.b * 3] - sim.positions[c.a * 3],
+        sim.positions[c.b * 3 + 1] - sim.positions[c.a * 3 + 1],
+        sim.positions[c.b * 3 + 2] - sim.positions[c.a * 3 + 2],
+      );
+      bin[ang < 15 ? 0 : ang < 45 ? 1 : ang < 75 ? 2 : 3].push(dd / c.restLength);
+    }
+    const nm = ["0~15°(원주)", "15~45°", "45~75°", "75~90°(축)"];
+    lines.push(`    [63계기·소매 방향 분해] ${bin.map((a, j) => {
+      if (a.length === 0) return `${nm[j]} n=0 산출 불가`;
+      a.sort((x, y) => x - y);
+      return `${nm[j]} n=${a.length} 중앙 ${a[Math.floor(a.length * 0.5)].toFixed(4)} p99 ${a[Math.floor(a.length * 0.99)].toFixed(3)} 최대 ${a[a.length - 1].toFixed(3)}`;
+    }).join(" │ ")}`);
+  }
   totals.clear();
   return lines.join("\n");
 };
@@ -2750,6 +2781,36 @@ console.log(`  자기교차(엣지-삼각형 · 게이트): ${xsec.count}건 (�
 }
 console.log(`  링 총 길이 상한 발화: ${ringTotalFired}회 = ${(ringTotalFired / Math.max(1, result.frames)).toFixed(2)}/프레임 · 상한 ${cm(ringTotalMaxM)}cm(계수 ${(ringTotalMaxM / Math.max(1e-9, ringRestM)).toFixed(3)})\n  넥밴드 원주 제약 발화 누적: ${collarFired}회 = ${(collarFired / Math.max(1, result.frames)).toFixed(1)}/프레임 · 봉합 완료 f=${seamClosedAtFrame < 0 ? "미도달" : seamClosedAtFrame}(그 전까지 링 전용 상한은 일반 상한에 위임) · 링 원주 봉합 전 최대 ${cm(ringMaxBeforeCloseM)}cm → 최종 ${cm(ringLenM())}cm (rest ${cm(ringRestM)}cm)`);
 console.log(`  관통(레이 패리티·비수밀 근사): 배치 후 ${penAfterPlace} → 정착 후 ${penEnd} / ${total}`);
+// ── 63회차 §2 — 관통의 **패널 귀속**(62 §8 최우선 등재 해소). 두 계기가 총계만 내
+// 소매분을 못 갈랐고, 그래서 62회차 S3의 효과 판정이 **원리적으로 불가능**했다.
+// 분류는 기존 `panelOfIdx`를 그대로 쓴다 — 새 술어 0 · 손 상수 0(함정 12).
+// y bin과 **패널을 함께** 인쇄한다: 45회차가 y130~143을 "링 대역"으로 라벨했는데
+// 61회차 산술로 그건 소매 캡 대역이었다 — **y bin이 패널을 안 본다**(함정 13·19).
+{
+  const attribute = (label: string, pos: Float32Array): void => {
+    const byPanel = [0, 0, 0, 0];
+    const byPanelY = new Map<string, number>();
+    let n = 0;
+    for (let i = 0; i < total; i++) {
+      if (!insideParity(pos[i * 3], pos[i * 3 + 1], pos[i * 3 + 2])) continue;
+      n++;
+      const p = panelOfIdx(i);
+      byPanel[p]++;
+      const yc = Math.round(pos[i * 3 + 1] * 100);
+      const band = yc >= 130 && yc <= 143 ? "y130~143" : yc >= 94 && yc <= 129 ? "y94~129" : yc >= 70 && yc <= 93 ? "y70~93" : "그외";
+      const k = `${PANEL_NAME[p]}·${band}`;
+      byPanelY.set(k, (byPanelY.get(k) ?? 0) + 1);
+    }
+    const rank = [...byPanelY.entries()].sort((a, b) => b[1] - a[1]);
+    console.log(
+      `    [63계기·관통 패널 귀속] ${label} 총 ${n} — ${PANEL_NAME.map((nm, p) => `${nm} ${byPanel[p]}`).join(" · ")}` +
+      ` │ **소매 합 ${byPanel[2] + byPanel[3]} (${n ? ((100 * (byPanel[2] + byPanel[3])) / n).toFixed(1) : "0.0"}%)**` +
+      ` │ 패널×y대역: ${rank.length ? rank.map(([k, v]) => `${k} ${v}`).join(" / ") : "없음"}`,
+    );
+  };
+  attribute("S0 배치 후", g.positions);
+  attribute("정착 후", sim.positions);
+}
 console.log(`  정착 프레임 ${settleFrame} · 물리 ${(elapsedS * 1000 / Math.max(1, result.frames)).toFixed(1)}ms/프레임`);
 if (result.failure) console.log(`  발산/중단: 상태 ${result.failure.state} · 프레임 ${result.failure.frame} · ${result.failure.reason}`);
 
