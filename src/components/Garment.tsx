@@ -316,8 +316,12 @@ export function Garment({ imageUrl }: Props) {
   // compositeGarmentTexture가 이미 만드는 캔버스는 코너 픽셀이 항상 대표색
   // 그대로다(프린트 박스는 중앙 고정 배치 — garmentTextureComposite.ts의
   // destX/destY 참고) — 그 캔버스를 재사용해 픽셀 1개만 더 읽는다.
-  // garmentTextureComposite.ts는 손 안 댐(borderRepresentativeColor 재노출
-  // 불필요). CSS 문자열(rgb(...))로 유지 — new THREE.Color(r,g,b)(숫자
+  // **72회차 정정**: 「garmentTextureComposite.ts는 손 안 댐」은 이 주석을 쓴 시점의
+  // 사실이었고 **71회차에 깨졌다** — v2(PatternPreview)가 같은 함수를 재사용하면서
+  // 선택 인자(`opts?: CompositeOptions` · `uMax`/`onDiag`)와 `onOversize` 콜백이 추가됐다.
+  // **v1 거동은 그대로다**(이 파일의 호출부가 인자 1개라 `uMax ?? 1`로 계산 동치).
+  // 아래 "재노출 불필요"라는 판단 자체는 여전히 유효하다 — v1은 지금도 코너 픽셀만 읽는다.
+  // CSS 문자열(rgb(...))로 유지 — new THREE.Color(r,g,b)(숫자
   // 3개 생성자)는 sRGB 바이트를 linear로 오인해 감마를 이중으로 먹이는
   // 함정이 이 파일 43-42행 위쪽 주석에 이미 실측 기록돼 있다(같은 파일의
   // 다른 이유였지만 THREE.Color 자체의 함정이라 여기도 똑같이 적용된다).
