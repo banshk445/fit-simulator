@@ -80,7 +80,17 @@ function bendPairsOf(tris: Uint32Array): { a: number; b: number }[] {
 // 앞뒤 오프셋 합(31.0cm)만큼 벌어져 있어 t=0에 그것을 한 번에 접는다.
 // 18회차가 "몸 밖 · 길이 보존 · 어깨 용접"의 3자 배타를 확정했고, 2a-thin이
 // 958프레임 수렴시킨 구성에는 용접이 없었다. 스위치는 롤백 수단으로 남긴다.
-export function buildPatternSim(g: PatternGarment, iterations: number, weldShoulder = false): PatternSim {
+// ── 60회차 H3 **대조군**(진단 탐침 · 처방 아님 · 기본 미전달) ────────────────
+// 밑단 대역 bend 제약만 강성을 올린다. 59회차가 "접음단이 만드는 것 3가지" 중
+// ②굽힘 강성만 흉내내는 후보로 등재했고, **「부품 대신 힘」 재발이라 처방 후보가
+// 아니다**(원리 [[보조힘은-대체품]] · 대체품 3층). 목적은 단 하나 —
+// **굽힘 강성이 프릴의 주 기전인가**를 가르는 것이다(v2-design:427은 굽힘을
+// 지목하나 접음단이 그것을 어떻게 바꾸는지는 안 적는다 · 28회차는 ①질량과 병렬 나열).
+// `raw`는 **보정 전** 강성이다 — 반복 보정을 이 함수 안에서 bendK와 **같은 식**으로
+// 건다(buildPatternSim.ts:121 규범 · A-② 되돌림 방지).
+// 미전달이면 아래 분기가 `bendK`를 그대로 돌려주므로 **기존 경로와 계산 동치**다.
+export type HemBendProbe = { is: (a: number, b: number) => boolean; raw: number };
+export function buildPatternSim(g: PatternGarment, iterations: number, weldShoulder = false, hemBend?: HemBendProbe): PatternSim {
   // 패널당 (cols = 정점 수, rows = 1) — `panelParticleStart`가 g.panelStarts와
   // 정확히 같아진다. `buildConstraints()`는 **부르지 않는다**(격자 제약이
   // 생겨 버린다). 생성자는 제약을 비운 상태로 시작한다.
@@ -119,12 +129,14 @@ export function buildPatternSim(g: PatternGarment, iterations: number, weldShoul
 
   // 제약별 강성 — 위 주석 1번.
   const bendK = 1 - Math.pow(1 - STIFFNESS_BEND, 1 / Math.max(1, iterations));
+  // 60회차 H3 — 같은 보정식. 미전달이면 아래에서 쓰이지 않는다.
+  const hemBendK = hemBend ? 1 - Math.pow(1 - hemBend.raw, 1 / Math.max(1, iterations)) : bendK;
   const bendKeys = new Set(bend.map((e) => Math.min(e.a, e.b) * 1_000_000 + Math.max(e.a, e.b)));
   const edgeKeys = new Set(g.edgePairs.map((e) => Math.min(e.a, e.b) * 1_000_000 + Math.max(e.a, e.b)));
   sim.scaleConstraintStiffness((a, b) => {
     const k = Math.min(a, b) * 1_000_000 + Math.max(a, b);
     if (edgeKeys.has(k)) return STIFFNESS_STRUCTURAL;
-    if (bendKeys.has(k)) return bendK;
+    if (bendKeys.has(k)) return hemBend && hemBend.is(a, b) ? hemBendK : bendK;
     return STIFFNESS_SEAM;
   });
   // kind는 전부 SEAM이므로 kind 목표는 seam만 의미가 있다(1.0 = 보정 후 1).

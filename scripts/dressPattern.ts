@@ -40,6 +40,7 @@ import {
   MAX_DISPLACEMENT_PER_SUBSTEP,
   SDF_FAR,
   SDF_VOXEL,
+  STIFFNESS_BEND,
   SUBSTEP_DT,
   COLLAR_STRAIN_LIMIT,
 } from "../src/lib/clothConfig";
@@ -328,7 +329,29 @@ if (t0Fails.length > 0) {
 
 // ── 물리 조립
 const preset = FABRIC_PRESETS[pose.fabric];
-const ps = buildPatternSim(g, preset.iterations);
+// ── 60회차 **H3 대조군**(`HEMBEND=1` · 기본 off · 진단 전용 · 승격 금지) ─────────
+// 목적은 **굽힘 강성이 프릴의 주 기전인가**를 가르는 것뿐이다. 59회차가 H3를
+// "「부품 대신 힘」 재발 = 대체품 3층"으로 등재했으므로 **처방 후보가 아니고**,
+// 아래 두 값은 **판정용이 아니라 기전 탐침**이라 결과가 좋아도 채택하지 않는다.
+//   대역폭 2.5cm — v2-design:427의 「접음단 2~3cm」 중앙. H4가 만들 두 겹과 **같은
+//     자리**를 짚어야 비교가 되기 때문이지, 이 값이 최적이라는 근거는 없다.
+//   raw 0.6 — STIFFNESS_BEND 0.1의 6배. 배수를 크게 잡은 것은 "안 움직인다"가
+//     나왔을 때 그것이 **약해서가 아님**을 확보하려는 것이다(귀무 쪽 보호).
+// **둘 다 스윕하지 않는다** — 스윕해서 좋은 값을 고르면 그 순간 함정 14다.
+const HEMBEND = process.env.HEMBEND === "1";
+const HEMBEND_BAND_M = 0.025, HEMBEND_RAW = 0.6;
+const hemBendProbe = HEMBEND
+  ? {
+      raw: HEMBEND_RAW,
+      is: (a: number, b: number): boolean => {
+        const lo = g.draft.dims.lengthM - HEMBEND_BAND_M;
+        const ya = a < g.panelStarts[2] ? g.pos2[a * 2 + 1] : -1;
+        const yb = b < g.panelStarts[2] ? g.pos2[b * 2 + 1] : -1;
+        return ya > lo && yb > lo; // 양 끝이 다 대역 안일 때만(경계 걸침 제외)
+      },
+    }
+  : undefined;
+const ps = buildPatternSim(g, preset.iterations, false, hemBendProbe);
 const sim = ps.sim;
 const DIAG = process.env.DIAG === "1";
 const edgeKeySet = new Set(g.edgePairs.map((e) => Math.min(e.a, e.b) * 1_000_000 + Math.max(e.a, e.b)));
@@ -673,7 +696,11 @@ const shrinkWorkSeries: number[] = [];
 //     자유낙하 예상 Δy(중력만 받았을 때)와 실제 Δy의 차 = 그 정점이 **받쳐진 양**이다.
 //     대역별로 합하면 "옷을 무엇이 들고 있는가"가 나온다(접촉력 계기가 없어도
 //     운동학에서 도출된다 — clothPhysics 무수정).
-const holdSeries: { ring: number; shoulder: number; other: number }[] = [];
+//     60회차 계기② — **밑단 분류 추가**(6회차 연속 이월분 해소). 55회차 ⓓ가
+//     "밑단 마찰은 애초에 지지에 안 쓰인다"를 단정했으나, 58회차 사전 반증이
+//     그 근거가 **밑단이 `other`에 묻혀 산출 불가였던 것**임을 밝혔다.
+//     술어는 `hemChain.strict`를 그대로 재사용한다 — **새 술어 0 · 손 상수 0**(함정 12).
+const holdSeries: { ring: number; shoulder: number; hem: number; other: number }[] = [];
 // 29회차 계기 — 링 중심 y와 링 길이의 시계열. 지지 실패(미끄러져 내려감)와
 // 인장(제자리에서 벌어짐)을 **가르는** 채널이다. 둘은 같은 "링이 크다"로 보인다.
 const ringYSeries: { f: number; st: string; y: number; top: number; bot: number; L: number }[] = [];
@@ -1053,6 +1080,9 @@ const hemChain = (() => {
   };
   return { loose, strict, front, back, badFront: bad(front), badBack: bad(back) };
 })();
+// 60회차 계기② — 하중 분류가 쓰는 집합. `hemChain.strict`를 **그대로** 뜬다
+// (별도 배열·별도 술어를 만들지 않는다 — 함정 12).
+const hemVertexSet = new Set<number>(hemChain.strict);
 // 사슬 하나의 요동 채널. `pos`는 좌표 소스(자기검사에서 합성 사슬을 넣는다).
 const hemWobble = (chain: number[], W: number, pos: Float32Array): {
   L: number; amp: number[]; vert: number[]; lam: number; perLam: number; edge: number;
@@ -1581,6 +1611,8 @@ const session = createGarmentSession(sim, env);
 const prevFrame = new Float32Array(sim.positions.length);
 prevFrame.set(sim.positions);
 const deltaHist: number[] = [];
+// 60회차 계기① — deltaHist와 **같은 순서**의 병렬 배열(정착 판정식 무변경).
+const deltaArg: { f: number; i: number }[] = [];
 const maxDelta20Mm = (): number => (deltaHist.length ? Math.max(...deltaHist.slice(-20)) : Infinity);
 const maxSeamGapM = (): number => {
   let m = 0;
@@ -2010,12 +2042,14 @@ const result = runDressing(
       // (2) 하중 배분 — 정착 구간(마지막 60프레임)만 누적한다.
       if (prevPos) {
         const gdt2 = 9.81 * SUBSTEP_DT * SUBSTEP_DT;
-        const rec = { ring: 0, shoulder: 0, other: 0 };
+        const rec = { ring: 0, shoulder: 0, hem: 0, other: 0 };
         for (let i = 0; i < total; i++) {
           const held = (sim.positions[i * 3 + 1] - prevPos[i * 3 + 1]) + gdt2;
           if (held <= 0) continue;
+          // 순서 ring → shoulder → hem → other. 앞의 셋은 서로소다(링·패턴 상단·패턴 하단).
           if (ringVertexSet.has(i)) rec.ring += held;
           else if (i < g.panelStarts[2] && g.pos2[i * 2 + 1] <= 0.03) rec.shoulder += held;
+          else if (hemVertexSet.has(i)) rec.hem += held;
           else rec.other += held;
         }
         holdSeries.push(rec);
@@ -2078,12 +2112,18 @@ const result = runDressing(
         closureLog = `f=${frame} seamGap ${(maxSeamGapM() * 1000).toFixed(1)}mm · ${parts.join(" | ")}`;
         console.log(`[dress] **봉합 닫힘** ${closureLog}`);
       }
-      let md = 0;
+      // 60회차 계기① — **argmax 기록**. 59회차 §2①: 지금까지 max만 쌓고 어느 정점이
+      // 그 값을 냈는지 안 남겼다. A 여유가 5.16 vs 문턱 5.6 = **0.44mm**뿐이라,
+      // 밑단 정점이 느는 처방에서 ABORT가 나면 "처방 실패"인지 "새 정점이 정착
+      // 판정을 인질로 잡음"인지 **구별할 수단이 없다**(함정 1). 대역 라벨은
+      // 기존 `bandOf`를 그대로 쓴다 — **새 술어 0 · 새 손 상수 0**(함정 12).
+      let md = 0, mi = -1;
       for (let i = 0; i < sim.positions.length; i += 3) {
         const d = Math.hypot(sim.positions[i] - prevFrame[i], sim.positions[i + 1] - prevFrame[i + 1], sim.positions[i + 2] - prevFrame[i + 2]);
-        if (d > md) md = d;
+        if (d > md) { md = d; mi = i / 3; }
       }
       deltaHist.push(md * 1000);
+      deltaArg.push({ f: frame, i: mi });
       prevFrame.set(sim.positions);
     },
   },
@@ -2308,6 +2348,24 @@ console.log(`  covShoulder 버킷: ${JSON.stringify(Object.fromEntries(Object.en
 console.log(`  shoulderHover top-front: hit ${tf.hit.toFixed(3)} / hover ${tf.mean.toFixed(2)}|${tf.max.toFixed(2)}mm`);
 console.log(`  shoulderHover top-back : hit ${tb.hit.toFixed(3)} / hover ${tb.mean.toFixed(2)}|${tb.max.toFixed(2)}mm`);
 console.log(`  maxStrain ${strain.v.toFixed(3)} (정점 ${strain.at}) · maxSeamGap ${(maxSeamGapM() * 1000).toFixed(2)}mm · Δ20 ${maxDelta20Mm().toFixed(2)}mm`);
+// 60회차 계기① — Δ20을 **누가** 냈는가. 판정에 쓰이는 창(마지막 20프레임)만 본다.
+{
+  const w = deltaHist.length - Math.min(20, deltaHist.length);
+  const win = deltaHist.slice(w).map((v, k) => ({ v, ...deltaArg[w + k] }));
+  if (win.length === 0) console.log(`  [60계기①·Δ20 argmax] 산출 불가 — 프레임 0`);
+  else {
+    const top = win.reduce((a, b) => (b.v > a.v ? b : a));
+    // 창 안에서 어느 대역이 몇 번 최댓값을 잡았나 — 1프레임 우연과 상시 인질을 가른다.
+    const freq = new Map<string, number>();
+    for (const r of win) { const b = r.i < 0 ? "미정" : bandOf(r.i, r.i); freq.set(b, (freq.get(b) ?? 0) + 1); }
+    const rank = [...freq.entries()].sort((a, b) => b[1] - a[1]);
+    console.log(
+      `  [60계기①·Δ20 argmax] 창 ${win.length}프레임 · **최대 ${top.v.toFixed(2)}mm @f${top.f} 정점 ${top.i}` +
+      ` = ${top.i < 0 ? "미정" : bandOf(top.i, top.i)}** (패널 ${top.i < 0 ? "-" : PANEL_NAME[panelOfIdx(top.i)]}` +
+      `${top.i < 0 ? "" : ` · pos2.y ${cm(g.pos2[top.i * 2 + 1])}cm`}) · 창 내 대역 점유 ${rank.map(([b, n]) => `${b} ${n}`).join(" / ")}`,
+    );
+  }
+}
 // ── 38계기 A: 정착 시점 접합 실거리(시계열의 마지막 행).
 {
   const rows = ringJoinPairs.map((sm, k) => {
@@ -2452,7 +2510,7 @@ console.log(`  maxStrain ${strain.v.toFixed(3)} (정점 ${strain.at}) · maxSeam
   }
   // 49회차 — **정착 시점 rest 정합 지도**(48회차 미이행 · f8 값을 정착으로 인용하던 금지 해소).
   console.log(restMap("**정착**(49회차 신설 — 이전까지 f0/f1/f8뿐이었다)"));
-  console.log(`  [54·처방 상태] D0(국면1 자석 차단) ${MAGNET_D0 ? "**on**(MAGNET_D0=1)" : MAGNET_AXIS1 ? "off · 축① w≡1(무변화)" : "**off**(기본)"} · 흡착 ${ADSORB_PENONLY ? "**관통-only**(ADSORB_PENONLY=1 · 진단 전용)" : "**양방향**(기본)"} · 몸통 캡슐 ${TORSOCAP ? "**on**(TORSOCAP=1 · 43회차 처방 A 복원)" : "**OFF**(기본 — 45회차 승격 기준선)"}`);
+  console.log(`  [54·처방 상태] D0(국면1 자석 차단) ${MAGNET_D0 ? "**on**(MAGNET_D0=1)" : MAGNET_AXIS1 ? "off · 축① w≡1(무변화)" : "**off**(기본)"} · 흡착 ${ADSORB_PENONLY ? "**관통-only**(ADSORB_PENONLY=1 · 진단 전용)" : "**양방향**(기본)"} · 몸통 캡슐 ${TORSOCAP ? "**on**(TORSOCAP=1 · 43회차 처방 A 복원)" : "**OFF**(기본 — 45회차 승격 기준선)"} · 밑단 굽힘 ${HEMBEND ? `**H3 대조군 on**(HEMBEND=1 · 대역 ${HEMBEND_BAND_M*100}cm · raw ${HEMBEND_RAW} = 기본 ${STIFFNESS_BEND}의 ${(HEMBEND_RAW/STIFFNESS_BEND).toFixed(0)}배 · **진단 탐침 · 처방 아님 · 승격 금지**)` : "**off**(기본)"}`);
 }
 // ── 35계기 6번: maxSeamGap의 **공간 분포**. 어느 종류·어느 자리가 벌어졌는가.
 {
@@ -2492,11 +2550,13 @@ console.log(`  자기교차(엣지-삼각형 · 게이트): ${xsec.count}건 (�
   const tail = <T,>(a: T[]): T[] => a.slice(Math.max(0, a.length - 60));
   const sw = tail(shrinkWorkSeries);
   const swMean = sw.reduce((a, b) => a + b, 0) / Math.max(1, sw.length);
-  const hb = tail(holdSeries).reduce((a, r) => ({ ring: a.ring + r.ring, shoulder: a.shoulder + r.shoulder, other: a.other + r.other }), { ring: 0, shoulder: 0, other: 0 });
-  const tot = hb.ring + hb.shoulder + hb.other || 1;
+  const hb = tail(holdSeries).reduce((a, r) => ({ ring: a.ring + r.ring, shoulder: a.shoulder + r.shoulder, hem: a.hem + r.hem, other: a.other + r.other }), { ring: 0, shoulder: 0, hem: 0, other: 0 });
+  const tot = hb.ring + hb.shoulder + hb.hem + hb.other || 1;
   const ringN = ringVertexSet.size;
   let shoulderN = 0;
   for (let i = 0; i < g.panelStarts[2]; i++) if (!ringVertexSet.has(i) && g.pos2[i * 2 + 1] <= 0.03) shoulderN++;
+  let hemN = 0;
+  for (const i of hemVertexSet) if (!ringVertexSet.has(i) && !(i < g.panelStarts[2] && g.pos2[i * 2 + 1] <= 0.03)) hemN++;
   for (const rep of probeReports) console.log(rep);
 
   // ── 30계기 B: 목선 대역 제약 잔차. `limitStrain`이 집행하는 상한은
@@ -2571,7 +2631,7 @@ console.log(`  자기교차(엣지-삼각형 · 게이트): ${xsec.count}건 (�
     console.log(`  [29계기·자유 평형 대조] 링 최종 길이 ${cm(ringLenM())}cm · 상한 ${ringTotalMaxM > 0 ? cm(ringTotalMaxM) + "cm" : "없음(RINGTOTAL=0)"} · **어깨 통과 둘레 ${cm(body.shoulderPassGirthM)}cm @ y${cm(body.shoulderJointY)} 단면**(2a 통과 조건의 그 값) · 링/어깨통과 ${(ringLenM() / body.shoulderPassGirthM).toFixed(3)}배`);
   }
   console.log(`  [27계기·축소 잔여 일량] 정착 60프레임 평균 ${(swMean * 100).toFixed(3)}cm · 최대 ${(Math.max(0, ...sw) * 100).toFixed(3)}cm · 전 구간 최대 ${(Math.max(0, ...shrinkWorkSeries) * 100).toFixed(2)}cm`);
-  console.log(`  [27계기·하중 배분] 정착 60프레임 받쳐진 양 — 링 ${(100 * hb.ring / tot).toFixed(1)}%(정점 ${ringN}) · 어깨대역 ${(100 * hb.shoulder / tot).toFixed(1)}%(정점 ${shoulderN}) · 나머지 ${(100 * hb.other / tot).toFixed(1)}%(정점 ${total - ringN - shoulderN}) · **중량 대비**(정점당) 링 ${((hb.ring / ringN) / (tot / total)).toFixed(2)}배 · 어깨 ${((hb.shoulder / Math.max(1, shoulderN)) / (tot / total)).toFixed(2)}배`);
+  console.log(`  [27계기·하중 배분] 정착 60프레임 받쳐진 양 — 링 ${(100 * hb.ring / tot).toFixed(1)}%(정점 ${ringN}) · 어깨대역 ${(100 * hb.shoulder / tot).toFixed(1)}%(정점 ${shoulderN}) · **밑단 ${(100 * hb.hem / tot).toFixed(1)}%(정점 ${hemN})** · 나머지 ${(100 * hb.other / tot).toFixed(1)}%(정점 ${total - ringN - shoulderN - hemN}) · **중량 대비**(정점당) 링 ${((hb.ring / ringN) / (tot / total)).toFixed(2)}배 · 어깨 ${((hb.shoulder / Math.max(1, shoulderN)) / (tot / total)).toFixed(2)}배 · **밑단 ${((hb.hem / Math.max(1, hemN)) / (tot / total)).toFixed(2)}배**`);
   const st: { v: number; i: number }[] = [];
   for (const e of g.edgePairs) {
     const rest = Math.hypot(g.pos2[e.b * 2] - g.pos2[e.a * 2], g.pos2[e.b * 2 + 1] - g.pos2[e.a * 2 + 1]);
