@@ -12132,3 +12132,244 @@ CLAUDE.md §사전 반증 「반증에 걸리면 계기를 돌리지 말고 정�
 - **CLAUDE.md 「계기 4항목」 vs 함정13 규범 6 「5항목」** 어긋남 — 81회차에 이어 이번에도 안 고쳤다
 
 기점: 없음(기준선 A 유효 · v2-2b-78-baseline 9fbd66c 그대로)
+
+---
+
+## 2026-08-07 · 83회차 — 결함 ③-b 판정(참조축 근사 제거) · 표적 ① 층위 판별 · 45 대조쌍 재계산
+
+기점 `v2-2b-78-baseline` (9fbd66c) · 기준선 A 유효 · 물리 0줄 · 처방 0건 · 값 도입 0.
+
+### 환경 스탬프 (전 실행 공통 · 로그 원문)
+
+```
+[dress] 환경 스탬프: node v25.9.0 · v8 14.1.146.11-node.25 · darwin/arm64 · three 185 · three-mesh-bvh 0.9.10
+[dress] 해시: pattern 9f7ba80b3497 · fixture 9e8b2bf13925 — **재현하려면 위 env 줄을 그대로 쓴다**(함정 26)
+[dress] 옷 정의 해시 대조: pattern 9f7ba80b3497 / fixture 9e8b2bf13925 vs 커밋본 9f7ba80b3497 / 9e8b2bf13925 → 동일
+```
+
+**산출 불가 — `코어=… 스무딩=…` 줄**: `dress:pattern`은 이 줄을 찍지 않는다.
+해당 출력은 `scripts/paramSweep.ts:1392`(= `sweep:pattern`) 단독이다(로그 전량 grep 0건).
+CLAUDE.md §실행의 「실행 첫 줄 확인」 조항이 **이 하네스에는 대상이 없다**.
+
+### 실행 6건 — env 줄 전량 (실행별 인용)
+
+```
+1  RINGTOTAL=0 PATTERNCORE=1 npm run dress:pattern                    42s   md5 14e50b8919a63a7f9799220b86e508a9
+   env: RINGTOTAL=0 · TORSOCAP=미설정 · SECONDS=미설정 · PATTERNCORE=1 · (그 외 20종 전부 미설정)
+2  RINGTOTAL=0 PATTERNCORE=1 TORSOCAP=1 npm run dress:pattern         45s   md5 9aa488d9b8ccf05891920f2bb4978cac
+   env: RINGTOTAL=0 · TORSOCAP=1 · SECONDS=미설정 · PATTERNCORE=1 · (그 외 미설정)
+3  RINGTOTAL=0 PATTERNCORE=1 SECONDS=2 npm run dress:pattern          32s   md5 7243d124b4e5e087f3434809e4024b6f
+   env: RINGTOTAL=0 · TORSOCAP=미설정 · SECONDS=2 · PATTERNCORE=1 · (그 외 미설정)
+4  RINGTOTAL=0 PATTERNCORE=1 SECONDS=3 npm run dress:pattern          37s   md5 57c79dec921d01dab53c226ed5624ff9
+   env: RINGTOTAL=0 · TORSOCAP=미설정 · SECONDS=3 · PATTERNCORE=1 · (그 외 미설정)
+5  RINGTOTAL=0 PATTERNCORE=1 SECONDS=4 npm run dress:pattern          43s   md5 ac932ecd0171a3d2c78acd9ec2247d20
+   env: RINGTOTAL=0 · TORSOCAP=미설정 · SECONDS=4 · PATTERNCORE=1 · (그 외 미설정)
+6  RINGTOTAL=0 PATTERNCORE=1 npm run dress:pattern (계기 4열 확장 후)   60s   md5 14e50b8919a63a7f9799220b86e508a9
+   env: 실행 1과 동일
+```
+
+**회귀 0 확인**: 실행 1·6의 dress-state md5 = `14e50b89…` = 82회차 등재값. 병기 열
+`covShoulder_old 637/1421 (44.8%) → _new 508/1421 (35.8%) · cov_old 3464/5439 (63.7%) → _new 3461/5439 (63.6%)`
+· `y124↑ 495/1038 (47.7%)` 전부 82회차 등재값과 비트 일치. **계기 3열→4열 확장이 기존 값을 안 바꿨다.**
+
+---
+
+### §1 결함 ③-b — 참조축 근사(`orientOutward`) 제거 · 4열 병기
+
+플래그 `rawNormal`(기본 off · `coverageMetric.ts` `CoverageParams`). **covShoulder 전용** —
+`cov 몸통`은 `[frontIdx, backIdx]`가 절단 시트라 절단선 정점 법선이 기운다(`coverageMetric.ts:140-143`).
+
+**기준선 A(실행 6) — 원문**
+
+```
+**[83회차 §1 · 3열 병기]** covShoulder 노출 old 637/1421 (44.8%) · new 508/1421 (35.8%)
+  · **truth(nearSign+rawNormal) 317/1421 (22.3%)** · [80재현후보 rawNormal만] 446/1421 (31.4%)
+[83 §1] top 대역 관통 오분류 건수 old 95 · new 91 · truth 92 — truth−new = 1
+```
+
+**판정 채널** = top 대역 관통 오분류 건수(부호 기반 · 옷 면법선·레이 내적 < 0 = 관통을 피복으로 셈).
+판정식·문턱(0)은 80회차 `nearSign`이 쓰던 것과 같다 — **새 상수 0**.
+
+```
+truth − new = **+1**   (사전등록 갈래 A 문언 = 0~5건 증가)
+```
+
+→ **갈래 A**. TORSOCAP=1(실행 2)에서도 `truth−new = +3`으로 같은 대역.
+
+**부호 채널 신설** — `CoverageResult.penetrationHits`(버킷별). 기준선 A:
+
+```
+truth {top-front-left:46, top-front-right:42, top-back-left:3, top-back-right:1, mid-back-left:8,
+       mid-front-left:3, mid-front-right:9, mid-back-right:2, bot-front-left:9, bot-front-right:10,
+       bot-back-left:2, bot-back-right:1}
+new   {top-front-left:45, top-front-right:42, top-back-left:3, top-back-right:1, ...}
+old   {top-front-left:45, top-front-right:42, top-back-left:3, top-back-right:5, ...}
+```
+
+**80회차 「진리 법선 기준 637→446」 — 재현 확인.**
+
+```
+80회차 프로브 = rawNormal **단독**(nearSign off)  →  446/1421 (31.4%)   ← 기준선 A에서 정확히 일치
+83회차 truth 열 = nearSign + rawNormal            →  317/1421 (22.3%)
+```
+
+80회차 수치는 **회수 대상이 아니다**. 다만 그 프로브의 구성이 `rawNormal` 단독이었음이
+이번에 확정됐다 — 저장소에 코드 흔적 0건이던 것(81 §5-2)이 재현 가능한 열 2개로 등재됐다.
+
+**노출 좌표 분포(기준선 A)**
+
+```
+old(637)   앞318/뒤319 · y빈 110:32 115:108 120:12 125:140 130:221 135:63 140:61 · |x|빈 10:30 15:375 20:88 25:70 30:70 35:4
+new(508)   앞280/뒤228 · y빈 110:32 115:108 120:11 125:125 130:199 135:21 140:12 · |x|빈 10:19 15:317 20:30 25:68 30:70 35:4
+truth(317) 앞161/뒤156 · y빈 110:32 115:108 120:3  125:54  130:89  135:19 140:12 · |x|빈 10:1  15:144 20:30 25:68 30:70 35:4
+```
+
+**승격 미집행** — 회차 금지 조항(§1 기본값 변경 0) + 사전 반증 미해소(아래).
+
+---
+
+### §2 표적 ① 층위 판별 — 삼각근 패치창(y128~134 · |x|16~19 · 후면) 4점
+
+`FRAMES`(`dressPattern.ts:2040`)는 `maxFrames` 상한으로만 쓰이고 램프·예산은 전부 고정 상수
+(`RAMP_FRAMES=120` `:1962` · budget `{S0:1,S1:240,S2:120,S3:720}` `:2057`) → `SECONDS`가
+**결정적으로 잘린 접두사**를 만든다(strategist 확인 · SECONDS 비례 지점 0건).
+
+| 점 | 프레임 | 상태 | 패치창 old | new | truth | cov 몸통 | covShoulder(old) |
+|---|---|---|---|---|---|---|---|
+| SECONDS=2 | f=120 | S2 → ABORT(예산) | **26** | 23 | 23 | 14.1% | 49.3% |
+| SECONDS=3 | f=180 | S2 → ABORT | **26** | 24 | 24 | 6.9% | 45.3% |
+| SECONDS=4 | f=240 | S3 → ABORT | **26** | 26 | 26 | 6.8% | 44.8% |
+| 완주 | f=260 | S3 → **DONE** | **26** | 26 | 26 | 6.8% | 44.8% |
+
+```
+원 채널(old)   26 · 26 · 26 · 26 = **불변** · 최초 관측점(f=120)부터 이미 열려 있다  → 갈래 ㄱ
+병기 열(new/truth) 23 → 24 → 26 → 26 = **+3 증가**(단조 비감소)
+```
+
+**갈래 ㄴ(초기엔 덮여 있고 정착 중 벌어짐)은 전 열에서 배제** — 최초 관측점에서 이미 23~26건이
+열려 있다(최종값의 88~100%). **갈래 ㄷ(비단조·추적 불가)도 배제** — 전 열 단조.
+
+**계기 결함 등재**: 패치창 채널에 **분모가 없다**. 노출 건수만 세고 그 창의 표본 수를 안 찍는다
+→ 「열려 있다」의 절대 크기를 못 잰다(함정 13 계열 · 이름과 측정 대상 어긋남은 아니나 arity 미달).
+
+**캡처 4장**(`docs/captures/2b-83-층위/` · 623×851 · 뷰포트만)
+
+```
+back-S2.png    md5 4daabe181afa6c9021c81cf322684674
+back-S3.png    md5 12cca7c4e3e906ea0626034213f90fc5
+back-S4.png    md5 6c0371805979ed16af2ebf6e100727dc
+back-Sfull.png md5 a1e17d10e56c09e61ac727a1fe2f5534
+```
+
+촬영 = `CAPTURE_URL='http://localhost:5173/?patterncore=1&patternstate=1&autofit=ff00c8'
+CAPTURE_OUT=docs/captures/2b-83-층위 CAPTURE_SETTLE=7000 npx tsx scripts/capture.ts back`.
+80회차 마젠타(#ff00c8)는 **업로드**로 만들어 재현이 사람 손에 묶여 있었다 →
+`?autofit=<6자리 hex>`로 같은 색을 URL에서 낸다(`autofit=1`은 기존 #3a6ea5 그대로 · 캡처 회귀 0).
+
+**관측(판정 아님)**: 4장 전부 후면 삼각근 좌우에 회색 맨살 2패치. f=120에서도 이미 열려 있다.
+화면 판정은 전략 세션 몫(규칙/화면판정 — 자체 선언 0).
+
+---
+
+### §3 45회차 대조쌍 재계산 — 회귀 5종
+
+회귀 5종 문언 정본 = `.obsidian-log/회차/2b-45-전면off승격.md:28-29` 원문:
+
+```
+회귀    A 대비 5종 **전부 개선**: 자기교차 6653→**1889** · maxStrain 6.498→**2.661** ·
+        cov 7.2→**6.8%** · covShoulder 54.5→**44.8%** · 관통 120→**50**
+```
+
+**수치 문턱 문언은 44·45 어디에도 없다**(82회차 §산출불가와 같은 판정) — 기준은 **부호(A 대비 감소)**뿐.
+45회차 값은 **old 정의** 열이므로 대조도 old 열로 한다.
+
+| 채널 | A = `RINGTOTAL=0 PATTERNCORE=1 TORSOCAP=1` | off = `RINGTOTAL=0 PATTERNCORE=1` | 방향 | 크기 | 45회차 등재값 |
+|---|---|---|---|---|---|
+| 자기교차(엣지-삼각형) | 6653 | **1889** | 감소 | −4764 (−71.6%) | 6653→1889 **일치** |
+| maxStrain | 6.498 (정점 2146) | **2.661** (정점 2146) | 감소 | −3.837 (−59.0%) | 6.498→2.661 **일치** |
+| cov 몸통(정식·팔 제외) | 7.2% (124/1728) | **6.8%** (118/1728) | 감소 | −0.4pp (−6 정점) | 7.2→6.8% **일치** |
+| covShoulder(old) | 54.5% (775/1421) | **44.8%** (637/1421) | 감소 | −9.7pp (−138 정점) | 54.5→44.8% **일치** |
+| 관통(정착 후·레이 패리티) | 120 / 5244 | **50** / 5244 | 감소 | −70 (−58.3%) | 120→50 **일치** |
+
+→ **갈래 A** — 5종 전부 개선 부호 유지. **45회차 승격 근거 생존.** 다섯 채널이 자릿수까지 일치.
+
+**병기 전량(대조쌍)**
+
+```
+                       A(TORSOCAP=1)        off(기준선 A)
+cov_old                3481/5439 (64.0%)    3464/5439 (63.7%)
+cov_new                3478/5439 (63.9%)    3461/5439 (63.6%)
+covShoulder_old        775/1421 (54.5%)     637/1421 (44.8%)
+covShoulder_new        645/1421 (45.4%)     508/1421 (35.8%)
+covShoulder_truth      448/1421 (31.5%)     317/1421 (22.3%)
+covShoulder y124↑      628/1038 (60.5%)     495/1038 (47.7%)
+top 관통 오분류 truth−new  +3                  +1
+정착 프레임              318                  260
+Δ20                    4.93mm               5.16mm
+maxSeamGap             10.31mm              11.14mm
+관통 패널 귀속           뒤판49·소매L32·소매R28·앞판11   소매L23·소매R24·뒤판3·앞판0
+```
+
+**하드 게이트(양변 동일)**: DONE PASS · RETRY 0 PASS · 발산 0 PASS · **자기교차 FAIL**(A 6653 / off 1889)
+· 정착 예산 PASS. 자기교차 FAIL은 78회차부터 이어진 기존 상태다(신규 회귀 아님).
+
+---
+
+### 사전 반증 (strategist · 계기 실행 전) — 필수 조건 체크
+
+| # | 조건 | 충족 |
+|---|---|---|
+| 1 | `collectBandSamples` 법선 = 삼각형 외적 **면적 가중** 누적, 스무딩·재가중 0, 마지막 1회 정규화 | 확인 |
+| 2 | 법선 누적 집합 = 넘겨받은 `indexes` 전량, `sampleMask`는 샘플 선택만 | 확인 |
+| 3 | `rawNormal`을 **파라미터로** 넣는다(env·모듈 전역 금지 — 7개 호출이 동시에 바뀐다) | 충족 |
+| 4 | `covShoulder`(`[wholeIndex]`)와 `cov 몸통`(`[frontIdx, backIdx]`)은 별개 params 객체 · 모듈 전역 0 | 확인 |
+| 5 | `coverageMetric.ts`는 **하네스 전용**(import 2곳: `dressPattern.ts:28` · `paramSweep.ts:52` · `src/components`·`src/workers` 0건) → 뷰어 무관 · 하드 리프레시 불요 | 확인 |
+| 6 | `FRAMES`는 `maxFrames` 상한 전용 · 램프 전부 고정 상수 → §2 접두사 설계 성립 | 확인 |
+
+**반증 3건 — 미해소 등재**
+
+```
+반증 1  「truth = 진리 법선」이 **부분 거짓**. 이 법선은 **와인딩 법선**이고 이 메시는
+        일부 영역 와인딩이 뒤집혀 있다(`coverageMetric.ts:290-295` — mid-back 93~96% 오노출이
+        그래서 났고 그것이 `orientOutward`의 존재 이유다).
+        → truth가 old/new와 갈릴 때 그 차이가 「참조축 편향」인지 「와인딩 결함」인지
+          **이 채널 하나로는 원리적으로 못 가른다**(두 원인이 같은 채널에 합류).
+        → **갈래 A 문언의 「진리 법선을 기본으로 승격」은 이 반증이 풀리기 전에는 집행 불가.**
+          이번 회차는 4열 병기까지만 등재하고 기본값을 안 바꿨다.
+반증 2  절단 시트 문제가 **covSh에도 있다**(81 §5-1은 cov 몸통에만 적었다).
+        covSh가 넘기는 `wholeIndex`는 `excludeHead` 산출물(`meshCollision.ts:81-103` ·
+        `HEAD_EXCLUDE_RADIUS=0.11`)이라 **목 주위에 구멍이 뚫린 시트**다.
+        어깨 대역 정점이 그 절단 경계에 닿는지 — **측정 이력 0건 · 확인 불가**.
+반증 3  줄 번호 4건 stale(82회차 환경 스탬프 블록으로 약 +31줄 밀림):
+        `[frontIdx, backIdx]` 2369-2371 → 2400-2402·2442 / `FRAMES` 2009 → 2040 /
+        `RAMP_FRAMES` 1931 → 1962 / budget 2024 → 2057. 심볼은 전부 맞다.
+```
+
+---
+
+### 계기 증분 (물리 0줄)
+
+```
+coverageMetric.ts  `CoverageParams.rawNormal`(기본 off) — `orientOutward` 건너뜀
+                   `rayNearestHit(..., signOut?)` — 채택 히트의 면법선·레이 내적을 밖으로
+                   `CoverageResult.penetrationHits` — 버킷별 「관통을 피복으로 센」 건수
+                   ※ 면법선 식을 `nearSign` 블록에서 위로 끌어올렸을 뿐 `best` 갱신 조건에는
+                     관여하지 않는다 → 부동소수 결과 불변(md5로 실증)
+dressPattern.ts    `covShTruth`(nearSign+rawNormal) · `covShRawOnly`(rawNormal 단독) 2열 추가
+                   3열 병기 줄 · top 관통 오분류 줄 · 버킷 줄 · truth 좌표 분포 줄
+                   ※ `pct()`는 `exposedRatio`를 쓴다 — 여기서 다시 나누면 80회차 병기 줄과
+                     반올림이 갈려 같은 508/1421이 35.7/35.8 두 값이 된다(1차 실행에서 실제 발생)
+useFitStore.ts     `?autofit=<6자리 hex>` — 캡처 전용 단색. `autofit=1`은 #3a6ea5 그대로
+```
+
+### 산출 불가 / 확인 불가
+
+- **`코어=… 스무딩=…` 줄** — `dress:pattern`에 존재하지 않는다(`sweep:pattern` 단독). 규약 대조 1건 대상 없음
+- **패치창 분모** — 노출 건수만 세고 창의 표본 수를 안 찍는다. 「구멍 크기」의 절대값 산출 불가
+- **어깨 대역 정점이 `excludeHead` 절단 경계(반경 0.11m)에 닿는가** — 측정 이력 0건
+- **truth/new 차이의 원인 분해**(참조축 편향 vs 와인딩 결함) — 이 채널로는 원리적 불가(반증 1)
+- **45회차 회귀 5종의 수치 문턱** — 44·45 노트에 문언 없음(82회차와 같은 판정)
+- **43회차(감사 행 2) 대조쌍** — 이번 회차 대상 아님(미집행)
+- **CLAUDE.md 「계기 4항목」 vs 함정13 규범 6 「5항목」 어긋남** — 81·82에 이어 이번에도 안 고쳤다
+
+기점: 없음(기준선 A 유효 · v2-2b-78-baseline 9fbd66c 그대로)
