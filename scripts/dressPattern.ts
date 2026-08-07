@@ -43,6 +43,7 @@ import {
   MAX_DISPLACEMENT_PER_SUBSTEP,
   SDF_FAR,
   SDF_VOXEL,
+  SEAM_REST_LENGTH,
   STIFFNESS_BEND,
   SUBSTEP_DT,
   COLLAR_STRAIN_LIMIT,
@@ -237,7 +238,7 @@ if (process.env.EXPORT_META === "1") {
     "HEMBEND", "MAGNET", "MAGNET_D0", "ADSORB_PENONLY", "WINDING", "FIXTURE",
     // 계기·출력
     "PATTERNCORE", "DIAG", "PROBE", "EXPORT_META", "PATTERN_META", "SKELSIGN", "SLEEVESIGN", "WINDPAR", "SLEEVEGEO",
-    "SHOULDERFIT", "ARMGEO", "PATCHDIR", "SIGNDIST",
+    "SHOULDERFIT", "ARMGEO", "PATCHDIR", "SIGNDIST", "SEAMGAP",
   ];
   const bvhVer = (() => {
     try {
@@ -2696,6 +2697,135 @@ console.log(`    버킷 old→new: ${Object.keys(covSh.buckets).sort().map((k) =
   console.log(`    **[83회차 §1 · 3열 병기]** covShoulder 노출 old ${pct(covSh)} · new ${pct(covShNew)} · **truth(nearSign+rawNormal) ${pct(covShTruth)}** · [80재현후보 rawNormal만] ${pct(covShRawOnly)}`);
   console.log(`    [83 §1] top 대역 관통 오분류 건수 old ${topPen(covSh)} · new ${topPen(covShNew)} · truth ${topPen(covShTruth)} — truth−new = ${topPen(covShTruth) - topPen(covShNew)}`);
   console.log(`    [83 §1] 관통 오분류 버킷 truth ${JSON.stringify(covShTruth.penetrationHits)} · new ${JSON.stringify(covShNew.penetrationHits)} · old ${JSON.stringify(covSh.penetrationHits)}`);
+  // ── 90회차 — **시접 갭의 자리**와 **패치창 최근접 옷의 정체**. `SEAMGAP=1`에서만 돈다.
+  // 35계기 6번이 이미 종류별 max|평균 + 상위 10쌍을 인쇄한다(42·68회차 등재). 여기서 더하는 것은
+  // ① `seamGroups` 기준 **논리 시접 5종 × 좌우 10그룹** 분해(종류 4종으로는 front/back armhole이 안 갈린다)
+  // ② 호장 t 구간별 분포 ③ argmax와 패치창의 공간 거리
+  // ④ **패치창 최근접 옷 정점이 시접 경계인가 자유 가장자리인가 패널 내부인가**
+  // ⑤ 최근접 스냅 4-튜플(86 §10-3 규범) ⑥ 뒤판 최근접 병기(85 §3-3의 「뒤판 55개」는 재현 경로가 없다)
+  if (process.env.SEAMGAP === "1") {
+    const gapOf = (a: number, b: number): number => Math.hypot(
+      sim.positions[b * 3] - sim.positions[a * 3],
+      sim.positions[b * 3 + 1] - sim.positions[a * 3 + 1],
+      sim.positions[b * 3 + 2] - sim.positions[a * 3 + 2],
+    );
+    const q = (arr: number[], f: number): number => (arr.length ? [...arr].sort((x, y) => x - y)[Math.min(arr.length - 1, Math.floor(arr.length * f))] : NaN);
+    // ── §1(a)(b) 그룹별 분포. `SEAM_REST_LENGTH` 6.0mm는 **등식 제약의 능동 하한**이고
+    //    `limitStrain` 1.2배가 천장 7.20mm를 만든다 — 그 두 값을 함께 찍어 「당연한 몫」을 분리한다.
+    console.log(`  [90 §1] 시접 rest ${(SEAM_REST_LENGTH * 1000).toFixed(2)}mm · limitStrain 상한 → 천장 ${(SEAM_REST_LENGTH * 1.2 * 1000).toFixed(2)}mm (이 위가 「이상분」이다)`);
+    const argmaxes: { label: string; d: number; x: number; y: number; z: number }[] = [];
+    for (const grp of g.seamGroups) {
+      const ds = grp.a.map((_, k) => gapOf(grp.a[k], grp.b[k]));
+      let am = 0;
+      for (let k = 1; k < ds.length; k++) if (ds[k] > ds[am]) am = k;
+      const mm = (v: number): string => (v * 1000).toFixed(2);
+      const bins = [0, 1, 2, 3].map((bi) => {
+        const sel = ds.filter((_, k) => Math.floor((k / Math.max(1, ds.length - 1)) * 3.999) === bi);
+        return sel.length ? mm(q(sel, 0.5)) : "—";
+      });
+      const av = grp.a[am];
+      argmaxes.push({ label: grp.label, d: ds[am], x: sim.positions[av * 3], y: sim.positions[av * 3 + 1], z: sim.positions[av * 3 + 2] });
+      console.log(
+        `  [90 §1a] ${grp.label.padEnd(46)} n=${String(ds.length).padStart(2)} · min ${mm(Math.min(...ds))} / 중앙 ${mm(q(ds, 0.5))} / p90 ${mm(q(ds, 0.9))} / **max ${mm(ds[am])}**mm` +
+        ` · 천장 초과 ${ds.filter((v) => v > SEAM_REST_LENGTH * 1.2 + 1e-9).length}쌍` +
+        ` │ argmax t=${(am / Math.max(1, ds.length - 1)).toFixed(3)} 패턴(${cm(g.pos2[av * 2])},${cm(g.pos2[av * 2 + 1])}) 3D(${cm(sim.positions[av * 3])},${cm(sim.positions[av * 3 + 1])},${cm(sim.positions[av * 3 + 2])})cm` +
+        ` │ t구간 중앙 ${bins.join(" / ")}mm`,
+      );
+    }
+    // ── 시접 정점 집합(그룹 라벨 포함) · 패널 경계 정점(엣지 사용 1회) · 자유 가장자리
+    const seamGrpOf = new Map<number, string>();
+    const seamTOf = new Map<number, number>();
+    for (const grp of g.seamGroups) {
+      for (let k = 0; k < grp.a.length; k++) {
+        for (const v of [grp.a[k], grp.b[k]]) {
+          if (!seamGrpOf.has(v)) { seamGrpOf.set(v, grp.label); seamTOf.set(v, k / Math.max(1, grp.a.length - 1)); }
+        }
+      }
+    }
+    const edgeUse = new Map<number, number>();
+    for (let t = 0; t + 2 < g.tris.length; t += 3) {
+      const v = [g.tris[t], g.tris[t + 1], g.tris[t + 2]];
+      for (const [i, j] of [[0, 1], [1, 2], [2, 0]]) {
+        const k = Math.min(v[i], v[j]) * 1_000_000 + Math.max(v[i], v[j]);
+        edgeUse.set(k, (edgeUse.get(k) ?? 0) + 1);
+      }
+    }
+    const boundaryV = new Set<number>();
+    for (const [k, u] of edgeUse) if (u === 1) { boundaryV.add(Math.floor(k / 1_000_000)); boundaryV.add(k % 1_000_000); }
+    console.log(`  [90 §2] 시접 정점 ${seamGrpOf.size} · 패널 경계 정점(엣지 1회) ${boundaryV.size} · 자유 가장자리(경계−시접) ${[...boundaryV].filter((v) => !seamGrpOf.has(v)).length}`);
+    // ── 패리티(부호 향) — 89회차와 같은 경로. 패치창에서 뒤집힘 0인지 재확인한다.
+    const uni = dedupeTrianglesWelded(position, [frontIdx, backIdx, wholeIndex ?? torsoIndex]);
+    const wp = classifyWindingOutward(position, [uni.index], {
+      points: covSh.samplePoints, normals: covSh.sampleNormals,
+      vertexIndexes: covSh.vertexIndexes, count: covSh.samples,
+    });
+    type Row = { exposed: boolean; cls: string; grp: string; dV: number; d2: number; margin: number; candGap: number; ang: number; dBack: number; slit: number };
+    const rows: Row[] = [];
+    for (let i = 0; i < covSh.samples; i++) {
+      const x = covSh.samplePoints[i * 3], y = covSh.samplePoints[i * 3 + 1], z = covSh.samplePoints[i * 3 + 2];
+      if (!(y >= 1.28 && y <= 1.34 && Math.abs(x - centerX) >= 0.16 && Math.abs(x - centerX) <= 0.19 && z < collision.centerZ)) continue;
+      let b1 = Infinity, i1 = -1, b2 = Infinity, i2 = -1, bBack = Infinity, iBack = -1;
+      for (let k = 0; k < total; k++) {
+        const dd = (sim.positions[k * 3] - x) ** 2 + (sim.positions[k * 3 + 1] - y) ** 2 + (sim.positions[k * 3 + 2] - z) ** 2;
+        if (dd < b1) { b2 = b1; i2 = i1; b1 = dd; i1 = k; } else if (dd < b2) { b2 = dd; i2 = k; }
+        if (panelOfIdx(k) === 1 && dd < bBack) { bBack = dd; iBack = k; }
+      }
+      const d1 = Math.sqrt(b1), d2 = Math.sqrt(b2);
+      const cls = seamGrpOf.has(i1) ? "시접" : boundaryV.has(i1) ? "자유가장자리" : "패널내부";
+      const sg = wp.flipped[i] ? -1 : 1;
+      const n = [covSh.sampleNormals[i * 3] * sg, covSh.sampleNormals[i * 3 + 1] * sg, covSh.sampleNormals[i * 3 + 2] * sg];
+      const w = [sim.positions[i1 * 3] - x, sim.positions[i1 * 3 + 1] - y, sim.positions[i1 * 3 + 2] - z];
+      rows.push({
+        exposed: covSh.exposedFlags[i] === 1, cls, grp: seamGrpOf.get(i1) ?? "-",
+        dV: d1, d2, margin: d2 - d1,
+        candGap: i2 < 0 ? NaN : Math.hypot(sim.positions[i1 * 3] - sim.positions[i2 * 3], sim.positions[i1 * 3 + 1] - sim.positions[i2 * 3 + 1], sim.positions[i1 * 3 + 2] - sim.positions[i2 * 3 + 2]),
+        ang: Math.acos(Math.max(-1, Math.min(1, (w[0] * n[0] + w[1] * n[1] + w[2] * n[2]) / (d1 || 1e-9)))) * 180 / Math.PI,
+        dBack: iBack < 0 ? NaN : Math.sqrt(bBack),
+        slit: iBack < 0 ? NaN : Math.hypot(sim.positions[i1 * 3] - sim.positions[iBack * 3], sim.positions[i1 * 3 + 1] - sim.positions[iBack * 3 + 1], sim.positions[i1 * 3 + 2] - sim.positions[iBack * 3 + 2]),
+      });
+    }
+    const grp2 = (rs: Row[], label: string): void => {
+      const cnt = (c: string): number => rs.filter((r) => r.cls === c).length;
+      console.log(
+        `  [90 §2a] ${label} ${rs.length}건 — **시접 ${cnt("시접")} · 자유가장자리 ${cnt("자유가장자리")} · 패널내부 ${cnt("패널내부")}**` +
+        ` │ 시접 그룹: ${[...new Set(rs.filter((r) => r.cls === "시접").map((r) => r.grp))].join(" / ") || "없음"}`,
+      );
+      const f = (g3: (r: Row) => number): string => `${(Math.min(...rs.map(g3)) * 100).toFixed(2)} / ${(q(rs.map(g3), 0.5) * 100).toFixed(2)} / ${(Math.max(...rs.map(g3)) * 100).toFixed(2)}`;
+      console.log(
+        `        스냅 4-튜플 min/중앙/max — 값(최근접) ${f((r) => r.dV)}cm · 1·2위 마진 ${f((r) => r.margin)}cm · 후보 간격 ${f((r) => r.candGap)}cm` +
+        // **주의**: 「마진 < 후보 간격」은 삼각부등식 |d1−d2| ≤ |p1−p2|이라 **항상 참인 항등식**이다.
+        // 건수를 세면 언제나 n/n이 나온다 — 판정에 쓸 수 없다. 판별력은 **비(比)**에 있다.
+        // 86회차의 확정 아티팩트는 비 0.0024였다(마진 0.06mm / 후보 간격 25.5mm).
+        ` │ 마진<후보간격 ${rs.filter((r) => r.margin < r.candGap).length}/${rs.length}(**삼각부등식상 항등 — 판정력 없음**)` +
+        ` │ **마진/후보간격 비 min/중앙/max ${(Math.min(...rs.map((r) => r.margin / (r.candGap || 1e-9)))).toFixed(4)} / ${q(rs.map((r) => r.margin / (r.candGap || 1e-9)), 0.5).toFixed(4)} / ${(Math.max(...rs.map((r) => r.margin / (r.candGap || 1e-9)))).toFixed(4)}** (86 확정 아티팩트 = 0.0024)`,
+      );
+      console.log(
+        `        뒤판 최근접 ${f((r) => r.dBack)}cm · **소매↔뒤판 최근접 정점 거리(틈 폭) ${f((r) => r.slit)}cm**` +
+        ` │ 사잇각 min/중앙/max ${Math.min(...rs.map((r) => r.ang)).toFixed(1)} / ${q(rs.map((r) => r.ang), 0.5).toFixed(1)} / ${Math.max(...rs.map((r) => r.ang)).toFixed(1)}°`,
+      );
+      // (d) 가장자리 여부 × 사잇각 교차표
+      for (const c of ["시접", "자유가장자리", "패널내부"]) {
+        const sel = rs.filter((r) => r.cls === c);
+        if (!sel.length) continue;
+        console.log(`        [교차] ${c} ${sel.length}건 — 사잇각 중앙 ${q(sel.map((r) => r.ang), 0.5).toFixed(1)}° · 최근접 중앙 ${(q(sel.map((r) => r.dV), 0.5) * 100).toFixed(2)}cm`);
+      }
+    };
+    grp2(rows.filter((r) => r.exposed), "**노출**");
+    grp2(rows.filter((r) => !r.exposed), "피복");
+    console.log(`  [90 §2] 패치창 패리티 뒤집힘 ${rows.length ? [...Array(covSh.samples).keys()].filter((i) => wp.flipped[i] === 1 && covSh.samplePoints[i * 3 + 1] >= 1.28 && covSh.samplePoints[i * 3 + 1] <= 1.34 && Math.abs(covSh.samplePoints[i * 3] - centerX) >= 0.16 && Math.abs(covSh.samplePoints[i * 3] - centerX) <= 0.19 && covSh.samplePoints[i * 3 + 2] < collision.centerZ).length : 0}건(89회차 0건 재확인)`);
+    // §1(c) — argmax 지점과 패치창 표본의 최소 거리
+    {
+      const pts: number[][] = [];
+      for (let i = 0; i < covSh.samples; i++) {
+        const x = covSh.samplePoints[i * 3], y = covSh.samplePoints[i * 3 + 1], z = covSh.samplePoints[i * 3 + 2];
+        if (y >= 1.28 && y <= 1.34 && Math.abs(x - centerX) >= 0.16 && Math.abs(x - centerX) <= 0.19 && z < collision.centerZ) pts.push([x, y, z]);
+      }
+      for (const a of argmaxes) {
+        const dmin = Math.min(...pts.map((p) => Math.hypot(p[0] - a.x, p[1] - a.y, p[2] - a.z)));
+        console.log(`  [90 §1c] ${a.label.padEnd(46)} argmax ${(a.d * 1000).toFixed(2)}mm → 패치창 최소거리 **${cm(dmin)}cm**`);
+      }
+    }
+  }
   // ── 89회차 §1 — **패치창 노출의 부호 판정**. `SIGNDIST=1`에서만 돈다.
   // 85 §1c의 「최근접 옷 거리 1.76cm」는 **절댓값**이고(`:2945` `Math.sqrt(best)`에서 부호가 소멸)
   // 85~88 어디에도 부호가 없다. 「옷이 몸 바깥에 떠 있는가(+) 안에 파묻혀 있는가(−)」를
