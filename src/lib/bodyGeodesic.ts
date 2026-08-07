@@ -373,6 +373,88 @@ export function axisSection(
 }
 
 /**
+ * 소매 배치 프레임 — `patternGarment.ts:490-503`과 **같은 식**이다.
+ * 88회차가 방위각 기저로 채택했고 89회차도 같은 θ를 쓴다. 두 곳이 갈리면 회차 간 대조가 끊기므로
+ * 한 군데로 모은다(식을 옮겨 적지 않는다).
+ *   e1 = 팔축에 직교하는 「위쪽」(어깨 능선 쪽 · 소매산 정점이 놓이는 방향) · θ=0
+ *   e2 = 앞(+z 고정 · 미러 패널은 flipSign으로 반전) · θ=+π/2
+ */
+export function sleeveArmFrame(
+  dir: { x: number; y: number; z: number },
+  flipSign: number,
+): { d: number[]; e1: number[]; e2: number[] } {
+  const nrm = (a: number[]): number[] => { const L = Math.hypot(a[0], a[1], a[2]) || 1; return [a[0] / L, a[1] / L, a[2] / L]; };
+  const crs = (a: number[], b: number[]): number[] => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
+  const d = nrm([dir.x, dir.y, dir.z]);
+  const k = d[1]; // up=(0,1,0)과의 내적
+  const e1 = nrm([-d[0] * k, 1 - d[1] * k, -d[2] * k]);
+  let e2 = nrm(crs(d, e1));
+  if (e2[2] < 0) e2 = e2.map((q) => -q);
+  if (flipSign < 0) e2 = e2.map((q) => -q);
+  return { d, e1, e2 };
+}
+
+/**
+ * 점 → 삼각형 최근접점(평탄 배열 9개씩). 정점 최근접이 아니라 **면** 최근접이다.
+ * 89회차 필요: 정점 최근접은 삼각형 최근접보다 최대 「엣지 절반」만큼 과대평가하는데
+ * 소매 패널 엣지가 5.3~22.3mm(평균 13.9mm)라 그 편향이 해석 중인 차(0.76cm)와 **같은 자릿수**다.
+ * 반환은 최근접점 좌표와 거리.
+ */
+export function closestPointOnTriangles(
+  tris: Float32Array,
+  px: number, py: number, pz: number,
+): { x: number; y: number; z: number; distM: number; tri: number } {
+  let bestD2 = Infinity, bx = 0, by = 0, bz = 0, bt = -1;
+  for (let o = 0; o + 8 < tris.length; o += 9) {
+    const ax = tris[o], ay = tris[o + 1], az = tris[o + 2];
+    const abx = tris[o + 3] - ax, aby = tris[o + 4] - ay, abz = tris[o + 5] - az;
+    const acx = tris[o + 6] - ax, acy = tris[o + 7] - ay, acz = tris[o + 8] - az;
+    const apx = px - ax, apy = py - ay, apz = pz - az;
+    const d1 = abx * apx + aby * apy + abz * apz;
+    const d2 = acx * apx + acy * apy + acz * apz;
+    let cx: number, cy: number, cz: number;
+    if (d1 <= 0 && d2 <= 0) { cx = ax; cy = ay; cz = az; } else {
+      const bpx = px - tris[o + 3], bpy = py - tris[o + 4], bpz = pz - tris[o + 5];
+      const d3 = abx * bpx + aby * bpy + abz * bpz;
+      const d4 = acx * bpx + acy * bpy + acz * bpz;
+      if (d3 >= 0 && d4 <= d3) { cx = tris[o + 3]; cy = tris[o + 4]; cz = tris[o + 5]; } else {
+        const cpx = px - tris[o + 6], cpy = py - tris[o + 7], cpz = pz - tris[o + 8];
+        const d5 = abx * cpx + aby * cpy + abz * cpz;
+        const d6 = acx * cpx + acy * cpy + acz * cpz;
+        if (d6 >= 0 && d5 <= d6) { cx = tris[o + 6]; cy = tris[o + 7]; cz = tris[o + 8]; } else {
+          const vc = d1 * d4 - d3 * d2;
+          if (vc <= 0 && d1 >= 0 && d3 <= 0) {
+            const v = d1 / (d1 - d3);
+            cx = ax + abx * v; cy = ay + aby * v; cz = az + abz * v;
+          } else {
+            const vb = d5 * d2 - d1 * d6;
+            if (vb <= 0 && d2 >= 0 && d6 <= 0) {
+              const w = d2 / (d2 - d6);
+              cx = ax + acx * w; cy = ay + acy * w; cz = az + acz * w;
+            } else {
+              const va = d3 * d6 - d5 * d4;
+              if (va <= 0 && d4 - d3 >= 0 && d5 - d6 >= 0) {
+                const w = (d4 - d3) / ((d4 - d3) + (d5 - d6));
+                cx = tris[o + 3] + (tris[o + 6] - tris[o + 3]) * w;
+                cy = tris[o + 4] + (tris[o + 7] - tris[o + 4]) * w;
+                cz = tris[o + 5] + (tris[o + 8] - tris[o + 5]) * w;
+              } else {
+                const den = 1 / (va + vb + vc);
+                const v = vb * den, w = vc * den;
+                cx = ax + abx * v + acx * w; cy = ay + aby * v + acy * w; cz = az + abz * v + acz * w;
+              }
+            }
+          }
+        }
+      }
+    }
+    const dd = (cx - px) ** 2 + (cy - py) ** 2 + (cz - pz) ** 2;
+    if (dd < bestD2) { bestD2 = dd; bx = cx; by = cy; bz = cz; bt = o / 9; }
+  }
+  return { x: bx, y: by, z: bz, distM: Math.sqrt(bestD2), tri: bt };
+}
+
+/**
  * 자체 검사 — 축 정렬 직육면체(가로 2 · 세로 4 · 깊이 1). 알려진 값과 대조한다.
  *   중간 높이 단면 둘레 = 2*(2+1) = 6 · 후면(z<0) = 절반 = 3
  *   아래앞왼 모서리 → 아래앞오른 모서리 표면 경로 = 직선 2(같은 엣지 위)
@@ -403,10 +485,19 @@ export function bodyGeodesicSelfCheck(): string {
   const ax = axisSection(both, idx2, { x: 0, y: 0, z: 0 }, { x: 0, y: 1, z: 0 }, 2);
   const okAx = ax.loopCount === 2 && ax.arm !== null && near(ax.arm.girthM, 6)
     && near(ax.arm.equivRadiusM, 6 / (2 * Math.PI)) && ax.arm.centerOffsetM < 1e-6;
+  // `closestPointOnTriangles` — 삼각형 (0,0,0)(1,0,0)(0,1,0) 하나.
+  //   내부 위 점(0.25,0.25,3) → 최근접 = 수직 투영, 거리 3
+  //   꼭짓점 밖 점(−1,−1,0)   → 최근접 = 꼭짓점 (0,0,0), 거리 √2
+  const tri1 = Float32Array.from([0, 0, 0, 1, 0, 0, 0, 1, 0]);
+  const cIn = closestPointOnTriangles(tri1, 0.25, 0.25, 3);
+  const cOut = closestPointOnTriangles(tri1, -1, -1, 0);
+  const okTri = near(cIn.distM, 3) && near(cIn.x, 0.25) && near(cIn.y, 0.25) && near(cIn.z, 0)
+    && near(cOut.distM, Math.SQRT2) && near(cOut.x, 0) && near(cOut.y, 0);
   const ok = near(sec.totalM, 6) && near(sec.backM, 3) && near(sec.frontM, 3)
-    && near(g.pathM, 2) && near(g.straightM, 2) && okAx;
+    && near(g.pathM, 2) && near(g.straightM, 2) && okAx && okTri;
   return `자체검사 ${ok ? "PASS" : "**FAIL**"} — 직육면체: 단면 둘레 ${sec.totalM.toFixed(4)}(기대 6) ·`
     + ` 후면 ${sec.backM.toFixed(4)}(기대 3) · 표면경로 ${g.pathM.toFixed(4)}(기대 2) · 직선 ${g.straightM.toFixed(4)}(기대 2)`
     + ` │ 축수직단면: 고리 ${ax.loopCount}(기대 2) · 축 고리 둘레 ${(ax.arm?.girthM ?? -1).toFixed(4)}(기대 6)`
-    + ` · 중심편차 ${((ax.arm?.centerOffsetM ?? -1) * 1000).toFixed(4)}mm(기대 0)`;
+    + ` · 중심편차 ${((ax.arm?.centerOffsetM ?? -1) * 1000).toFixed(4)}mm(기대 0)`
+    + ` │ 점-삼각형: 내부 ${cIn.distM.toFixed(4)}(기대 3) · 꼭짓점밖 ${cOut.distM.toFixed(4)}(기대 1.4142)`;
 }

@@ -26,7 +26,7 @@ import { makeOutlineProvider } from "../src/lib/bodyOutline";
 import { buildPatternSim } from "../src/lib/buildPatternSim";
 import { correctPlacementPenetration, countInside, countOpenEdges, countOpenEdgesWelded, countSelfIntersections, dedupeTrianglesWelded, makeParityInside } from "../src/lib/patternPlacement";
 import { classifyWindingOutward, windingParitySelfCheck } from "../src/lib/windingParity";
-import { axisSection, bodyGeodesicSelfCheck, horizontalSection, surfacePathLength } from "../src/lib/bodyGeodesic";
+import { axisSection, bodyGeodesicSelfCheck, closestPointOnTriangles, horizontalSection, sleeveArmFrame, surfacePathLength } from "../src/lib/bodyGeodesic";
 import { computeBodyCoverage, deriveShoulderBand } from "../src/lib/coverageMetric";
 import { bakeSdf, createCachedSdfIterationFriction, createSdfFrictionPass, makeRadialSignedSampler, makeSkeletonSignedSampler, sampleSdf, sdfNormal } from "../src/lib/sdfCollision";
 import {
@@ -237,7 +237,7 @@ if (process.env.EXPORT_META === "1") {
     "HEMBEND", "MAGNET", "MAGNET_D0", "ADSORB_PENONLY", "WINDING", "FIXTURE",
     // 계기·출력
     "PATTERNCORE", "DIAG", "PROBE", "EXPORT_META", "PATTERN_META", "SKELSIGN", "SLEEVESIGN", "WINDPAR", "SLEEVEGEO",
-    "SHOULDERFIT", "ARMGEO", "PATCHDIR",
+    "SHOULDERFIT", "ARMGEO", "PATCHDIR", "SIGNDIST",
   ];
   const bvhVer = (() => {
     try {
@@ -2696,6 +2696,104 @@ console.log(`    버킷 old→new: ${Object.keys(covSh.buckets).sort().map((k) =
   console.log(`    **[83회차 §1 · 3열 병기]** covShoulder 노출 old ${pct(covSh)} · new ${pct(covShNew)} · **truth(nearSign+rawNormal) ${pct(covShTruth)}** · [80재현후보 rawNormal만] ${pct(covShRawOnly)}`);
   console.log(`    [83 §1] top 대역 관통 오분류 건수 old ${topPen(covSh)} · new ${topPen(covShNew)} · truth ${topPen(covShTruth)} — truth−new = ${topPen(covShTruth) - topPen(covShNew)}`);
   console.log(`    [83 §1] 관통 오분류 버킷 truth ${JSON.stringify(covShTruth.penetrationHits)} · new ${JSON.stringify(covShNew.penetrationHits)} · old ${JSON.stringify(covSh.penetrationHits)}`);
+  // ── 89회차 §1 — **패치창 노출의 부호 판정**. `SIGNDIST=1`에서만 돈다.
+  // 85 §1c의 「최근접 옷 거리 1.76cm」는 **절댓값**이고(`:2945` `Math.sqrt(best)`에서 부호가 소멸)
+  // 85~88 어디에도 부호가 없다. 「옷이 몸 바깥에 떠 있는가(+) 안에 파묻혀 있는가(−)」를
+  // 이 캠페인이 한 번도 안 쟀다.
+  //
+  // 부호 기준 법선은 `covSh.sampleNormals`(와인딩 법선 · `orientOutward` **전**)에
+  // 84회차 패리티(`classifyWindingOutward`)를 물려 향을 정한다 — **참조축을 안 쓴다.**
+  // ※ 노출/피복 라벨은 `orientOutward` 기준이고 부호는 패리티 기준이라 **두 법선이 다르다**.
+  //   밴드 전체에서 최소 191개(13.4%)가 두 법선이 반대인 표본이다(84 §2 · covShNew 508 vs truth 317).
+  //   그 사실을 인쇄해 둔다 — 감추면 다음 회차가 같은 자리에서 또 걸린다.
+  if (process.env.SIGNDIST === "1") {
+    console.log(`  [89 §1] ${bodyGeodesicSelfCheck()}`);
+    const uni = dedupeTrianglesWelded(position, [frontIdx, backIdx, wholeIndex ?? torsoIndex]);
+    const uWeld = countOpenEdgesWelded(position, [uni.index]);
+    console.log(`  [89 §1] 패리티 전제 — 합집합 삼각형 ${uni.unique} · 열린 ${uWeld.open} · 3매공유 ${uWeld.shared3plus}`);
+    if (uWeld.open !== 0 || uWeld.shared3plus !== 0) {
+      console.log(`  [89 §1] **패리티 전제 불성립** — 부호 채널 미성립(갈래 D). 판정하지 않는다.`);
+    } else {
+      const wp = classifyWindingOutward(position, [uni.index], {
+        points: covSh.samplePoints, normals: covSh.sampleNormals,
+        vertexIndexes: covSh.vertexIndexes, count: covSh.samples,
+      });
+      console.log(`  [89 §1] 밴드 전체 — 뒤집힘 ${wp.flippedCount}/${wp.count} · 판정 불가 ${wp.ambiguousCount}/${wp.count}`);
+      const armPlus = pose.armLeft.trueShoulder.x >= pose.armRight.trueShoulder.x ? pose.armLeft : pose.armRight;
+      const deg = (t: number): string => `${(t * 180 / Math.PI).toFixed(1)}°`;
+      type Row = {
+        exposed: boolean; amb: boolean; flip: boolean;
+        sAx: number; th: number;
+        dV: number; sgV: number; cosV: number;   // 정점 최근접
+        dT: number; sgT: number; cosT: number;   // 삼각형 최근접
+      };
+      for (const [nm, arm] of [["좌(+x)", pose.armLeft], ["우(−x)", pose.armRight]] as const) {
+        const f = sleeveArmFrame(arm.dir, arm === armPlus ? 1 : -1);
+        const t0 = arm.trueShoulder;
+        const rows: Row[] = [];
+        for (let i = 0; i < covSh.samples; i++) {
+          const x = covSh.samplePoints[i * 3], y = covSh.samplePoints[i * 3 + 1], z = covSh.samplePoints[i * 3 + 2];
+          if (!(y >= 1.28 && y <= 1.34 && Math.abs(x - centerX) >= 0.16 && Math.abs(x - centerX) <= 0.19 && z < collision.centerZ)) continue;
+          if ((x > centerX) !== (arm.trueShoulder.x > centerX)) continue;
+          // 향 보정: 패리티가 「안쪽」이라 한 정점만 반전. `orientOutward`는 쓰지 않는다.
+          const sg = wp.flipped[i] ? -1 : 1;
+          const n = [covSh.sampleNormals[i * 3] * sg, covSh.sampleNormals[i * 3 + 1] * sg, covSh.sampleNormals[i * 3 + 2] * sg];
+          // 정점 최근접
+          let best = Infinity, bi = 0;
+          for (let k = 0; k < total; k++) {
+            const dd = (sim.positions[k * 3] - x) ** 2 + (sim.positions[k * 3 + 1] - y) ** 2 + (sim.positions[k * 3 + 2] - z) ** 2;
+            if (dd < best) { best = dd; bi = k; }
+          }
+          const wv = [sim.positions[bi * 3] - x, sim.positions[bi * 3 + 1] - y, sim.positions[bi * 3 + 2] - z];
+          const dV = Math.sqrt(best);
+          const dotV = wv[0] * n[0] + wv[1] * n[1] + wv[2] * n[2];
+          // 삼각형 최근접
+          const cp = closestPointOnTriangles(clothTris, x, y, z);
+          const wt = [cp.x - x, cp.y - y, cp.z - z];
+          const dotT = wt[0] * n[0] + wt[1] * n[1] + wt[2] * n[2];
+          // 팔 국소 좌표(88회차와 같은 프레임)
+          const rel = [x - t0.x, y - t0.y, z - t0.z];
+          const sAx = rel[0] * f.d[0] + rel[1] * f.d[1] + rel[2] * f.d[2];
+          const rad = [0, 1, 2].map((k2) => rel[k2] - f.d[k2] * sAx);
+          rows.push({
+            exposed: covSh.exposedFlags[i] === 1, amb: wp.ambiguous[i] === 1, flip: wp.flipped[i] === 1,
+            sAx, th: Math.atan2(rad[0] * f.e2[0] + rad[1] * f.e2[1] + rad[2] * f.e2[2], rad[0] * f.e1[0] + rad[1] * f.e1[1] + rad[2] * f.e1[2]),
+            dV, sgV: Math.sign(dotV), cosV: dotV / (dV || 1e-9),
+            dT: cp.distM, sgT: Math.sign(dotT), cosT: dotT / (cp.distM || 1e-9),
+          });
+        }
+        const med = (a: number[]): number => (a.length ? [...a].sort((p, q) => p - q)[Math.floor(a.length / 2)] : NaN);
+        const rng = (a: number[]): string => (a.length ? `${Math.min(...a).toFixed(2)} / ${med(a).toFixed(2)} / ${Math.max(...a).toFixed(2)}` : "—");
+        const grp = (rs: Row[], label: string): void => {
+          const ok = rs.filter((r) => !r.amb);
+          const negV = ok.filter((r) => r.sgV < 0), negT = ok.filter((r) => r.sgT < 0);
+          console.log(
+            `  [89 §1c] ${nm} ${label} ${rs.length}건 (부호 미정 ${rs.filter((r) => r.amb).length} · 패리티 뒤집힘 ${rs.filter((r) => r.flip).length})` +
+            ` — **정점최근접 음수(파묻힘) ${negV.length}/${ok.length}** · 삼각형최근접 음수 ${negT.length}/${ok.length}`,
+          );
+          console.log(
+            `        부호 있는 거리 min/중앙/max — 정점 ${rng(ok.map((r) => r.sgV * r.dV * 100))}cm · 삼각형 ${rng(ok.map((r) => r.sgT * r.dT * 100))}cm` +
+            ` │ 절댓값 정점 ${rng(ok.map((r) => r.dV * 100))} · 삼각형 ${rng(ok.map((r) => r.dT * 100))}cm`,
+          );
+          // **부호 신뢰도** — 법선과 최근접 벡터의 사잇각. 90°에 붙으면 부호는 잡음이다.
+          const ang = ok.map((r) => Math.acos(Math.max(-1, Math.min(1, r.cosV))) * 180 / Math.PI);
+          console.log(
+            `        부호 신뢰도(법선↔최근접 벡터 사잇각) min/중앙/max ${rng(ang)}° · **60~120° 구간 ${ang.filter((a) => a >= 60 && a <= 120).length}/${ang.length}건**` +
+            ` │ 정점·삼각형 부호 불일치 ${ok.filter((r) => r.sgV !== r.sgT).length}건`,
+          );
+        };
+        grp(rows.filter((r) => r.exposed), "**노출**");
+        grp(rows.filter((r) => !r.exposed), "피복");
+        const negs = rows.filter((r) => !r.amb && r.sgV < 0);
+        console.log(
+          `  [89 §1d] ${nm} 음수 표본 ${negs.length}건의 자리 — ` +
+          (negs.length
+            ? `s ${cm(Math.min(...negs.map((r) => r.sAx)))}~${cm(Math.max(...negs.map((r) => r.sAx)))}cm · θ ${deg(Math.min(...negs.map((r) => r.th)))}~${deg(Math.max(...negs.map((r) => r.th)))}`
+            : "없음"),
+        );
+      }
+    }
+  }
   // ── 88회차 §1 — **패치창 방향 반경 대조**. `PATCHDIR=1`에서만 돈다.
   // 87 §6은 등가반경(둘레/2π)으로 댔고 §6-2에서 스스로 「방향평균이지 클리어런스 하한이 아니다」로
   // 단서를 달았다. 이번엔 **패치창이 있는 방향**을 특정해서 잰다. 87 갈래 B를 뒤집는 것이 아니라
@@ -2710,19 +2808,10 @@ console.log(`    버킷 old→new: ${Object.keys(covSh.buckets).sort().map((k) =
   if (process.env.PATCHDIR === "1") {
     const bodyIdx = wholeIndex ?? torsoIndex;
     const rEff = ARM_COLLISION_RADIUS + 0.006; // 87 §5 — 캡슐 반경 + margin(dressPattern.ts:740 리터럴)
-    const nrm = (a: number[]): number[] => { const L = Math.hypot(a[0], a[1], a[2]) || 1; return [a[0] / L, a[1] / L, a[2] / L]; };
-    const crs = (a: number[], b: number[]): number[] => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
     // armPlus = trueShoulder.x가 큰 쪽(= flipSign +1). `patternGarment.ts:347`·`:490`과 같은 규칙.
     const armPlus = pose.armLeft.trueShoulder.x >= pose.armRight.trueShoulder.x ? pose.armLeft : pose.armRight;
-    const frameOf = (arm: typeof pose.armLeft, flipSign: number): { d: number[]; e1: number[]; e2: number[] } => {
-      const d = nrm([arm.dir.x, arm.dir.y, arm.dir.z]);
-      const k = d[1]; // up=(0,1,0)과의 내적
-      const e1 = nrm([-d[0] * k, 1 - d[1] * k, -d[2] * k]);
-      let e2 = nrm(crs(d, e1));
-      if (e2[2] < 0) e2 = e2.map((q) => -q);
-      if (flipSign < 0) e2 = e2.map((q) => -q);
-      return { d, e1, e2 };
-    };
+    // 프레임 식은 `bodyGeodesic.sleeveArmFrame` 한 군데에 있다(89회차가 같은 θ를 써야 해서 모았다).
+    const frameOf = (arm: typeof pose.armLeft, flipSign: number) => sleeveArmFrame(arm.dir, flipSign);
     const deg = (t: number): string => `${(t * 180 / Math.PI).toFixed(1)}°`;
     for (const [nm, arm] of [["좌(+x)", pose.armLeft], ["우(−x)", pose.armRight]] as const) {
       const flip = arm === armPlus ? 1 : -1;
