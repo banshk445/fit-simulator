@@ -237,7 +237,7 @@ if (process.env.EXPORT_META === "1") {
     "HEMBEND", "MAGNET", "MAGNET_D0", "ADSORB_PENONLY", "WINDING", "FIXTURE",
     // 계기·출력
     "PATTERNCORE", "DIAG", "PROBE", "EXPORT_META", "PATTERN_META", "SKELSIGN", "SLEEVESIGN", "WINDPAR", "SLEEVEGEO",
-    "SHOULDERFIT", "ARMGEO",
+    "SHOULDERFIT", "ARMGEO", "PATCHDIR",
   ];
   const bvhVer = (() => {
     try {
@@ -2696,6 +2696,93 @@ console.log(`    버킷 old→new: ${Object.keys(covSh.buckets).sort().map((k) =
   console.log(`    **[83회차 §1 · 3열 병기]** covShoulder 노출 old ${pct(covSh)} · new ${pct(covShNew)} · **truth(nearSign+rawNormal) ${pct(covShTruth)}** · [80재현후보 rawNormal만] ${pct(covShRawOnly)}`);
   console.log(`    [83 §1] top 대역 관통 오분류 건수 old ${topPen(covSh)} · new ${topPen(covShNew)} · truth ${topPen(covShTruth)} — truth−new = ${topPen(covShTruth) - topPen(covShNew)}`);
   console.log(`    [83 §1] 관통 오분류 버킷 truth ${JSON.stringify(covShTruth.penetrationHits)} · new ${JSON.stringify(covShNew.penetrationHits)} · old ${JSON.stringify(covSh.penetrationHits)}`);
+  // ── 88회차 §1 — **패치창 방향 반경 대조**. `PATCHDIR=1`에서만 돈다.
+  // 87 §6은 등가반경(둘레/2π)으로 댔고 §6-2에서 스스로 「방향평균이지 클리어런스 하한이 아니다」로
+  // 단서를 달았다. 이번엔 **패치창이 있는 방향**을 특정해서 잰다. 87 갈래 B를 뒤집는 것이 아니라
+  // **다른 채널로 새로 묻는 것**이다(사후 문턱 변경 아님).
+  //
+  // 방위각 기저는 새로 만들지 않고 **소매 배치 프레임**(`patternGarment.ts:490-503`)을 그대로 쓴다.
+  // 이유: 소매 메시가 이미 그 프레임으로 놓여 있고, 좌우 미러 정합이 성립하는 유일한 기저다
+  // (`axisSection`의 기본 seed 기저는 우팔에서 v가 몸 안쪽을 가리켜 방위각이 거울상이 아니다).
+  //   θ = 0     → e1 = 팔축에 직교하는 「위쪽」(어깨 능선 쪽 · 소매산 정점이 놓이는 방향)
+  //   θ = +π/2  → e2 = 앞(+z 고정 · 미러 패널은 flipSign으로 반전)
+  //   ⇒ 후면은 θ ≈ −π/2 쪽이다.
+  if (process.env.PATCHDIR === "1") {
+    const bodyIdx = wholeIndex ?? torsoIndex;
+    const rEff = ARM_COLLISION_RADIUS + 0.006; // 87 §5 — 캡슐 반경 + margin(dressPattern.ts:740 리터럴)
+    const nrm = (a: number[]): number[] => { const L = Math.hypot(a[0], a[1], a[2]) || 1; return [a[0] / L, a[1] / L, a[2] / L]; };
+    const crs = (a: number[], b: number[]): number[] => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
+    // armPlus = trueShoulder.x가 큰 쪽(= flipSign +1). `patternGarment.ts:347`·`:490`과 같은 규칙.
+    const armPlus = pose.armLeft.trueShoulder.x >= pose.armRight.trueShoulder.x ? pose.armLeft : pose.armRight;
+    const frameOf = (arm: typeof pose.armLeft, flipSign: number): { d: number[]; e1: number[]; e2: number[] } => {
+      const d = nrm([arm.dir.x, arm.dir.y, arm.dir.z]);
+      const k = d[1]; // up=(0,1,0)과의 내적
+      const e1 = nrm([-d[0] * k, 1 - d[1] * k, -d[2] * k]);
+      let e2 = nrm(crs(d, e1));
+      if (e2[2] < 0) e2 = e2.map((q) => -q);
+      if (flipSign < 0) e2 = e2.map((q) => -q);
+      return { d, e1, e2 };
+    };
+    const deg = (t: number): string => `${(t * 180 / Math.PI).toFixed(1)}°`;
+    for (const [nm, arm] of [["좌(+x)", pose.armLeft], ["우(−x)", pose.armRight]] as const) {
+      const flip = arm === armPlus ? 1 : -1;
+      const f = frameOf(arm, flip);
+      const t0 = arm.trueShoulder;
+      console.log(`  [88 §1] 팔 ${nm} flipSign ${flip > 0 ? "+1" : "−1"} — e1(${f.e1.map((q) => q.toFixed(4)).join(",")}) e2(${f.e2.map((q) => q.toFixed(4)).join(",")})`);
+      // (a) 패치창 표본을 팔 국소 좌표로. 표본은 covSh 원자료에서 뜬다(함정 12).
+      type Row = { s: number; th: number; r: number; exposed: boolean };
+      const rows: Row[] = [];
+      for (let i = 0; i < covSh.samples; i++) {
+        const x = covSh.samplePoints[i * 3], y = covSh.samplePoints[i * 3 + 1], z = covSh.samplePoints[i * 3 + 2];
+        if (!(y >= 1.28 && y <= 1.34 && Math.abs(x - centerX) >= 0.16 && Math.abs(x - centerX) <= 0.19 && z < collision.centerZ)) continue;
+        if ((x > centerX) !== (arm.trueShoulder.x > centerX)) continue; // 팔 귀속 — |x|≥16cm라 경계 모호 0
+        const rel = [x - t0.x, y - t0.y, z - t0.z];
+        const s = rel[0] * f.d[0] + rel[1] * f.d[1] + rel[2] * f.d[2];
+        const rad = [0, 1, 2].map((k) => rel[k] - f.d[k] * s);
+        const a1 = rad[0] * f.e1[0] + rad[1] * f.e1[1] + rad[2] * f.e1[2];
+        const a2 = rad[0] * f.e2[0] + rad[1] * f.e2[1] + rad[2] * f.e2[2];
+        rows.push({ s, th: Math.atan2(a2, a1), r: Math.hypot(a1, a2), exposed: covSh.exposedFlags[i] === 1 });
+      }
+      const band = (rs: Row[]): string => rs.length
+        ? `θ ${deg(Math.min(...rs.map((q) => q.th)))}~${deg(Math.max(...rs.map((q) => q.th)))} · s ${cm(Math.min(...rs.map((q) => q.s)))}~${cm(Math.max(...rs.map((q) => q.s)))}cm · r ${cm(Math.min(...rs.map((q) => q.r)))}~${cm(Math.max(...rs.map((q) => q.r)))}cm`
+        : "표본 0";
+      const exp = rows.filter((q) => q.exposed), cov2 = rows.filter((q) => !q.exposed);
+      console.log(`  [88 §1a] 패치창 표본 ${rows.length}(노출 ${exp.length}/피복 ${cov2.length}) — 전체 ${band(rows)}`);
+      console.log(`  [88 §1d] **노출** ${band(exp)}`);
+      console.log(`  [88 §1d] 피복  ${band(cov2)}`);
+      if (exp.length && cov2.length) {
+        const lo = (rs: Row[]) => Math.min(...rs.map((q) => q.th)), hi = (rs: Row[]) => Math.max(...rs.map((q) => q.th));
+        const ov = Math.max(0, Math.min(hi(exp), hi(cov2)) - Math.max(lo(exp), lo(cov2)));
+        const un = Math.max(hi(exp), hi(cov2)) - Math.min(lo(exp), lo(cov2));
+        console.log(`  [88 §1d] θ 대역 겹침 ${(ov / (un || 1e-9) * 100).toFixed(1)}% (겹침 ${deg(ov)} / 합집합 ${deg(un)})`);
+      }
+      // (b)(c) 스테이션별 — 노출 표본의 θ 대역 안에서 실제 팔 반경 vs 캡슐 유효 반경
+      for (const sc of [4, 6, 8]) {
+        const sec = axisSection(position, bodyIdx, t0, arm.dir, sc / 100, { u: { x: f.e1[0], y: f.e1[1], z: f.e1[2] }, v: { x: f.e2[0], y: f.e2[1], z: f.e2[2] } });
+        if (!sec.arm) { console.log(`  [88 §1c] s=${sc}cm — **팔 분리 불가** · null(추정하지 않는다)`); continue; }
+        const near2 = rows.filter((q) => Math.abs(q.s - sc / 100) <= 0.01);
+        const pick = (rs: Row[], label: string): void => {
+          if (!rs.length) { console.log(`      s=${sc}cm ${label}: 이 스테이션 ±1cm 표본 0 · null`); return; }
+          const lo = Math.min(...rs.map((q) => q.th)), hi = Math.max(...rs.map((q) => q.th));
+          const inBand: number[] = [];
+          for (const [r0, r1, , th0, th1] of sec.arm!.segRadii) {
+            if (th0 >= lo && th0 <= hi) inBand.push(r0);
+            if (th1 >= lo && th1 <= hi) inBand.push(r1);
+          }
+          if (!inBand.length) { console.log(`      s=${sc}cm ${label}: θ ${deg(lo)}~${deg(hi)} · **단면 표본 0** · null`); return; }
+          const diffs = inBand.map((r) => (rEff - r) * 100).sort((a, b) => a - b);
+          const med = diffs[Math.floor(diffs.length / 2)];
+          console.log(
+            `      s=${sc}cm ${label}: θ ${deg(lo)}~${deg(hi)} · 단면점 ${inBand.length}` +
+            ` · 실제반경 ${cm(Math.min(...inBand))}~${cm(Math.max(...inBand))}cm` +
+            ` · **유효−실제 min ${diffs[0].toFixed(2)} / 중앙 ${med.toFixed(2)} / max ${diffs[diffs.length - 1].toFixed(2)}cm**`,
+          );
+        };
+        pick(near2.filter((q) => q.exposed), "**노출θ**");
+        pick(near2.filter((q) => !q.exposed), "피복θ");
+      }
+    }
+  }
   // ── 87회차 §1 — **실제 팔 기하 실측**. `ARMGEO=1`에서만 돈다.
   // 86회차가 표적 ①의 기전을 미특정으로 되돌렸다(갈래 A·B 둘 다 크기가 한 자리 부족).
   // 다음 후보는 **충돌 기하**다 — 옷을 띄우는 것이 패턴이 아니라 충돌 프리미티브라면

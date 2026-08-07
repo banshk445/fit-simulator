@@ -241,10 +241,12 @@ export interface AxisSectionResult {
     rMinM: number; rMaxM: number; rMeanM: number; rStdM: number;
     segments: number;
     /**
-     * 선분별 [양 끝 축거리 r0, r1, 선분 길이]. 「반경 r인 원기둥 밖에 있는 둘레가 얼마인가」를
-     * 호출부가 낼 수 있어야 한다 — 등가반경(둘레/2π)은 **방향평균**이라 국소 돌출을 못 잰다.
+     * 선분별 [축거리 r0, r1, 선분 길이, 방위각 th0, th1]. 「반경 r인 원기둥 밖에 있는 둘레가
+     * 얼마인가」와 「**어느 방향에서** 그런가」를 호출부가 낼 수 있어야 한다 —
+     * 등가반경(둘레/2π)은 **방향평균**이라 국소 돌출도 그 방향도 못 잰다(함정 18).
+     * `th`는 `basis`를 넘겼을 때만 의미가 있다(안 넘기면 기저가 임의로 세워진다).
      */
-    segRadii: [number, number, number][];
+    segRadii: [number, number, number, number, number][];
   } | null;
   /** 팔 고리를 뺀 나머지 고리들의 둘레(m) — 몸통 등 */
   otherM: number[];
@@ -265,6 +267,13 @@ export function axisSection(
   origin: { x: number; y: number; z: number },
   dir: { x: number; y: number; z: number },
   sM: number,
+  /**
+   * 평면 안의 기준 방향. **넘기지 않으면 기저가 임의로 세워지고 방위각에 의미가 없다**
+   * (87회차는 안 넘겼다 — 등가반경 대조라 방향에 둔감했다).
+   * 88회차는 소매 배치 프레임(`patternGarment.ts:490-503`의 e1·e2)을 그대로 넘긴다:
+   * 이미 소매 메시가 그 프레임으로 놓여 있고 좌우 미러 정합이 성립하는 유일한 기저다.
+   */
+  basis?: { u: { x: number; y: number; z: number }; v: { x: number; y: number; z: number } },
 ): AxisSectionResult {
   const dl = Math.hypot(dir.x, dir.y, dir.z) || 1;
   const n = [dir.x / dl, dir.y / dl, dir.z / dl];
@@ -274,8 +283,13 @@ export function axisSection(
   const cross = (a: number[], b: number[]): number[] =>
     [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
   const norm = (a: number[]): number[] => { const L = Math.hypot(a[0], a[1], a[2]) || 1; return [a[0] / L, a[1] / L, a[2] / L]; };
-  const u = norm(cross(seed, n));
-  const v = cross(n, u);
+  // 기저: `basis`가 있으면 그것을 n에 직교화해서 쓰고, 없으면 seed 규칙(방위각 무의미).
+  const u = basis
+    ? norm((() => { const b = [basis.u.x, basis.u.y, basis.u.z]; const k = b[0] * n[0] + b[1] * n[1] + b[2] * n[2]; return [b[0] - n[0] * k, b[1] - n[1] * k, b[2] - n[2] * k]; })())
+    : norm(cross(seed, n));
+  const v = basis
+    ? norm((() => { const b = [basis.v.x, basis.v.y, basis.v.z]; const k = b[0] * n[0] + b[1] * n[1] + b[2] * n[2]; return [b[0] - n[0] * k, b[1] - n[1] * k, b[2] - n[2] * k]; })())
+    : cross(n, u);
   const sd = (v3: number): number =>
     (position[v3 * 3] - o[0]) * n[0] + (position[v3 * 3 + 1] - o[1]) * n[1] + (position[v3 * 3 + 2] - o[2]) * n[2];
   const flat = (q: number[]): [number, number] => {
@@ -317,20 +331,20 @@ export function axisSection(
   if (groups.length <= 1) {
     return { sM, loopCount: groups.length, arm: null, otherM: groups.map((g) => g.reduce((a, i) => a + segs[i].L, 0)) };
   }
-  const stat = (g: number[]): { girthM: number; cu: number; cv: number; rs: number[]; segRadii: [number, number, number][] } => {
+  const stat = (g: number[]): { girthM: number; cu: number; cv: number; rs: number[]; segRadii: [number, number, number, number, number][] } => {
     let girthM = 0, cu = 0, cv = 0, cnt = 0;
     const rs: number[] = [];
-    const segRadii: [number, number, number][] = [];
+    const segRadii: [number, number, number, number, number][] = [];
     for (const i of g) {
       girthM += segs[i].L;
-      const pair: number[] = [];
+      const pair: number[] = [], ths: number[] = [];
       for (const e of [segs[i].a, segs[i].b]) {
         const [a, b] = flat(e);
         cu += a; cv += b; cnt++;
         const r = Math.hypot(a, b);
-        rs.push(r); pair.push(r);
+        rs.push(r); pair.push(r); ths.push(Math.atan2(b, a));
       }
-      segRadii.push([pair[0], pair[1], segs[i].L]);
+      segRadii.push([pair[0], pair[1], segs[i].L, ths[0], ths[1]]);
     }
     return { girthM, cu: cu / (cnt || 1), cv: cv / (cnt || 1), rs, segRadii };
   };
