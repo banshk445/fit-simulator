@@ -12797,7 +12797,7 @@ dressPattern.ts               `SLEEVEGEO=1` 블록(§1 a~d) · ENV_KEYS에 `SLEE
 dress-state md5 14e50b8919a63a7f9799220b86e508a9  (83·84·85회차 등재값 일치 · 재생성 대조 5회차)
 ```
 
-### 실행 4건 — env 줄
+### 실행 5건 — env 줄
 
 ```
 1  RINGTOTAL=0 PATTERNCORE=1 npm run dress:pattern                    **대조군**(처방 전) md5 14e50b89…
