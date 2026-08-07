@@ -143,6 +143,48 @@ export interface SectionResult {
 }
 
 /**
+ * 교선 선분들을 끝점 좌표 용접으로 이어 붙여 **연결 성분(고리)** 으로 가른다.
+ * 어깨·팔 대역의 단면은 몸통과 팔을 함께 자르므로 합계만 내면 섞인다 —
+ * 상수로 팔을 빼지 않고 연결성으로 가르는 것이 이 저장소의 규율이다(85회차 §3).
+ * `flat`은 3D 끝점을 그 평면의 2D 좌표로 보내는 사영이다(키·중심 계산용).
+ */
+function groupLoops(
+  segs: { a: number[]; b: number[]; L: number; back: boolean }[],
+  flat: (q: number[]) => [number, number],
+): SectionResult["loops"] {
+  const key = (q: number[]): string => {
+    const [u, v] = flat(q);
+    return `${Math.round(u / 1e-4)},${Math.round(v / 1e-4)}`;
+  };
+  const node = new Map<string, number[]>(); // 끝점 키 → 인접 선분 목록
+  segs.forEach((s, i) => {
+    for (const e of [s.a, s.b]) {
+      const k = key(e);
+      const l = node.get(k);
+      if (l) l.push(i); else node.set(k, [i]);
+    }
+  });
+  const seenSeg = new Uint8Array(segs.length);
+  const loops: SectionResult["loops"] = [];
+  for (let i = 0; i < segs.length; i++) {
+    if (seenSeg[i]) continue;
+    const stack = [i];
+    seenSeg[i] = 1;
+    let lt = 0, lb = 0, lf = 0, xs = 0, n = 0;
+    while (stack.length) {
+      const s = segs[stack.pop()!];
+      lt += s.L; if (s.back) lb += s.L; else lf += s.L;
+      xs += (s.a[0] + s.b[0]) / 2; n++;
+      for (const e of [s.a, s.b]) for (const j of node.get(key(e)) ?? []) {
+        if (!seenSeg[j]) { seenSeg[j] = 1; stack.push(j); }
+      }
+    }
+    loops.push({ totalM: lt, backM: lb, frontM: lf, xCenter: xs / (n || 1), segments: n });
+  }
+  return loops;
+}
+
+/**
  * 높이 y의 수평 평면과 메시의 교선 길이. 삼각형별 선분을 모아 합한다
  * (닫힌 고리로 정렬하지 않는다 — 길이 합은 순서에 무관하다).
  */
@@ -178,35 +220,142 @@ export function horizontalSection(
     if (back) backM += L; else frontM += L;
     segs.push({ a: hit[0], b: hit[1], L, back });
   }
-  // 끝점을 좌표 용접해 이어 붙여 연결 성분(고리)을 만든다. 상수는 용접 격자뿐이다.
-  const key = (q: number[]): string => `${Math.round(q[0] / 1e-4)},${Math.round(q[2] / 1e-4)}`;
-  const node = new Map<string, number[]>(); // 끝점 키 → 인접 선분 목록
-  segs.forEach((s, i) => {
-    for (const e of [s.a, s.b]) {
-      const k = key(e);
-      const l = node.get(k);
-      if (l) l.push(i); else node.set(k, [i]);
-    }
-  });
-  const seenSeg = new Uint8Array(segs.length);
-  const loops: SectionResult["loops"] = [];
-  for (let i = 0; i < segs.length; i++) {
-    if (seenSeg[i]) continue;
-    const stack = [i];
-    seenSeg[i] = 1;
-    let lt = 0, lb = 0, lf = 0, xs = 0, n = 0;
-    while (stack.length) {
-      const s = segs[stack.pop()!];
-      lt += s.L; if (s.back) lb += s.L; else lf += s.L;
-      xs += (s.a[0] + s.b[0]) / 2; n++;
-      for (const e of [s.a, s.b]) for (const j of node.get(key(e)) ?? []) {
-        if (!seenSeg[j]) { seenSeg[j] = 1; stack.push(j); }
-      }
-    }
-    loops.push({ totalM: lt, backM: lb, frontM: lf, xCenter: xs / (n || 1), segments: n });
-  }
+  const loops = groupLoops(segs, (q) => [q[0], q[2]]);
   loops.sort((a, b) => b.totalM - a.totalM);
   return { y, totalM, backM, frontM, segments, loops };
+}
+
+export interface AxisSectionResult {
+  /** 축을 따라 잰 거리(m). 평면은 이 지점에서 축에 수직이다. */
+  sM: number;
+  /** 고리 수. 1이면 팔이 몸통과 붙어 **분리 불가**다. */
+  loopCount: number;
+  /** 축 지점을 품은 고리(= 팔 고리)가 있으면 그 값. 없으면 null. */
+  arm: {
+    girthM: number;
+    /** 둘레에서 낸 등가 반경 = girth / 2π */
+    equivRadiusM: number;
+    /** 고리 중심이 축에서 얼마나 벗어났는가(m) */
+    centerOffsetM: number;
+    /** 축 지점 → 단면 점 거리의 통계(m). 원 근사가 얼마나 깨지는가. */
+    rMinM: number; rMaxM: number; rMeanM: number; rStdM: number;
+    segments: number;
+    /**
+     * 선분별 [양 끝 축거리 r0, r1, 선분 길이]. 「반경 r인 원기둥 밖에 있는 둘레가 얼마인가」를
+     * 호출부가 낼 수 있어야 한다 — 등가반경(둘레/2π)은 **방향평균**이라 국소 돌출을 못 잰다.
+     */
+    segRadii: [number, number, number][];
+  } | null;
+  /** 팔 고리를 뺀 나머지 고리들의 둘레(m) — 몸통 등 */
+  otherM: number[];
+}
+
+/**
+ * 축(origin + dir·s)에 **수직인 평면**으로 메시를 자르고 연결 고리로 가른다.
+ * 팔 대역은 수평면으로 자르면 축에 비스듬해 둘레가 부풀므로(85회차 §3(b) y130 참고)
+ * 팔 기하를 재려면 축 수직 평면이어야 한다.
+ *
+ * 팔 고리 선택은 **축 지점을 품은 고리**로 한다 — 반경 상수로 고르지 않는다.
+ * 판정: 고리의 2D 중심이 축 지점에 가장 가까운 것. 고리가 1개면 몸통과 붙은 것이므로
+ * `arm`을 내지 않고 `loopCount = 1`로 보고한다(분리 불가를 값으로 채우지 않는다).
+ */
+export function axisSection(
+  position: Float32Array,
+  index: ArrayLike<number>,
+  origin: { x: number; y: number; z: number },
+  dir: { x: number; y: number; z: number },
+  sM: number,
+): AxisSectionResult {
+  const dl = Math.hypot(dir.x, dir.y, dir.z) || 1;
+  const n = [dir.x / dl, dir.y / dl, dir.z / dl];
+  const o = [origin.x + n[0] * sM, origin.y + n[1] * sM, origin.z + n[2] * sM];
+  // 평면 안의 정규직교 기저 — n과 가장 덜 나란한 축에서 만든다.
+  const seed = Math.abs(n[0]) < 0.9 ? [1, 0, 0] : [0, 1, 0];
+  const cross = (a: number[], b: number[]): number[] =>
+    [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
+  const norm = (a: number[]): number[] => { const L = Math.hypot(a[0], a[1], a[2]) || 1; return [a[0] / L, a[1] / L, a[2] / L]; };
+  const u = norm(cross(seed, n));
+  const v = cross(n, u);
+  const sd = (v3: number): number =>
+    (position[v3 * 3] - o[0]) * n[0] + (position[v3 * 3 + 1] - o[1]) * n[1] + (position[v3 * 3 + 2] - o[2]) * n[2];
+  const flat = (q: number[]): [number, number] => {
+    const d = [q[0] - o[0], q[1] - o[1], q[2] - o[2]];
+    return [d[0] * u[0] + d[1] * u[1] + d[2] * u[2], d[0] * v[0] + d[1] * v[1] + d[2] * v[2]];
+  };
+  const segs: { a: number[]; b: number[]; L: number; back: boolean }[] = [];
+  for (let t = 0; t + 2 < index.length; t += 3) {
+    const vs = [index[t], index[t + 1], index[t + 2]];
+    const hit: number[][] = [];
+    for (const [i, j] of [[0, 1], [1, 2], [2, 0]]) {
+      const d0 = sd(vs[i]), d1 = sd(vs[j]);
+      if ((d0 < 0 && d1 < 0) || (d0 > 0 && d1 > 0)) continue;
+      if (d0 === d1) continue;
+      const w = d0 / (d0 - d1);
+      if (w < 0 || w > 1) continue;
+      hit.push([0, 1, 2].map((k) => position[vs[i] * 3 + k] + (position[vs[j] * 3 + k] - position[vs[i] * 3 + k]) * w));
+    }
+    if (hit.length !== 2) continue;
+    const L = Math.hypot(hit[0][0] - hit[1][0], hit[0][1] - hit[1][1], hit[0][2] - hit[1][2]);
+    segs.push({ a: hit[0], b: hit[1], L, back: false });
+  }
+  // 고리별 통계를 다시 내려면 선분→고리 대응이 필요하다. `groupLoops`는 합계만 주므로
+  // 여기서는 같은 용접 키로 한 번 더 묶어 **고리별 선분 목록**을 만든다.
+  const key = (q: number[]): string => { const [a, b] = flat(q); return `${Math.round(a / 1e-4)},${Math.round(b / 1e-4)}`; };
+  const node = new Map<string, number[]>();
+  segs.forEach((s, i) => { for (const e of [s.a, s.b]) { const k = key(e); const l = node.get(k); if (l) l.push(i); else node.set(k, [i]); } });
+  const seen = new Uint8Array(segs.length);
+  const groups: number[][] = [];
+  for (let i = 0; i < segs.length; i++) {
+    if (seen[i]) continue;
+    const stack = [i]; seen[i] = 1; const g: number[] = [];
+    while (stack.length) {
+      const c = stack.pop()!; g.push(c);
+      for (const e of [segs[c].a, segs[c].b]) for (const j of node.get(key(e)) ?? []) if (!seen[j]) { seen[j] = 1; stack.push(j); }
+    }
+    groups.push(g);
+  }
+  if (groups.length <= 1) {
+    return { sM, loopCount: groups.length, arm: null, otherM: groups.map((g) => g.reduce((a, i) => a + segs[i].L, 0)) };
+  }
+  const stat = (g: number[]): { girthM: number; cu: number; cv: number; rs: number[]; segRadii: [number, number, number][] } => {
+    let girthM = 0, cu = 0, cv = 0, cnt = 0;
+    const rs: number[] = [];
+    const segRadii: [number, number, number][] = [];
+    for (const i of g) {
+      girthM += segs[i].L;
+      const pair: number[] = [];
+      for (const e of [segs[i].a, segs[i].b]) {
+        const [a, b] = flat(e);
+        cu += a; cv += b; cnt++;
+        const r = Math.hypot(a, b);
+        rs.push(r); pair.push(r);
+      }
+      segRadii.push([pair[0], pair[1], segs[i].L]);
+    }
+    return { girthM, cu: cu / (cnt || 1), cv: cv / (cnt || 1), rs, segRadii };
+  };
+  const stats = groups.map(stat);
+  // 팔 고리 = 중심이 축 지점(평면 원점)에 가장 가까운 고리.
+  let bi = 0;
+  for (let i = 1; i < stats.length; i++) {
+    if (Math.hypot(stats[i].cu, stats[i].cv) < Math.hypot(stats[bi].cu, stats[bi].cv)) bi = i;
+  }
+  const s = stats[bi];
+  const mean = s.rs.reduce((a, b) => a + b, 0) / (s.rs.length || 1);
+  const varr = s.rs.reduce((a, b) => a + (b - mean) ** 2, 0) / (s.rs.length || 1);
+  return {
+    sM,
+    loopCount: groups.length,
+    arm: {
+      girthM: s.girthM,
+      equivRadiusM: s.girthM / (2 * Math.PI),
+      centerOffsetM: Math.hypot(s.cu, s.cv),
+      rMinM: Math.min(...s.rs), rMaxM: Math.max(...s.rs), rMeanM: mean, rStdM: Math.sqrt(varr),
+      segments: groups[bi].length,
+      segRadii: s.segRadii,
+    },
+    otherM: stats.filter((_, i) => i !== bi).map((q) => q.girthM),
+  };
 }
 
 /**
@@ -232,7 +381,18 @@ export function bodyGeodesicSelfCheck(): string {
   const sec = horizontalSection(position, index, 2, 0);
   const g = surfacePathLength(position, index, { x: -1, y: 0, z: -0.5 }, { x: 1, y: 0, z: -0.5 });
   const near = (a: number, b: number): boolean => Math.abs(a - b) < 1e-6;
-  const ok = near(sec.totalM, 6) && near(sec.backM, 3) && near(sec.frontM, 3) && near(g.pathM, 2) && near(g.straightM, 2);
+  // `axisSection` — 같은 상자 + x로 10 떨어진 사본(= 「몸통」). y축 수직 평면으로 자르면
+  // 고리 2개가 나오고, 축 지점을 품은 쪽(원본)만 골라야 한다. 기대 둘레 6.
+  const far = Float32Array.from([...position].map((v, i) => (i % 3 === 0 ? v + 10 : v)));
+  const both = Float32Array.from([...position, ...far]);
+  const idx2 = [...index, ...index.map((v) => v + position.length / 3)];
+  const ax = axisSection(both, idx2, { x: 0, y: 0, z: 0 }, { x: 0, y: 1, z: 0 }, 2);
+  const okAx = ax.loopCount === 2 && ax.arm !== null && near(ax.arm.girthM, 6)
+    && near(ax.arm.equivRadiusM, 6 / (2 * Math.PI)) && ax.arm.centerOffsetM < 1e-6;
+  const ok = near(sec.totalM, 6) && near(sec.backM, 3) && near(sec.frontM, 3)
+    && near(g.pathM, 2) && near(g.straightM, 2) && okAx;
   return `자체검사 ${ok ? "PASS" : "**FAIL**"} — 직육면체: 단면 둘레 ${sec.totalM.toFixed(4)}(기대 6) ·`
-    + ` 후면 ${sec.backM.toFixed(4)}(기대 3) · 표면경로 ${g.pathM.toFixed(4)}(기대 2) · 직선 ${g.straightM.toFixed(4)}(기대 2)`;
+    + ` 후면 ${sec.backM.toFixed(4)}(기대 3) · 표면경로 ${g.pathM.toFixed(4)}(기대 2) · 직선 ${g.straightM.toFixed(4)}(기대 2)`
+    + ` │ 축수직단면: 고리 ${ax.loopCount}(기대 2) · 축 고리 둘레 ${(ax.arm?.girthM ?? -1).toFixed(4)}(기대 6)`
+    + ` · 중심편차 ${((ax.arm?.centerOffsetM ?? -1) * 1000).toFixed(4)}mm(기대 0)`;
 }

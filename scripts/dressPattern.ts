@@ -26,10 +26,11 @@ import { makeOutlineProvider } from "../src/lib/bodyOutline";
 import { buildPatternSim } from "../src/lib/buildPatternSim";
 import { correctPlacementPenetration, countInside, countOpenEdges, countOpenEdgesWelded, countSelfIntersections, dedupeTrianglesWelded, makeParityInside } from "../src/lib/patternPlacement";
 import { classifyWindingOutward, windingParitySelfCheck } from "../src/lib/windingParity";
-import { bodyGeodesicSelfCheck, horizontalSection, surfacePathLength } from "../src/lib/bodyGeodesic";
+import { axisSection, bodyGeodesicSelfCheck, horizontalSection, surfacePathLength } from "../src/lib/bodyGeodesic";
 import { computeBodyCoverage, deriveShoulderBand } from "../src/lib/coverageMetric";
 import { bakeSdf, createCachedSdfIterationFriction, createSdfFrictionPass, makeRadialSignedSampler, makeSkeletonSignedSampler, sampleSdf, sdfNormal } from "../src/lib/sdfCollision";
 import {
+  ARM_COLLISION_RADIUS,
   COLLISION_DETECTION_RADIUS,
   COLLISION_EVERY,
   COLLISION_MARGIN,
@@ -236,7 +237,7 @@ if (process.env.EXPORT_META === "1") {
     "HEMBEND", "MAGNET", "MAGNET_D0", "ADSORB_PENONLY", "WINDING", "FIXTURE",
     // 계기·출력
     "PATTERNCORE", "DIAG", "PROBE", "EXPORT_META", "PATTERN_META", "SKELSIGN", "SLEEVESIGN", "WINDPAR", "SLEEVEGEO",
-    "SHOULDERFIT",
+    "SHOULDERFIT", "ARMGEO",
   ];
   const bvhVer = (() => {
     try {
@@ -2695,6 +2696,51 @@ console.log(`    버킷 old→new: ${Object.keys(covSh.buckets).sort().map((k) =
   console.log(`    **[83회차 §1 · 3열 병기]** covShoulder 노출 old ${pct(covSh)} · new ${pct(covShNew)} · **truth(nearSign+rawNormal) ${pct(covShTruth)}** · [80재현후보 rawNormal만] ${pct(covShRawOnly)}`);
   console.log(`    [83 §1] top 대역 관통 오분류 건수 old ${topPen(covSh)} · new ${topPen(covShNew)} · truth ${topPen(covShTruth)} — truth−new = ${topPen(covShTruth) - topPen(covShNew)}`);
   console.log(`    [83 §1] 관통 오분류 버킷 truth ${JSON.stringify(covShTruth.penetrationHits)} · new ${JSON.stringify(covShNew.penetrationHits)} · old ${JSON.stringify(covSh.penetrationHits)}`);
+  // ── 87회차 §1 — **실제 팔 기하 실측**. `ARMGEO=1`에서만 돈다.
+  // 86회차가 표적 ①의 기전을 미특정으로 되돌렸다(갈래 A·B 둘 다 크기가 한 자리 부족).
+  // 다음 후보는 **충돌 기하**다 — 옷을 띄우는 것이 패턴이 아니라 충돌 프리미티브라면
+  // 그 반경과 실제 팔 단면의 차가 노출 거리(중앙 1.76cm)를 만든다.
+  // 이 블록은 **충돌 상수를 한 개도 읽지 않는다**(85회차 §2 규율 — 몸을 먼저 잰다).
+  // 끝점 스냅을 쓰지 않는다(평면을 팔축에서 해석적으로 세운다) → 86 §10-3 4-튜플 대상 아님.
+  if (process.env.ARMGEO === "1") {
+    const bodyIdx = wholeIndex ?? torsoIndex;
+    console.log(`  [87 §1] ${bodyGeodesicSelfCheck()}`);
+    for (const [nm, arm] of [["좌", pose.armLeft], ["우", pose.armRight]] as const) {
+      const t = arm.trueShoulder;
+      console.log(`  [87 §1] 팔축 ${nm} — 시작(${cm(t.x)},${cm(t.y)},${cm(t.z)})cm · 방향(${arm.dir.x.toFixed(5)},${arm.dir.y.toFixed(5)},${arm.dir.z.toFixed(5)}) · 길이 ${cm(arm.length)}cm`);
+      for (const sc of [0, 2, 4, 6, 8, 10, 12]) {
+        const r = axisSection(position, bodyIdx, t, arm.dir, sc / 100);
+        // 패치창 대응 구간(85 §4 — 최근접 소매 정점의 팔축 사영 s 3.05~8.64cm)
+        const mark = sc >= 3 && sc <= 8.64 ? " **[패치창 구간]**" : "";
+        if (!r.arm) {
+          console.log(`  [87 §1] s=${sc}cm — 고리 ${r.loopCount} → **팔 분리 불가**(몸통과 한 고리) · 둘레 ${r.otherM.map((v) => cm(v)).join("/")}cm${mark}`);
+          continue;
+        }
+        const a = r.arm;
+        console.log(
+          `  [87 §1] s=${String(sc).padStart(2)}cm — 고리 ${r.loopCount} · **팔 둘레 ${cm(a.girthM)}cm · 등가반경 ${cm(a.equivRadiusM)}cm**` +
+          ` · 중심편차 ${cm(a.centerOffsetM)}cm │ 반경 min ${cm(a.rMinM)} / max ${cm(a.rMaxM)} / 평균 ${cm(a.rMeanM)} / 표준편차 ${cm(a.rStdM)}cm` +
+          ` · 비원형도(max/min) ${(a.rMaxM / (a.rMinM || 1e-9)).toFixed(2)} · 선분 ${a.segments} · 나머지 고리 ${r.otherM.map((v) => cm(v)).join("/") || "없음"}cm${mark}`,
+        );
+        // 캡슐 대비 — **등가반경만으로는 안 된다.** 등가반경은 방향평균이라 국소 돌출을 못 잰다.
+        // 유효 반경 = `ARM_COLLISION_RADIUS`(clothConfig.ts) + 팔 캡슐 margin(dressPattern.ts:740 리터럴 0.006).
+        // 두 값 다 여기서 **읽기만** 한다(값 도입 0).
+        {
+          const rEff = ARM_COLLISION_RADIUS + 0.006;
+          let outLen = 0, maxOut = -Infinity;
+          for (const [r0, r1, L] of a.segRadii) {
+            const rm = (r0 + r1) / 2;
+            if (rm > rEff) outLen += L;
+            maxOut = Math.max(maxOut, r0 - rEff, r1 - rEff);
+          }
+          console.log(
+            `      ↳ 캡슐 대비: 유효반경 ${cm(rEff)}cm(= ${cm(ARM_COLLISION_RADIUS)} + margin 0.60) · **유효−등가 ${((rEff - a.equivRadiusM) * 100).toFixed(2)}cm**` +
+            ` · 캡슐 밖 둘레 ${(outLen / (a.girthM || 1) * 100).toFixed(1)}% (${cm(outLen)}cm) · **최대 돌출 ${(maxOut * 100).toFixed(2)}cm**`,
+          );
+        }
+      }
+    }
+  }
   // ── 86회차 §1 — **대칭성 시험**. `SHOULDERFIT=1`에서만 돈다.
   // (1) 85회차 §1(a)의 좌우 차(8.26 vs 9.92cm)가 실재인가 계기 아티팩트인가
   // (2) 옷 어깨점 y vs 몸 능선 y — 갈래 B(기울기 외삽)의 직접 확증
