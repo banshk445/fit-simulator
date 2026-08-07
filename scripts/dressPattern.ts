@@ -26,6 +26,7 @@ import { makeOutlineProvider } from "../src/lib/bodyOutline";
 import { buildPatternSim } from "../src/lib/buildPatternSim";
 import { correctPlacementPenetration, countInside, countOpenEdges, countOpenEdgesWelded, countSelfIntersections, dedupeTrianglesWelded, makeParityInside } from "../src/lib/patternPlacement";
 import { classifyWindingOutward, windingParitySelfCheck } from "../src/lib/windingParity";
+import { bodyGeodesicSelfCheck, horizontalSection, surfacePathLength } from "../src/lib/bodyGeodesic";
 import { computeBodyCoverage, deriveShoulderBand } from "../src/lib/coverageMetric";
 import { bakeSdf, createCachedSdfIterationFriction, createSdfFrictionPass, makeRadialSignedSampler, makeSkeletonSignedSampler, sampleSdf, sdfNormal } from "../src/lib/sdfCollision";
 import {
@@ -234,7 +235,7 @@ if (process.env.EXPORT_META === "1") {
     "RINGTOTAL", "TORSOCAP", "SINGLE", "SECONDS", "PINDRESS", "GRAV0", "S0FIX",
     "HEMBEND", "MAGNET", "MAGNET_D0", "ADSORB_PENONLY", "WINDING", "FIXTURE",
     // 계기·출력
-    "PATTERNCORE", "DIAG", "PROBE", "EXPORT_META", "PATTERN_META", "SKELSIGN", "SLEEVESIGN", "WINDPAR",
+    "PATTERNCORE", "DIAG", "PROBE", "EXPORT_META", "PATTERN_META", "SKELSIGN", "SLEEVESIGN", "WINDPAR", "SLEEVEGEO",
   ];
   const bvhVer = (() => {
     try {
@@ -2693,6 +2694,77 @@ console.log(`    버킷 old→new: ${Object.keys(covSh.buckets).sort().map((k) =
   console.log(`    **[83회차 §1 · 3열 병기]** covShoulder 노출 old ${pct(covSh)} · new ${pct(covShNew)} · **truth(nearSign+rawNormal) ${pct(covShTruth)}** · [80재현후보 rawNormal만] ${pct(covShRawOnly)}`);
   console.log(`    [83 §1] top 대역 관통 오분류 건수 old ${topPen(covSh)} · new ${topPen(covShNew)} · truth ${topPen(covShTruth)} — truth−new = ${topPen(covShTruth) - topPen(covShNew)}`);
   console.log(`    [83 §1] 관통 오분류 버킷 truth ${JSON.stringify(covShTruth.penetrationHits)} · new ${JSON.stringify(covShNew.penetrationHits)} · old ${JSON.stringify(covSh.penetrationHits)}`);
+  // ── 85회차 §1 — **몸 쪽 실측**. `SLEEVEGEO=1`에서만 돈다.
+  // 표적 ①(후면 삼각근 패치 · 노출 26/48 = 54.2%)이 패턴 층위로 확정된 뒤(84 §3),
+  // 「패턴 치수가 부족한가」를 물으려면 몸 길이를 **패턴과 무관하게 먼저** 재야 한다
+  // (원리/몸에서-가져와라). 이 블록은 패턴 값을 한 개도 읽지 않는다.
+  if (process.env.SLEEVEGEO === "1") {
+    const bodyIdx = wholeIndex ?? torsoIndex;
+    console.log(`  [85 §1] ${bodyGeodesicSelfCheck()}`);
+    // (a) 어깨 능선 경로 — **끝점을 몸에서 가져온다**: 목밑점 옆선 = 목 중심에서 목 반경만큼
+    //     좌/우로 나간 점(커버리지가 쓰는 neckCenter·0.12와 같은 값) · 어깨끝 = 팔 축의 trueShoulder.
+    for (const [nm, arm] of [["좌", pose.armLeft], ["우", pose.armRight]] as const) {
+      const s = Math.sign(arm.trueShoulder.x - centerX) || 1;
+      const neckSide = { x: centerX + s * 0.12, y: neckCenter.y, z: neckCenter.z };
+      const r = surfacePathLength(position, bodyIdx, neckSide, arm.trueShoulder);
+      console.log(
+        `  [85 §1a] 어깨 능선 ${nm} — 목밑옆(${cm(neckSide.x)},${cm(neckSide.y)},${cm(neckSide.z)}) → 어깨끝(${cm(arm.trueShoulder.x)},${cm(arm.trueShoulder.y)},${cm(arm.trueShoulder.z)})cm` +
+        ` · **표면경로 ${cm(r.pathM)}cm**(엣지 그래프 = 측지 상한) · 직선 ${cm(r.straightM)}cm · 굴곡비 ${(r.pathM / (r.straightM || 1)).toFixed(3)} · 홉 ${r.hops}${r.unreachable ? " · **연결 안 됨**" : ""}`,
+      );
+    }
+    // (b) 어깨 관절 위 높이별 후면 반둘레.
+    for (const yc of [130, 132, 134, 136]) {
+      const sec = horizontalSection(position, bodyIdx, yc / 100, collision.centerZ);
+      // 몸통 고리 = **중심선을 품은 고리**(팔 고리는 중심에서 벗어난다). 상수로 팔을 빼지 않는다.
+      const torso = sec.loops.reduce((b, l) => (Math.abs(l.xCenter - centerX) < Math.abs(b.xCenter - centerX) ? l : b), sec.loops[0]);
+      console.log(
+        `  [85 §1b] 단면 y${yc} — 전체 둘레 ${cm(sec.totalM)}cm(고리 ${sec.loops.length} · 선분 ${sec.segments})` +
+        ` │ **몸통 고리: 둘레 ${cm(torso.totalM)}cm · 후면 ${cm(torso.backM)}cm · 전면 ${cm(torso.frontM)}cm**` +
+        ` │ 나머지 고리 ${sec.loops.filter((l) => l !== torso).map((l) => `${cm(l.totalM)}cm@x${cm(l.xCenter)}`).join(" · ") || "없음"}`,
+      );
+    }
+    // (c)(d) 패치창 48표본 — 표본은 **다시 만들지 않고** covSh 원자료에서 뜬다(함정 12).
+    const nearestCloth = (x: number, y: number, z: number): { d: number; panel: number } => {
+      let best = Infinity, bi = 0;
+      for (let i = 0; i < total; i++) {
+        const d = (sim.positions[i * 3] - x) ** 2 + (sim.positions[i * 3 + 1] - y) ** 2 + (sim.positions[i * 3 + 2] - z) ** 2;
+        if (d < best) { best = d; bi = i; }
+      }
+      return { d: Math.sqrt(best), panel: panelOfIdx(bi) };
+    };
+    const win: { x: number; y: number; z: number; exposed: boolean; d: number; panel: number }[] = [];
+    for (let s = 0; s < covSh.samples; s++) {
+      const x = covSh.samplePoints[s * 3], y = covSh.samplePoints[s * 3 + 1], z = covSh.samplePoints[s * 3 + 2];
+      if (!(y >= 1.28 && y <= 1.34 && Math.abs(x - centerX) >= 0.16 && Math.abs(x - centerX) <= 0.19 && z < collision.centerZ)) continue;
+      const nc = nearestCloth(x, y, z);
+      win.push({ x, y, z, exposed: covSh.exposedFlags[s] === 1, d: nc.d, panel: nc.panel });
+    }
+    const stat = (rows: typeof win, label: string): void => {
+      if (!rows.length) { console.log(`  [85 §1c] ${label}: 표본 0`); return; }
+      const ds = rows.map((r) => r.d * 100).sort((a, b) => a - b);
+      const byPanel = PANEL_NAME.map((nm, p) => `${nm} ${rows.filter((r) => r.panel === p).length}`).join(" · ");
+      const rng = (f: (r: typeof win[0]) => number): string =>
+        `${cm(Math.min(...rows.map(f)))}~${cm(Math.max(...rows.map(f)))}`;
+      console.log(
+        `  [85 §1c] ${label}(${rows.length}) — 최근접 옷 거리 중앙 ${ds[Math.floor(ds.length / 2)].toFixed(2)}cm · 최소 ${ds[0].toFixed(2)} · 최대 ${ds[ds.length - 1].toFixed(2)}` +
+        ` │ 패널 귀속 ${byPanel} │ |x−중심| ${rng((r) => Math.abs(r.x - centerX))}cm · y ${rng((r) => r.y)}cm · z ${rng((r) => r.z)}cm`,
+      );
+    };
+    stat(win, "패치창 전체");
+    stat(win.filter((r) => r.exposed), "**노출**");
+    stat(win.filter((r) => !r.exposed), "피복");
+    // (d) 노출/피복이 어느 축으로 갈리는가 — 좌우 · 상하 각각의 분할표.
+    const side = (r: typeof win[0]): string => (r.x < centerX ? "우" : "좌");
+    const rows5 = [...new Set(win.map((r) => Math.round(r.y * 100)))].sort((a, b) => a - b);
+    console.log(`  [85 §1d] 좌우 분할 — ${["좌", "우"].map((s2) => {
+      const g2 = win.filter((r) => side(r) === s2);
+      return `${s2} 노출 ${g2.filter((r) => r.exposed).length}/${g2.length}`;
+    }).join(" · ")}`);
+    console.log(`  [85 §1d] 높이 분할 — ${rows5.map((yc) => {
+      const g2 = win.filter((r) => Math.round(r.y * 100) === yc);
+      return `y${yc} ${g2.filter((r) => r.exposed).length}/${g2.length}`;
+    }).join(" · ")}`);
+  }
   // ── 84회차 §2 — 와인딩 분해. `WINDPAR=1`에서만 돈다(1421×28,880 브루트포스라 몇 초 든다).
   // 목적: truth 열(참조축 근사 제거)의 값에 **와인딩 결함**이 실려 있는가.
   // 실려 있지 않다면 truth와 old/new의 차이는 전부 **참조축 편향**이고 ③-b 승격의
