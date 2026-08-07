@@ -152,6 +152,7 @@ export function PatternPreview(): React.JSX.Element | null {
               ` · 프린트 bbox ${d.printBox ? `${d.printBox.w.toFixed(0)}×${d.printBox.h.toFixed(0)}px @(${d.printBox.x.toFixed(0)},${d.printBox.y.toFixed(0)})` : "없음"}` +
               ` · 프레임 비율 ${(d.frameFracW * 100).toFixed(1)}% × ${(d.frameFracH * 100).toFixed(1)}%` +
               ` · PRINT_MAX_FRAME_FRACTION ${d.maxFrameFired ? "**발동**(프린트 버림)" : "미발동"}` +
+              ` · **재스캔(G2′)** ${d.rescan ? `성분 ${d.rescan.components}개 중 경계접촉 ${d.rescan.excluded}개 제외 → ${d.rescan.box ? `bbox ${d.rescan.box.w.toFixed(0)}×${d.rescan.box.h.toFixed(0)}px @(${d.rescan.box.x.toFixed(0)},${d.rescan.box.y.toFixed(0)})` : "남은 성분 없음"}` : "미실행(1패스 통과)"}` +
               ` · uMax ${uMax.toFixed(4)}`,
             );
           },

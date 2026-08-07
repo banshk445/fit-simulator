@@ -132,6 +132,7 @@ function findPrintBoundingBox(
   srcH: number,
   color: { r: number; g: number; b: number },
   onOversize?: (box: PrintBox) => void,
+  onRescan?: (d: { components: number; excluded: number; box: PrintBox | null }) => void,
 ): PrintBox | null {
   const scanCanvas = document.createElement("canvas");
   scanCanvas.width = SCAN_SIZE;
@@ -148,6 +149,9 @@ function findPrintBoundingBox(
 
   const { r: r0, g: g0, b: b0 } = color;
 
+  // 78회차 — 후보 화소를 **마스크로도 남긴다**(bbox 산출식은 그대로).
+  // 문턱에 걸렸을 때만 쓰는 재스캔(G2′)의 입력이고, 미발동 경로에서는 읽히지 않는다.
+  const mask = new Uint8Array(SCAN_SIZE * SCAN_SIZE);
   let minX = SCAN_SIZE;
   let minY = SCAN_SIZE;
   let maxX = -1;
@@ -160,6 +164,7 @@ function findPrintBoundingBox(
       const dg = data[i + 1] - g0;
       const db = data[i + 2] - b0;
       if (Math.sqrt(dr * dr + dg * dg + db * db) < PRINT_COLOR_DIST_THRESHOLD) continue;
+      mask[y * SCAN_SIZE + x] = 1;
       if (x < minX) minX = x;
       if (x > maxX) maxX = x;
       if (y < minY) minY = y;
@@ -179,11 +184,65 @@ function findPrintBoundingBox(
   };
   // 71회차 — 문턱 발동을 **밖에서 구분할 수 있게** 상자를 함께 넘긴다.
   // (이전에는 "프린트 없음"과 "프레임 초과"가 둘 다 null이라 판별자가 못 갈랐다.)
-  if (box.w >= srcW * PRINT_MAX_FRAME_FRACTION || box.h >= srcH * PRINT_MAX_FRAME_FRACTION) {
-    if (onOversize) onOversize(box);
-    return null;
+  const oversized = (b: PrintBox): boolean =>
+    b.w >= srcW * PRINT_MAX_FRAME_FRACTION || b.h >= srcH * PRINT_MAX_FRAME_FRACTION;
+  if (!oversized(box)) return box;
+
+  // ── 78회차 처방 **G2′** — 문턱에 걸렸을 때만 도는 재스캔. ────────────────────
+  // 알파 없는 흰 배경 자산에서는 배경이 통째로 "프린트"로 잡혀 bbox가 프레임 전체가
+  // 된다(76·77회차 실측: 100%×100%). 색으로는 못 가른다 — 배경을 완벽히 지워도
+  // **실루엣 1픽셀 후광 링**이 남고 그 밝기가 프린트와 겹친다(후광 min 64 vs 프린트 med 113).
+  // 그래서 색이 아니라 **위상**을 쓴다: 후보 화소를 8-연결 성분으로 나누고
+  // **프레임 경계에 닿는 성분을 제외**한다(배경은 정의상 경계에 닿는다).
+  // **새 상수 0**(문턱도 근백색 술어도 안 쓴다) · **1패스 미발동 자산은 여기 오지 않으므로
+  // 경로가 정의상 동일**하다 → v1 거동 불변(게이트 불요).
+  // 재스캔 후에도 걸리면 기존대로 프린트를 버린다.
+  const label = new Int32Array(SCAN_SIZE * SCAN_SIZE).fill(-1);
+  const stack: number[] = [];
+  let nComp = 0, nExcluded = 0;
+  let rMinX = SCAN_SIZE, rMinY = SCAN_SIZE, rMaxX = -1, rMaxY = -1;
+  for (let start = 0; start < mask.length; start++) {
+    if (mask[start] === 0 || label[start] !== -1) continue;
+    const id = nComp++;
+    let touchesEdge = false;
+    let cMinX = SCAN_SIZE, cMinY = SCAN_SIZE, cMaxX = -1, cMaxY = -1;
+    label[start] = id;
+    stack.length = 0;
+    stack.push(start);
+    while (stack.length > 0) {
+      const cur = stack.pop() as number;
+      const cx = cur % SCAN_SIZE, cy = (cur / SCAN_SIZE) | 0;
+      if (cx === 0 || cy === 0 || cx === SCAN_SIZE - 1 || cy === SCAN_SIZE - 1) touchesEdge = true;
+      if (cx < cMinX) cMinX = cx;
+      if (cx > cMaxX) cMaxX = cx;
+      if (cy < cMinY) cMinY = cy;
+      if (cy > cMaxY) cMaxY = cy;
+      for (let dy = -1; dy <= 1; dy++) {
+        for (let dx = -1; dx <= 1; dx++) {
+          if (dx === 0 && dy === 0) continue;
+          const nx = cx + dx, ny = cy + dy;
+          if (nx < 0 || ny < 0 || nx >= SCAN_SIZE || ny >= SCAN_SIZE) continue;
+          const ni = ny * SCAN_SIZE + nx;
+          if (mask[ni] === 0 || label[ni] !== -1) continue;
+          label[ni] = id;
+          stack.push(ni);
+        }
+      }
+    }
+    if (touchesEdge) { nExcluded++; continue; }
+    if (cMinX < rMinX) rMinX = cMinX;
+    if (cMaxX > rMaxX) rMaxX = cMaxX;
+    if (cMinY < rMinY) rMinY = cMinY;
+    if (cMaxY > rMaxY) rMaxY = cMaxY;
   }
-  return box;
+  const rescanBox: PrintBox | null = rMaxX < 0 ? null : {
+    x: rMinX * scaleX, y: rMinY * scaleY,
+    w: (rMaxX - rMinX + 1) * scaleX, h: (rMaxY - rMinY + 1) * scaleY,
+  };
+  if (onRescan) onRescan({ components: nComp, excluded: nExcluded, box: rescanBox });
+  if (rescanBox && !oversized(rescanBox)) return rescanBox;
+  if (onOversize) onOversize(box);
+  return null;
 }
 
 // ── 71회차 v2 적응 (선택 인자 · **미전달이면 v1과 계산 동치**) ────────────────
@@ -201,6 +260,9 @@ export interface CompositeOptions {
     frameFracH: number;
     maxFrameFired: boolean;
     corner00: { r: number; g: number; b: number } | null;
+    // 78회차 G2′ — 재스캔이 돌았는지, 경계 접촉 성분을 몇 개 뺐는지, 그 결과 bbox.
+    // 재스캔이 안 돌면 null이다(1패스 미발동 = 경로 불변의 직접 증거).
+    rescan: { components: number; excluded: number; box: PrintBox | null } | null;
   }) => void;
 }
 
@@ -224,7 +286,12 @@ export function compositeGarmentTexture(image: HTMLImageElement, opts?: Composit
   if (!srcW || !srcH) return canvas;
 
   let oversize: PrintBox | null = null;
-  const printBox = findPrintBoundingBox(image, srcW, srcH, representativeColor, (b) => { oversize = b; });
+  let rescan: { components: number; excluded: number; box: PrintBox | null } | null = null;
+  const printBox = findPrintBoundingBox(
+    image, srcW, srcH, representativeColor,
+    (b) => { oversize = b; },
+    (d) => { rescan = d; },
+  );
   if (opts?.onDiag) {
     // 판별자 — 문턱 전 상자(`printBox ?? oversize`)로 프레임 비율을 낸다.
     // `maxFrameFired`는 **문턱이 실제로 걸렸을 때만** 참이다(프린트 없음과 구분된다).
@@ -241,6 +308,7 @@ export function compositeGarmentTexture(image: HTMLImageElement, opts?: Composit
       frameFracH: raw ? raw.h / srcH : 0,
       maxFrameFired: oversize !== null,
       corner00,
+      rescan,
     });
   }
   if (!printBox) return canvas;
