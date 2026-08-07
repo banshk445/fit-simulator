@@ -44,6 +44,9 @@ export interface CoverageResult {
   // 그대로 노출한다(천 행 인덱스로 대역을 재정의하면 비교 불가 —
   // 이번 세션 2회 재발한 함정).
   hits: { bucket: string; hoverMm: number; x: number; y: number; z: number }[];
+  // 83회차 — 버킷별 「관통을 피복으로 센」 건수(옷 면법선·레이 내적 < 0).
+  // 히트가 없는 버킷은 키가 없다.
+  penetrationHits: Record<string, number>;
 }
 
 // ── §9-1 어깨/삼각근(deltoid) 대역 ──────────────────────────────────────
@@ -244,9 +247,14 @@ function rayNearestHit(
   tMin: number,
   tMax: number,
   nearSign?: boolean,
+  // 83회차 — 채택된 히트의 **부호**(옷 면법선 · 레이 방향 내적)를 밖으로 낸다.
+  // 값 도입 0: 판정식은 아래 `nearSign` 블록이 이미 쓰던 것과 같고 문턱은 0이다.
+  // 미전달이면 반환값·`best` 갱신 경로가 전부 그대로다(회귀 0).
+  signOut?: { v: number },
 ): number {
   const EPS = 1e-9;
   let best = -1;
+  let bestSign = 0;
   for (let t = 0; t < tris.length; t += 9) {
     const ax = tris[t], ay = tris[t + 1], az = tris[t + 2];
     const e1x = tris[t + 3] - ax, e1y = tris[t + 4] - ay, e1z = tris[t + 5] - az;
@@ -267,7 +275,13 @@ function rayNearestHit(
     if (v < 0 || u + v > 1) continue;
     const hitT = (e2x * qx + e2y * qy + e2z * qz) * invDet;
     if (hitT > tMax || (best >= 0 && hitT >= best)) continue;
-    if (hitT >= tMin) { best = hitT; continue; }
+    // 면법선·레이 내적 — 아래 `nearSign` 블록이 쓰던 식을 위로 끌어올렸을 뿐이다.
+    // `best` 갱신 조건에는 관여하지 않으므로 부동소수 결과가 바뀌지 않는다.
+    const fnx = e1y * e2z - e1z * e2y;
+    const fny = e1z * e2x - e1x * e2z;
+    const fnz = e1x * e2y - e1y * e2x;
+    const fd = fnx * dx + fny * dy + fnz * dz;
+    if (hitT >= tMin) { best = hitT; bestSign = fd; continue; }
     // ── 80회차 결함 ① 수리(`nearSign` 전달 시에만) ────────────────────────────
     // `tMin`(5mm)은 「두께 0의 몸 메시 자기 자신을 안 맞히도록」이라 적혀 있었으나
     // 이 레이가 쏘는 `tris`는 **옷 삼각형뿐이고 몸 메시가 들어 있지 않다**
@@ -279,11 +293,9 @@ function rayNearestHit(
     // = 근접 피복. 음수면 옷 바깥면이 몸을 향하므로 관통으로 보고 **버린다**(기존과 같다).
     // **새 상수 0** — `nearSign`은 켜고 끄는 스위치일 뿐 값이 아니다.
     if (!nearSign || hitT < 0) continue;
-    const fnx = e1y * e2z - e1z * e2y;
-    const fny = e1z * e2x - e1x * e2z;
-    const fnz = e1x * e2y - e1y * e2x;
-    if (fnx * dx + fny * dy + fnz * dz > 0) best = hitT;
+    if (fd > 0) { best = hitT; bestSign = fd; }
   }
+  if (signOut) signOut.v = bestSign;
   return best;
 }
 
@@ -340,6 +352,16 @@ export interface CoverageParams {
   // 80회차 — `rayMin` 미만 히트를 **부호로** 살린다(위 rayNearestHit 주석).
   // 기본 off라 미전달이면 25~78회차와 비트 동일이다(병기용).
   nearSign?: boolean;
+  // 83회차 결함 ③-b 병기 — `orientOutward`(참조축 근사)를 **건너뛰고**
+  // `collectBandSamples`가 누적한 와인딩 법선을 그대로 레이 방향으로 쓴다.
+  // 기본 off · 미전달이면 값이 안 바뀐다.
+  // **제한**: 절단 시트(`[frontIdx, backIdx]`)에는 물리지 말 것 — 절단선
+  // 정점이 한쪽 삼각형만 받아 법선이 기운다(:140-143 주석). covShoulder 전용.
+  // **해석 제한**: 이 법선은 「진리」가 아니라 **와인딩 법선**이다. 이 메시는
+  // 일부 영역 와인딩이 뒤집혀 있고(아래 orientOutward 주석의 mid-back 93~96%)
+  // 그것이 `orientOutward`의 존재 이유다 — old/new와 갈릴 때 그 차이가
+  // 「참조축 편향」인지 「와인딩 결함」인지 **이 채널 하나로는 못 가른다**.
+  rawNormal?: boolean;
 }
 
 export function computeBodyCoverage(
@@ -363,6 +385,10 @@ export function computeBodyCoverage(
   const hits: { bucket: string; hoverMm: number; x: number; y: number; z: number }[] = [];
   let exposed = 0;
   let reverseHits = 0;
+  // 83회차 — 「피복」으로 센 히트 중 옷 바깥면이 **몸을 향한** 것(= 관통을
+  // 피복으로 오분류). 버킷별 건수. 문턱은 0(부호)이고 새 상수는 없다.
+  const penetrationHits: Record<string, number> = {};
+  const sgn = { v: 0 };
   const bandH = (params.yMax - params.yMin) / 3;
   for (let i = 0; i < body.count; i++) {
     const x = body.points[i * 3];
@@ -383,13 +409,16 @@ export function computeBodyCoverage(
     } else {
       [refX, refY, refZ] = torsoOutwardRef(x, z, params.centerX, params.centerZ);
     }
-    const [nx, ny, nz] = orientOutward(
-      body.normals[i * 3], body.normals[i * 3 + 1], body.normals[i * 3 + 2],
-      refX, refY, refZ,
-    );
-    const hitT = rayNearestHit(x, y, z, nx, ny, nz, tris, rayMin, rayMax, params.nearSign);
+    const [nx, ny, nz] = params.rawNormal
+      ? [body.normals[i * 3], body.normals[i * 3 + 1], body.normals[i * 3 + 2]]
+      : orientOutward(
+        body.normals[i * 3], body.normals[i * 3 + 1], body.normals[i * 3 + 2],
+        refX, refY, refZ,
+      );
+    const hitT = rayNearestHit(x, y, z, nx, ny, nz, tris, rayMin, rayMax, params.nearSign, sgn);
     const hit = hitT >= 0;
     if (hit) {
+      if (sgn.v < 0) penetrationHits[key] = (penetrationHits[key] ?? 0) + 1;
       const mm = hitT * 1000;
       hits.push({ bucket: key, hoverMm: Number(mm.toFixed(2)), x: Number(x.toFixed(4)), y: Number(y.toFixed(4)), z: Number(z.toFixed(4)) });
       bucket.hoverSumMm += mm;
@@ -415,5 +444,6 @@ export function computeBodyCoverage(
     exposedExamples,
     hits,
     reverseHits,
+    penetrationHits,
   };
 }

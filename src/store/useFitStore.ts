@@ -201,13 +201,17 @@ if (import.meta.env.DEV) {
 //   localhost:5173/?autofit=1&newcore=1&friction=0  (마찰 A/B)
 {
   const q = new URLSearchParams(window.location.search);
-  if (q.get("autofit") === "1") {
+  // 83회차 — `autofit=<6자리 hex>` 로 단색을 지정할 수 있다. `autofit=1`은 그대로
+  // #3a6ea5(기존 캡처 회귀 0). 80회차 마젠타 대비 캡처는 **업로드**로 만들어서
+  // 재현이 사람 손에 묶여 있었다 — 같은 색(#ff00c8)을 URL로 낼 수 있게만 한다.
+  const autofit = q.get("autofit");
+  if (autofit) {
     const canvas = document.createElement("canvas");
     canvas.width = 400;
     canvas.height = 400;
     const g = canvas.getContext("2d");
     if (g) {
-      g.fillStyle = "#3a6ea5";
+      g.fillStyle = /^[0-9a-fA-F]{6}$/.test(autofit) ? `#${autofit}` : "#3a6ea5";
       g.fillRect(0, 0, 400, 400);
       useFitStore.getState().setGarmentImage(canvas.toDataURL());
     }

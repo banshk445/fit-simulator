@@ -2444,6 +2444,39 @@ const covNew = computeBodyCoverage(
   { ...covBand, yMin: hemWorldY, nearSign: true },
   clothTris,
 );
+// ── 83회차 §1 결함 ③-b 병기 — `orientOutward`(팔축 근사) **제거** 열.
+// 80회차의 「진리 법선 기준 637→446」은 일회용 프로브였고 저장소에 코드가 0건이었다
+// (81 §5-2) → 재현 가능한 형태로 만든다. `new` 대비 **한 변수만** 다르다(rawNormal).
+// **cov 몸통에는 물리지 않는다** — `[frontIdx, backIdx]`가 절단 시트라 절단선
+// 정점 법선이 기운다(coverageMetric.ts:140-143). covShoulder 전용이다.
+const covShTruth = computeBodyCoverage(
+  position, [wholeIndex], gridView, [],
+  {
+    yMin: band.yMin, yMax: band.yMax,
+    neckCenter, neckRadius: 0.12,
+    centerX, centerZ: collision.centerZ,
+    outwardAxes: band.axes,
+    sampleMask: band.mask,
+    nearSign: true,
+    rawNormal: true,
+  },
+  clothTris,
+);
+// 80회차가 「진리 법선 기준 637→446」이라 적은 일회용 프로브의 **재현 후보**.
+// 위 `covShTruth`는 `nearSign`과 `rawNormal`을 **동시에** 켠 열이라 80회차 프로브와
+// 변수가 2개 다르다 — 참조축만 뺀 열(= nearSign off)을 따로 낸다. 재현 여부 판정용.
+const covShRawOnly = computeBodyCoverage(
+  position, [wholeIndex], gridView, [],
+  {
+    yMin: band.yMin, yMax: band.yMax,
+    neckCenter, neckRadius: 0.12,
+    centerX, centerZ: collision.centerZ,
+    outwardAxes: band.axes,
+    sampleMask: band.mask,
+    rawNormal: true,
+  },
+  clothTris,
+);
 const covSh = computeBodyCoverage(
   position, [wholeIndex], gridView, [],
   {
@@ -2633,7 +2666,20 @@ console.log(`    버킷 old→new: ${Object.keys(covSh.buckets).sort().map((k) =
   // 잔여 노출이 공간적으로 대응하는가. **등재만 · 판정 아님.**
   const patch = (pts: { x: number; y: number; z: number }[]): number =>
     pts.filter((p) => p.y >= 1.28 && p.y <= 1.34 && Math.abs(p.x - centerX) >= 0.16 && Math.abs(p.x - centerX) <= 0.19 && p.z < collision.centerZ).length;
-  console.log(`    [§4 검증점] 삼각근 패치창(y128~134 · |x|16~19 · 뒤) 노출 old ${patch(covSh.exposedExamples)} · new ${patch(covShNew.exposedExamples)}`);
+  console.log(`    [§4 검증점] 삼각근 패치창(y128~134 · |x|16~19 · 뒤) 노출 old ${patch(covSh.exposedExamples)} · new ${patch(covShNew.exposedExamples)} · truth ${patch(covShTruth.exposedExamples)}`);
+  // ── 83회차 §1 — 3열 병기 + **top 대역 관통 오분류 건수**(부호 기반).
+  // 오분류 = 「피복」으로 센 히트인데 옷 바깥면이 몸을 향한 것(면법선·레이 내적 < 0).
+  // 판정식·문턱(0)은 80회차 `nearSign`이 쓰던 것과 같다 — 새 상수 0.
+  const topPen = (r: { penetrationHits: Record<string, number> }): number =>
+    Object.entries(r.penetrationHits).filter(([k]) => k.startsWith("top")).reduce((s, [, v]) => s + v, 0);
+  // 백분율은 **`exposedRatio`를 쓴다** — 여기서 다시 나누면 80회차 병기 줄과
+  // 반올림이 갈려 같은 분자·분모가 35.7/35.8로 두 값이 된다(함정 13 계열).
+  const pct = (r: { exposed: number; samples: number; exposedRatio: number }): string =>
+    `${r.exposed}/${r.samples} (${(r.exposedRatio * 100).toFixed(1)}%)`;
+  console.log(`    **[83회차 §1 · 3열 병기]** covShoulder 노출 old ${pct(covSh)} · new ${pct(covShNew)} · **truth(nearSign+rawNormal) ${pct(covShTruth)}** · [80재현후보 rawNormal만] ${pct(covShRawOnly)}`);
+  console.log(`    [83 §1] top 대역 관통 오분류 건수 old ${topPen(covSh)} · new ${topPen(covShNew)} · truth ${topPen(covShTruth)} — truth−new = ${topPen(covShTruth) - topPen(covShNew)}`);
+  console.log(`    [83 §1] 관통 오분류 버킷 truth ${JSON.stringify(covShTruth.penetrationHits)} · new ${JSON.stringify(covShNew.penetrationHits)} · old ${JSON.stringify(covSh.penetrationHits)}`);
+  console.log(`    covSh 노출 좌표 truth(${covShTruth.exposedExamples.length}): ${dist(covShTruth.exposedExamples)}`);
 }
 console.log(`  covShoulder 버킷: ${JSON.stringify(Object.fromEntries(Object.entries(covSh.buckets).map(([k, b]) => [k, `${b.exposed}/${b.samples}`])))}`);
 console.log(`  shoulderHover top-front: hit ${tf.hit.toFixed(3)} / hover ${tf.mean.toFixed(2)}|${tf.max.toFixed(2)}mm`);
