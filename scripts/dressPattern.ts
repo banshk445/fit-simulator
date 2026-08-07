@@ -238,7 +238,7 @@ if (process.env.EXPORT_META === "1") {
     "HEMBEND", "MAGNET", "MAGNET_D0", "ADSORB_PENONLY", "WINDING", "FIXTURE",
     // 계기·출력
     "PATTERNCORE", "DIAG", "PROBE", "EXPORT_META", "PATTERN_META", "SKELSIGN", "SLEEVESIGN", "WINDPAR", "SLEEVEGEO",
-    "SHOULDERFIT", "ARMGEO", "PATCHDIR", "SIGNDIST", "SEAMGAP", "BANDGAP",
+    "SHOULDERFIT", "ARMGEO", "PATCHDIR", "SIGNDIST", "SEAMGAP", "BANDGAP", "SLEEVESHAPE",
   ];
   const bvhVer = (() => {
     try {
@@ -2697,6 +2697,80 @@ console.log(`    버킷 old→new: ${Object.keys(covSh.buckets).sort().map((k) =
   console.log(`    **[83회차 §1 · 3열 병기]** covShoulder 노출 old ${pct(covSh)} · new ${pct(covShNew)} · **truth(nearSign+rawNormal) ${pct(covShTruth)}** · [80재현후보 rawNormal만] ${pct(covShRawOnly)}`);
   console.log(`    [83 §1] top 대역 관통 오분류 건수 old ${topPen(covSh)} · new ${topPen(covShNew)} · truth ${topPen(covShTruth)} — truth−new = ${topPen(covShTruth) - topPen(covShNew)}`);
   console.log(`    [83 §1] 관통 오분류 버킷 truth ${JSON.stringify(covShTruth.penetrationHits)} · new ${JSON.stringify(covShNew.penetrationHits)} · old ${JSON.stringify(covSh.penetrationHits)}`);
+  // ── 93회차 — **소매 형상 채널**. `SLEEVESHAPE=1`에서만 돈다.
+  // 79~92회차 12회차가 **몸 표본에서 옷을 봤다**(노출률·최근접 거리 = 전부 피복 채널).
+  // 「소매가 팔을 따르는가 원통을 따르는가」는 그 채널로 못 잰다 — **옷 정점 자신**을 본다.
+  // `hoverMm`은 쓰지 않는다(91 §4-1㉡ — 방향 구속 · rayMin 하한 · 피복 한정).
+  if (process.env.SLEEVESHAPE === "1") {
+    const rEff = ARM_COLLISION_RADIUS + 0.006; // 87 §5 — 캡슐 반경 + 팔 캡슐 margin(:742 리터럴)
+    const sleeveTubeR = g.draft.dims.sleeveTubeRadiusM; // 소매 원통 배치 반경(patternDraft.ts:384)
+    const armPlus = pose.armLeft.trueShoulder.x >= pose.armRight.trueShoulder.x ? pose.armLeft : pose.armRight;
+    const armMinus = armPlus === pose.armLeft ? pose.armRight : pose.armLeft;
+    console.log(`  [93 §2] ${bodyGeodesicSelfCheck()}`);
+    console.log(`  [93 §2] 기준선 — 캡슐 유효반경 ${cm(rEff)}cm(= ${cm(ARM_COLLISION_RADIUS)} + 0.60) · 소매 원통 배치반경 ${cm(sleeveTubeR)}cm · 소매 정점 ${total - g.panelStarts[2]}(패널2 ${g.panelStarts[3] - g.panelStarts[2]} + 패널3 ${total - g.panelStarts[3]})`);
+    // `patternGarment.ts:490`과 같은 배정 — 패널3=armPlus(flip +1) · 패널2=armMinus(flip −1)
+    for (const [nm, panel, arm, flip] of [["R(+x축)", 3, armPlus, 1], ["L(−x축)", 2, armMinus, -1]] as const) {
+      const f = sleeveArmFrame(arm.dir, flip);
+      const t0 = arm.trueShoulder;
+      const lo = g.panelStarts[panel], hi = panel === 3 ? total : g.panelStarts[3];
+      type V = { s: number; th: number; r: number };
+      const vs: V[] = [];
+      for (let i = lo; i < hi; i++) {
+        const rel = [sim.positions[i * 3] - t0.x, sim.positions[i * 3 + 1] - t0.y, sim.positions[i * 3 + 2] - t0.z];
+        const s = rel[0] * f.d[0] + rel[1] * f.d[1] + rel[2] * f.d[2];
+        const rad = [0, 1, 2].map((k) => rel[k] - f.d[k] * s);
+        vs.push({
+          s, r: Math.hypot(rad[0], rad[1], rad[2]),
+          th: Math.atan2(rad[0] * f.e2[0] + rad[1] * f.e2[1] + rad[2] * f.e2[2], rad[0] * f.e1[0] + rad[1] * f.e1[1] + rad[2] * f.e1[2]),
+        });
+      }
+      const qv = (a: number[], p: number): number => (a.length ? [...a].sort((x, y) => x - y)[Math.min(a.length - 1, Math.floor(a.length * p))] : NaN);
+      const c2 = (v: number): string => (v * 100).toFixed(2);
+      // 갈래 D 검사 — θ가 정의되지 않는 축 근접 정점(91 §4-2 선례: r < 2cm)
+      const degen = vs.filter((v) => v.r < 0.02).length;
+      console.log(`  [93 §2d] ${nm} — 소매 정점 ${vs.length} · **r<2cm(θ 불안정) ${degen}건 (${(degen / vs.length * 100).toFixed(1)}%)** · s 범위 ${c2(Math.min(...vs.map((v) => v.s)))}~${c2(Math.max(...vs.map((v) => v.s)))}cm`);
+      // (b)(c)(d)(e) — s 2cm 스테이션별
+      let contactHit = 0, contactTot = 0;
+      for (let sb = 0; sb < 24; sb += 2) {
+        const sel = vs.filter((v) => v.s * 100 >= sb && v.s * 100 < sb + 2);
+        if (!sel.length) continue;
+        const rs = sel.map((v) => v.r);
+        const mean = rs.reduce((a, b) => a + b, 0) / rs.length;
+        const sd = Math.sqrt(rs.reduce((a, b) => a + (b - mean) ** 2, 0) / rs.length);
+        // 방향 편차 — θ 30° 빈별 r 중앙의 max−min
+        const thMed: number[] = [];
+        for (let tb = -180; tb < 180; tb += 30) {
+          const q2 = sel.filter((v) => v.th * 180 / Math.PI >= tb && v.th * 180 / Math.PI < tb + 30);
+          if (q2.length >= 3) thMed.push(qv(q2.map((v) => v.r), 0.5));
+        }
+        // (d) 접촉 = 캡슐 표면에 붙어 있는가(±0.05cm)
+        const touch = sel.filter((v) => Math.abs(v.r - rEff) <= 0.0005).length;
+        if (sb < 12) { contactHit += touch; contactTot += sel.length; }
+        // (e) 상/하 — e1이 「위쪽」이므로 |θ|<90°가 상반
+        const up = sel.filter((v) => Math.abs(v.th) < Math.PI / 2).map((v) => v.r);
+        const dn = sel.filter((v) => Math.abs(v.th) >= Math.PI / 2).map((v) => v.r);
+        // (c) 같은 s의 실제 팔 반경 — **몸 메시에서 직접**(87 프로파일 인용이 아니라 재도출)
+        const sec = axisSection(position, wholeIndex ?? torsoIndex, t0, arm.dir, (sb + 1) / 100,
+          { u: { x: f.e1[0], y: f.e1[1], z: f.e1[2] }, v: { x: f.e2[0], y: f.e2[1], z: f.e2[2] } });
+        const armR = sec.arm ? c2(sec.arm.equivRadiusM) : "분리불가";
+        console.log(
+          `  [93 §2b] ${nm} s${String(sb).padStart(2)}~${sb + 2}cm n=${String(sel.length).padStart(3)} — 옷 r min ${c2(Math.min(...rs))} / p25 ${c2(qv(rs, 0.25))} / **중앙 ${c2(qv(rs, 0.5))}** / p75 ${c2(qv(rs, 0.75))} / max ${c2(Math.max(...rs))} · 표준편차 ${c2(sd)}cm` +
+          ` │ 방향편차(θ빈 중앙 max−min) ${thMed.length >= 2 ? c2(Math.max(...thMed) - Math.min(...thMed)) : "—"}cm` +
+          ` │ **접촉 ${touch}/${sel.length}** │ 상 ${up.length ? c2(qv(up, 0.5)) : "—"} / 하 ${dn.length ? c2(qv(dn, 0.5)) : "—"}cm(차 ${up.length && dn.length ? c2(qv(dn, 0.5) - qv(up, 0.5)) : "—"})` +
+          ` │ 팔 실측 ${armR} · 캡슐 ${c2(rEff)} · 원통 ${c2(sleeveTubeR)}cm`,
+        );
+      }
+      // 판정 채널 요약
+      const s012 = vs.filter((v) => v.s >= 0 && v.s < 0.12);
+      const up12 = s012.filter((v) => Math.abs(v.th) < Math.PI / 2).map((v) => v.r);
+      const dn12 = s012.filter((v) => Math.abs(v.th) >= Math.PI / 2).map((v) => v.r);
+      console.log(
+        `  [93 §2-판정] ${nm} s0~12 — **접촉률 ${contactHit}/${contactTot} = ${(contactHit / (contactTot || 1)).toFixed(3)}**` +
+        ` · **상하 r 중앙 차 ${up12.length && dn12.length ? c2(qv(dn12, 0.5) - qv(up12, 0.5)) : "—"}cm**(상 ${up12.length ? c2(qv(up12, 0.5)) : "—"} / 하 ${dn12.length ? c2(qv(dn12, 0.5)) : "—"})` +
+        ` · 전체 r 중앙 ${c2(qv(s012.map((v) => v.r), 0.5))}cm`,
+      );
+    }
+  }
   // ── 91회차 — **대역 전역 간극 분포**와 **패치창 특이성**. `BANDGAP=1`에서만 돈다.
   // 패치창 48은 83회차에 층위 판별 대상으로 잡힌 뒤 그 자체가 표적이 됐으나
   // **그 창이 소매 대역의 다른 곳보다 나쁜 자리인지는 측정된 적이 없다.**
