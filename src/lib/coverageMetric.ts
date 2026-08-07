@@ -47,6 +47,15 @@ export interface CoverageResult {
   // 83회차 — 버킷별 「관통을 피복으로 센」 건수(옷 면법선·레이 내적 < 0).
   // 히트가 없는 버킷은 키가 없다.
   penetrationHits: Record<string, number>;
+  // ── 84회차 — 샘플 단위 원자료. **표본을 다시 만들지 않고** 샘플에 다른 채널을
+  // 물리기 위한 것이다(함정 12). 셋 다 길이 = samples이고 같은 순서다.
+  //   vertexIndexes  샘플 → 몸 정점 인덱스
+  //   sampleNormals  샘플의 **와인딩 법선**(`orientOutward` 적용 **전**, 정규화됨)
+  //   exposedFlags   1 = 노출(레이가 옷을 못 맞힘) · 0 = 피복
+  vertexIndexes: Int32Array;
+  samplePoints: Float32Array;
+  sampleNormals: Float32Array;
+  exposedFlags: Uint8Array;
 }
 
 // ── §9-1 어깨/삼각근(deltoid) 대역 ──────────────────────────────────────
@@ -131,6 +140,9 @@ interface BodySamples {
   points: Float32Array; // xyz
   normals: Float32Array; // xyz(정규화)
   count: number;
+  // 84회차 — 샘플별 **몸 정점 인덱스**. 계기가 표본을 다시 만들지 않고
+  // 「이 샘플이 어느 정점인가」를 물을 수 있어야 한다(함정 12).
+  vertexIndexes: Int32Array;
 }
 
 function collectBandSamples(
@@ -177,6 +189,7 @@ function collectBandSamples(
   }
   const pts: number[] = [];
   const nrms: number[] = [];
+  const vids: number[] = [];
   const exclR2 = excludeRadius * excludeRadius;
   for (let i = 0; i < n; i++) {
     if (!used[i]) continue;
@@ -196,8 +209,14 @@ function collectBandSamples(
     if (len < 1e-9) continue;
     pts.push(x, y, z);
     nrms.push(nx / len, ny / len, nz / len);
+    vids.push(i);
   }
-  return { points: Float32Array.from(pts), normals: Float32Array.from(nrms), count: pts.length / 3 };
+  return {
+    points: Float32Array.from(pts),
+    normals: Float32Array.from(nrms),
+    count: pts.length / 3,
+    vertexIndexes: Int32Array.from(vids),
+  };
 }
 
 // 천 삼각형(그리드 셀당 2개)을 패널들에서 평탄 배열로 뽑는다.
@@ -388,6 +407,7 @@ export function computeBodyCoverage(
   // 83회차 — 「피복」으로 센 히트 중 옷 바깥면이 **몸을 향한** 것(= 관통을
   // 피복으로 오분류). 버킷별 건수. 문턱은 0(부호)이고 새 상수는 없다.
   const penetrationHits: Record<string, number> = {};
+  const exposedFlags = new Uint8Array(body.count);
   const sgn = { v: 0 };
   const bandH = (params.yMax - params.yMin) / 3;
   for (let i = 0; i < body.count; i++) {
@@ -429,6 +449,7 @@ export function computeBodyCoverage(
     }
     if (!hit) {
       exposed++;
+      exposedFlags[i] = 1;
       bucket.exposed++;
       if (params.probeReverse && rayNearestHit(x, y, z, -nx, -ny, -nz, tris, rayMin, params.probeReverseMax ?? 0.02) >= 0) reverseHits++;
       // 전체 노출 좌표를 담는다(수백 개 수준) — 신구 대조 시 "새로 노출된
@@ -445,5 +466,9 @@ export function computeBodyCoverage(
     hits,
     reverseHits,
     penetrationHits,
+    vertexIndexes: body.vertexIndexes,
+    samplePoints: body.points,
+    sampleNormals: body.normals,
+    exposedFlags,
   };
 }

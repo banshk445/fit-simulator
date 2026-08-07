@@ -24,7 +24,8 @@ import { measureBody } from "../src/lib/bodyMeasure";
 import { buildPatternGarment, PANEL_PAT_BACK, PANEL_PAT_FRONT, PATTERN_EDGE_INTERIOR_M } from "../src/lib/patternGarment";
 import { makeOutlineProvider } from "../src/lib/bodyOutline";
 import { buildPatternSim } from "../src/lib/buildPatternSim";
-import { correctPlacementPenetration, countInside, countOpenEdges, countSelfIntersections, makeParityInside } from "../src/lib/patternPlacement";
+import { correctPlacementPenetration, countInside, countOpenEdges, countOpenEdgesWelded, countSelfIntersections, dedupeTrianglesWelded, makeParityInside } from "../src/lib/patternPlacement";
+import { classifyWindingOutward, windingParitySelfCheck } from "../src/lib/windingParity";
 import { computeBodyCoverage, deriveShoulderBand } from "../src/lib/coverageMetric";
 import { bakeSdf, createCachedSdfIterationFriction, createSdfFrictionPass, makeRadialSignedSampler, makeSkeletonSignedSampler, sampleSdf, sdfNormal } from "../src/lib/sdfCollision";
 import {
@@ -233,7 +234,7 @@ if (process.env.EXPORT_META === "1") {
     "RINGTOTAL", "TORSOCAP", "SINGLE", "SECONDS", "PINDRESS", "GRAV0", "S0FIX",
     "HEMBEND", "MAGNET", "MAGNET_D0", "ADSORB_PENONLY", "WINDING", "FIXTURE",
     // 계기·출력
-    "PATTERNCORE", "DIAG", "PROBE", "EXPORT_META", "PATTERN_META", "SKELSIGN", "SLEEVESIGN",
+    "PATTERNCORE", "DIAG", "PROBE", "EXPORT_META", "PATTERN_META", "SKELSIGN", "SLEEVESIGN", "WINDPAR",
   ];
   const bvhVer = (() => {
     try {
@@ -2666,7 +2667,20 @@ console.log(`    버킷 old→new: ${Object.keys(covSh.buckets).sort().map((k) =
   // 잔여 노출이 공간적으로 대응하는가. **등재만 · 판정 아님.**
   const patch = (pts: { x: number; y: number; z: number }[]): number =>
     pts.filter((p) => p.y >= 1.28 && p.y <= 1.34 && Math.abs(p.x - centerX) >= 0.16 && Math.abs(p.x - centerX) <= 0.19 && p.z < collision.centerZ).length;
-  console.log(`    [§4 검증점] 삼각근 패치창(y128~134 · |x|16~19 · 뒤) 노출 old ${patch(covSh.exposedExamples)} · new ${patch(covShNew.exposedExamples)} · truth ${patch(covShTruth.exposedExamples)}`);
+  // ── 84회차 §1 계기 수리 — 이 채널은 **1-튜플(노출 건수)이었다**(83 §7-1 등재).
+  // 분모가 없으면 「26」이 창의 전부인지 절반인지 못 가른다 = 「불변」과 「포화」가 구별되지 않는다.
+  // 분모는 **표본을 다시 세지 않고** 계기가 낸 것에서 직접 뜬다(함정 12):
+  // `computeBodyCoverage` 루프는 매 샘플을 `hit`이면 `hits`, 아니면 `exposedExamples`에
+  // **정확히 한 번** 넣는다(`coverageMetric.ts` 루프에 `continue` 0건) → 둘의 합집합 = 표본 전량.
+  const patchDenom = (r: { hits: { x: number; y: number; z: number }[]; exposedExamples: { x: number; y: number; z: number }[] }): number =>
+    patch(r.hits) + patch(r.exposedExamples);
+  // 세 열은 표본 생성 인자(`bodyIndexes`·`band`·`neck`·`sampleMask`)가 전부 같고 `nearSign`/`rawNormal`은
+  // 레이 판정에만 쓰인다 → **분모 3개가 같아야 한다.** 다르면 그 자체가 계기 결함이므로 셋 다 찍는다.
+  const pw = (r: { hits: { x: number; y: number; z: number }[]; exposedExamples: { x: number; y: number; z: number }[] }): string => {
+    const d = patchDenom(r), e = patch(r.exposedExamples);
+    return `${e}/${d} (${((e / (d || 1)) * 100).toFixed(1)}%)`;
+  };
+  console.log(`    [§4 검증점] 삼각근 패치창(y128~134 · |x|16~19 · 뒤) **노출/표본** old ${pw(covSh)} · new ${pw(covShNew)} · truth ${pw(covShTruth)}`);
   // ── 83회차 §1 — 3열 병기 + **top 대역 관통 오분류 건수**(부호 기반).
   // 오분류 = 「피복」으로 센 히트인데 옷 바깥면이 몸을 향한 것(면법선·레이 내적 < 0).
   // 판정식·문턱(0)은 80회차 `nearSign`이 쓰던 것과 같다 — 새 상수 0.
@@ -2679,6 +2693,47 @@ console.log(`    버킷 old→new: ${Object.keys(covSh.buckets).sort().map((k) =
   console.log(`    **[83회차 §1 · 3열 병기]** covShoulder 노출 old ${pct(covSh)} · new ${pct(covShNew)} · **truth(nearSign+rawNormal) ${pct(covShTruth)}** · [80재현후보 rawNormal만] ${pct(covShRawOnly)}`);
   console.log(`    [83 §1] top 대역 관통 오분류 건수 old ${topPen(covSh)} · new ${topPen(covShNew)} · truth ${topPen(covShTruth)} — truth−new = ${topPen(covShTruth) - topPen(covShNew)}`);
   console.log(`    [83 §1] 관통 오분류 버킷 truth ${JSON.stringify(covShTruth.penetrationHits)} · new ${JSON.stringify(covShNew.penetrationHits)} · old ${JSON.stringify(covSh.penetrationHits)}`);
+  // ── 84회차 §2 — 와인딩 분해. `WINDPAR=1`에서만 돈다(1421×28,880 브루트포스라 몇 초 든다).
+  // 목적: truth 열(참조축 근사 제거)의 값에 **와인딩 결함**이 실려 있는가.
+  // 실려 있지 않다면 truth와 old/new의 차이는 전부 **참조축 편향**이고 ③-b 승격의
+  // 미해소 반증 1이 풀린다. 승격은 여기서 하지 않는다 — 분해까지가 이 회차의 정의역이다.
+  if (process.env.WINDPAR === "1") {
+    console.log(`  [84 §2] ${windingParitySelfCheck()}`);
+    // 패리티 전제 = **기하학적 닫힘**. 인덱스 기준(`countOpenEdges`)은 UV 접합 정점을
+    // 구멍으로 세므로 여기 쓰면 안 된다 — 좌표 용접 기준으로 잰다.
+    const wIdx = countOpenEdges(wholeIndex ?? torsoIndex);
+    const wWeld = countOpenEdgesWelded(position, [wholeIndex ?? torsoIndex]);
+    // 합집합은 **중복 삼각형을 뺀 뒤에** 잰다 — `wholeIndex`가 앞/뒤판 삼각형을 이미 포함하므로
+    // 그냥 이으면 엣지가 4매 공유가 되어 수밀성도 패리티도 무너진다(1차 실행에서 3매공유 35,447).
+    const uni = dedupeTrianglesWelded(position, [frontIdx, backIdx, wholeIndex ?? torsoIndex]);
+    const uWeld = countOpenEdgesWelded(position, [uni.index]);
+    console.log(`  [84 §2] 수밀성 — wholeIndex: 인덱스기준 비-2회 ${wIdx.open} / **용접기준 열린 ${wWeld.open}** · 3매공유 ${wWeld.shared3plus}`);
+    console.log(`  [84 §2] 합집합 중복 제거: 삼각형 ${uni.total} → **${uni.unique}**(중복 ${uni.total - uni.unique})`);
+    console.log(`  [84 §2] 수밀성 — front∪back∪whole(중복 제거): 삼각형 ${uWeld.triangles} · 용접 엣지 ${uWeld.edges} · **열린 ${uWeld.open}** · 3매공유 ${uWeld.shared3plus}`);
+    if (uWeld.open !== 0 || uWeld.shared3plus !== 0) {
+      console.log(`  [84 §2] **패리티 전제 불성립** — 대상 집합이 닫히지 않았다. 판정하지 않는다(갈래 B).`);
+    } else {
+      const wp = classifyWindingOutward(position, [uni.index], {
+        points: covSh.samplePoints, normals: covSh.sampleNormals,
+        vertexIndexes: covSh.vertexIndexes, count: covSh.samples,
+      });
+      const pctOf = (n: number, d: number): string => `${n}/${d} (${((n / (d || 1)) * 100).toFixed(2)}%)`;
+      console.log(`  [84 §2] 대상 삼각형 ${wp.triangles} · covShoulder 표본 ${wp.count}`);
+      console.log(`  [84 §2] **와인딩 뒤집힌 정점 ${pctOf(wp.flippedCount, wp.count)}** · 판정 불가 ${pctOf(wp.ambiguousCount, wp.count)} (t≈0 히트 ${wp.nearZeroHits} · 경계 스침 ${wp.grazingHits})`);
+      // truth 열 노출분을 「뒤집힌 정점에 실린 몫 / 아닌 몫」으로 가른다.
+      const split = (r: { exposedFlags: Uint8Array }): string => {
+        let fl = 0, ok = 0, am = 0;
+        for (let s = 0; s < wp.count; s++) {
+          if (!r.exposedFlags[s]) continue;
+          if (wp.ambiguous[s]) am++;
+          else if (wp.flipped[s]) fl++;
+          else ok++;
+        }
+        return `총 ${fl + ok + am} = 뒤집힘 ${fl} · 정상 ${ok} · 판정불가 ${am}`;
+      };
+      console.log(`  [84 §2] 노출 귀속 — old ${split(covSh)} │ new ${split(covShNew)} │ truth ${split(covShTruth)}`);
+    }
+  }
   console.log(`    covSh 노출 좌표 truth(${covShTruth.exposedExamples.length}): ${dist(covShTruth.exposedExamples)}`);
 }
 console.log(`  covShoulder 버킷: ${JSON.stringify(Object.fromEntries(Object.entries(covSh.buckets).map(([k, b]) => [k, `${b.exposed}/${b.samples}`])))}`);

@@ -61,6 +61,73 @@ export function countOpenEdges(index: ArrayLike<number>): { triangles: number; e
   return { triangles: index.length / 3, edges: use.size, open };
 }
 
+// 84회차 — 위 `countOpenEdges`는 **정점 인덱스** 기준이라 좌표가 같고 인덱스만 다른
+// 정점(UV 접합)을 구멍으로 센다. 패리티가 요구하는 것은 **기하학적 닫힘**이므로
+// 좌표를 양자화해 용접한 뒤 다시 센다. 80·51회차의 수밀성 값이 인덱스 기준이었고
+// 그 차이가 「2,760개 구멍」과 「실제 구멍 100개」로 갈렸다(84회차 §2).
+// quantM: 용접 격자(기본 0.1mm) — 값이 아니라 좌표 잡음 폭이다.
+export function countOpenEdgesWelded(
+  position: Float32Array,
+  indexes: readonly (ArrayLike<number> | null)[],
+  quantM = 1e-4,
+): { triangles: number; edges: number; open: number; shared3plus: number } {
+  const key = (v: number): number => {
+    const q = (k: number) => Math.round(position[v * 3 + k] / quantM);
+    // 좌표 3성분을 하나의 문자열 키로 — 수치 키는 범위가 넘친다.
+    return q(0) * 4_000_000 + q(1) * 2_000 + q(2);
+  };
+  const use = new Map<string, number>();
+  let triangles = 0;
+  for (const index of indexes) {
+    if (!index) continue;
+    for (let t = 0; t + 2 < index.length; t += 3) {
+      triangles++;
+      const w = [key(index[t]), key(index[t + 1]), key(index[t + 2])];
+      for (const [i, j] of [[0, 1], [1, 2], [2, 0]]) {
+        const k = `${Math.min(w[i], w[j])}|${Math.max(w[i], w[j])}`;
+        use.set(k, (use.get(k) ?? 0) + 1);
+      }
+    }
+  }
+  let open = 0, shared3plus = 0;
+  for (const u of use.values()) { if (u < 2) open++; else if (u > 2) shared3plus++; }
+  return { triangles, edges: use.size, open, shared3plus };
+}
+
+// 84회차 — 여러 인덱스 집합의 **합집합**을 만들 때 같은 삼각형이 두 번 들어가면
+// (예: `wholeIndex`가 `frontIdx`·`backIdx`를 이미 포함한다) 엣지가 4매 공유가 되어
+// 수밀성 검사도 패리티도 무너진다. 좌표 용접 키로 삼각형을 정규화해 중복을 뺀다.
+// 첫 시도에서 이걸 안 해 3매공유 35,447이 나왔고 계기가 「전제 불성립」으로 정지했다.
+export function dedupeTrianglesWelded(
+  position: Float32Array,
+  indexes: readonly (ArrayLike<number> | null)[],
+  quantM = 1e-4,
+): { index: Int32Array; total: number; unique: number } {
+  const key = (v: number): string => {
+    const q = (k: number) => Math.round(position[v * 3 + k] / quantM);
+    return `${q(0)},${q(1)},${q(2)}`;
+  };
+  const seen = new Set<string>();
+  const out: number[] = [];
+  let total = 0;
+  for (const index of indexes) {
+    if (!index) continue;
+    for (let t = 0; t + 2 < index.length; t += 3) {
+      total++;
+      const a = index[t], b = index[t + 1], c = index[t + 2];
+      // 와인딩(순환 순서)은 보존하되 **시작점만** 정규화한다 — 뒤집힌 사본은
+      // 다른 삼각형이므로 여기서 합치면 안 된다(그 자체가 측정 대상이다).
+      const k = [key(a), key(b), key(c)];
+      const s = k.indexOf(k.slice().sort()[0]);
+      const canon = `${k[s]}|${k[(s + 1) % 3]}|${k[(s + 2) % 3]}`;
+      if (seen.has(canon)) continue;
+      seen.add(canon);
+      out.push(a, b, c);
+    }
+  }
+  return { index: Int32Array.from(out), total, unique: out.length / 3 };
+}
+
 export function countInside(
   positions: Float32Array,
   count: number,
