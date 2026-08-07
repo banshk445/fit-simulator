@@ -14004,3 +14004,134 @@ scripts/dressPattern.ts        `BANDGAP=1` 블록 — 대역 1421 전체 최근�
 - **와인딩 72건 · 수밀성 감사 · 감사 재계산** — 전부 미착수 유지
 
 기점: 없음(기준선 A 유효 · v2-2b-78-baseline 9fbd66c 그대로)
+
+---
+
+## 2026-08-07 · 92회차 — 팔 캡슐 메시 도출 처방 **집행 금지 · §2~§4 미집행 · 정지**
+
+기점 `v2-2b-78-baseline` (9fbd66c) · 기준선 A 유효 · 착수 시 HEAD 8265b9d · 코드 기점 33cc10a.
+**이 회차는 코드를 한 줄도 바꾸지 않았다**(사전 반증이 집행 금지 조건에 걸렸다).
+
+### 환경 스탬프 · 해시 3종 재생성 대조
+
+```
+[dress] 환경 스탬프: node v25.9.0 · v8 14.1.146.11-node.25 · darwin/arm64 · three 185 · three-mesh-bvh 0.9.10
+[dress] 옷 정의 해시 대조: pattern 9f7ba80b3497 / fixture 9e8b2bf13925 vs 커밋본 → 동일
+dress-state md5 14e50b8919a63a7f9799220b86e508a9   (83~91회차 등재값 일치 · 재생성 대조 11회차)
+```
+
+### 실행 1건 — env 줄
+
+```
+RINGTOTAL=0 PATTERNCORE=1 BANDGAP=1 npm run dress:pattern     **대조군 확보용**   md5 14e50b89…
+env: RINGTOTAL=0 · TORSOCAP=미설정 · SECONDS=미설정 · … · SEAMGAP=미설정 · **BANDGAP=1**
+```
+
+**대조군(처방 전) 전량** — 다음 회차가 처방을 집행하면 이 값이 「전」 열이다
+
+```
+패치창 26/48 (54.2%) · covShoulder 637/1421 (44.8%) · cov 몸통 118/1728 (6.8%)
+maxStrain 2.661 · maxSeamGap 11.14mm · Δ20 5.16mm · 자기교차 1889 · 관통 50/5244
+정착 260프레임 · **물리 72.4ms/프레임** · 하드 게이트 DONE·RETRY0·발산0·정착예산 PASS / 자기교차 FAIL
+대역 삼각형최근접 n=1421 중앙 1.29cm · 패치창 P 정점 39.0% / 삼각형 43.0%
+s빈 노출(old): s−10~−5 16/54 · s−5~0 66/220 · **s0~5 209/342(61.1%)** · **s5~10 174/243(71.6%)**
+             · s10~15 30/170 · **s15~20 0/168(0.0%)** · s20~25 92/168 · s25~30 50/56(89.3%)
+             → **s0~10 합산 383/585 = 65.5%**(문턱 ①의 기준값 · 실측 확인)
+```
+
+---
+
+## §1 사전 반증 — **집행 금지**
+
+> strategist가 세션 한도로 중단됐다(32 tool · 376s). 중단 직전에 낸 단서
+> 「`garmentWorker.ts:470`(v1 제품 경로)이 `buildArmCapsules`를 부른다」를 **직접 코드로 확정**했고,
+> 나머지 (b)(d)도 코드로 마저 확정했다. (c)와 (e)는 미완 — 아래 산출 불가 참고.
+
+### (a) 겸직·공유 — **집행 금지 조건 성립**
+
+```
+호출자 전량 grep — `buildArmCapsules`
+  src/lib/garmentFrame.ts:70          정의
+  **src/workers/garmentWorker.ts:470  ← v1 제품 워커**
+      collisionState.armCapsules = [...buildArmCapsules(msg.armLeft), ...buildArmCapsules(msg.armRight)]
+  **scripts/paramSweep.ts:12,441      ← v1 12콤보 게이트 하네스**(별칭 `buildFrameArmCapsules`)
+  scripts/spikeDressing.ts:127        2a-thin 스파이크
+  scripts/dressPattern.ts:686         v2 착장(처방 대상)
+※ `scripts/checkSleeveSeam.ts:46`·`scripts/paramSweep.ts:76`은 **같은 이름의 지역 사본**(별개 함수)
+```
+
+**회차 프롬프트 §1(a) 문언**: 「v1 워커도 부르는가. 부르면 v1 경로가 같이 바뀐다
+(구 경로 비트 동일성 하드 게이트 위반). **이것이 참이면 집행 금지다.**」 → **참이다.**
+
+`buildArmCapsules`를 메시 실측화하면 **v1 제품 경로와 v1 게이트 하네스가 함께 바뀐다.**
+CLAUDE.md 하드 게이트 「구 코어 12콤보 비트 동일성 깨짐 = 즉시 실패」에 정면으로 걸린다.
+
+**게이트 분모 경로는 안 닿는다(첫 조항은 통과)**
+
+```
+patternGarment.ts:546  armGirthM = 2 * Math.PI * ARM_COLLISION_RADIUS   ← 상수를 직접 읽는다
+checkPattern.ts:108    report(checkDraft(g.draft, g.meta.armGirthM), …)
+patternDraft.ts:448    암홀 ≥ armGirthM + ARMHOLE_ARM_CLEARANCE_M
+patternDraft.ts:470    소매 둘레 > armGirthM
+→ **`buildArmCapsules`를 경유하지 않는다.** 상수를 안 바꾸는 한 게이트 분모는 불변이다
+```
+
+**v2만 바꾸려면 필요한 분기(코드 사실만 · 제안 아님)**: `garmentFrame.ts`에 **별도 함수**를 두고
+`dressPattern.ts:686`만 그것을 부르면 v1 3경로(`garmentWorker.ts:470` · `paramSweep.ts:441` ·
+`spikeDressing.ts:127`)가 안 닿는다. **이번 회차 프롬프트가 지정한 처방(「`buildArmCapsules`가
+… 취하도록 바꾼다」)은 그 형태가 아니므로, 형태를 바꾸는 것은 사후 설계 변경이라 하지 않았다.**
+
+### (b) 반경 정의 — **방향별 max는 코드 사실로 배제된다**
+
+```
+소매 S0 배치 반경  sleeveTubeRadiusM = sleeveWidthM / π = 0.18/π = **5.73cm**
+                  (patternDraft.ts:384 · patternGarment.ts:349,504)
+방향별 max 채택 시 캡슐 유효 반경 = 실측 max 5.76 + margin 0.60 = **6.36cm**
+→ **6.36 > 5.73** — 소매 원통이 캡슐보다 **작다.**
+  S0 배치 직후 소매 전 정점이 캡슐 안에 놓여 첫 프레임부터 전량 바깥으로 밀린다
+```
+등가반경 채택 시에는 88 §4-5가 실측한 **후면 돌출 +0.74cm가 여전히 캡슐 밖**이다
+(= 표적 방향에 처방이 안 닿는다). **두 선택지가 각각 반대편 반증에 걸린다.**
+
+**제3안(비원형 프리미티브)은 현 배선에 안 들어간다** — `torsoCapsule.ts`의
+`applyCapsuleCollision`은 `const r = capsule.radius + margin;` 스칼라 하나로 판정한다.
+방향별 반경을 받을 자리가 시그니처에 없다.
+
+### (d) 세그먼트 — **보간이 없다. 테이퍼는 계단이 된다**
+
+```
+torsoCapsule.ts  캡슐 루프가 `capsule.radius + margin` **세그먼트당 단일 반경**을 쓴다(보간 0)
+현행 2세그먼트: seg1 s 0~12.10cm · seg2 s 12.10~27.50cm
+메시 반경 프로파일(87 §4-3): s4 4.78 → s6 4.56 → s8 4.49 → s10 4.42 → s12 4.34cm (단조 감소)
+→ 2세그먼트로 근사하면 seg1 구간 안에서만 **0.44cm 계단**이 남는다
+알고리즘 복잡도: 정점당 전 캡슐 순회(`for (const capsule of capsules)`) = **세그먼트 수에 선형**
+```
+
+---
+
+## 판정 — **§2~§4 미집행 · 정지**
+
+```
+§1(a)가 회차 프롬프트가 명시한 **집행 금지 조건**에 걸렸다(v1 제품 경로 공유).
+§1(b)는 두 선택지가 각각 반증에 걸려 **확정안을 못 냈다**.
+회차 프롬프트 위임 조항: 「반증이 하나라도 미해소면 §2 집행 금지·정지」 → 그대로 따랐다.
+→ §2 처방 0줄 · §3 문턱 판정 없음 · §4 재캡처 없음.
+   갈래 A′/B′/C′ 어느 것도 **적용 대상이 아니다**(처방을 안 돌렸으므로 판정 대상이 없다).
+```
+
+**코드 변경 0줄** — 원복할 것도 없다. `dress-state` md5 `14e50b89…` · patternHash `9f7ba80b3497` 불변.
+
+---
+
+### 산출 불가 / 확인 불가
+
+- **§1(c) s<4 구간 처리안** — strategist 중단으로 미완. 그 구간 소매 정점 수를 세지 않았다
+- **§1(e) 기대 효과 사전 도출** — 미완. **문턱 ①(65.5% → ≤45%)이 달성 가능한지 예측이 없다**
+- **§1(f) 반증 3종**(인과 vs 상관 · 부호 확인 · s0~10 성공기준의 타당성) — **전부 미수행**.
+  특히 「캡슐을 키우면 소매가 몸에서 **더** 멀어지는데 표적이 「소매가 원통을 따른다」인 것과
+  부호가 맞는가」는 처방 설계의 근간인데 **답이 없다**
+- **세그먼트 수 증가의 프레임 비용 실측** — 처방 미집행이라 없음(대조군 72.4ms만 있다)
+- **s15~20 노출 0%의 다른 원인**(시접·소매 밑단·마찰) — 미조사
+- **와인딩 72건 · 수밀성 감사 · 감사 재계산** — 전부 미착수 유지
+
+기점: 없음(기준선 A 유효 · v2-2b-78-baseline 9fbd66c 그대로 · 코드 0줄)
