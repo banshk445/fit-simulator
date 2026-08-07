@@ -236,6 +236,7 @@ if (process.env.EXPORT_META === "1") {
     "HEMBEND", "MAGNET", "MAGNET_D0", "ADSORB_PENONLY", "WINDING", "FIXTURE",
     // 계기·출력
     "PATTERNCORE", "DIAG", "PROBE", "EXPORT_META", "PATTERN_META", "SKELSIGN", "SLEEVESIGN", "WINDPAR", "SLEEVEGEO",
+    "SHOULDERFIT",
   ];
   const bvhVer = (() => {
     try {
@@ -2694,6 +2695,84 @@ console.log(`    버킷 old→new: ${Object.keys(covSh.buckets).sort().map((k) =
   console.log(`    **[83회차 §1 · 3열 병기]** covShoulder 노출 old ${pct(covSh)} · new ${pct(covShNew)} · **truth(nearSign+rawNormal) ${pct(covShTruth)}** · [80재현후보 rawNormal만] ${pct(covShRawOnly)}`);
   console.log(`    [83 §1] top 대역 관통 오분류 건수 old ${topPen(covSh)} · new ${topPen(covShNew)} · truth ${topPen(covShTruth)} — truth−new = ${topPen(covShTruth) - topPen(covShNew)}`);
   console.log(`    [83 §1] 관통 오분류 버킷 truth ${JSON.stringify(covShTruth.penetrationHits)} · new ${JSON.stringify(covShNew.penetrationHits)} · old ${JSON.stringify(covSh.penetrationHits)}`);
+  // ── 86회차 §1 — **대칭성 시험**. `SHOULDERFIT=1`에서만 돈다.
+  // (1) 85회차 §1(a)의 좌우 차(8.26 vs 9.92cm)가 실재인가 계기 아티팩트인가
+  // (2) 옷 어깨점 y vs 몸 능선 y — 갈래 B(기울기 외삽)의 직접 확증
+  if (process.env.SHOULDERFIT === "1") {
+    const bodyIdx = wholeIndex ?? torsoIndex;
+    // (1-i) 끝점 자체의 좌우 대칭 — `trueShoulder`는 **관절 중심**이라 표면 위가 아니다.
+    const tl = pose.armLeft.trueShoulder, tr = pose.armRight.trueShoulder;
+    console.log(
+      `  [86 §1-1] trueShoulder 좌(${tl.x.toFixed(6)},${tl.y.toFixed(6)},${tl.z.toFixed(6)}) · 우(${tr.x.toFixed(6)},${tr.y.toFixed(6)},${tr.z.toFixed(6)})` +
+      ` │ |x|차 ${(Math.abs(Math.abs(tl.x - centerX) - Math.abs(tr.x - centerX)) * 1000).toFixed(4)}mm · y차 ${(Math.abs(tl.y - tr.y) * 1000).toFixed(4)}mm · **z차 ${(Math.abs(tl.z - tr.z) * 1000).toFixed(4)}mm**`,
+    );
+    // (1-ii) 경로 + 스냅 진단. 스냅 마진이 후보 간격보다 훨씬 작으면 순위가 불안정하다.
+    for (const [nm, arm] of [["좌", pose.armLeft], ["우", pose.armRight]] as const) {
+      const s = Math.sign(arm.trueShoulder.x - centerX) || 1;
+      const neckSide = { x: centerX + s * 0.12, y: neckCenter.y, z: neckCenter.z };
+      const r = surfacePathLength(position, bodyIdx, neckSide, arm.trueShoulder);
+      console.log(`  [86 §1-1] 능선 ${nm} — 표면경로 ${cm(r.pathM)}cm · 직선 ${cm(r.straightM)}cm · 홉 ${r.hops}`);
+      for (const sn of r.snap) {
+        console.log(
+          `      스냅(${sn.end}) 질의점→정점 **${(sn.distM * 1000).toFixed(1)}mm** · 1·2위 마진 **${(sn.marginM * 1000).toFixed(2)}mm** · 후보 간격 ${(sn.candidateGapM * 1000).toFixed(1)}mm`,
+        );
+      }
+      console.log(`      경로 정점: ${r.pathPoints.map((p) => `(${cm(p.x)},${cm(p.y)},${cm(p.z)})`).join(" → ")}`);
+    }
+    // (1-iii) 끝점 z를 좌우 서로 바꿔 넣으면 값이 뒤집히는가 — 아티팩트의 결정적 시험.
+    for (const [nm, arm, other] of [["좌", pose.armLeft, pose.armRight], ["우", pose.armRight, pose.armLeft]] as const) {
+      const s = Math.sign(arm.trueShoulder.x - centerX) || 1;
+      const neckSide = { x: centerX + s * 0.12, y: neckCenter.y, z: neckCenter.z };
+      const swapped = { x: arm.trueShoulder.x, y: arm.trueShoulder.y, z: other.trueShoulder.z };
+      const r = surfacePathLength(position, bodyIdx, neckSide, swapped);
+      console.log(`  [86 §1-1] 능선 ${nm}(끝점 z만 반대쪽 값으로 교체) — 표면경로 ${cm(r.pathM)}cm · 직선 ${cm(r.straightM)}cm · 홉 ${r.hops}`);
+    }
+    // (1-iv) 몸 메시 자체의 좌우 대칭 — x를 centerX 기준으로 뒤집고 최근접 정점까지의 거리.
+    {
+      const vs: number[] = [];
+      for (const idx of [bodyIdx]) for (let t = 0; t < idx.length; t++) vs.push(idx[t]);
+      const uniq = [...new Set(vs)];
+      const band = uniq.filter((v) => position[v * 3 + 1] >= 1.30 && position[v * 3 + 1] <= 1.50);
+      const dists: number[] = [];
+      for (const v of band) {
+        const mx = 2 * centerX - position[v * 3], my = position[v * 3 + 1], mz = position[v * 3 + 2];
+        let best = Infinity;
+        for (const w of uniq) {
+          const d = (position[w * 3] - mx) ** 2 + (position[w * 3 + 1] - my) ** 2 + (position[w * 3 + 2] - mz) ** 2;
+          if (d < best) best = d;
+        }
+        dists.push(Math.sqrt(best) * 1000);
+      }
+      dists.sort((a, b) => a - b);
+      const q = (f: number): number => dists[Math.min(dists.length - 1, Math.floor(dists.length * f))];
+      console.log(`  [86 §1-1] 몸 메시 좌우 대칭(어깨 대역 y130~150 · ${dists.length}정점) — 거울 최근접 거리 평균 ${(dists.reduce((a, b) => a + b, 0) / (dists.length || 1)).toFixed(3)}mm · 중앙 ${q(0.5).toFixed(3)} · p99 ${q(0.99).toFixed(3)} · 최대 ${dists[dists.length - 1].toFixed(3)}mm`);
+    }
+    // (2) 옷 어깨점 y vs 몸 능선 y — **좌우 각각**. `body.ridge`는 좌우 max라 못 쓴다
+    //     (bodyMeasure.ts:281-292) → 좌우가 보존된 `body.ridgePoints`에서 편을 갈라 뜬다.
+    const D = g.draft.dims;
+    const perSide = (sgn: number): { xM: number; y: number }[] => {
+      const out = new Map<number, number>();
+      for (const p of body.ridgePoints) {
+        if (Math.sign(p.x - centerX) !== sgn) continue;
+        const k = Math.round(Math.abs(p.x - centerX) * 100);
+        out.set(k, Math.max(out.get(k) ?? -Infinity, p.y));
+      }
+      return [...out.entries()].map(([k, y]) => ({ xM: k / 100, y })).sort((a, b) => a.xM - b.xM);
+    };
+    const sides = { 좌: perSide(1), 우: perSide(-1) };
+    const maxSampled = Math.max(...sides.좌.map((r) => r.xM), ...sides.우.map((r) => r.xM));
+    console.log(`  [86 §1-2] 능선 프로파일 표본 상한 |x| = ${cm(maxSampled)}cm · 좌 ${sides.좌.length}점 · 우 ${sides.우.length}점 · 패턴 어깨점 x = ${cm(D.shoulderHalfM)}cm`);
+    console.log(`  [86 §1-2] 패턴 어깨선 y(x) = ridgeAnchorY ${cm(D.ridgeAnchorY)} − slope ${D.shoulderSlope.toFixed(5)} × (x − ${cm(D.neckHalfWidthM)})`);
+    for (const xc of [0.16, 0.18, 0.20, 0.225]) {
+      const patY = D.ridgeAnchorY - D.shoulderSlope * (xc - D.neckHalfWidthM);
+      const cells = (["좌", "우"] as const).map((nm) => {
+        const row = sides[nm].find((r) => Math.abs(r.xM - xc) < 0.005);
+        if (!row) return `${nm} **몸 표본 없음**`;
+        return `${nm} 몸 ${cm(row.y)} · 옷 ${cm(patY)} · **차 ${((patY - row.y) * 100).toFixed(3)}cm**`;
+      });
+      console.log(`  [86 §1-2] x${cm(xc)}cm — ${cells.join(" │ ")}`);
+    }
+  }
   // ── 85회차 §1 — **몸 쪽 실측**. `SLEEVEGEO=1`에서만 돈다.
   // 표적 ①(후면 삼각근 패치 · 노출 26/48 = 54.2%)이 패턴 층위로 확정된 뒤(84 §3),
   // 「패턴 치수가 부족한가」를 물으려면 몸 길이를 **패턴과 무관하게 먼저** 재야 한다

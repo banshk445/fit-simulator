@@ -29,6 +29,22 @@ export interface GeodesicResult {
   hops: number;
   /** 목적지에 닿지 못했으면 true(연결 성분이 갈림) */
   unreachable: boolean;
+  /** 86회차 — 경로가 지난 정점 좌표(출발 → 도착). 경로가 능선을 따라가는지 눈으로 확인하려면 필요하다. */
+  pathPoints: { x: number; y: number; z: number }[];
+  /**
+   * 86회차 — **끝점 스냅 진단.** 질의점이 표면에서 떨어져 있으면(관절 중심 등)
+   * 최근접 정점 후보 1·2위의 거리 마진이 작아지고, 미세한 질의점 차이가 순위를 뒤집는다.
+   * 그 경우 경로 길이는 「같은 양의 두 판본」이 되므로 좌우 대조에 쓸 수 없다.
+   */
+  snap: {
+    end: "from" | "to";
+    /** 질의점 → 스냅된 정점 거리(m). 크면 질의점이 표면 위가 아니다. */
+    distM: number;
+    /** 1위와 2위 후보의 거리 차(m). 작으면 순위가 불안정하다. */
+    marginM: number;
+    /** 1·2위 후보가 서로 얼마나 떨어져 있는가(m). 크면 뒤집힘의 대가가 크다. */
+    candidateGapM: number;
+  }[];
 }
 
 /**
@@ -60,15 +76,26 @@ export function surfacePathLength(
     const v = [rep[index[t]], rep[index[t + 1]], rep[index[t + 2]]];
     for (const [i, j] of [[0, 1], [1, 2], [2, 0]]) { link(v[i], v[j]); link(v[j], v[i]); }
   }
-  const nearest = (p: { x: number; y: number; z: number }): number => {
-    let best = Infinity, bi = -1;
+  // 최근접 정점과 **2위까지** 낸다 — 스냅 순위가 얼마나 아슬아슬한지가 이 계기의 신뢰도다.
+  const nearest = (p: { x: number; y: number; z: number }): { i: number; d: number; i2: number; d2: number } => {
+    let best = Infinity, bi = -1, best2 = Infinity, bi2 = -1;
     for (const v of adj.keys()) {
       const d = (position[v * 3] - p.x) ** 2 + (position[v * 3 + 1] - p.y) ** 2 + (position[v * 3 + 2] - p.z) ** 2;
-      if (d < best) { best = d; bi = v; }
+      if (d < best) { best2 = best; bi2 = bi; best = d; bi = v; } else if (d < best2) { best2 = d; bi2 = v; }
     }
-    return bi;
+    return { i: bi, d: Math.sqrt(best), i2: bi2, d2: Math.sqrt(best2) };
   };
-  const src = nearest(from), dst = nearest(to);
+  const ns = nearest(from), nd = nearest(to);
+  const src = ns.i, dst = nd.i;
+  const gap = (a: number, b: number): number => (a < 0 || b < 0 ? NaN : Math.hypot(
+    position[a * 3] - position[b * 3],
+    position[a * 3 + 1] - position[b * 3 + 1],
+    position[a * 3 + 2] - position[b * 3 + 2],
+  ));
+  const snap: GeodesicResult["snap"] = [
+    { end: "from", distM: ns.d, marginM: ns.d2 - ns.d, candidateGapM: gap(ns.i, ns.i2) },
+    { end: "to", distM: nd.d, marginM: nd.d2 - nd.d, candidateGapM: gap(nd.i, nd.i2) },
+  ];
   const straightM = Math.hypot(
     position[src * 3] - position[dst * 3],
     position[src * 3 + 1] - position[dst * 3 + 1],
@@ -90,9 +117,11 @@ export function surfacePathLength(
     }
   }
   const pathM = dist.get(dst) ?? Infinity;
-  let hops = 0;
-  for (let v = dst; prev.has(v); v = prev.get(v)!) hops++;
-  return { pathM, straightM, hops, unreachable: !Number.isFinite(pathM) };
+  const rev: number[] = [dst];
+  for (let v = dst; prev.has(v); v = prev.get(v)!) rev.push(prev.get(v)!);
+  rev.reverse();
+  const pathPoints = rev.map((v) => ({ x: position[v * 3], y: position[v * 3 + 1], z: position[v * 3 + 2] }));
+  return { pathM, straightM, hops: rev.length - 1, unreachable: !Number.isFinite(pathM), pathPoints, snap };
 }
 
 export interface SectionResult {
