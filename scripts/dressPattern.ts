@@ -2383,6 +2383,35 @@ const covShHi = computeBodyCoverage(
     outwardAxes: band.axes,
     sampleMask: band.mask,
   },
+  // ── 80회차 결함 ② 수리 — **6번째 인자 `clothTris`가 빠져 있었다.**
+  // 바로 아래 `covSh` 호출에는 있는데 여기만 없어서 `clothTrisOverride`가
+  // undefined → `clothTriangles(sim, [])` → **삼각형 0개** → 전 레이 미스 →
+  // **전량 노출**이 됐다. 그것이 로그의 「y124↑ 병기 1038/1038 (100.0%)」다.
+  // 46·47·48회차가 그 100%를 「대역마다 표본 재생성」으로 오귀속했고
+  // 79회차가 반증했다(1038은 1421의 정상 부분집합이다).
+  clothTris,
+);
+// ── 80회차 결함 ① 수리 **병기 채널**(`nearSign`) — 원 채널은 손대지 않는다.
+// 79·80회차: `rayMin 5mm`가 버리는 히트가 전부 실제 옷 히트이고(레이가 쏘는
+// `tris`에 몸 메시가 없다) 80 §3이 그 구간 top 95건을 **근접 피복 97.9% /
+// 관통 1.1% / 모호 1.1%**로 분해해 사전 등록 문턱 3개를 통과시켰다.
+// **구/신을 나란히 낸다** — 병기 없이 교체하면 25~78회차 대조가 끊긴다.
+const covShNew = computeBodyCoverage(
+  position, [wholeIndex], gridView, [],
+  {
+    yMin: band.yMin, yMax: band.yMax,
+    neckCenter, neckRadius: 0.12,
+    centerX, centerZ: collision.centerZ,
+    outwardAxes: band.axes,
+    sampleMask: band.mask,
+    nearSign: true,
+  },
+  clothTris,
+);
+const covNew = computeBodyCoverage(
+  position, [frontIdx, backIdx], gridView, [],
+  { ...covBand, yMin: hemWorldY, nearSign: true },
+  clothTris,
 );
 const covSh = computeBodyCoverage(
   position, [wholeIndex], gridView, [],
@@ -2545,7 +2574,9 @@ console.log(
 console.log(`  cov 몸통 버킷(**정식·팔 제외** — 분모 합 = ${covArmless.samples}): ${JSON.stringify(Object.fromEntries(Object.entries(covArmless.buckets).map(([k, b]) => [k, `${b.exposed}/${b.samples}`])))}`);
 console.log(`  cov 버킷(구 정의·팔 포함 · 이력 대조용 · 분모 합 = ${cov.samples}): ${JSON.stringify(Object.fromEntries(Object.entries(cov.buckets).map(([k, b]) => [k, `${b.exposed}/${b.samples}`])))}`);
 console.log(`  covShoulder: 노출 ${covSh.exposed}/${covSh.samples} (${(covSh.exposedRatio * 100).toFixed(1)}%)`);
-console.log(`  covShoulder(**병기 · 대역 y124↑ 제한** · 정의 변경 아님): 노출 ${covShHi.exposed}/${covShHi.samples} (${(covShHi.exposedRatio * 100).toFixed(1)}%) — 원 채널 대역은 y${cm(band.yMin)}~${cm(band.yMax)}cm`);
+console.log(`  covShoulder(**병기 · 대역 y124↑ 제한** · 정의 변경 아님): 노출 ${covShHi.exposed}/${covShHi.samples} (${(covShHi.exposedRatio * 100).toFixed(1)}%) — 원 채널 대역은 y${cm(band.yMin)}~${cm(band.yMax)}cm · **80회차 결함② 수리 후 값**(그 전에는 clothTris 인자 누락으로 항상 100.0%였다)`);
+console.log(`  **[80회차 병기 · 결함① 수리]** covShoulder_old ${covSh.exposed}/${covSh.samples} (${(covSh.exposedRatio * 100).toFixed(1)}%) → **covShoulder_new(nearSign) ${covShNew.exposed}/${covShNew.samples} (${(covShNew.exposedRatio * 100).toFixed(1)}%)** · cov_old ${cov.exposed}/${cov.samples} (${(cov.exposedRatio * 100).toFixed(1)}%) → **cov_new ${covNew.exposed}/${covNew.samples} (${(covNew.exposedRatio * 100).toFixed(1)}%)** — 원 채널은 손대지 않았다(25~78회차 대조 보존)`);
+console.log(`    버킷 old→new: ${Object.keys(covSh.buckets).sort().map((k) => `${k} ${covSh.buckets[k].exposed}→${covShNew.buckets[k]?.exposed ?? "-"}/${covSh.buckets[k].samples}`).join(" · ")}`);
 console.log(`  covShoulder 버킷: ${JSON.stringify(Object.fromEntries(Object.entries(covSh.buckets).map(([k, b]) => [k, `${b.exposed}/${b.samples}`])))}`);
 console.log(`  shoulderHover top-front: hit ${tf.hit.toFixed(3)} / hover ${tf.mean.toFixed(2)}|${tf.max.toFixed(2)}mm`);
 console.log(`  shoulderHover top-back : hit ${tb.hit.toFixed(3)} / hover ${tb.mean.toFixed(2)}|${tb.max.toFixed(2)}mm`);

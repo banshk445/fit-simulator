@@ -243,6 +243,7 @@ function rayNearestHit(
   tris: Float32Array,
   tMin: number,
   tMax: number,
+  nearSign?: boolean,
 ): number {
   const EPS = 1e-9;
   let best = -1;
@@ -265,7 +266,23 @@ function rayNearestHit(
     const v = (dx * qx + dy * qy + dz * qz) * invDet;
     if (v < 0 || u + v > 1) continue;
     const hitT = (e2x * qx + e2y * qy + e2z * qz) * invDet;
-    if (hitT >= tMin && hitT <= tMax && (best < 0 || hitT < best)) best = hitT;
+    if (hitT > tMax || (best >= 0 && hitT >= best)) continue;
+    if (hitT >= tMin) { best = hitT; continue; }
+    // ── 80회차 결함 ① 수리(`nearSign` 전달 시에만) ────────────────────────────
+    // `tMin`(5mm)은 「두께 0의 몸 메시 자기 자신을 안 맞히도록」이라 적혀 있었으나
+    // 이 레이가 쏘는 `tris`는 **옷 삼각형뿐이고 몸 메시가 들어 있지 않다**
+    // → 이 하한이 버리는 것은 전부 **실제 옷 히트**다(79회차 등재 · 함정 19).
+    // 문턱을 그냥 낮추면 관통을 피복으로 센다(함정 11) — 그래서 **부호**로 가른다.
+    // 80회차 §3 실측: tMin 5→0mm 구간 130건 중 top 95건이
+    // **근접 피복 93(97.9%) / 관통 1(1.1%) / 부호 모호 1(1.1%)** → 사전 등록 문턱 3개 통과.
+    // 판정식: 옷 면법선과 레이 방향의 내적이 양수면 「옷 바깥면이 레이를 향한다」
+    // = 근접 피복. 음수면 옷 바깥면이 몸을 향하므로 관통으로 보고 **버린다**(기존과 같다).
+    // **새 상수 0** — `nearSign`은 켜고 끄는 스위치일 뿐 값이 아니다.
+    if (!nearSign || hitT < 0) continue;
+    const fnx = e1y * e2z - e1z * e2y;
+    const fny = e1z * e2x - e1x * e2z;
+    const fnz = e1x * e2y - e1y * e2x;
+    if (fnx * dx + fny * dy + fnz * dz > 0) best = hitT;
   }
   return best;
 }
@@ -320,6 +337,9 @@ export interface CoverageParams {
   probeReverseMax?: number;
   // 샘플 정점 마스크 — collectBandSamples의 mask 주석 참고.
   sampleMask?: Uint8Array;
+  // 80회차 — `rayMin` 미만 히트를 **부호로** 살린다(위 rayNearestHit 주석).
+  // 기본 off라 미전달이면 25~78회차와 비트 동일이다(병기용).
+  nearSign?: boolean;
 }
 
 export function computeBodyCoverage(
@@ -367,7 +387,7 @@ export function computeBodyCoverage(
       body.normals[i * 3], body.normals[i * 3 + 1], body.normals[i * 3 + 2],
       refX, refY, refZ,
     );
-    const hitT = rayNearestHit(x, y, z, nx, ny, nz, tris, rayMin, rayMax);
+    const hitT = rayNearestHit(x, y, z, nx, ny, nz, tris, rayMin, rayMax, params.nearSign);
     const hit = hitT >= 0;
     if (hit) {
       const mm = hitT * 1000;
