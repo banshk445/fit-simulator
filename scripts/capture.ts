@@ -20,6 +20,7 @@
 import { execFileSync } from "node:child_process";
 import { mkdirSync } from "node:fs";
 import { resolve } from "node:path";
+import { CAPTURE_VIEWS } from "../src/lib/captureViews";
 
 const BASE = process.env.CAPTURE_URL ?? "http://localhost:5173/?autofit=1&newcore=1";
 // 시뮬이 정착할 시간. fixture 계측상 Δ20<=5.6mm 도달이 104프레임(≈1.7s)
@@ -27,6 +28,21 @@ const BASE = process.env.CAPTURE_URL ?? "http://localhost:5173/?autofit=1&newcor
 const SETTLE_MS = Number(process.env.CAPTURE_SETTLE ?? 9000);
 const OUT_DIR = resolve(process.env.CAPTURE_OUT ?? "/tmp/fit-capture");
 const VIEWS = (process.argv[2] ?? process.env.CAPTURE_VIEWS ?? "front,back,neck,cuff").split(",");
+
+// 91회차 — **미등록 view 이름을 촬영 전에 막는다.**
+// 받는 쪽(`FitCanvas`)은 미등록 이름이면 기본 카메라로 폴백하는데 그 폴백값이 `front`
+// 프리셋과 **정확히 같다**. 그래서 오타 하나면 `left.png`가 정면 사진으로 저장되고
+// **실패 신호가 0이다** — 파일명만 보고 판정하면 그대로 사고다(함정 20 계열).
+// 프리셋 정본은 `src/lib/captureViews.ts` 하나이고 여기서 그것을 그대로 읽는다(목록 복제 0).
+{
+  const unknown = VIEWS.filter((v) => !(v in CAPTURE_VIEWS));
+  if (unknown.length) {
+    console.error(`[capture] 등록되지 않은 view: ${unknown.join(", ")}`);
+    console.error(`[capture] 등록된 view: ${Object.keys(CAPTURE_VIEWS).join(", ")}`);
+    console.error("[capture] 미등록 이름은 **정면 사진**이 되고 실패 신호가 없다 — 촬영하지 않고 종료한다.");
+    process.exit(1);
+  }
+}
 
 function osa(script: string): string {
   try {

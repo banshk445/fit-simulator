@@ -238,7 +238,7 @@ if (process.env.EXPORT_META === "1") {
     "HEMBEND", "MAGNET", "MAGNET_D0", "ADSORB_PENONLY", "WINDING", "FIXTURE",
     // 계기·출력
     "PATTERNCORE", "DIAG", "PROBE", "EXPORT_META", "PATTERN_META", "SKELSIGN", "SLEEVESIGN", "WINDPAR", "SLEEVEGEO",
-    "SHOULDERFIT", "ARMGEO", "PATCHDIR", "SIGNDIST", "SEAMGAP",
+    "SHOULDERFIT", "ARMGEO", "PATCHDIR", "SIGNDIST", "SEAMGAP", "BANDGAP",
   ];
   const bvhVer = (() => {
     try {
@@ -2697,6 +2697,135 @@ console.log(`    버킷 old→new: ${Object.keys(covSh.buckets).sort().map((k) =
   console.log(`    **[83회차 §1 · 3열 병기]** covShoulder 노출 old ${pct(covSh)} · new ${pct(covShNew)} · **truth(nearSign+rawNormal) ${pct(covShTruth)}** · [80재현후보 rawNormal만] ${pct(covShRawOnly)}`);
   console.log(`    [83 §1] top 대역 관통 오분류 건수 old ${topPen(covSh)} · new ${topPen(covShNew)} · truth ${topPen(covShTruth)} — truth−new = ${topPen(covShTruth) - topPen(covShNew)}`);
   console.log(`    [83 §1] 관통 오분류 버킷 truth ${JSON.stringify(covShTruth.penetrationHits)} · new ${JSON.stringify(covShNew.penetrationHits)} · old ${JSON.stringify(covSh.penetrationHits)}`);
+  // ── 91회차 — **대역 전역 간극 분포**와 **패치창 특이성**. `BANDGAP=1`에서만 돈다.
+  // 패치창 48은 83회차에 층위 판별 대상으로 잡힌 뒤 그 자체가 표적이 됐으나
+  // **그 창이 소매 대역의 다른 곳보다 나쁜 자리인지는 측정된 적이 없다.**
+  // 이 블록은 기전 후보를 내지 않는다 — 「패치창은 특별한가」만 묻는다.
+  //
+  // **`hits[].hoverMm`를 쓰지 않는다** — 그건 레이 히트 거리라 (a) 정의역이 피복뿐이고
+  // (노출 637에는 값이 원리적으로 없다) (b) 방향 구속이라 최근접점 대비 1.09~21.3배 과대,
+  // (c) `rayMin` 5mm 하한이 박혀 있다. 이름을 「최근접 거리」로 붙이면 함정 13 재발이다.
+  if (process.env.BANDGAP === "1") {
+    console.log(`  [91 §1] ${bodyGeodesicSelfCheck()}`);
+    const armPlus = pose.armLeft.trueShoulder.x >= pose.armRight.trueShoulder.x ? pose.armLeft : pose.armRight;
+    const fL = sleeveArmFrame(pose.armLeft.dir, pose.armLeft === armPlus ? 1 : -1);
+    const fR = sleeveArmFrame(pose.armRight.dir, pose.armRight === armPlus ? 1 : -1);
+    type B = {
+      i: number; x: number; y: number; z: number; side: 1 | -1;
+      dV: number; dT: number; margin: number; candGap: number;
+      s: number; th: number; r: number;
+      expOld: boolean; expNew: boolean; expTruth: boolean; inWin: boolean;
+    };
+    const all: B[] = [];
+    for (let i = 0; i < covSh.samples; i++) {
+      const x = covSh.samplePoints[i * 3], y = covSh.samplePoints[i * 3 + 1], z = covSh.samplePoints[i * 3 + 2];
+      const side: 1 | -1 = x > centerX ? 1 : -1;
+      const arm = side > 0 ? (pose.armLeft.trueShoulder.x > centerX ? pose.armLeft : pose.armRight)
+        : (pose.armLeft.trueShoulder.x > centerX ? pose.armRight : pose.armLeft);
+      const f = arm === pose.armLeft ? fL : fR;
+      const t0 = arm.trueShoulder;
+      let b1 = Infinity, i1 = -1, b2 = Infinity, i2 = -1;
+      for (let k = 0; k < total; k++) {
+        const dd = (sim.positions[k * 3] - x) ** 2 + (sim.positions[k * 3 + 1] - y) ** 2 + (sim.positions[k * 3 + 2] - z) ** 2;
+        if (dd < b1) { b2 = b1; i2 = i1; b1 = dd; i1 = k; } else if (dd < b2) { b2 = dd; i2 = k; }
+      }
+      const dV = Math.sqrt(b1), d2 = Math.sqrt(b2);
+      const rel = [x - t0.x, y - t0.y, z - t0.z];
+      const s = rel[0] * f.d[0] + rel[1] * f.d[1] + rel[2] * f.d[2];
+      const rad = [0, 1, 2].map((k2) => rel[k2] - f.d[k2] * s);
+      all.push({
+        i, x, y, z, side,
+        dV, dT: closestPointOnTriangles(clothTris, x, y, z).distM,
+        margin: d2 - dV,
+        candGap: i2 < 0 ? NaN : Math.hypot(sim.positions[i1 * 3] - sim.positions[i2 * 3], sim.positions[i1 * 3 + 1] - sim.positions[i2 * 3 + 1], sim.positions[i1 * 3 + 2] - sim.positions[i2 * 3 + 2]),
+        s, th: Math.atan2(rad[0] * f.e2[0] + rad[1] * f.e2[1] + rad[2] * f.e2[2], rad[0] * f.e1[0] + rad[1] * f.e1[1] + rad[2] * f.e1[2]),
+        r: Math.hypot(rad[0], rad[1], rad[2]),
+        expOld: covSh.exposedFlags[i] === 1, expNew: covShNew.exposedFlags[i] === 1, expTruth: covShTruth.exposedFlags[i] === 1,
+        inWin: y >= 1.28 && y <= 1.34 && Math.abs(x - centerX) >= 0.16 && Math.abs(x - centerX) <= 0.19 && z < collision.centerZ,
+      });
+    }
+    const qs = (a: number[], f: number): number => (a.length ? [...a].sort((p, q2) => p - q2)[Math.min(a.length - 1, Math.floor(a.length * f))] : NaN);
+    const cm2 = (v: number): string => (v * 100).toFixed(2);
+    const dist = (rs: B[], g2: (b: B) => number, label: string): void => {
+      const a = rs.map(g2);
+      console.log(`  [91 §1a] ${label} n=${rs.length} — min ${cm2(Math.min(...a))} / p25 ${cm2(qs(a, 0.25))} / **중앙 ${cm2(qs(a, 0.5))}** / p75 ${cm2(qs(a, 0.75))} / p90 ${cm2(qs(a, 0.9))} / max ${cm2(Math.max(...a))}cm`);
+    };
+    const win = all.filter((b) => b.inWin);
+    console.log(`  [91 §1] 대역 ${all.length}표본 · 패치창 ${win.length} · 노출 라벨 old ${all.filter((b) => b.expOld).length} / new ${all.filter((b) => b.expNew).length} / truth ${all.filter((b) => b.expTruth).length}`);
+    dist(all, (b) => b.dV, "대역 전체 · 정점최근접  ");
+    dist(all, (b) => b.dT, "대역 전체 · 삼각형최근접");
+    dist(all.filter((b) => b.side > 0), (b) => b.dT, "대역 좌(+x) · 삼각형    ");
+    dist(all.filter((b) => b.side < 0), (b) => b.dT, "대역 우(−x) · 삼각형    ");
+    dist(win, (b) => b.dV, "패치창 · 정점최근접    ");
+    dist(win, (b) => b.dT, "패치창 · 삼각형최근접  ");
+    // ── §1(b) 판정 채널: 패치창 중앙값의 대역 백분위
+    const pct = (rs: B[], g2: (b: B) => number, v: number): number => (rs.filter((b) => g2(b) < v).length / (rs.length || 1)) * 100;
+    const medWinV = qs(win.map((b) => b.dV), 0.5), medWinT = qs(win.map((b) => b.dT), 0.5);
+    const PV = pct(all, (b) => b.dV, medWinV), PT = pct(all, (b) => b.dT, medWinT);
+    console.log(`  [91 §1b] **판정 채널 — 패치창 중앙의 대역 백분위 P: 정점 ${PV.toFixed(1)}% (중앙 ${cm2(medWinV)}cm) · 삼각형 ${PT.toFixed(1)}% (중앙 ${cm2(medWinT)}cm)**`);
+    // ── §1(c) p75/p90 초과 건수(2-튜플)
+    for (const [nm, g2] of [["정점", (b: B) => b.dV], ["삼각형", (b: B) => b.dT]] as const) {
+      const p75 = qs(all.map(g2), 0.75), p90 = qs(all.map(g2), 0.9);
+      console.log(`  [91 §1c] ${nm} — 패치창 48 중 대역 p75(${cm2(p75)}cm) 초과 **${win.filter((b) => g2(b) > p75).length}/${win.length}** · p90(${cm2(p90)}cm) 초과 **${win.filter((b) => g2(b) > p90).length}/${win.length}**`);
+    }
+    // ── §1(d) 좌우 각각 + 스냅 4-튜플 비(90 §12-2 규범: 부등식 아닌 비)
+    for (const [nm, sd] of [["좌(+x)", 1], ["우(−x)", -1]] as const) {
+      const bs = all.filter((b) => b.side === sd), ws = win.filter((b) => b.side === sd);
+      if (!ws.length) { console.log(`  [91 §1d] ${nm} — 패치창 표본 0 · null`); continue; }
+      const mv = qs(ws.map((b) => b.dV), 0.5), mt = qs(ws.map((b) => b.dT), 0.5);
+      const rt = ws.map((b) => b.margin / (b.candGap || 1e-9));
+      console.log(
+        `  [91 §1d] ${nm} — 패치창 ${ws.length} 중앙 정점 ${cm2(mv)} / 삼각형 ${cm2(mt)}cm · **P 정점 ${pct(bs, (b) => b.dV, mv).toFixed(1)}% / 삼각형 ${pct(bs, (b) => b.dT, mt).toFixed(1)}%**` +
+        ` │ 스냅 마진/후보간격 비 min ${Math.min(...rt).toFixed(4)} / 중앙 ${qs(rt, 0.5).toFixed(4)} / max ${Math.max(...rt).toFixed(4)} (86 확정 아티팩트 0.0024)`,
+      );
+    }
+    console.log(`  [91 §1] 정점·삼각형 판본 갈림(둘 중 하나가 대역 중앙을 넘고 다른 하나는 안 넘는 표본) ${all.filter((b) => (b.dV > qs(all.map((c) => c.dV), 0.5)) !== (b.dT > qs(all.map((c) => c.dT), 0.5))).length}/${all.length}`);
+    // ── **교란 채널(strategist 반증 1)**: 거리 분포가 y에 강하게 의존하면 대역 백분위는
+    //    「창이 나쁘다」가 아니라 「그 y대가 나쁘다」를 잰다. 층화 대조를 함께 낸다.
+    console.log(`  [91 §1-교란] y 5cm 빈 — 삼각형최근접 중앙 / 노출률(old) / n:`);
+    for (let yb = 110; yb < 150; yb += 5) {
+      const sel = all.filter((b) => b.y * 100 >= yb && b.y * 100 < yb + 5);
+      if (!sel.length) continue;
+      console.log(`      y${yb}~${yb + 5}  중앙 ${cm2(qs(sel.map((b) => b.dT), 0.5))}cm · p90 ${cm2(qs(sel.map((b) => b.dT), 0.9))} · 노출 ${sel.filter((b) => b.expOld).length}/${sel.length} (${(sel.filter((b) => b.expOld).length / sel.length * 100).toFixed(1)}%)`);
+    }
+    {
+      const sameY = all.filter((b) => b.y >= 1.28 && b.y <= 1.34);
+      const sameYBack = sameY.filter((b) => b.z < collision.centerZ);
+      console.log(
+        `  [91 §1-교란] **층화 대조** — 같은 y창(128~134) 전체 n=${sameY.length} 중앙 ${cm2(qs(sameY.map((b) => b.dT), 0.5))}cm` +
+        ` · 같은 y창·후면 n=${sameYBack.length} 중앙 ${cm2(qs(sameYBack.map((b) => b.dT), 0.5))}cm` +
+        ` │ **패치창 중앙 ${cm2(medWinT)}cm · 같은 y창 안 백분위 ${pct(sameY, (b) => b.dT, medWinT).toFixed(1)}% · 같은 y창·후면 안 백분위 ${pct(sameYBack, (b) => b.dT, medWinT).toFixed(1)}%**`,
+      );
+    }
+    console.log(`  [91 §1-교란] s 5cm 빈 — n / 노출(old):`);
+    for (let sb = -10; sb < 30; sb += 5) {
+      const sel = all.filter((b) => b.s * 100 >= sb && b.s * 100 < sb + 5);
+      if (!sel.length) continue;
+      console.log(`      s${sb}~${sb + 5}  n=${sel.length} · 노출 ${sel.filter((b) => b.expOld).length} (${(sel.filter((b) => b.expOld).length / sel.length * 100).toFixed(1)}%)`);
+    }
+    console.log(`  [91 §1] s 정의역 — [0,18cm](대역 축) 밖 ${all.filter((b) => b.s < 0 || b.s > 0.18).length}/${all.length} · [0,22cm](팔 length) 밖 ${all.filter((b) => b.s < 0 || b.s > 0.22).length} · 팔축 수직거리 r max ${cm2(Math.max(...all.map((b) => b.r)))}cm · r<2cm ${all.filter((b) => b.r < 0.02).length}건(θ 불안정)`);
+    // ── §2 (s,θ) 격자 — **등재 전용 · 판정 0**. 비닝 민감도를 함께 낸다.
+    const grid = (thDeg: number): { key: string; n: number; exp: number; med: number; p90: number }[] => {
+      const m = new Map<string, B[]>();
+      for (const b of all) {
+        const si = Math.floor(b.s * 100 / 2) * 2;
+        const ti = Math.floor((b.th * 180 / Math.PI + 180) / thDeg) * thDeg - 180;
+        const k = `s${si}~${si + 2}·θ${ti}~${ti + thDeg}`;
+        (m.get(k) ?? m.set(k, []).get(k)!).push(b);
+      }
+      return [...m].map(([key, v]) => ({ key, n: v.length, exp: v.filter((b) => b.expOld).length, med: qs(v.map((b) => b.dT), 0.5), p90: qs(v.map((b) => b.dT), 0.9) }));
+    };
+    for (const th of [30, 45]) {
+      const cells = grid(th).filter((c) => c.n >= 5).sort((a, b) => b.med - a.med);
+      console.log(`  [91 §2] θ=${th}° 격자 — 거리 중앙 상위 3칸: ${cells.slice(0, 3).map((c) => `${c.key} n=${c.n} 노출 ${c.exp}/${c.n} 중앙 ${cm2(c.med)}cm`).join(" │ ")}`);
+      console.log(`  [91 §2] θ=${th}° 격자 — 하위 3칸: ${cells.slice(-3).map((c) => `${c.key} n=${c.n} 노출 ${c.exp}/${c.n} 중앙 ${cm2(c.med)}cm`).join(" │ ")} · 저n(<5) 칸 ${grid(th).filter((c) => c.n < 5).length}개(인쇄 생략 · 분모 명시)`);
+    }
+    {
+      const winCells = new Set(win.map((b) => { const si = Math.floor(b.s * 100 / 2) * 2; const ti = Math.floor((b.th * 180 / Math.PI + 180) / 30) * 30 - 180; return `s${si}~${si + 2}·θ${ti}~${ti + 30}`; }));
+      const ranked = grid(30).filter((c) => c.n >= 5).sort((a, b) => b.med - a.med);
+      console.log(`  [91 §2] 패치창이 걸친 칸 ${winCells.size}개 — ${[...winCells].map((k) => { const r2 = ranked.findIndex((c) => c.key === k); return `${k}${r2 >= 0 ? `(순위 ${r2 + 1}/${ranked.length})` : "(저n)"}`; }).join(" · ")}`);
+    }
+  }
   // ── 90회차 — **시접 갭의 자리**와 **패치창 최근접 옷의 정체**. `SEAMGAP=1`에서만 돈다.
   // 35계기 6번이 이미 종류별 max|평균 + 상위 10쌍을 인쇄한다(42·68회차 등재). 여기서 더하는 것은
   // ① `seamGroups` 기준 **논리 시접 5종 × 좌우 10그룹** 분해(종류 4종으로는 front/back armhole이 안 갈린다)
