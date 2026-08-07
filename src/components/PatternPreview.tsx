@@ -51,7 +51,8 @@ export function PatternPreview(): React.JSX.Element | null {
   // ── 48회차 `?cleanrender=1` — **캡처 전용 토글 · 기본 off · 물리 무관.**
   // 47회차 δ가 옆선 세로 결함에 렌더 성분 3종이 항상 얹힌다는 것을 코드에서 확인했다:
   //  ① 패널마다 따로 `computeVertexNormals()` → 패널 경계에서 법선 불연속
-  //  ② 시접 브리지가 단색 회청 띠(#6b7f8c)로 항상 그려짐
+  //  ② 시접 브리지가 단색 띠로 항상 그려짐 — **75회차부터 원단 대표색**이고
+  //     업로드가 없을 때만 회청 `#6b7f8c`로 폴백한다(그 전에는 항상 회청이었다)
   //  ③ 패널을 따로 그려 시접 rest 6mm가 세로 틈으로 보임(주석이 이미 등재)
   // 이 토글은 ①의 법선을 시접 쌍끼리 **평균해 용접**하고 ②를 **숨긴다**.
   // **정점 위치는 한 좌표도 건드리지 않는다** — 표현만 바꿔 렌더 몫을 분리한다.
@@ -344,11 +345,16 @@ export function PatternPreview(): React.JSX.Element | null {
       })}
       {/* 브리지는 체커 텍스처를 안 쓴다 — UV가 없고(띠는 패널 UV 밖이다), 시접이
           어디를 메웠는지 눈으로 구분되는 게 이 단계의 목적이다.
-          색은 저채도 회청(21회차) — 전에는 주황(#c8641e)이라 채도가 높아 화면
-          판정에서 천보다 먼저 눈에 들어왔다. 렌더 전용이라 물리·게이트는 무관. */}
+          색은 **75회차부터 원단 대표색**(`composited.solid` — 합성 캔버스 (0,0) 픽셀)이고
+          업로드가 없으면 저채도 회청 `#6b7f8c`로 폴백한다.
+          그 회청은 21회차에 주황(#c8641e)을 대체하며 고른 값인데, **체커 기준선에 맞춰
+          고른 값**이라(함정14) 실물 검정 원단에서는 화면 최대 결함이 됐다(72회차 실측:
+          색거리 2.0배 · 화면 밝기 38배). v1은 처음부터 대표색을 도출해 쓴다
+          (`Garment.tsx:327`) — 75회차는 **v2가 안 하던 것을 맞춘 것**이고 손 상수 순증감 −1이다.
+          렌더 전용이라 물리·게이트는 무관. */}
       {bridgeGeo && !cleanRender && (
         <mesh geometry={bridgeGeo} frustumCulled={false}>
-          <meshStandardMaterial key="pattern-seam-bridge" color="#6b7f8c" side={THREE.DoubleSide} roughness={0.85} />
+          <meshStandardMaterial key="pattern-seam-bridge" color={composited ? composited.solid : "#6b7f8c"} side={THREE.DoubleSide} roughness={0.85} />
         </mesh>
       )}
     </group>
