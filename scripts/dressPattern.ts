@@ -2577,6 +2577,33 @@ console.log(`  covShoulder: 노출 ${covSh.exposed}/${covSh.samples} (${(covSh.e
 console.log(`  covShoulder(**병기 · 대역 y124↑ 제한** · 정의 변경 아님): 노출 ${covShHi.exposed}/${covShHi.samples} (${(covShHi.exposedRatio * 100).toFixed(1)}%) — 원 채널 대역은 y${cm(band.yMin)}~${cm(band.yMax)}cm · **80회차 결함② 수리 후 값**(그 전에는 clothTris 인자 누락으로 항상 100.0%였다)`);
 console.log(`  **[80회차 병기 · 결함① 수리]** covShoulder_old ${covSh.exposed}/${covSh.samples} (${(covSh.exposedRatio * 100).toFixed(1)}%) → **covShoulder_new(nearSign) ${covShNew.exposed}/${covShNew.samples} (${(covShNew.exposedRatio * 100).toFixed(1)}%)** · cov_old ${cov.exposed}/${cov.samples} (${(cov.exposedRatio * 100).toFixed(1)}%) → **cov_new ${covNew.exposed}/${covNew.samples} (${(covNew.exposedRatio * 100).toFixed(1)}%)** — 원 채널은 손대지 않았다(25~78회차 대조 보존)`);
 console.log(`    버킷 old→new: ${Object.keys(covSh.buckets).sort().map((k) => `${k} ${covSh.buckets[k].exposed}→${covShNew.buckets[k]?.exposed ?? "-"}/${covSh.buckets[k].samples}`).join(" · ")}`);
+{
+  // ── 81회차 §1 — `covSh.exposedExamples`가 계산만 되고 인쇄되지 않았다(감사 §6).
+  // 이 출력이 없으면 §2 재계산·79회차 좌표 분포가 **하네스 로그로 검증되지 않는다**.
+  // `cov` 히스토그램과 **섞지 않는다** — 분모(1421 vs 5439) · 참조축(팔축 vs 몸통축) ·
+  // 정의역(대역 y113~144 · 목 12cm 제외)이 다르다(함정 13).
+  const dist = (pts: { x: number; y: number; z: number }[]): string => {
+    const yb = new Map<number, number>(), xb = new Map<number, number>();
+    let front = 0;
+    for (const p of pts) {
+      const y = Math.floor(p.y * 20) / 20; // 5cm 빈
+      yb.set(y, (yb.get(y) ?? 0) + 1);
+      const ax = Math.floor(Math.abs(p.x - centerX) * 20) / 20;
+      xb.set(ax, (xb.get(ax) ?? 0) + 1);
+      if (p.z >= collision.centerZ) front++;
+    }
+    const fmt = (m: Map<number, number>): string =>
+      [...m.entries()].sort((a, b) => a[0] - b[0]).map(([k, v]) => `${(k * 100).toFixed(0)}:${v}`).join(" ");
+    return `앞${front}/뒤${pts.length - front} · y빈(5cm) ${fmt(yb)} · |x|빈(5cm) ${fmt(xb)}`;
+  };
+  console.log(`    covSh 노출 좌표 old(${covSh.exposedExamples.length}): ${dist(covSh.exposedExamples)}`);
+  console.log(`    covSh 노출 좌표 new(${covShNew.exposedExamples.length}): ${dist(covShNew.exposedExamples)}`);
+  // §4 추가 검증점 — 마젠타 캡처의 삼각근 2패치 영역(y128~134 · |x|16~19 · 후면)에
+  // 잔여 노출이 공간적으로 대응하는가. **등재만 · 판정 아님.**
+  const patch = (pts: { x: number; y: number; z: number }[]): number =>
+    pts.filter((p) => p.y >= 1.28 && p.y <= 1.34 && Math.abs(p.x - centerX) >= 0.16 && Math.abs(p.x - centerX) <= 0.19 && p.z < collision.centerZ).length;
+  console.log(`    [§4 검증점] 삼각근 패치창(y128~134 · |x|16~19 · 뒤) 노출 old ${patch(covSh.exposedExamples)} · new ${patch(covShNew.exposedExamples)}`);
+}
 console.log(`  covShoulder 버킷: ${JSON.stringify(Object.fromEntries(Object.entries(covSh.buckets).map(([k, b]) => [k, `${b.exposed}/${b.samples}`])))}`);
 console.log(`  shoulderHover top-front: hit ${tf.hit.toFixed(3)} / hover ${tf.mean.toFixed(2)}|${tf.max.toFixed(2)}mm`);
 console.log(`  shoulderHover top-back : hit ${tb.hit.toFixed(3)} / hover ${tb.mean.toFixed(2)}|${tb.max.toFixed(2)}mm`);
