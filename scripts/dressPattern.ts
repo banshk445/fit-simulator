@@ -220,6 +220,37 @@ if (process.env.EXPORT_META === "1") {
   );
 }
 
+// ── 82회차 §2 — **환경 스탬프**. 함정 26의 구조적 처방이다.
+// 81회차가 기준선 A를 재현하지 못하고 「런타임 드리프트」로 등재했으나, 원인은
+// `RINGTOTAL=0` **env 누락**이었다(그 스위치는 `:611`에서 링 총길이 상한을 끈다 =
+// 물리 제약이다). 실행 로그 어디에도 「무슨 env로 돌렸는가」가 없어서 3회 실행 ·
+// 태그 워크트리 체크아웃 · 원인 격리를 전부 같은 누락 위에서 했다.
+// **노트 규율에 맡기면 재발한다 — 계기가 스스로 기록한다.**
+// 미설정도 반드시 인쇄한다(이번 사고는 「안 찍힌 것」이 원인이었다).
+{
+  const ENV_KEYS = [
+    // 상태를 바꾸는 것(물리·구성)
+    "RINGTOTAL", "TORSOCAP", "SINGLE", "SECONDS", "PINDRESS", "GRAV0", "S0FIX",
+    "HEMBEND", "MAGNET", "MAGNET_D0", "ADSORB_PENONLY", "WINDING", "FIXTURE",
+    // 계기·출력
+    "PATTERNCORE", "DIAG", "PROBE", "EXPORT_META", "PATTERN_META", "SKELSIGN", "SLEEVESIGN",
+  ];
+  const bvhVer = (() => {
+    try {
+      return (JSON.parse(readFileSync("node_modules/three-mesh-bvh/package.json", "utf8")) as { version: string }).version;
+    } catch { return "미상"; }
+  })();
+  console.log(
+    `[dress] 환경 스탬프: node ${process.version} · v8 ${process.versions.v8} · ${process.platform}/${process.arch} · three ${THREE.REVISION} · three-mesh-bvh ${bvhVer}`,
+  );
+  console.log(
+    `[dress] env: ${ENV_KEYS.map((k) => `${k}=${process.env[k] ?? "미설정"}`).join(" · ")}`,
+  );
+  console.log(
+    `[dress] 해시: pattern ${patternHash} · fixture ${fixtureHash} — **재현하려면 위 env 줄을 그대로 쓴다**(함정 26)`,
+  );
+}
+
 console.log(
   `[dress] 패널 정점 ${total}(${g.panelCounts.join("/")}) · 삼각형 ${g.tris.length / 3} · 메시 엣지 ${g.edgePairs.length} · 시접 ${g.seams.length}쌍 ${JSON.stringify(g.meta.seamCounts)}`,
 );
