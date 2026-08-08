@@ -3593,14 +3593,25 @@ console.log(`  maxStrain ${strain.v.toFixed(3)} (정점 ${strain.at}) · maxSeam
       return m.signedClearance(sim.positions[i * 3], sim.positions[i * 3 + 1], sim.positions[i * 3 + 2], SDF_FAR);
     };
     const phaseStat = (nm: string, idx: number[]): string => {
-      const v = idx.map(dOf).filter((q): q is number => q !== null).sort((a, b) => a - b);
-      if (v.length === 0) return `    ${nm} — 산출 불가`;
+      // ── 97 §1 결함 A 수리 — `signedClearance`가 `null`을 주면 조용히 버려지고 `n`만 찍혔다.
+      // 표본이 실행마다 줄어드는데 분모가 안 보이면 비율·분위수를 **회차 간 비교할 수 없다**
+      // (96 §5 등재). 필터 **전** 정의역 크기와 탈락 수를 함께 찍는다.
+      const raw = idx.map(dOf);
+      const v = raw.filter((q): q is number => q !== null).sort((a, b) => a - b);
+      const nulls = raw.length - v.length;
+      if (v.length === 0) return `    ${nm} — 산출 불가(정의역 ${raw.length} · null 탈락 ${nulls})`;
       const q = (f: number): string => (v[Math.min(v.length - 1, Math.floor(f * v.length))] * 1000).toFixed(1);
       const p1 = v.filter((x) => x > COLLISION_MARGIN).length;
       const p2 = v.filter((x) => x > 0 && x <= COLLISION_MARGIN).length;
       const p3 = v.filter((x) => x <= 0).length;
-      return `    ${nm} n=${v.length} · d(mm) p25 ${q(0.25)} 중앙 ${q(0.5)} p75 ${q(0.75)} p99 ${q(0.99)}` +
-        ` · **국면1(자석 d>15) ${p1}(${(100 * p1 / v.length).toFixed(1)}%) · 국면2(안착 0<d≤15) ${p2}(${(100 * p2 / v.length).toFixed(1)}%) · 국면3(관통 d≤0) ${p3}(${(100 * p3 / v.length).toFixed(1)}%)**`;
+      // ── 97 §1 결함 C 수리 — **계기 질의 반경(SDF_FAR 300mm) ≠ 물리 탐지 반경(150mm)**.
+      // 그 사이 구간은 「물리가 안 건드리는데 계기는 세는」 자리다. 값은 안 바꾸고 구간만 가른다
+      // (`SDF_FAR` 변경 0 · 판정 로직 0줄 · 인쇄 전용).
+      const inR = v.filter((x) => x <= COLLISION_DETECTION_RADIUS).length;
+      const outR = v.length - inR;
+      return `    ${nm} n=${v.length}/${raw.length}(null 탈락 ${nulls}) · d(mm) p25 ${q(0.25)} 중앙 ${q(0.5)} p75 ${q(0.75)} p99 ${q(0.99)}` +
+        ` · **국면1(자석 d>15) ${p1}(${(100 * p1 / v.length).toFixed(1)}%) · 국면2(안착 0<d≤15) ${p2}(${(100 * p2 / v.length).toFixed(1)}%) · 국면3(관통 d≤0) ${p3}(${(100 * p3 / v.length).toFixed(1)}%)**` +
+        ` · 탐지반경 ${(COLLISION_DETECTION_RADIUS * 1000).toFixed(0)}mm 이내 ${inR} / **${(COLLISION_DETECTION_RADIUS * 1000).toFixed(0)}~${(SDF_FAR * 1000).toFixed(0)}mm ${outR}**(물리 미도달)`;
     };
     console.log(`  [53계기b·몸거리 d 분위수·국면] 정착 · 경계 = COLLISION_MARGIN ${(COLLISION_MARGIN * 1000).toFixed(1)}mm`);
     console.log(phaseStat("링 앞판", fr)); console.log(phaseStat("링 뒤판", bk));
