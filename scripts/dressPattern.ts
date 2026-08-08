@@ -3737,8 +3737,13 @@ console.log(`  자기교차(엣지-삼각형 · 게이트): ${xsec.count}건 (�
       console.log(`    ${st.padEnd(3)} 진입 ${r(e.first)} → 이탈 ${r(e.last)} · 구간 최대 ${r(e.max)}@f${e.maxF} · ${e.n}프레임`);
     }
     console.log(`    초반 정밀: ${ringYSeries.slice(0, 8).map((q) => `f${q.f} ${r(q.L)}`).join(" · ")}`);
-    const gmax = ringYSeries.reduce((b, q) => (q.L > b.L ? q : b), ringYSeries[0]);
-    console.log(`    전 구간 최대 ${r(gmax.L)} @f${gmax.f}/${gmax.st} · 최종 ${r(ringYSeries[ringYSeries.length - 1].L)} · 봉합 완료 f=${seamClosedAtFrame}`);
+    // 95 §1 가드 — `SECONDS=0`이면 스텝이 0회라 `ringYSeries`가 비고, reduce의 초기값이
+    // undefined가 되어 여기서 죽었다(94회차 R0: `Cannot read properties of undefined (reading 'L')`).
+    // 시계열이 없는 것은 **산출 불가**이지 0이 아니다 — 추정치로 채우지 않는다.
+    const gmax = ringYSeries.length ? ringYSeries.reduce((b, q) => (q.L > b.L ? q : b)) : null;
+    console.log(gmax
+      ? `    전 구간 최대 ${r(gmax.L)} @f${gmax.f}/${gmax.st} · 최종 ${r(ringYSeries[ringYSeries.length - 1].L)} · 봉합 완료 f=${seamClosedAtFrame}`
+      : `    전 구간 최대 **산출 불가**(ringYSeries 0개 — 프레임 0) · 최종 **산출 불가** · 봉합 완료 f=${seamClosedAtFrame}`);
   }
 
   // ── 29계기: 링 y 시계열.  // ── 29계기: 링 y 시계열. 지지 실패(내려감)와 인장(제자리에서 벌어짐)의 분리.
@@ -3749,11 +3754,14 @@ console.log(`  자기교차(엣지-삼각형 · 게이트): ${xsec.count}건 (�
       .map((r) => `f${r.f}/${r.st} 정${cm(r.top)}/중${cm(r.y)} L${cm(r.L)}`).join(" · ");
     const y0 = ringYSeries[0]?.y ?? 0, yN = ringYSeries[ringYSeries.length - 1]?.y ?? 0;
     const t0 = ringYSeries[0]?.top ?? 0, tN = ringYSeries[ringYSeries.length - 1]?.top ?? 0;
-    const yMin = Math.min(...ringYSeries.map((r) => r.y));
+    const yMin = ringYSeries.length ? Math.min(...ringYSeries.map((r) => r.y)) : NaN;
+    // 95 §1 가드 — `SECONDS=0`이면 시계열이 비어 `?? 0`이 「0.00cm를 쟀다」로, `Math.min(...[])`가
+    // 「Infinity를 쟀다」로 읽힌다. 시계열이 없는 것은 **산출 불가**이지 0이 아니다(추정치 금지).
+    const ry = (v: number): string => (ringYSeries.length ? cm(v) : "산출불가");
     console.log(`  [29계기·링 y 시계열] 기준선 — 목밑점 y ${cm(body.neckBaseY)} · 어깨 능선 최상단 y ${cm(ridgeTopY)} · 어깨 관절 y ${cm(body.shoulderJointY)}`);
-    console.log(`    ${line}`);
-    console.log(`    [최상점] 시작 ${cm(t0)} → 최종 ${cm(tN)} (낙차 ${cm(t0 - tN)}cm) · 목밑점 대비 ${cm(tN - body.neckBaseY)}cm · 능선 최상단 대비 ${cm(tN - ridgeTopY)}cm · 어깨관절 대비 ${cm(tN - body.shoulderJointY)}cm`);
-    console.log(`    [중심]   시작 ${cm(y0)} → 최종 ${cm(yN)} (낙차 ${cm(y0 - yN)}cm) · 최저 ${cm(yMin)} — 목선이 곡선이라 중심은 배치 시점부터 목점보다 앞목/뒤목 깊이만큼 아래다(제도 앞목 ${cm(g.draft.dims.frontNeckDropM)} 뒤목 ${cm(g.draft.dims.backNeckDropM)})`);
+    console.log(`    ${ringYSeries.length ? line : "**산출 불가** — ringYSeries 0개(프레임 0)"}`);
+    console.log(`    [최상점] 시작 ${ry(t0)} → 최종 ${ry(tN)} (낙차 ${ry(t0 - tN)}cm) · 목밑점 대비 ${ry(tN - body.neckBaseY)}cm · 능선 최상단 대비 ${ry(tN - ridgeTopY)}cm · 어깨관절 대비 ${ry(tN - body.shoulderJointY)}cm`);
+    console.log(`    [중심]   시작 ${ry(y0)} → 최종 ${ry(yN)} (낙차 ${ry(y0 - yN)}cm) · 최저 ${ry(yMin)} — 목선이 곡선이라 중심은 배치 시점부터 목점보다 앞목/뒤목 깊이만큼 아래다(제도 앞목 ${cm(g.draft.dims.frontNeckDropM)} 뒤목 ${cm(g.draft.dims.backNeckDropM)})`);
     console.log(`  [29계기·자유 평형 대조] 링 최종 길이 ${cm(ringLenM())}cm · 상한 ${ringTotalMaxM > 0 ? cm(ringTotalMaxM) + "cm" : "없음(RINGTOTAL=0)"} · **어깨 통과 둘레 ${cm(body.shoulderPassGirthM)}cm @ y${cm(body.shoulderJointY)} 단면**(2a 통과 조건의 그 값) · 링/어깨통과 ${(ringLenM() / body.shoulderPassGirthM).toFixed(3)}배`);
   }
   console.log(`  [27계기·축소 잔여 일량] 정착 60프레임 평균 ${(swMean * 100).toFixed(3)}cm · 최대 ${(Math.max(0, ...sw) * 100).toFixed(3)}cm · 전 구간 최대 ${(Math.max(0, ...shrinkWorkSeries) * 100).toFixed(2)}cm`);
