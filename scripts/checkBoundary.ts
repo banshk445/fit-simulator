@@ -72,7 +72,7 @@ const pad = (s: string, n: number): string => s + " ".repeat(Math.max(0, n - [..
 
 // ── 몸 둘레 계기: 그 높이 단면 윤곽(레이캐스트)의 폴리라인 둘레 ──────────
 const outlineGirthAt = (h: number): number => {
-  const pts = outlineAt(h, COLLISION_MARGIN);
+  const pts = outlineAt(h, MARGIN_ALL);
   let l = 0;
   for (let i = 0; i < pts.length; i++) {
     const a = pts[i], b = pts[(i + 1) % pts.length];

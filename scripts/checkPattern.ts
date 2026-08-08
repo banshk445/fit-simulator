@@ -260,7 +260,7 @@ let corrected = 0;
     if (!c) continue;
     const dx = c.x - x, dy = c.y - y, dz = c.z - z;
     const l = Math.hypot(dx, dy, dz) || 1;
-    let out = COLLISION_MARGIN;
+    let out = MARGIN_ALL;
     for (let k = 0; k < 8; k++) {
       const px = c.x + (dx / l) * out, py = c.y + (dy / l) * out, pz = c.z + (dz / l) * out;
       const clash = clashAt(i, px, py, pz);
@@ -510,7 +510,7 @@ if (after.n > 0) fails.push("배치 관통 0");
   //     같아지는 높이. 볼록 폐곡선의 오프셋은 정확히 2πm만큼 늘어나므로
   //     슬라이스 둘레에서 바로 도출한다(새 계측 없음). 정착 후 실측과 대조할 것.
   {
-    const offM = 2 * Math.PI * COLLISION_MARGIN;
+    const offM = 2 * Math.PI * MARGIN_ALL;
     const up = body.slices.filter((s) => s.y >= body.shoulderJointY).sort((a, b) => a.y - b.y);
     let pred = NaN, lo = "", hi2 = "";
     for (let i = 1; i < up.length; i++) {
@@ -522,7 +522,7 @@ if (after.n > 0) fails.push("배치 관통 0");
       }
     }
     console.log(
-      `  [예측] 링 안착 높이 = 몸 폐곡선(표면+오프셋 ${cm(COLLISION_MARGIN)}cm) ${cm(D.necklineGirthM)}cm 지점 → **y${Number.isNaN(pred) ? "미교차" : cm(pred)}cm** (보간 구간 ${lo} ~ ${hi2}) · 목밑 y${cm(D.neckBaseY)}cm · 정착 후 실측과 대조할 것`,
+      `  [예측] 링 안착 높이 = 몸 폐곡선(표면+오프셋 ${cm(MARGIN_ALL)}cm) ${cm(D.necklineGirthM)}cm 지점 → **y${Number.isNaN(pred) ? "미교차" : cm(pred)}cm** (보간 구간 ${lo} ~ ${hi2}) · 목밑 y${cm(D.neckBaseY)}cm · 정착 후 실측과 대조할 것`,
     );
   }
 }

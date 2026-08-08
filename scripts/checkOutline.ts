@@ -48,7 +48,10 @@ const hemY = caps[caps.length - 1].bottom.y;
 const centerX = (pose.pinLeft.x + pose.pinRight.x) / 2;
 const arms = [pose.armLeft, pose.armRight] as const;
 const skeleton = deriveBodySkeleton(position, torsoIndex, [pose.armLeft, pose.armRight], centerX, collision.centerZ, hemY);
-const body = measureBody(position, torsoIndex, wholeIndex, arms, skeleton, hemY, centerX, collision.centerZ);
+// 103 §2 — 게이트 하네스 판 배선(100회차 규범의 «범위 확장»).
+// 미설정이면 `COLLISION_MARGIN` — 기존 호출과 비트 동일.
+const MARGIN_ALL = process.env.MARGIN_ALL ? Number(process.env.MARGIN_ALL) / 1000 : COLLISION_MARGIN;
+const body = measureBody(position, torsoIndex, wholeIndex, arms, skeleton, hemY, centerX, collision.centerZ, MARGIN_ALL);
 
 const torsoMesh = new ArrayBvhCollision();
 torsoMesh.rebuild(position, torsoIndex);
@@ -62,7 +65,7 @@ const signedSkel = makeSkeletonSignedSampler(wholeMesh, skeleton.segments, SDF_F
 const insideSkel = (x: number, y: number, z: number): boolean => signedSkel(x, y, z) < 0;
 
 const cm = (v: number): string => (v * 100).toFixed(2);
-console.log(`[outline] fixture ${fixtureHash} · 몸통 삼각형 ${torsoIndex.length / 3} · 전신 ${wholeIndex.length / 3} · 오프셋 ${cm(COLLISION_MARGIN)}cm · 목표 엣지 ${cm(PATTERN_EDGE_INTERIOR_M)}cm`);
+console.log(`[outline] fixture ${fixtureHash} · 몸통 삼각형 ${torsoIndex.length / 3} · 전신 ${wholeIndex.length / 3} · 오프셋 ${cm(MARGIN_ALL)}cm · 목표 엣지 ${cm(PATTERN_EDGE_INTERIOR_M)}cm`);
 
 // ── 대조군 B: 각도 bin 최근접 반경 폴리곤(14회차 대안 — 여기서 재현만 한다)
 const GIRTH_BINS = 24;
@@ -156,12 +159,12 @@ let bakeMs = 0;
 const rows: { h: number; a: Score; b: Score; f: Score; d: Score; fMeta: string; dMeta: string }[] = [];
 for (const h of HEIGHTS) {
   const [cx, cz] = axisAt(h);
-  const aPts = body.loopAt(h, COLLISION_MARGIN);
-  const bPts = binRadiusLoop(h, cx, cz, COLLISION_MARGIN);
+  const aPts = body.loopAt(h, MARGIN_ALL);
+  const bPts = binRadiusLoop(h, cx, cz, MARGIN_ALL);
   const made: Record<EmptyAngleRule, ReturnType<typeof sliceOutline>> = { fallback: null!, drop: null! };
   for (const rule of ["fallback", "drop"] as EmptyAngleRule[]) {
     const t = performance.now();
-    made[rule] = sliceOutline(torsoMesh, wholeMesh, h, cx, cz, COLLISION_MARGIN, PATTERN_EDGE_INTERIOR_M, rule);
+    made[rule] = sliceOutline(torsoMesh, wholeMesh, h, cx, cz, MARGIN_ALL, PATTERN_EDGE_INTERIOR_M, rule);
     bakeMs += performance.now() - t;
   }
   rows.push({
