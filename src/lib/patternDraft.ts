@@ -210,7 +210,27 @@ export interface GarmentDims {
 }
 
 export function draftTshirtPattern(body: BodyMeasure, g: GarmentDims): PatternDraft {
-  const halfWidthM = g.widthM / 2;
+  // ── 104 §2 1단계 — **항등 재표현**. 몸판 반폭을 「절대값」이 아니라 «몸에서» 낸다.
+  // 형식은 **같은 파일이 이미 채택한 교재 계열 그대로**다(:47 `ARMHOLE_DEPTH_CHEST_DIVISOR = 4` ·
+  // :258 진동깊이 = `B/4 + 여유`). 한 제도 안에서 폭만 다른 계열을 쓸 이유가 없다(103 §5 후보 D).
+  // B = `body.chestGirthM`(`measureBody` · 팔 제외 볼록껍질). 103 §8 ㄴ이 이 채널을 확정했다 —
+  // `garmentFitLimits`의 119.4는 «슬라이더 가슴둘레»이지 메시 실측이 아니고, 그것을 쓰면
+  // 한 제도 안에서 두 몸을 섞는다.
+  //
+  // `WIDTH_EASE_M`은 **기준선 A에서 현행값과 «항등»이 되도록 역산한 값**이다(104 §2 · 실측):
+  //   B = 0.84008920495327033 · 현행 halfWidth = 0.27500000000000002(= 0.55/2)
+  //   e = halfWidth − B/4 = **0.06497769876168244 m**  ⟹ `B/4 + e`가 현행값과 **비트 동일**
+  // 자릿수를 줄이면 항등이 깨진다 — 그래서 반올림하지 않았다.
+  //
+  // **이 회차는 e를 사전 고정으로만 둔다**(함정14 §경계선 — 결과가 나쁘면 값을 바꾸지 말고
+  // 실패로 기록). 문헌 대표값으로의 교체 여부는 §3이 판단한다.
+  //
+  // **부수 사실(등재분)**: 이 줄이 바뀌면 슬라이더 `garmentSize.width`의 의미가 «절대 폭»에서
+  // 「도출 입력 아님」으로 갈린다 — 새 경로는 `g.widthM`을 읽지 않는다. UI 라벨은 그대로다.
+  // 103 §4(d)가 등재한 「한 슬라이더 두 규약」과 **같은 자리**에 붙는 불일치다.
+  const WIDTH_CHEST_DIVISOR = 4;
+  const WIDTH_EASE_M = 0.06497769876168244;
+  const halfWidthM = body.chestGirthM / WIDTH_CHEST_DIVISOR + WIDTH_EASE_M;
   const shoulderHalfM = g.shoulderWidthM / 2;
 
   // 목 — 목선 둘레가 목밑둘레 + 여유가 되도록 목너비를 이분법으로 푼다.
