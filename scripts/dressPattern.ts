@@ -234,7 +234,7 @@ if (process.env.EXPORT_META === "1") {
 {
   const ENV_KEYS = [
     // 상태를 바꾸는 것(물리·구성)
-    "RINGTOTAL", "TORSOCAP", "ARMCAP", "SINGLE", "SECONDS", "PINDRESS", "GRAV0", "S0FIX",
+    "RINGTOTAL", "TORSOCAP", "ARMCAP", "MESHMARGIN", "PLACEMARGIN", "SINGLE", "SECONDS", "PINDRESS", "GRAV0", "S0FIX",
     "HEMBEND", "MAGNET", "MAGNET_D0", "ADSORB_PENONLY", "WINDING", "FIXTURE",
     // 계기·출력
     "PATTERNCORE", "DIAG", "PROBE", "EXPORT_META", "PATTERN_META", "SKELSIGN", "SLEEVESIGN", "WINDPAR", "SLEEVEGEO",
@@ -324,9 +324,27 @@ for (const e of [...g.edgePairs, ...g.seams.map((s) => ({ a: s.a, b: s.b }))]) {
 // 오프셋 확대). 배치 원본 자기교차가 0인데 교정 후가 수백 건이면 교정이 순손해
 // 이므로, 무력화 변이를 상시 스위치로 둔다: `S0FIX=0`.
 const S0FIX = process.env.S0FIX !== "0";
+// ── 100회차 §2 ①②③④ — **margin 채널 단일 소스**(기본값은 상수 그대로 · 비트 동일).
+// 99 §1이 등재한 선행 조건: 계기는 「호출부에 «실제로» 넘어간 값」을 읽어야 하고
+// (`:3612`·`:1473`·`:1477`·`:3901`이 문자열 「15」를 하드로 박고 있었다 — 함정 12),
+// 배치 교정과 정착 물리가 **서로 다른 소비처**라는 사실이 인쇄에 드러나야 한다(99 §1(e)③).
+//
+// **이 회차는 값을 바꾸지 않는다** — 두 env 모두 미설정이 기본이고 그때 `COLLISION_MARGIN`과
+// 동일하므로 기준선은 비트 동일이다. 다음 회차가 «도출»을 세울 때 쓰는 배선만 깔아 둔다
+// (`docs/metrics-log.md:9860` — 값 스윕은 함정 14 정면 · **도출 변경만 허용 범위**).
+//
+// 두 채널을 «분리해» 둔 이유는 99 §1(e)③이 등재한 물리 불일치다: 배치 교정은 margin 껍질에
+// 정점을 «놓고», 정착 물리는 margin 껍질로 «당긴다». 두 값이 갈리면 초기 조건과 평형점이
+// 그 차만큼 어긋난다. 어느 쪽으로 고정할지는 **이 회차가 정하지 않는다**(규범 4·5).
+const MESH_MARGIN = process.env.MESHMARGIN ? Number(process.env.MESHMARGIN) / 1000 : COLLISION_MARGIN;
+const PLACE_MARGIN = process.env.PLACEMARGIN ? Number(process.env.PLACEMARGIN) / 1000 : COLLISION_MARGIN;
+const MM = (m: number): string => (m * 1000).toFixed(1);
+console.log(`[dress] margin 채널: 정착 물리(mesh 리졸버) ${MM(MESH_MARGIN)}mm · 배치 교정(correctPlacementPenetration) ${MM(PLACE_MARGIN)}mm · 상수 COLLISION_MARGIN ${MM(COLLISION_MARGIN)}mm` +
+  `${MESH_MARGIN === PLACE_MARGIN ? " — 두 채널 동일" : ` — **두 채널 상이(차 ${MM(PLACE_MARGIN - MESH_MARGIN)}mm)**`}` +
+  ` · **이 스크립트가 안 바꾸는 소비처**: 제도 치수(bodyMeasure:317→patternDraft) · 배치 기하(patternGarment:358-359,411,422,504) · 몸통 캡슐(:752) · 앵커(:991) — 전부 상수 ${MM(COLLISION_MARGIN)}mm`);
 const penBefore = countInside(g.positions, total, insideParity);
 const corrected = S0FIX ? correctPlacementPenetration(
-  g.positions, total, wholeMesh, insideParity, COLLISION_MARGIN, g.selfCollisionMinDistM, skipKeys, SDF_FAR,
+  g.positions, total, wholeMesh, insideParity, PLACE_MARGIN, g.selfCollisionMinDistM, skipKeys, SDF_FAR,
 ) : 0;
 const penAfterPlace = countInside(g.positions, total, insideParity);
 console.log(`[dress] S0 배치 관통: ${penBefore} → 교정 ${corrected}정점 → ${penAfterPlace} (패리티 근사)${S0FIX ? "" : " · **교정 off(S0FIX=0)**"}`);
@@ -706,8 +724,8 @@ const MAGNET_D0 = process.env.MAGNET_D0 === "1";
 const magnetArg = MAGNET_D0 ? { w: (): number => 0 } : MAGNET_AXIS1 ? { w: (): number => 1 } : undefined;
 const meshResolver = createPanelSplitResolver(
   [
-    frontMesh.createResolver(COLLISION_MARGIN, COLLISION_DETECTION_RADIUS, undefined, undefined, undefined, penAxis, magnetArg),
-    backMesh.createResolver(COLLISION_MARGIN, COLLISION_DETECTION_RADIUS, undefined, undefined, undefined, penAxis, magnetArg),
+    frontMesh.createResolver(MESH_MARGIN, COLLISION_DETECTION_RADIUS, undefined, undefined, undefined, penAxis, magnetArg),
+    backMesh.createResolver(MESH_MARGIN, COLLISION_DETECTION_RADIUS, undefined, undefined, undefined, penAxis, magnetArg),
     null,
     null,
   ],
@@ -1467,13 +1485,13 @@ const hemReport = (label: string): string => {
       const dv = c.map((i) => m.signedClearance(sim.positions[i * 3], sim.positions[i * 3 + 1], sim.positions[i * 3 + 2], SDF_FAR))
         .filter((q): q is number => q !== null);
       if (dv.length > 0) {
-        const p1 = dv.filter((x) => x > COLLISION_MARGIN).length, p2 = dv.filter((x) => x > 0 && x <= COLLISION_MARGIN).length, p3 = dv.filter((x) => x <= 0).length;
+        const p1 = dv.filter((x) => x > MESH_MARGIN).length, p2 = dv.filter((x) => x > 0 && x <= MESH_MARGIN).length, p3 = dv.filter((x) => x <= 0).length;
         const so = [...dv].sort((a, b) => a - b);
         const q = (f: number): string => (so[Math.min(so.length - 1, Math.floor(f * so.length))] * 1000).toFixed(1);
-        lines.push(`    ${nm} **국면**(경계 margin 15.0mm) 1(자석) ${p1}(${(100 * p1 / dv.length).toFixed(1)}%) · 2(안착) ${p2}(${(100 * p2 / dv.length).toFixed(1)}%) · 3(관통) ${p3}(${(100 * p3 / dv.length).toFixed(1)}%) · d(mm) p25 ${q(0.25)} 중앙 ${q(0.5)} p75 ${q(0.75)} p99 ${q(0.99)}`);
+        lines.push(`    ${nm} **국면**(경계 margin ${MM(MESH_MARGIN)}mm) 1(자석) ${p1}(${(100 * p1 / dv.length).toFixed(1)}%) · 2(안착) ${p2}(${(100 * p2 / dv.length).toFixed(1)}%) · 3(관통) ${p3}(${(100 * p3 / dv.length).toFixed(1)}%) · d(mm) p25 ${q(0.25)} 중앙 ${q(0.5)} p75 ${q(0.75)} p99 ${q(0.99)}`);
       }
     }
-    lines.push(`    ${nm} 접힘계수 = 사슬 ${cm(r0.L)} / 투영 볼록껍질 ${cm(hp)} = **${(r0.L / Math.max(1e-9, hp)).toFixed(3)}** · 몸거리 중앙 ${ds.length ? ds[Math.floor(ds.length / 2)].toFixed(1) : "-"} p99 ${ds.length ? ds[Math.floor(ds.length * 0.99)].toFixed(1) : "-"} 최소 ${ds.length ? ds[0].toFixed(1) : "-"}mm (흡착 margin 15.0mm)`);
+    lines.push(`    ${nm} 접힘계수 = 사슬 ${cm(r0.L)} / 투영 볼록껍질 ${cm(hp)} = **${(r0.L / Math.max(1e-9, hp)).toFixed(3)}** · 몸거리 중앙 ${ds.length ? ds[Math.floor(ds.length / 2)].toFixed(1) : "-"} p99 ${ds.length ? ds[Math.floor(ds.length * 0.99)].toFixed(1) : "-"} 최소 ${ds.length ? ds[0].toFixed(1) : "-"}mm (흡착 margin ${MM(MESH_MARGIN)}mm)`);
   }
   return lines.join("\n");
 };
@@ -1567,7 +1585,7 @@ const phaseLine = (nm: string, idx: number[]): string => {
   }).filter((q): q is number => q !== null).sort((a, b) => a - b);
   if (v.length === 0) return `    ${nm} — 산출 불가`;
   const q = (f: number): string => (v[Math.min(v.length - 1, Math.floor(f * v.length))] * 1000).toFixed(1);
-  const p1 = v.filter((x) => x > COLLISION_MARGIN).length, p2 = v.filter((x) => x > 0 && x <= COLLISION_MARGIN).length, p3 = v.filter((x) => x <= 0).length;
+  const p1 = v.filter((x) => x > MESH_MARGIN).length, p2 = v.filter((x) => x > 0 && x <= MESH_MARGIN).length, p3 = v.filter((x) => x <= 0).length;
   const pc = (n: number): string => (100 * n / v.length).toFixed(1);
   return `    ${nm} n=${v.length} · d(mm) p25 ${q(0.25)} 중앙 ${q(0.5)} p99 ${q(0.99)} · 국면1 ${p1}(${pc(p1)}%) · 국면2 ${p2}(${pc(p2)}%) · 국면3 ${p3}(${pc(p3)}%)`;
 };
@@ -1578,7 +1596,7 @@ const ringMidReport = (label: string): string => {
     const y = sim.positions[i * 3 + 1];
     if (y >= 1.10 && y <= 1.25) mid.push(i);
   }
-  return [`  [55계기·링/중배부 국면] ${label} · 경계 margin ${(COLLISION_MARGIN * 1000).toFixed(1)}mm`,
+  return [`  [55계기·링/중배부 국면] ${label} · 경계 margin ${MM(MESH_MARGIN)}mm`,
     phaseLine("링 앞판", fr), phaseLine("링 뒤판", bk), phaseLine("뒤판 중배부(y110~125)", mid)].join("\n");
 };
 const ringShapeReport = (label: string): string => {
@@ -1617,6 +1635,9 @@ const ringShapeReport = (label: string): string => {
 const bodyPartOf = (x: number, y: number, z: number): string => {
   const dx = Math.abs(x - centerX);
   if (y > body.neckBaseY) return "목기둥";
+  // 100 §2 ① — 이 `COLLISION_MARGIN`은 **몸 대역 라벨의 폭**이고 정착 물리의 margin이 아니다.
+  // 99가 「의도인지 우연인지 코드에 없다」로 등재했고 이번에도 **근거를 못 찾았다** →
+  // `MESH_MARGIN`에 배선하지 않는다(배선하면 물리를 바꿀 때 «몸 분류»가 따라 움직인다).
   if (y >= body.ridgeTopYAt(dx) - COLLISION_MARGIN) return "어깨능선";
   if (dx > body.shoulderSpanM / 2) return "팔";
   return z > collision.centerZ ? "가슴" : "등";
@@ -2079,7 +2100,7 @@ const result = runDressing(
   {
     place: (scale) => {
       g.place(scale);
-      correctPlacementPenetration(g.positions, total, wholeMesh, insideParity, COLLISION_MARGIN, g.selfCollisionMinDistM, skipKeys, SDF_FAR);
+      correctPlacementPenetration(g.positions, total, wholeMesh, insideParity, PLACE_MARGIN, g.selfCollisionMinDistM, skipKeys, SDF_FAR);
       for (let i = 0; i < total; i++) sim.setParticle(i, g.positions[i * 3], g.positions[i * 3 + 1], g.positions[i * 3 + 2]);
       placementRestGate(`(i) 재배치 직후 · 핀 발화 전 (오프셋 배수 ${scale.toFixed(2)})`);
       gateArmed = true; // 재배치가 좌표를 배치 상태로 되돌렸다 → 다음 핀 발화는 다시 "배치 직후"다
@@ -3601,8 +3622,8 @@ console.log(`  maxStrain ${strain.v.toFixed(3)} (정점 ${strain.at}) · maxSeam
       const nulls = raw.length - v.length;
       if (v.length === 0) return `    ${nm} — 산출 불가(정의역 ${raw.length} · null 탈락 ${nulls})`;
       const q = (f: number): string => (v[Math.min(v.length - 1, Math.floor(f * v.length))] * 1000).toFixed(1);
-      const p1 = v.filter((x) => x > COLLISION_MARGIN).length;
-      const p2 = v.filter((x) => x > 0 && x <= COLLISION_MARGIN).length;
+      const p1 = v.filter((x) => x > MESH_MARGIN).length;
+      const p2 = v.filter((x) => x > 0 && x <= MESH_MARGIN).length;
       const p3 = v.filter((x) => x <= 0).length;
       // ── 97 §1 결함 C 수리 — **계기 질의 반경(SDF_FAR 300mm) ≠ 물리 탐지 반경(150mm)**.
       // 그 사이 구간은 「물리가 안 건드리는데 계기는 세는」 자리다. 값은 안 바꾸고 구간만 가른다
@@ -3610,10 +3631,10 @@ console.log(`  maxStrain ${strain.v.toFixed(3)} (정점 ${strain.at}) · maxSeam
       const inR = v.filter((x) => x <= COLLISION_DETECTION_RADIUS).length;
       const outR = v.length - inR;
       return `    ${nm} n=${v.length}/${raw.length}(null 탈락 ${nulls}) · d(mm) p25 ${q(0.25)} 중앙 ${q(0.5)} p75 ${q(0.75)} p99 ${q(0.99)}` +
-        ` · **국면1(자석 d>15) ${p1}(${(100 * p1 / v.length).toFixed(1)}%) · 국면2(안착 0<d≤15) ${p2}(${(100 * p2 / v.length).toFixed(1)}%) · 국면3(관통 d≤0) ${p3}(${(100 * p3 / v.length).toFixed(1)}%)**` +
+        ` · **국면1(자석 d>${MM(MESH_MARGIN)}) ${p1}(${(100 * p1 / v.length).toFixed(1)}%) · 국면2(안착 0<d≤${MM(MESH_MARGIN)}) ${p2}(${(100 * p2 / v.length).toFixed(1)}%) · 국면3(관통 d≤0) ${p3}(${(100 * p3 / v.length).toFixed(1)}%)**` +
         ` · 탐지반경 ${(COLLISION_DETECTION_RADIUS * 1000).toFixed(0)}mm 이내 ${inR} / **${(COLLISION_DETECTION_RADIUS * 1000).toFixed(0)}~${(SDF_FAR * 1000).toFixed(0)}mm ${outR}**(물리 미도달)`;
     };
-    console.log(`  [53계기b·몸거리 d 분위수·국면] 정착 · 경계 = COLLISION_MARGIN ${(COLLISION_MARGIN * 1000).toFixed(1)}mm`);
+    console.log(`  [53계기b·몸거리 d 분위수·국면] 정착 · 경계 = **mesh 리졸버에 넘긴 값** ${MM(MESH_MARGIN)}mm(상수 ${MM(COLLISION_MARGIN)}mm · 배치 교정 ${MM(PLACE_MARGIN)}mm)`);
     console.log(phaseStat("링 앞판", fr)); console.log(phaseStat("링 뒤판", bk));
     console.log(phaseStat("밑단 앞판", hemChain.front)); console.log(phaseStat("밑단 뒤판", hemChain.back));
     {
@@ -3674,7 +3695,7 @@ console.log(`  maxStrain ${strain.v.toFixed(3)} (정점 ${strain.at}) · maxSeam
   }
 }
 // ── 35계기 3번: 흡착 파라미터를 **코드에서** 인쇄한다(문서 인용 금지 — 함정 13).
-console.log(`  [35계기·흡착 파라미터] margin ${(COLLISION_MARGIN * 1000).toFixed(1)}mm(clothConfig · 근거="옷감 두께 근사치" **정성적**) · 탐지반경 ${(COLLISION_DETECTION_RADIUS * 1000).toFixed(1)}mm(근거=관통 파티클 구조 여유 **정성적·수치 도출 없음**) · under-relaxation 0.4(bvhFromArrays PUSH_RELAXATION · 근거=탐지반경 15cm에서 shrink-wrap **실측**) · 검사 주기 ${COLLISION_EVERY}반복마다`);
+console.log(`  [35계기·흡착 파라미터] margin **정착 물리 ${MM(MESH_MARGIN)}mm / 배치 교정 ${MM(PLACE_MARGIN)}mm / 상수 ${MM(COLLISION_MARGIN)}mm**(clothConfig · 근거="옷감 두께 근사치" **정성적 · 코드가 수치 도출을 대지 않는다**) · **껍질 둘레 잉여 2π·Δ = ${((2 * Math.PI * (PLACE_MARGIN - MESH_MARGIN)) * 100).toFixed(2)}cm**(배치 − 정착 · 0이면 두 채널 동일) · 탐지반경 ${(COLLISION_DETECTION_RADIUS * 1000).toFixed(1)}mm(근거=관통 파티클 구조 여유 **정성적·수치 도출 없음**) · under-relaxation 0.4(bvhFromArrays PUSH_RELAXATION · 근거=탐지반경 15cm에서 shrink-wrap **실측**) · 검사 주기 ${COLLISION_EVERY}반복마다`);
 console.log(`    표적 선택 = BVH closestPointToPoint(**최근접 삼각형**) → 목표 = hit.point + 그 삼각형 **면 법선** × margin. 법선 방향 제한 **없음**.`);
 console.log(`    penetrationAxis ${ADSORB_PENONLY ? "**전달됨(ADSORB_PENONLY=1)** → **관통-only**(표면 밖 정점은 안 건드린다)" : "**미전달** → 관통-only 아님 = **양방향 흡착**"}${ADSORB_PENONLY ? "" : "(탐지반경 안이면 관통 여부 무관하게 항상 표면+margin으로 40%씩 끌어당김)"}. 대상 = 앞/뒤판만(소매는 null 리졸버 + 팔 캡슐).`);
 console.log(
@@ -3898,7 +3919,7 @@ if (DIAG) {
         const d = m.signedClearance(sim.positions[i * 3], sim.positions[i * 3 + 1], sim.positions[i * 3 + 2], SDF_FAR);
         if (d === null) { byPanel["질의 실패"] = (byPanel["질의 실패"] ?? 0) + 1; continue; }
         ds.push(d * 1000);
-        if (d <= 0) neg++; else if (d <= COLLISION_MARGIN) inMargin++; else out++;
+        if (d <= 0) neg++; else if (d <= MESH_MARGIN) inMargin++; else out++;
       }
       ds.sort((a, b) => a - b);
       const q = (f: number): string => (ds.length ? ds[Math.min(ds.length - 1, Math.floor(f * ds.length))].toFixed(1) : "-");
