@@ -57,7 +57,10 @@ const centerX = (pose.pinLeft.x + pose.pinRight.x) / 2;
 const arms = [pose.armLeft, pose.armRight] as const;
 
 const skeleton = deriveBodySkeleton(position, torsoIndex, [pose.armLeft, pose.armRight], centerX, collision.centerZ, hemY);
-const body = measureBody(position, torsoIndex, wholeIndex, arms, skeleton, hemY, centerX, collision.centerZ);
+// 102 §2 — `MARGIN_ALL` 채널을 게이트 하네스에도 잇는다(문턱 ⑦⑧ 평가용).
+// 미설정이면 `COLLISION_MARGIN` — 기존 호출과 비트 동일.
+const MARGIN_ALL = process.env.MARGIN_ALL ? Number(process.env.MARGIN_ALL) / 1000 : COLLISION_MARGIN;
+const body = measureBody(position, torsoIndex, wholeIndex, arms, skeleton, hemY, centerX, collision.centerZ, MARGIN_ALL);
 
 // 옷 치수 — fixture가 워커에 실제로 넘긴 값에서 도출한다(하드코딩 금지).
 // 어깨너비는 v1 어깨 핀 간격이 곧 옷 어깨너비다(pinLeft/pinRight = 옷 어깨점).
@@ -88,7 +91,7 @@ const outlineAt = makeOutlineProvider(
   (h) => { const sl = body.slices.reduce((b, s2) => (Math.abs(s2.y - h) < Math.abs(b.y - h) ? s2 : b), body.slices[0]); return [sl.axisX, sl.axisZ]; },
   PATTERN_EDGE_INTERIOR_M,
 );
-const g = buildPatternGarment(body, garmentDims, arms as unknown as readonly [typeof pose.armLeft, typeof pose.armRight], outlineAt);
+const g = buildPatternGarment(body, garmentDims, arms as unknown as readonly [typeof pose.armLeft, typeof pose.armRight], outlineAt, undefined, MARGIN_ALL);
 const buildMs = Math.round(performance.now() - tBuild);
 const d = g.draft.dims;
 console.log(
