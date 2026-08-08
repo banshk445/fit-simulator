@@ -92,8 +92,23 @@ const hemY = collision.capsules[collision.capsules.length - 1].bottom.y;
 const centerX = (pose.pinLeft.x + pose.pinRight.x) / 2;
 const arms = [pose.armLeft, pose.armRight] as const;
 
+// ══ 102 §1 — **margin 전 소비처 일관 적용 채널** ═════════════════════════════
+// 101이 도출은 세웠으나(3.212mm = `g.selfCollisionMinDistM`) **정착 물리 한 곳에만**
+// 넣어 실패했다(갈래 C · cov 6.8→87.4% · 관통 50→692). 실패 원인은 도출이 아니라
+// **소비처 부분 적용**이다([[함정32]]). `MARGIN_ALL=값(mm)`이면 v2의 «네 소비처 군»이
+// 전부 그 값을 읽는다 — 정착 물리 · 배치 교정 · 배치 기하 · 제도 시접.
+//
+// **미설정이 기본이고 그때 전부 `COLLISION_MARGIN`이라 기준선은 비트 동일**이다.
+// **상수는 안 바꾼다** — v1 3경로는 상수를 직접 읽고 `measureBody`/`buildPatternGarment`를
+// 부르지도 않으므로 **v1 비트 동일이 구조로 보장**된다(호출부 grep 확인분).
+//
+// **주의(102가 새로 등재)**: `MARGIN_ALL`이 제도에 들어가면 목선 pos2가 바뀌고
+// **`patternHash`가 깨진다.** 그것이 이 회차의 승인 사항이다(§0(2)).
+// 그리고 도출원 `selfCollisionMinDistM`은 «메시»에서 나오는데 그 메시가 제도에서
+// 나오므로 **일관 적용은 고정점이 아니다** — 적용 후 값을 인쇄해 간극을 드러낸다.
+const MARGIN_ALL = process.env.MARGIN_ALL ? Number(process.env.MARGIN_ALL) / 1000 : COLLISION_MARGIN;
 const skeleton = deriveBodySkeleton(position, torsoIndex, [pose.armLeft, pose.armRight], centerX, collision.centerZ, hemY);
-const body = measureBody(position, torsoIndex, wholeIndex, arms, skeleton, hemY, centerX, collision.centerZ);
+const body = measureBody(position, torsoIndex, wholeIndex, arms, skeleton, hemY, centerX, collision.centerZ, MARGIN_ALL);
 
 // ══ 정본 · 몸 반경 프로파일 v1 (42회차 신설 · 영구) ══════════════════════════
 //
@@ -183,7 +198,8 @@ const outlineAt = makeOutlineProvider(
   (h) => { const sl = body.slices.reduce((b, s2) => (Math.abs(s2.y - h) < Math.abs(b.y - h) ? s2 : b), body.slices[0]); return [sl.axisX, sl.axisZ]; },
   PATTERN_EDGE_INTERIOR_M,
 );
-const g = buildPatternGarment(body, garmentDims, arms, outlineAt);
+// `undefined`는 sizeOpts 기본값을 그대로 쓴다 — 삼각화 설정 변경 0.
+const g = buildPatternGarment(body, garmentDims, arms, outlineAt, undefined, MARGIN_ALL);
 const total = g.panelCounts.reduce((a, b) => a + b, 0);
 const cm = (v: number): string => (v * 100).toFixed(2);
 
@@ -234,7 +250,7 @@ if (process.env.EXPORT_META === "1") {
 {
   const ENV_KEYS = [
     // 상태를 바꾸는 것(물리·구성)
-    "RINGTOTAL", "TORSOCAP", "ARMCAP", "MESHMARGIN", "PLACEMARGIN", "SINGLE", "SECONDS", "PINDRESS", "GRAV0", "S0FIX",
+    "RINGTOTAL", "TORSOCAP", "ARMCAP", "MARGIN_ALL", "MESHMARGIN", "PLACEMARGIN", "SINGLE", "SECONDS", "PINDRESS", "GRAV0", "S0FIX",
     "HEMBEND", "MAGNET", "MAGNET_D0", "ADSORB_PENONLY", "WINDING", "FIXTURE",
     // 계기·출력
     "PATTERNCORE", "DIAG", "PROBE", "EXPORT_META", "PATTERN_META", "SKELSIGN", "SLEEVESIGN", "WINDPAR", "SLEEVEGEO",
@@ -344,12 +360,14 @@ const S0FIX = process.env.S0FIX !== "0";
 // 기각한 대안: 같은 도출원의 **절반**(중립면 규약 = 자기충돌 문턱이 「1겹 두께」라는 해석).
 //   저장소가 그 규약을 **어디에서도 진술하지 않으므로** 채택하면 «미진술 가정»이 하나 는다.
 const MESH_MARGIN = process.env.MESHMARGIN === "self" ? g.selfCollisionMinDistM
-  : process.env.MESHMARGIN ? Number(process.env.MESHMARGIN) / 1000 : COLLISION_MARGIN;
-const PLACE_MARGIN = process.env.PLACEMARGIN ? Number(process.env.PLACEMARGIN) / 1000 : COLLISION_MARGIN;
+  : process.env.MESHMARGIN ? Number(process.env.MESHMARGIN) / 1000 : MARGIN_ALL;
+const PLACE_MARGIN = process.env.PLACEMARGIN ? Number(process.env.PLACEMARGIN) / 1000 : MARGIN_ALL;
 const MM = (m: number): string => (m * 1000).toFixed(1);
 console.log(`[dress] margin 채널: 정착 물리(mesh 리졸버) ${MM(MESH_MARGIN)}mm${process.env.MESHMARGIN === "self" ? `(**도출 = g.selfCollisionMinDistM** — 옷↔몸 배제거리 ≡ 옷↔옷 배제거리)` : ""} · 배치 교정(correctPlacementPenetration) ${MM(PLACE_MARGIN)}mm · 상수 COLLISION_MARGIN ${MM(COLLISION_MARGIN)}mm` +
   `${MESH_MARGIN === PLACE_MARGIN ? " — 두 채널 동일" : ` — **두 채널 상이(차 ${MM(PLACE_MARGIN - MESH_MARGIN)}mm)**`}` +
-  ` · **이 스크립트가 안 바꾸는 소비처**: 제도 치수(bodyMeasure:317→patternDraft) · 배치 기하(patternGarment:358-359,411,422,504) · 몸통 캡슐(:752) · 앵커(:991) — 전부 상수 ${MM(COLLISION_MARGIN)}mm`);
+  ` · 배치 기하(patternGarment:358-359,411,422,504) ${MM(MARGIN_ALL)}mm · 제도 시접(bodyMeasure:317→patternDraft) ${MM(MARGIN_ALL)}mm` +
+  ` · **안 바꾸는 소비처**: 몸통 캡슐(:752 · TORSOCAP off) · 앵커(:991 · PINDRESS off) — 상수 ${MM(COLLISION_MARGIN)}mm` +
+  ` · **도출 고정점 간극**: 적용값 ${MM(MARGIN_ALL)}mm ↔ 적용 «후» 메시가 주는 g.selfCollisionMinDistM ${MM(g.selfCollisionMinDistM)}mm(차 ${MM(g.selfCollisionMinDistM - MARGIN_ALL)}mm — 0이 아니면 일관 적용이 고정점이 아니다)`);
 const penBefore = countInside(g.positions, total, insideParity);
 const corrected = S0FIX ? correctPlacementPenetration(
   g.positions, total, wholeMesh, insideParity, PLACE_MARGIN, g.selfCollisionMinDistM, skipKeys, SDF_FAR,

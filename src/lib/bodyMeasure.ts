@@ -166,6 +166,12 @@ export function measureBody(
   hemY: number,
   centerX: number,
   centerZ: number,
+  // ── 102 §1 — **제도 시접 채널**(101 §1(c)). 목밑 슬라이스를 표면에서 이만큼 방사
+  // 오프셋한 뒤 볼록껍질 둘레를 잰다 = 「목선이 얹힐 껍질의 반경」.
+  // 기본값이 `COLLISION_MARGIN`이므로 **인자를 안 넘기는 호출은 비트 동일**이다.
+  // v1 3경로(garmentWorker · paramSweep · spikeDressing)는 `measureBody`를 **부르지 않는다**
+  // (호출부 전량: dressPattern · checkPattern · checkBoundary · checkOutline · PatternPreview).
+  shellMarginM: number = COLLISION_MARGIN,
 ): BodyMeasure {
   const shoulderJointY = Math.max(arms[0].trueShoulder.y, arms[1].trueShoulder.y);
   const shoulderSpanM = Math.abs(arms[0].trueShoulder.x - arms[1].trueShoulder.x);
@@ -314,7 +320,7 @@ export function measureBody(
       pts.push([position[v * 3], position[v * 3 + 2]]);
     }
     if (pts.length < 3) throw new Error("목밑 단면 표본 부족 — 능선 무릎 높이 확인");
-    const { girthM, points } = girthOfSlice(pts, cx, cz, COLLISION_MARGIN);
+    const { girthM, points } = girthOfSlice(pts, cx, cz, shellMarginM);
     // 앞/뒤 배분 — 같은 폐곡선을 x 최대·최소 정점에서 자른다.
     const hull = convexHull(points);
     let iMax = 0, iMin = 0;

@@ -194,6 +194,11 @@ export function buildPatternGarment(
     hInteriorM: PATTERN_EDGE_INTERIOR_M,
     bandM: PATTERN_REFINE_BAND_M,
   },
+  // ── 102 §1 — **배치 기하 채널**(101 §1(b')(b'')). 앞뒤판 평면 z 오프셋 ·
+  // 윤곽 오프셋 · 소매 원통 반경이 읽는다. 기본값이 `COLLISION_MARGIN`이라
+  // **인자를 안 넘기는 호출은 비트 동일**이다. `×2` 배율은 **근거 부재로 등재**돼
+  // 있으므로 건드리지 않는다 — base만 갈아 끼운다(101 §1(b') 유지).
+  marginM: number = COLLISION_MARGIN,
 ): PatternGarment {
   const draft = draftTshirtPattern(body, garment);
   sampleAllSegments(draft, sizeOpts);
@@ -355,8 +360,8 @@ export function buildPatternGarment(
   const wrapShrink = 1 - 1 / Math.max(2, cuffSamples - 1);
   const anchorY = draft.dims.ridgeAnchorY;
   // 앞/뒤 오프셋을 **따로** 도출한다(몸 z 비대칭).
-  const torsoOffsetFront = body.frontExtentM + COLLISION_MARGIN * 2;
-  const torsoOffsetBack = body.backExtentM + COLLISION_MARGIN * 2;
+  const torsoOffsetFront = body.frontExtentM + marginM * 2;
+  const torsoOffsetBack = body.backExtentM + marginM * 2;
 
   const norm = (v: Vec3Like): Vec3Like => {
     const l = Math.hypot(v.x, v.y, v.z) || 1;
@@ -408,7 +413,7 @@ export function buildPatternGarment(
     return { x: sl.axisX, z: sl.axisZ };
   };
   const outlineGirthAt = (h: number): number => {
-    const pts = outlineAt(h, COLLISION_MARGIN);
+    const pts = outlineAt(h, marginM);
     let l = 0;
     for (let i = 0; i < pts.length; i++) {
       const a = pts[i], b = pts[(i + 1) % pts.length];
@@ -419,7 +424,7 @@ export function buildPatternGarment(
   const maxRadiusAt = (h: number): number => {
     const ax = axisAtH(h);
     let r = 0;
-    for (const q of outlineAt(h, COLLISION_MARGIN)) r = Math.max(r, Math.hypot(q[0] - ax.x, q[1] - ax.z));
+    for (const q of outlineAt(h, marginM)) r = Math.max(r, Math.hypot(q[0] - ax.x, q[1] - ax.z));
     return r;
   };
   // top 높이 — 목선 크기의 원이 몸 밖에 존재하는 높이. 2πR(h)는 **단봉**이므로
@@ -501,7 +506,7 @@ export function buildPatternGarment(
       // 거울상으로 만든다(미러 쌍 정합 검사가 이것을 잡는다).
       if (e2.z < 0) e2 = { x: -e2.x, y: -e2.y, z: -e2.z };
       if (flipSign < 0) e2 = { x: -e2.x, y: -e2.y, z: -e2.z };
-      const radius = sleeveRadiusM + COLLISION_MARGIN * offsetScale;
+      const radius = sleeveRadiusM + marginM * offsetScale;
       const start = panelStarts[panel];
       const base = draft.dims.sleeveHalfWidthM;
       for (let i = 0; i < panelCounts[panel]; i++) {
