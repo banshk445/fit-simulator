@@ -234,7 +234,7 @@ if (process.env.EXPORT_META === "1") {
 {
   const ENV_KEYS = [
     // 상태를 바꾸는 것(물리·구성)
-    "RINGTOTAL", "TORSOCAP", "SINGLE", "SECONDS", "PINDRESS", "GRAV0", "S0FIX",
+    "RINGTOTAL", "TORSOCAP", "ARMCAP", "SINGLE", "SECONDS", "PINDRESS", "GRAV0", "S0FIX",
     "HEMBEND", "MAGNET", "MAGNET_D0", "ADSORB_PENONLY", "WINDING", "FIXTURE",
     // 계기·출력
     "PATTERNCORE", "DIAG", "PROBE", "EXPORT_META", "PATTERN_META", "SKELSIGN", "SLEEVESIGN", "WINDPAR", "SLEEVEGEO",
@@ -723,6 +723,18 @@ const meshResolver = createPanelSplitResolver(
 // 함정16 규범("근접을 기전으로 승격하려면 ablation으로 흔들어라")의 이행 수단이다.
 // 처방이 아니다: 관통·cov 붕괴는 예상된 부작용이고 판정 대상이 아니다.
 const TORSOCAP = process.env.TORSOCAP === "1";
+// ── 94회차 §1 **절제 스위치**(진단 전용 · 기본 on · `ARMCAP=0`으로 해제 · 처방 아님).
+// `buildArmCapsules`는 0줄 — 92 §4-1(v1 제품 경로가 그 함수를 공유한다)을 지킨다.
+// 여기(dressPattern.ts)의 호출 지점은 v2 전용이다(strategist 94 §1(a): v1 3경로는
+// garmentFrame.ts:160-172 · paramSweep.ts:205 · spikeDressing.ts:152의 **다른** 호출을 쓴다).
+// **변수는 1개가 아니다**(strategist 94 §1(c) 반증). 이 게이트를 끄면:
+//   ① 소매 패널(2·3)의 **유일한** 충돌자가 사라진다 — :711 createPanelSplitResolver의
+//      3·4번째 인자가 `null`이고, 몸통 메시는 meshCollision.ts:53 `excludeArms`로
+//      팔 축 반경 9cm가 지워져 있다.
+//   ② 몸판(0·1)의 팔 대역 충돌자도 함께 사라진다 — 아래 호출에 패널 분기가 없다.
+// 그리고 TORSOCAP이 45회차부터 기본 off이므로 `ARMCAP=0`은 **캡슐 층 전체 절제**다.
+// 판정에서 ①②를 가르기 위해 관통을 패널별로 분해해 인쇄한다(94 체크리스트 4·5).
+const ARMCAP = process.env.ARMCAP !== "0";
 // 42회차 처방 A — 정점당 **가장 깊이 파묻힌 캡슐 1개만** 민다(기본 on · `SINGLE=0`으로 해제).
 const SINGLE_DEEPEST = process.env.SINGLE !== "0";
 const unified = (positions: Float32Array, pinned: Uint8Array, n: number): void => {
@@ -739,7 +751,7 @@ const unified = (positions: Float32Array, pinned: Uint8Array, n: number): void =
       // 1개만 발화하므로 이 플래그가 켜져도 **거동이 같다**(비트 동일 확인 대상).
       applyCapsuleCollision(pos, pin, count, collision.capsules, COLLISION_MARGIN, undefined, undefined, SINGLE_DEEPEST);
     }
-    applyCapsuleCollision(pos, pin, count, armCapsules, 0.006);
+    if (ARMCAP) applyCapsuleCollision(pos, pin, count, armCapsules, 0.006);
     offset += count;
   }
   void n;
@@ -1138,7 +1150,10 @@ const compSequential = (): { mesh: Float32Array; torso: Float32Array; arm: Float
   offset = 0;
   for (let p = 0; p < g.panelCounts.length; p++) {
     const count = g.panelCounts[p];
-    applyCapsuleCollision(compScratch.subarray(offset * 3, (offset + count) * 3), adsorbNoPin.subarray(offset, offset + count), count, armCapsules, 0.006);
+    // **ablation 게이트**(94회차 — 39회차 몸통 정정과 같은 이유). ARMCAP=0이면 `unified`가
+    // 이 리졸버를 부르지 않으므로 계기도 부르면 안 된다(안 그러면 실행되지 않은 리졸버의
+    // 가정 프로브를 실측처럼 인쇄한다). 헤더에 게이트 상태를 병기한다.
+    if (ARMCAP) applyCapsuleCollision(compScratch.subarray(offset * 3, (offset + count) * 3), adsorbNoPin.subarray(offset, offset + count), count, armCapsules, 0.006);
     offset += count;
   }
   return { mesh: snapA, torso: snapB, arm: compScratch };
@@ -1147,7 +1162,7 @@ const compReport = (label: string): string => {
   const front = ringOrder.filter((i) => i < g.panelStarts[1]);
   const back = ringOrder.filter((i) => i >= g.panelStarts[1]);
   const { mesh, torso, arm } = compSequential();
-  const lines = [`  [39계기B·흡착 성분 3분리 · **순차 in-situ**] ${label} · 앞판 링 ${front.length} / 뒤판 링 ${back.length} · **충돌 1회 호출분**(실제 서브스텝은 4회 — 패스표와 단위 다름)`];
+  const lines = [`  [39계기B·흡착 성분 3분리 · **순차 in-situ**] ${label} · 앞판 링 ${front.length} / 뒤판 링 ${back.length} · **충돌 1회 호출분**(실제 서브스텝은 4회 — 패스표와 단위 다름) · 게이트 TORSOCAP=${TORSOCAP ? 1 : 0} ARMCAP=${ARMCAP ? 1 : 0}${ARMCAP ? "" : " — **팔 성분 열은 항등(절제됨)**"}`];
   const seg = (from: Float32Array | null, to: Float32Array, idx: number[]): string => {
     const base = (i: number, k: number): number => (from ? from[i * 3 + k] : sim.positions[i * 3 + k]);
     const mags = idx.map((i) => Math.hypot(to[i * 3] - base(i, 0), to[i * 3 + 1] - base(i, 1), to[i * 3 + 2] - base(i, 2)) * 1000);
@@ -2708,6 +2723,19 @@ console.log(`    버킷 old→new: ${Object.keys(covSh.buckets).sort().map((k) =
     const armMinus = armPlus === pose.armLeft ? pose.armRight : pose.armLeft;
     console.log(`  [93 §2] ${bodyGeodesicSelfCheck()}`);
     console.log(`  [93 §2] 기준선 — 캡슐 유효반경 ${cm(rEff)}cm(= ${cm(ARM_COLLISION_RADIUS)} + 0.60) · 소매 원통 배치반경 ${cm(sleeveTubeR)}cm · 소매 정점 ${total - g.panelStarts[2]}(패널2 ${g.panelStarts[3] - g.panelStarts[2]} + 패널3 ${total - g.panelStarts[3]})`);
+    // ── 94회차 체크리스트 3 — 절제 시 **접촉 채널은 판정에 쓸 수 없다**. 정점을 반경 rEff에
+    // 얹는 유일한 기구가 :742이므로 ARMCAP=0의 접촉률 하락은 가설의 검정이 아니라
+    // 스위치의 재인쇄다(항진). rEff는 상수 유래라 계기는 산출되지만 그 열만 무효다.
+    if (!ARMCAP) console.log(`  [94 §1 게이트] **ARMCAP=0 — 팔 캡슐 절제 실행**. rEff ${cm(rEff)}cm은 상수(clothConfig ARM_COLLISION_RADIUS + 0.006)에서 뜬 값이며 이 실행에는 대응하는 물리가 없다 → **접촉/접촉률 열은 판정 불가(항진)**. r 분위수·상하 차·팔 실측은 팔 축 프레임만 쓰므로 유효.`);
+    // ── 94회차 체크리스트 4·5 — 팔 대역 비관통 제약이 전 패널에서 0이 되므로
+    // "소매 형상이 캡슐 무관"과 "소매가 팔을 통과했다"를 구분하려면 관통을 패널별로 본다.
+    {
+      const perPanel = g.panelCounts.map((c, p) => {
+        const st = g.panelStarts[p];
+        return `${PANEL_NAME[p]} ${countInside(sim.positions.subarray(st * 3, (st + c) * 3), c, insideParity)}/${c}`;
+      });
+      console.log(`  [94 §1] 관통 패널 분해(정착 후) — ${perPanel.join(" · ")} · 총 ${countInside(sim.positions, total, insideParity)}/${total}`);
+    }
     // `patternGarment.ts:490`과 같은 배정 — 패널3=armPlus(flip +1) · 패널2=armMinus(flip −1)
     for (const [nm, panel, arm, flip] of [["R(+x축)", 3, armPlus, 1], ["L(−x축)", 2, armMinus, -1]] as const) {
       const f = sleeveArmFrame(arm.dir, flip);
@@ -2765,7 +2793,7 @@ console.log(`    버킷 old→new: ${Object.keys(covSh.buckets).sort().map((k) =
       const up12 = s012.filter((v) => Math.abs(v.th) < Math.PI / 2).map((v) => v.r);
       const dn12 = s012.filter((v) => Math.abs(v.th) >= Math.PI / 2).map((v) => v.r);
       console.log(
-        `  [93 §2-판정] ${nm} s0~12 — **접촉률 ${contactHit}/${contactTot} = ${(contactHit / (contactTot || 1)).toFixed(3)}**` +
+        `  [93 §2-판정] ${nm} s0~12 — ${ARMCAP ? "" : "[판정불가·항진] "}**접촉률 ${contactHit}/${contactTot} = ${(contactHit / (contactTot || 1)).toFixed(3)}**` +
         ` · **상하 r 중앙 차 ${up12.length && dn12.length ? c2(qv(dn12, 0.5) - qv(up12, 0.5)) : "—"}cm**(상 ${up12.length ? c2(qv(up12, 0.5)) : "—"} / 하 ${dn12.length ? c2(qv(dn12, 0.5)) : "—"})` +
         ` · 전체 r 중앙 ${c2(qv(s012.map((v) => v.r), 0.5))}cm`,
       );
