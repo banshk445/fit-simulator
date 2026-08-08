@@ -11,7 +11,7 @@
 import { readFileSync, writeFileSync, existsSync } from "node:fs";
 import { createHash } from "node:crypto";
 import * as THREE from "three";
-import { ArrayBvhCollision } from "../src/lib/bvhFromArrays";
+import { ArrayBvhCollision, getResolverMissCount } from "../src/lib/bvhFromArrays";
 import { SelfCollision } from "../src/lib/selfCollision";
 import { FABRIC_PRESETS } from "../src/lib/fabricPresets";
 import { createGarmentSession, createPanelSplitResolver, buildArmCapsules } from "../src/lib/garmentFrame";
@@ -336,10 +336,18 @@ const S0FIX = process.env.S0FIX !== "0";
 // 두 채널을 «분리해» 둔 이유는 99 §1(e)③이 등재한 물리 불일치다: 배치 교정은 margin 껍질에
 // 정점을 «놓고», 정착 물리는 margin 껍질로 «당긴다». 두 값이 갈리면 초기 조건과 평형점이
 // 그 차만큼 어긋난다. 어느 쪽으로 고정할지는 **이 회차가 정하지 않는다**(규범 4·5).
-const MESH_MARGIN = process.env.MESHMARGIN ? Number(process.env.MESHMARGIN) / 1000 : COLLISION_MARGIN;
+// 101 §1(a) 도출 채택분 — `MESHMARGIN=self`는 **값이 아니라 도출을 지정한다**:
+//   「옷이 몸에서 떨어져야 할 거리 = 옷이 옷 자신에게서 떨어져야 할 거리」
+//   ⟹ MESH_MARGIN = `g.selfCollisionMinDistM`(= edgeMin × SELF_COLLISION_EDGE_FACTOR ·
+//      `patternGarment.ts:342-343` · 이미 «측정된 엣지»에서 도출된 길이다).
+// 숫자를 손으로 적지 않는다 — 메시가 바뀌면 도출값이 따라 움직인다(함정 12 규범).
+// 기각한 대안: 같은 도출원의 **절반**(중립면 규약 = 자기충돌 문턱이 「1겹 두께」라는 해석).
+//   저장소가 그 규약을 **어디에서도 진술하지 않으므로** 채택하면 «미진술 가정»이 하나 는다.
+const MESH_MARGIN = process.env.MESHMARGIN === "self" ? g.selfCollisionMinDistM
+  : process.env.MESHMARGIN ? Number(process.env.MESHMARGIN) / 1000 : COLLISION_MARGIN;
 const PLACE_MARGIN = process.env.PLACEMARGIN ? Number(process.env.PLACEMARGIN) / 1000 : COLLISION_MARGIN;
 const MM = (m: number): string => (m * 1000).toFixed(1);
-console.log(`[dress] margin 채널: 정착 물리(mesh 리졸버) ${MM(MESH_MARGIN)}mm · 배치 교정(correctPlacementPenetration) ${MM(PLACE_MARGIN)}mm · 상수 COLLISION_MARGIN ${MM(COLLISION_MARGIN)}mm` +
+console.log(`[dress] margin 채널: 정착 물리(mesh 리졸버) ${MM(MESH_MARGIN)}mm${process.env.MESHMARGIN === "self" ? `(**도출 = g.selfCollisionMinDistM** — 옷↔몸 배제거리 ≡ 옷↔옷 배제거리)` : ""} · 배치 교정(correctPlacementPenetration) ${MM(PLACE_MARGIN)}mm · 상수 COLLISION_MARGIN ${MM(COLLISION_MARGIN)}mm` +
   `${MESH_MARGIN === PLACE_MARGIN ? " — 두 채널 동일" : ` — **두 채널 상이(차 ${MM(PLACE_MARGIN - MESH_MARGIN)}mm)**`}` +
   ` · **이 스크립트가 안 바꾸는 소비처**: 제도 치수(bodyMeasure:317→patternDraft) · 배치 기하(patternGarment:358-359,411,422,504) · 몸통 캡슐(:752) · 앵커(:991) — 전부 상수 ${MM(COLLISION_MARGIN)}mm`);
 const penBefore = countInside(g.positions, total, insideParity);
@@ -3646,6 +3654,39 @@ console.log(`  maxStrain ${strain.v.toFixed(3)} (정점 ${strain.at}) · maxSeam
       console.log(phaseStat("뒤판 중배부(y110~125)", mid));
       console.log(sdfStat("뒤판 중배부(y110~125)", mid));
       console.log(stat("뒤판 중배부(y110~125)", mid));
+      // ── 101 §2(2) — **가슴 대역 간극 채널 신설**. 96·98·99·100 네 회차 연속 부재였고
+      // 화면 서열 1순위(전역 여유)의 자리이며 제도 여유가 가장 큰 대역이다(96 §3 가슴 25.99cm).
+      // 대역은 `body.chestY`(bodyMeasure가 고른 가슴 슬라이스) ± 2.5cm · **앞판·뒤판 분리**.
+      // 새 상수 0 — 높이는 몸에서, 폭은 중배부 대역(y110~125 = ±7.5cm)보다 좁게 잡되
+      // 그 근거는 「슬라이스 간격」이다(bodyMeasure 슬라이스는 1cm 간격).
+      {
+        const cy = body.chestY, half = 0.025;
+        const cf: number[] = [], cb: number[] = [];
+        for (let i = 0; i < g.panelStarts[2]; i++) {
+          const y = sim.positions[i * 3 + 1];
+          if (y < cy - half || y > cy + half) continue;
+          (i < g.panelStarts[1] ? cf : cb).push(i);
+        }
+        console.log(`  [101 §2-2·가슴 대역] y ${cm(cy)}±${cm(half)}cm(body.chestY · 몸 가슴둘레 ${cm(body.chestGirthM)}cm) · 앞판 ${cf.length} / 뒤판 ${cb.length}정점`);
+        console.log(phaseStat("가슴 앞판", cf)); console.log(phaseStat("가슴 뒤판", cb));
+        console.log(sdfStat("가슴 앞판", cf)); console.log(sdfStat("가슴 뒤판", cb));
+      }
+      // ── 101 §2(3) — **원주 직접 채널**(선행 조건 ⑦ 판별자 확정분 · 100 §7 갈림 ㄹ).
+      // 접힘계수·자기교차는 간접이다. 원주 잉여가 어디로 갔는지는 원주를 직접 재서 본다.
+      {
+        const chainLen = (idx: number[]): number => {
+          let l = 0;
+          for (let k = 1; k < idx.length; k++) {
+            const a = idx[k - 1], b = idx[k];
+            l += Math.hypot(sim.positions[b * 3] - sim.positions[a * 3], sim.positions[b * 3 + 1] - sim.positions[a * 3 + 1], sim.positions[b * 3 + 2] - sim.positions[a * 3 + 2]);
+          }
+          return l;
+        };
+        console.log(`  [101 §2-3·원주 직접] 목선 링 ${cm(ringLenM())}cm(rest ${cm(ringRestConfirmedM)}cm · ${(ringLenM() / ringRestConfirmedM).toFixed(3)}배) · 밑단 사슬 앞 ${cm(chainLen(hemChain.front))}cm / 뒤 ${cm(chainLen(hemChain.back))}cm · 합 ${cm(chainLen(hemChain.front) + chainLen(hemChain.back))}cm`);
+      }
+      // ── 101 §2(1) — **탐지 실패 누적**(함정 25 · 98 등재). margin·반경을 건드리면
+      // 이 수가 판정을 왜곡한다. 0이면 「전 정점이 매 호출 잡혔다」가 실증된다.
+      console.log(`  [101 §2-1·탐지 실패] closestPointToPoint null 누적 **${getResolverMissCount()}회**(전 실행 · 앞/뒤판 리졸버 합 · 탐지반경 ${(COLLISION_DETECTION_RADIUS * 1000).toFixed(0)}mm)`);
     }
   }
   // ── 53회차 §3 — 5회차 이월분 2건.

@@ -26,6 +26,12 @@ const scratchRay = new THREE.Ray();
 // 작은 조각으로 쪼그라듦). selfCollision.ts와 같은 under-relaxation 패턴을
 // 적용해, 한 호출당 목표 지점까지 일부만 이동시키고 나머지는 이후 반복에서
 // 구조 제약과 번갈아 가며 서서히 수렴하게 한다.
+// ── 101 §2(1) — 탐지 실패(`closestPointToPoint`가 `null`) 누적 카운터.
+// **읽기 전용 진단**이고 물리에 되먹이지 않는다(값을 쓰는 코드 0곳).
+let resolverMissCount = 0;
+export const getResolverMissCount = (): number => resolverMissCount;
+export const resetResolverMissCount = (): void => { resolverMissCount = 0; };
+
 const PUSH_RELAXATION = 0.4;
 
 // meshCollision.ts의 MannequinCollisionMesh가 메인 스레드(살아있는 Object3D
@@ -233,7 +239,11 @@ export class ArrayBvhCollision {
         const ix = i * 3;
         scratchPoint.set(positions[ix], positions[ix + 1], positions[ix + 2]);
         const hit = bvh.closestPointToPoint(scratchPoint, this.hitInfo, 0, detectionRadius);
-        if (!hit) continue;
+        // ── 101 §2(1) — **말없는 실패 경로 계수**(98회차 등재 · 함정 25).
+        // 탐지 반경 밖이면 그 정점은 그 프레임에 **아무 처리도 안 된다**. 로그도 카운터도
+        // 없어서 「몇 개가 무처리였나」가 원리적으로 산출 불가였다. margin·반경을 건드리면
+        // 이 수가 판정을 왜곡하므로 세기만 한다 — **거동 0줄**(카운터 증가뿐).
+        if (!hit) { resolverMissCount++; continue; }
         if (penetrationAxis?.enabled) {
           const px = positions[ix];
           const py = positions[ix + 1];
