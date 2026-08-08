@@ -254,7 +254,7 @@ if (process.env.EXPORT_META === "1") {
     "HEMBEND", "MAGNET", "MAGNET_D0", "ADSORB_PENONLY", "WINDING", "FIXTURE",
     // 계기·출력
     "PATTERNCORE", "DIAG", "PROBE", "EXPORT_META", "PATTERN_META", "SKELSIGN", "SLEEVESIGN", "WINDPAR", "SLEEVEGEO",
-    "SHOULDERFIT", "ARMGEO", "PATCHDIR", "SIGNDIST", "SEAMGAP", "BANDGAP", "SLEEVESHAPE",
+    "SHOULDERFIT", "ARMGEO", "PATCHDIR", "SIGNDIST", "SEAMGAP", "BANDGAP", "SLEEVESHAPE", "BODYWIDTH",
   ];
   const bvhVer = (() => {
     try {
@@ -3702,7 +3702,28 @@ console.log(`  maxStrain ${strain.v.toFixed(3)} (정점 ${strain.at}) · maxSeam
         };
         console.log(`  [101 §2-3·원주 직접] 목선 링 ${cm(ringLenM())}cm(rest ${cm(ringRestConfirmedM)}cm · ${(ringLenM() / ringRestConfirmedM).toFixed(3)}배) · 밑단 사슬 앞 ${cm(chainLen(hemChain.front))}cm / 뒤 ${cm(chainLen(hemChain.back))}cm · 합 ${cm(chainLen(hemChain.front) + chainLen(hemChain.back))}cm`);
       }
-      // ── 101 §2(1) — **탐지 실패 누적**(함정 25 · 98 등재). margin·반경을 건드리면
+      // ── 103 §3 — **몸통 단면 폭 프로파일**(`BODYWIDTH=1`). 몸을 «먼저» 재는 절이다 —
+  // 패턴 값을 참조하지 않는다(회차 조항 「§3 전에 §4를 읽지 마라」).
+  // 전량 `measureBody`가 «이미 계산해 둔» `body.slices`에서 뜬다 — 새 기하 연산 0 ·
+  // 새 손 상수 0. 대표값 단독 금지(87 §9-3)라 등가반경·폭·깊이·비원형도·앞뒤 분리를 병기한다.
+  // girthM은 **볼록껍질 둘레(팔 제외)**이고 오프셋 0이다(`bodyMeasure.ts:238`).
+  if (process.env.BODYWIDTH === "1") {
+    const yTopG = layout.topY, yBotG = hemY;
+    const inRange = body.slices.filter((sl) => sl.y >= yBotG - 1e-9 && sl.y <= yTopG + 1e-9);
+    console.log(`  [103 §3·몸통 단면 프로파일] 옷이 덮는 y 범위 ${cm(yBotG)}~${cm(yTopG)}cm · 슬라이스 ${inRange.length}개(전체 ${body.slices.length}) · 표본(bins) 분모 병기 · **팔 제외 볼록껍질 · 오프셋 0**`);
+    console.log(`    y(cm) │ 폐둘레 │ 등가반경 │ 폭x │ 깊이z │ 비원형도(폭/깊이) │ 앞(z+) │ 뒤(z−) │ 앞뒤비 │ bins`);
+    const step = Math.max(1, Math.round(inRange.length / 14));
+    for (let i = 0; i < inRange.length; i += step) {
+      const sl = inRange[i];
+      const front = sl.zMax - sl.axisZ, back = sl.axisZ - sl.zMin;
+      console.log(`    ${cm(sl.y).padStart(6)} │ ${cm(sl.girthM).padStart(6)} │ ${cm(sl.girthM / (2 * Math.PI)).padStart(6)} │ ${cm(sl.widthM).padStart(5)} │ ${cm(sl.depthM).padStart(5)} │ ${(sl.widthM / Math.max(1e-9, sl.depthM)).toFixed(3).padStart(6)} │ ${cm(front).padStart(5)} │ ${cm(back).padStart(5)} │ ${(front / Math.max(1e-9, back)).toFixed(3).padStart(5)} │ ${String(sl.bins).padStart(4)}`);
+    }
+    const gs = inRange.map((sl) => sl.girthM);
+    const q = (a: number[], f: number): number => [...a].sort((x, y) => x - y)[Math.min(a.length - 1, Math.floor(f * a.length))];
+    console.log(`    [요약] 폐둘레 min ${cm(Math.min(...gs))} / p25 ${cm(q(gs, 0.25))} / 중앙 ${cm(q(gs, 0.5))} / p75 ${cm(q(gs, 0.75))} / max ${cm(Math.max(...gs))}cm · 대역 폭 ${cm(Math.max(...gs) - Math.min(...gs))}cm`);
+    console.log(`    [명명 슬라이스] 가슴 y${cm(body.chestY)} ${cm(body.chestGirthM)}cm · 허리 y${cm(body.waistY)} ${cm(body.waistGirthM)}cm · 목밑 y${cm(body.neckBaseY)} · 어깨 관절 y${cm(body.shoulderJointY)} · 어깨 통과 ${cm(body.shoulderPassGirthM)}cm`);
+  }
+  // ── 101 §2(1) — **탐지 실패 누적**(함정 25 · 98 등재). margin·반경을 건드리면
       // 이 수가 판정을 왜곡한다. 0이면 「전 정점이 매 호출 잡혔다」가 실증된다.
       console.log(`  [101 §2-1·탐지 실패] closestPointToPoint null 누적 **${getResolverMissCount()}회**(전 실행 · 앞/뒤판 리졸버 합 · 탐지반경 ${(COLLISION_DETECTION_RADIUS * 1000).toFixed(0)}mm)`);
     }
