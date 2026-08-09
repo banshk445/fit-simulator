@@ -254,7 +254,7 @@ if (process.env.EXPORT_META === "1") {
     "HEMBEND", "MAGNET", "MAGNET_D0", "ADSORB_PENONLY", "WINDING", "FIXTURE",
     // 계기·출력
     "PATTERNCORE", "DIAG", "PROBE", "EXPORT_META", "PATTERN_META", "SKELSIGN", "SLEEVESIGN", "WINDPAR", "SLEEVEGEO",
-    "SHOULDERFIT", "ARMGEO", "PATCHDIR", "SIGNDIST", "SEAMGAP", "BANDGAP", "SLEEVESHAPE", "BODYWIDTH",
+    "SHOULDERFIT", "ARMGEO", "PATCHDIR", "SIGNDIST", "SEAMGAP", "BANDGAP", "SLEEVESHAPE", "BODYWIDTH", "HEMJAG",
   ];
   const bvhVer = (() => {
     try {
@@ -3626,6 +3626,98 @@ console.log(`  maxStrain ${strain.v.toFixed(3)} (정점 ${strain.at}) · maxSeam
   }
   console.log(ringShapeReport("정착"));
   console.log(capsuleCountReport("정착"));
+  // ══ 109 §2·§3 — **밑단 톱니 관측량 3종 + 대리 지표 검증**(`HEMJAG=1` · 인쇄 전용) ══
+  // §1 결과: 부재 주장은 **거짓**이다 — `hemWobble(chain, W, pos)`(:1382)이 **임의 사슬**에
+  // 도는 범용 함수이고 48계기(밑단)·50계기 β(옆선)가 **같은 식**을 이미 쓴다(그 주석이
+  // 「새 식을 만들지 않는다」로 명시). 그래서 ①은 **재실행으로 축소**하고, 새로 만드는 것은
+  // ①의 「이웃 3점 각」 형태 · ② 밑단 대역 면 뒤집힘 · ③ 사슬 y 편차 · 그리고 §3 백분위뿐이다.
+  // **옷 주체**(함정 29) · 새 손 상수 0 · 문턱 0 — 문턱 도출은 채택 회차 몫(규범 4·5).
+  if (process.env.HEMJAG === "1") {
+    const q = (a: number[], f: number): number => (a.length ? [...a].sort((x, y) => x - y)[Math.min(a.length - 1, Math.floor(f * a.length))] : NaN);
+    // ① 이웃 3점 «꺾임각»(도) — 사슬을 호장으로 매개했을 때의 2차 차분과 같은 계열이고
+    //    스케일 무차원이라 사슬 간 비교가 성립한다(§3의 요구).
+    const turnDeg = (c: number[]): number[] => {
+      const out: number[] = [];
+      for (let k = 1; k < c.length - 1; k++) {
+        const a = c[k - 1], b = c[k], d = c[k + 1];
+        const u = [0, 1, 2].map((t) => sim.positions[b * 3 + t] - sim.positions[a * 3 + t]);
+        const v = [0, 1, 2].map((t) => sim.positions[d * 3 + t] - sim.positions[b * 3 + t]);
+        const lu = Math.hypot(...u), lv = Math.hypot(...v);
+        if (lu < 1e-9 || lv < 1e-9) continue;
+        const dot = (u[0] * v[0] + u[1] * v[1] + u[2] * v[2]) / (lu * lv);
+        out.push(Math.acos(Math.min(1, Math.max(-1, dot))) * 180 / Math.PI);
+      }
+      return out;
+    };
+    // 비교 모집단 = 옷 경계 사슬 전량 중 **저장소에 사슬이 있는 것**.
+    // 소매단 사슬은 **저장소에 없다**(cuff/소매단 사슬 술어 0건) → 산출 불가로 적는다.
+    const ringFront = ringOrder.filter((i) => i < g.panelStarts[1]);
+    const ringBack = ringOrder.filter((i) => i >= g.panelStarts[1]);
+    const chains: [string, number[]][] = [
+      ["밑단 앞판", hemChain.front], ["밑단 뒤판", hemChain.back],
+      ["목선 링 앞판", ringFront], ["목선 링 뒤판", ringBack],
+    ];
+    console.log(`  [109 §2·사슬 요철 3종] 옷 주체 · 새 손 상수 0 · **문턱 0**(도출은 채택 회차 몫) · 소매단 사슬 = **산출 불가**(저장소에 술어 0건)`);
+    const turnStats: [string, number[]][] = [];
+    for (const [nm, c] of chains) {
+      if (c.length < 8) { console.log(`    ${nm} — 사슬 ${c.length}정점(8 미만) · 산출 불가`); continue; }
+      const t = turnDeg(c); turnStats.push([nm, t]);
+      const w = hemWobble(c, 0.16, sim.positions);
+      const amp = w.amp.map(Math.abs);
+      const ys = c.map((i) => sim.positions[i * 3 + 1]);
+      console.log(
+        `    ${nm} n=${c.length} · 사슬 ${cm(w.L)}cm` +
+        ` │ **① 꺾임각(도)** 중앙 ${q(t, 0.5).toFixed(2)} p75 ${q(t, 0.75).toFixed(2)} p90 ${q(t, 0.9).toFixed(2)} max ${Math.max(...t).toFixed(2)}(n=${t.length})` +
+        ` │ **①' 요동(48·50계기 재실행 · W=16cm)** 중앙 ${q(amp, 0.5).toFixed(2)} p90 ${q(amp, 0.9).toFixed(2)} max ${Math.max(...amp).toFixed(2)}mm` +
+        ` │ **③ y 편차** 중앙 ${cm(q(ys, 0.5))} 폭 ${((Math.max(...ys) - Math.min(...ys)) * 1000).toFixed(1)}mm`,
+      );
+    }
+    // §3 대리 지표 검증 — 밑단의 값이 «모집단»에서 상위인가(91회차 절차 · 문턱 0).
+    // 모집단 = 위 사슬 전량의 꺾임각을 합친 것. P = 밑단 중앙값의 백분위.
+    {
+      const pool = turnStats.flatMap(([, t]) => t).sort((a, b) => a - b);
+      const pct = (v: number): string => (pool.length ? (100 * pool.filter((x) => x < v).length / pool.length).toFixed(1) : "—");
+      console.log(`  [109 §3·대리 지표 검증] 모집단 = 위 사슬 꺾임각 합 n=${pool.length} · **P = 각 사슬 중앙값의 모집단 백분위**(문턱 0 · 판정은 채택 회차)`);
+      for (const [nm, t] of turnStats) console.log(`    ${nm} 중앙 ${q(t, 0.5).toFixed(2)}° → **P ${pct(q(t, 0.5))}** · p90 ${q(t, 0.9).toFixed(2)}° → P ${pct(q(t, 0.9))}`);
+    }
+    // ② 밑단 «대역» 면 뒤집힘 — 밑단 사슬 정점을 포함한 삼각형의 이웃 법선각 · 부호 갈림.
+    //    72건(전 메시)과 **정의역이 다르다** — 병기하되 같은 양으로 취급하지 않는다.
+    {
+      const hemSet = hemVertexSet;
+      const triN = g.tris.length / 3;
+      const nrm = (t: number): [number, number, number] => {
+        const a = g.tris[t * 3], b = g.tris[t * 3 + 1], c2 = g.tris[t * 3 + 2];
+        const u = [0, 1, 2].map((k) => sim.positions[b * 3 + k] - sim.positions[a * 3 + k]);
+        const v = [0, 1, 2].map((k) => sim.positions[c2 * 3 + k] - sim.positions[a * 3 + k]);
+        const n: [number, number, number] = [u[1] * v[2] - u[2] * v[1], u[2] * v[0] - u[0] * v[2], u[0] * v[1] - u[1] * v[0]];
+        const l = Math.hypot(...n) || 1;
+        return [n[0] / l, n[1] / l, n[2] / l];
+      };
+      const band: number[] = [];
+      for (let t = 0; t < triN; t++) if (hemSet.has(g.tris[t * 3]) || hemSet.has(g.tris[t * 3 + 1]) || hemSet.has(g.tris[t * 3 + 2])) band.push(t);
+      const edgeTri = new Map<number, number[]>();
+      for (const t of band) {
+        const vs = [g.tris[t * 3], g.tris[t * 3 + 1], g.tris[t * 3 + 2]];
+        for (let k = 0; k < 3; k++) {
+          const a = vs[k], b = vs[(k + 1) % 3];
+          const key = Math.min(a, b) * 1e6 + Math.max(a, b);
+          (edgeTri.get(key) ?? edgeTri.set(key, []).get(key)!).push(t);
+        }
+      }
+      const angs: number[] = [];
+      let flip = 0;
+      for (const [, ts] of edgeTri) {
+        if (ts.length !== 2) continue;
+        const [n1, n2] = [nrm(ts[0]), nrm(ts[1])];
+        const d = n1[0] * n2[0] + n1[1] * n2[1] + n1[2] * n2[2];
+        angs.push(Math.acos(Math.min(1, Math.max(-1, d))) * 180 / Math.PI);
+        if (d < 0) flip++;
+      }
+      angs.sort((a, b) => a - b);
+      console.log(`  [109 §2-②·밑단 대역 면 뒤집힘] 대역 삼각형 ${band.length} · 내부 엣지 쌍 ${angs.length} · **이웃 법선각(도)** 중앙 ${q(angs, 0.5).toFixed(2)} p90 ${q(angs, 0.9).toFixed(2)} max ${(angs.length ? angs[angs.length - 1] : NaN).toFixed(2)}` +
+        ` · **부호 갈림(내적<0) ${flip}쌍** · ※ 정의역이 «밑단 대역»이라 전 메시 72건과 **같은 양이 아니다**(병기만)`);
+    }
+  }
   console.log(hemReport("정착"));
   console.log(hemRenderReport("정착"));
   console.log(betaReport("정착"));
