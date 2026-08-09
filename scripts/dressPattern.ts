@@ -387,10 +387,37 @@ console.log(`[dress] margin 채널: 정착 물리(mesh 리졸버) ${MM(MESH_MARG
     ` · **㉯를 읽는 물리·판정 소비처 0곳**(g.widthM은 patternDraft 미참조 = 죽은 입력 · frameLayout은 armSoftPull/necklineHug off · 나머지는 인쇄/메타)` +
     ` · **안 바꾸는 소비처**: v1 제품(Garment.tsx:643 슬라이더 직독) · UI 착용판정(garmentFitLimits) · v1 하네스(buildGarmentSim·spikeDressing·paramSweep)`);
 }
+// ── 106 §3 — **배치 교정 변위 계기**(인쇄 전용 · 판정 로직 0줄 · `patternPlacement.ts` 0줄).
+// 105 §1-4가 증명한 구조적 상계(mapTorso는 패널 내부에서 1-Lipschitz ⟹ 배치 상태에서
+// 신장비 > 1 불가)의 **유일한 예외**가 `correctPlacementPenetration`이다.
+// 106 §1 판독 결과: 이 함수는 **정점별 «독립» 변위**이고(`for i` 루프 · 이웃 관계 항 0개)
+// **변위 크기 상한이 없다**(표면까지 거리 `l`은 `SDF_FAR` 300mm까지 허용 · 새 위치는
+// `c + (c−p)/|c−p| · out`이라 변위 = `l + out`). ⟹ **상계를 구조적으로 깬다**(갈래 A).
+// 이 계기는 그 함수가 **실제로 발화하는지·얼마나 미는지**를 매 배치마다 인쇄한다.
+const placeCorrectStat = (label: string, pos: Float32Array, run: () => number): void => {
+  const before = pos.slice();
+  const n = run();
+  const d: number[] = [];
+  for (let i = 0; i < total; i++) {
+    const dx = pos[i * 3] - before[i * 3], dy = pos[i * 3 + 1] - before[i * 3 + 1], dz = pos[i * 3 + 2] - before[i * 3 + 2];
+    const m = Math.hypot(dx, dy, dz);
+    if (m > 0) d.push(m);
+  }
+  d.sort((a, b) => a - b);
+  const q = (f: number): string => (d.length ? (d[Math.min(d.length - 1, Math.floor(f * d.length))] * 1000).toFixed(2) : "—");
+  console.log(`  [106 §3·배치 교정 변위] ${label} — 교정 반환 ${n}정점 · **실제 이동 ${d.length}정점 / ${total}**` +
+    (d.length
+      ? ` · 변위(mm) 중앙 ${q(0.5)} · p99 ${q(0.99)} · **최대 ${(d[d.length - 1] * 1000).toFixed(2)}**`
+      : ` · **발화 0 — 이 배치에서 이 함수는 좌표를 한 점도 안 바꿨다**`) +
+    ` · 상한 없음(변위 = 표면까지 거리 + out · out ≤ ${MM(PLACE_MARGIN)} + 8×${(g.selfCollisionMinDistM * 1000).toFixed(2)}mm)`);
+};
 const penBefore = countInside(g.positions, total, insideParity);
-const corrected = S0FIX ? correctPlacementPenetration(
-  g.positions, total, wholeMesh, insideParity, PLACE_MARGIN, g.selfCollisionMinDistM, skipKeys, SDF_FAR,
-) : 0;
+let corrected = 0;
+if (S0FIX) {
+  placeCorrectStat("S0 배치", g.positions, () => (corrected = correctPlacementPenetration(
+    g.positions, total, wholeMesh, insideParity, PLACE_MARGIN, g.selfCollisionMinDistM, skipKeys, SDF_FAR,
+  )));
+}
 const penAfterPlace = countInside(g.positions, total, insideParity);
 console.log(`[dress] S0 배치 관통: ${penBefore} → 교정 ${corrected}정점 → ${penAfterPlace} (패리티 근사)${S0FIX ? "" : " · **교정 off(S0FIX=0)**"}`);
 // 46회차 — t=0 자기교차(정착 분해의 대조 기준).
@@ -2145,7 +2172,9 @@ const result = runDressing(
   {
     place: (scale) => {
       g.place(scale);
-      correctPlacementPenetration(g.positions, total, wholeMesh, insideParity, PLACE_MARGIN, g.selfCollisionMinDistM, skipKeys, SDF_FAR);
+      placeCorrectStat(`재배치(오프셋 배수 ${scale.toFixed(2)})`, g.positions, () => correctPlacementPenetration(
+        g.positions, total, wholeMesh, insideParity, PLACE_MARGIN, g.selfCollisionMinDistM, skipKeys, SDF_FAR,
+      ));
       for (let i = 0; i < total; i++) sim.setParticle(i, g.positions[i * 3], g.positions[i * 3 + 1], g.positions[i * 3 + 2]);
       placementRestGate(`(i) 재배치 직후 · 핀 발화 전 (오프셋 배수 ${scale.toFixed(2)})`);
       gateArmed = true; // 재배치가 좌표를 배치 상태로 되돌렸다 → 다음 핀 발화는 다시 "배치 직후"다
