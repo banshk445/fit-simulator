@@ -368,6 +368,25 @@ console.log(`[dress] margin 채널: 정착 물리(mesh 리졸버) ${MM(MESH_MARG
   ` · 배치 기하(patternGarment:358-359,411,422,504) ${MM(MARGIN_ALL)}mm · 제도 시접(bodyMeasure:317→patternDraft) ${MM(MARGIN_ALL)}mm` +
   ` · **안 바꾸는 소비처**: 몸통 캡슐(:752 · TORSOCAP off) · 앵커(:991 · PINDRESS off) — 상수 ${MM(COLLISION_MARGIN)}mm` +
   ` · **도출 고정점 간극**: 적용값 ${MM(MARGIN_ALL)}mm ↔ 적용 «후» 메시가 주는 g.selfCollisionMinDistM ${MM(g.selfCollisionMinDistM)}mm(차 ${MM(g.selfCollisionMinDistM - MARGIN_ALL)}mm — 0이 아니면 일관 적용이 고정점이 아니다)`);
+// ── 105 §2 — **폭 채널**(margin 채널 줄과 같은 형식 · 인쇄 전용 · 판정 로직 0줄).
+// 104가 몸판 반폭을 `B/4 + e`로 항등 재표현했다. 그 뒤 폭 소비처가 **어느 출처를 읽는지**를
+// 로그가 스스로 인쇄한다 — 105 §1이 찾은 ㉮(1단계 도출) / ㉯(fixture `layout.widthM` 절대값)
+// 갈림을 실행이 매번 드러낸다(함정 12 규범 — 계기는 «호출부에 넘어간 값»을 읽는다).
+//
+// **105 §1 확정 사실**: ㉯를 읽는 자리는 6곳이나 **전부 죽은 입력·off 함수 인자·인쇄/메타**다.
+//   `g.widthM`(:187 경유)은 `patternDraft`가 **한 번도 읽지 않는다**(사용처 전량 = shoulderWidthM ·
+//   lengthM · sleeveWidthM · sleeveLengthM). `frameLayout.widthM`(:2105 계열)의 소비처는
+//   `garmentFrame.ts:380/383` 두 함수뿐이고 dress env는 둘 다 **false**다.
+//   **배치(`mapTorso`)는 `pos2`(㉮)만, 앵커는 `body.ridgePoints`+`pos2`만 읽는다.**
+{
+  const halfW = g.draft.dims.halfWidthM;
+  const cm2 = (m: number): string => (m * 100).toFixed(2);
+  console.log(`[dress] 폭 채널: 제도 반폭(㉮ = body.chestGirthM/4 + WIDTH_EASE_M) **${cm2(halfW)}cm** · 몸통 완성 폐둘레 ${cm2(4 * halfW)}cm · 몸 가슴둘레 ${cm2(body.chestGirthM)}cm · 여유 ${cm2(4 * halfW - body.chestGirthM)}cm(배율 ${(4 * halfW / body.chestGirthM).toFixed(3)})` +
+    ` · **㉯ fixture layout.widthM ${cm2(garmentDims.widthM)}cm**(= 반폭 환산 ${cm2(garmentDims.widthM / 2)}cm)` +
+    ` — ${Math.abs(halfW - garmentDims.widthM / 2) < 1e-12 ? "㉮ = ㉯(항등 상태)" : `**㉮ ≠ ㉯ · 차 ${cm2(halfW - garmentDims.widthM / 2)}cm**`}` +
+    ` · **㉯를 읽는 물리·판정 소비처 0곳**(g.widthM은 patternDraft 미참조 = 죽은 입력 · frameLayout은 armSoftPull/necklineHug off · 나머지는 인쇄/메타)` +
+    ` · **안 바꾸는 소비처**: v1 제품(Garment.tsx:643 슬라이더 직독) · UI 착용판정(garmentFitLimits) · v1 하네스(buildGarmentSim·spikeDressing·paramSweep)`);
+}
 const penBefore = countInside(g.positions, total, insideParity);
 const corrected = S0FIX ? correctPlacementPenetration(
   g.positions, total, wholeMesh, insideParity, PLACE_MARGIN, g.selfCollisionMinDistM, skipKeys, SDF_FAR,
