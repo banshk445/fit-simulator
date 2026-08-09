@@ -16464,3 +16464,176 @@ patternDraft.ts  halfWidthM = body.chestGirthM / WIDTH_CHEST_DIVISOR + WIDTH_EAS
 - **목선 · 소매 축 · 와인딩 72건 · 수밀성 감사 · 감사 6건 · 고정점 · A′** — 전부 미착수 유지.
 
 기점: 없음(**기준선 A 유지** · v2-2b-78-baseline 9fbd66c 그대로 · 태그 갱신 0)
+
+---
+
+## 2026-08-09 · 105회차 — 폭 소비처 전량 정리 · **판정 불가**(갈래 A·B·C 미해당) · 정지
+
+기점 `v2-2b-78-baseline` (9fbd66c) · 기준선 A 유효 · 착수 시 HEAD 916cee9 · **계기 커밋 8036dfd**.
+물리 0줄 · `patternGarment`/`garmentFrame`/`torsoCapsule`/`clothPhysics` 0줄 ·
+**e 변경 0 · 2단계 재시도 0 · fixture 재굽기 0 · 앵커 배선 변경 0 · 값 스윕 0 · 처방 0건 ·
+새 문턱 0 · 캡처 0장.**
+
+### 환경 스탬프 · 해시 3종 · 회귀
+
+```
+[dress] 해시: pattern 9f7ba80b3497 · fixture 9e8b2bf13925 — **재현하려면 위 env 줄을 그대로 쓴다**(함정 26)
+[dress] env: RINGTOTAL=0 · … · MARGIN_ALL=미설정 · … · PATTERNCORE=1 · …
+```
+dress-state md5 `14e50b8919a63a7f9799220b86e508a9` **불변**(재생성 19회차) ·
+`patternHash 9f7ba80b3497` · `fixture 9e8b2bf13925` 불변 · `npx tsc -b` 통과 · 벽시계 ~44s ·
+전 채널 비트 동일(cov 6.8% · maxStrain 2.661 · maxSeamGap 11.14 · Δ20 5.16 · 자기교차 1889 ·
+관통 50/5244 · DONE f=260 · 링 61.80 · 밑단 합 112.57 · 탐지 실패 2253).
+
+---
+
+### §1 폭 소비처 전량 (검색 지점 11개 · 규범 18 확장판)
+
+검색: `grep widthM|halfWidth|WIDTH_EASE|WIDTH_CHEST_DIVISOR|chestGirth` 전량 ·
+fixture JSON 2종 직접 판독 · **v1 층**(`buildGarmentSim.ts:112-114` · `garmentFitLimits.ts:42,45,63,68`
+= **이름이 다른 등가 식**) · 등가 식 재검색(`/ 4` · `chest *` · `girth / 2`) ·
+하드코딩 리터럴 `0.55`(`checkSleeveSeam.ts:41` = v1 하네스 별개 상수) ·
+`git log -S 'layout.widthM'`(6799668 · bca0f65 · 0ba0a18 · c291e22 · b29c76b) ·
+`git log -S 'halfWidthM'`(0ba0a18) · `git log -S 'widthM' -- patternGarment`(4568be2 · 76d6db8) ·
+`grep layout -- garmentFrame.ts`(`:380`·`:383` **2곳뿐**).
+
+**출처 분류 — ㉮ 1단계 도출(`B/4+e`) / ㉯ fixture `layout.widthM`(0.55 절대값) / ㉰ 슬라이더 직독**
+
+| 파일:줄 | 뜻 | 출처 | ㉮·㉯ 갈림 |
+|---|---|---|---|
+| `patternDraft.ts:231,243,244` `halfWidthM` | 제도 치수(도출 원점) | **㉮** | (원점) |
+| `patternDraft.ts:293` `underarmPoint.x` · `:294` `hemOut.x` · `:404` `dims` · `:491-492` 자기검사 | 제도 치수·게이트 | ㉮ | 아니오 |
+| `checkPattern.ts:451,452` 코너 `±D.halfWidthM` · `checkBoundary.ts:189` 여유 인쇄 | 게이트 좌표·인쇄 | ㉮ | 아니오 |
+| **`patternGarment.ts:454-458` `mapTorso`** | **배치 목표** | **㉮ 경유(`pos2`)** · z는 `body.{front,back}ExtentM + margin·2` | **아니오** |
+| `dressPattern.ts:187` `garmentDims.widthM = layout.widthM` → `g.widthM` | 제도 입력(명목) | ㉯ | **예 — 그러나 `patternDraft`가 `g.widthM`을 «한 번도 읽지 않는다»**(사용처 전량 = `shoulderWidthM` · `lengthM` · `sleeveWidthM` · `sleeveLengthM`) ⇒ **죽은 입력** |
+| `dressPattern.ts:2105` `frameLayout.widthM` → `session.step` | 프레임 파라미터 | ㉯ | **예 — 소비처는 `garmentFrame.ts:380/383`뿐이고 dress env는 `armSoftPull:false · necklineHug:false`** ⇒ **불활성** |
+| `dressPattern.ts:219` `patternMeta.garmentDims` | 메타 인쇄 | ㉯ | 예(인쇄). **`patternHash` 입력이 아니다** — 해시 = `pos2`+`tris`+`seams` |
+| `checkPattern.ts:69,76` · `checkBoundary.ts:55` | 인쇄 | ㉯ | 예(인쇄 전용) |
+| `PatternPreview.tsx:228` | UI 미리보기 | ㉰ | **예 — `g.widthM`이 죽은 입력이라 슬라이더가 미리보기 폭을 못 바꾼다** |
+| `useFitStore.ts:129,167,255-256` · `garmentFitLimits.ts:63,68` | 슬라이더·UI 착용판정 | ㉰ | 예(UI 전용) |
+| `Garment.tsx:643` · `buildGarmentSim.ts` · `spikeDressing` · `paramSweep` | v1 경로 | ㉰/㉯ | v2 판정 밖 |
+
+**㉮·㉯가 실제로 갈리는 소비처 = 6곳**
+(`dressPattern.ts:187`·`:2105`·`:219` · `checkPattern.ts:69/76` · `checkBoundary.ts:55` ·
+`PatternPreview.tsx:228`). **그중 판정·물리에 값을 넘기는 것은 0곳**이고
+**배치·앵커 경로는 포함되지 않는다.**
+
+### §1(3) 앵커 36개 — **좌표 기반 · 재삼각화에 취약하지 않다**
+
+`dressPattern.ts:978-1037`:
+```ts
+return g.seams.filter((sm) => sm.kind === "shoulder")
+  .filter((sm) => !(ringVerts.has(sm.a) || ringVerts.has(sm.b)))   // :1024 목점 2쌍 제외
+  .map((sm) => { const px = g.pos2[sm.a*2], py = g.pos2[sm.a*2+1];  // :1026 패턴 2D
+    const s = Math.hypot(Math.abs(px) - nwHalf, py) / shoulderSeamM; // :1027 호장 비율
+    const t = at(Math.sign(px) || 1, s);                             // :1028 능선 곡선 위 점
+    return { i: sm.a, x: t.x, y: t.y + COLLISION_MARGIN, z: t.z, … }; });
+```
+- **목표는 «좌표»다** — `body.ridgePoints` 폴리라인을 호장 비율로 보간 + `COLLISION_MARGIN`.
+  배치 3D 좌표가 아니다(`:1046`이 배치 평면 z와 구분해 인쇄).
+- **인덱스는 매 실행 `g.seams`에서 재도출**된다(저장된 인덱스 표·하드코딩 목록 **부재**).
+  ⇒ **재삼각화가 앵커를 «다른 정점»으로 어긋나게 하는 구조가 아니다.**
+  실측 대조: `pattern-meta.json` `seamCounts.shoulder = 38` → 앵커 36(= 38−2) ·
+  **104의 e=3cm 실행 로그도 「36개」** ⇒ 재삼각화 후에도 기수 동일.
+- **어느 폭도 참조하지 않는다** — 읽는 값 전량 = `neckHalfWidthM` · `shoulderSeamM` ·
+  `body.ridgePoints`/`centerX` · `g.pos2` · `COLLISION_MARGIN`. `halfWidthM`은 어느 항에도 없다.
+- **`PINDRESS` off인데 발화하는 경로**(함정 17 계열 · 신규 확정):
+  소프트 `dressPattern.ts:1886 anchors: () => (PINDRESS ? anchorList : [])`는 꺼지지만,
+  **하드 `:2051-2093 setAnchorHard`(→ `sim.pinned[a.i] = 1` · `setParticle`)는 `PINDRESS`를
+  참조하지 않는다.** 로그 문구 `착장 앵커 off(기본)`(`:497`)는 **소프트 경로만** 가리킨다.
+
+### §1(4) 34게이트 — 비교 대상 확정 + **구조적 상계**
+
+`dressPattern.ts:1996-2025` `placementRestGate`:
+- **분자** = `sim.positions`의 **현재 3D 정점간 거리**
+- **분모** = `sim.constraintPairs[].restLength` = `buildPatternSim.ts:108-119`의
+  **패턴 2D(`g.pos2`) 거리**(structural + bend 전량). **시접 쌍은 `:2001`에서 제외**(그것만 3D 갭 등록).
+- 대상 = 몸판 한정(`c.a < g.panelStarts[2]`). 「신장비 1.000±3.33e-5」 =
+  ‖3D 현재‖ / ‖패턴 2D‖ · 허용분은 `2·maxCoord·2⁻²⁴ / minRest`.
+- **핀 목표는 게이트에 들어가지 않는다** — 게이트 호출이 `setAnchorHard` 안(`:2091`)이지만
+  그 직전 `setParticle`은 `anchorRampS = 0`이고 `anchorFrom`이 그 프레임의 현재 좌표라 **쓰기가 항등**.
+- **두 대상이 서로 다른 폭을 읽을 수 있는가 — 아니오.** 분모는 `g.pos2`, 분자는
+  `mapTorso(pos2)`로 **같은 `pos2`**에서 나온다. `layout.widthM`은 **어느 쪽에도 없다.**
+- **시점** — `dressingMachine.ts:196 hooks.setAnchorHard?.(closure <= 0)`는 `session.step`(`:221`)
+  **«전»**이고, 게이트는 `:2091 if (anchorRampFrame === 0 && gateArmed)` = **배치 뒤 첫 하드 전이 1회**.
+
+**구조적 상계(신규 등재)**: 배치 상태에서는 **신장비 > 1이 원리적으로 불가능**하다.
+게이트 대상 몸판 제약은 전부 **패널 내부** 쌍이고
+```
+mapTorso: x = centerX + xp (항등) · y = topY − clamp(yp,0,lengthM) (1-Lipschitz) · z = 패널 상수
+```
+⇒ 같은 패널 두 점의 3D 거리 ≤ 2D 거리. 기준선 실측이 그 상계다 —
+**최대 1.000016 / 최소 0.999986 / 신장총 0.0cm**(34·41·42·43회차 전량).
+⟹ **104가 인용한 `최대 22.668559 · 최소 0.067297 · 신장총 14841.6cm`는 배치 사상이 만들 수
+있는 값이 아니다.** 배치 시점의 예외는 `correctPlacementPenetration`(`patternPlacement.ts:169-185`)
+하나뿐이다. **부수 산술**: throw 직전 인쇄가 `seamGap 44.3mm`인데 배치 직후 앞↔뒤판 시접 갭은
+`frontExtentM + backExtentM + 4·COLLISION_MARGIN` = 몸 두께 + 6cm 규모(등재된 배치 평면 z = +17.07cm)다 —
+**44.3mm는 배치 상태의 seamGap이 아니다.** **기전 귀속은 하지 않는다.**
+
+---
+
+### §1 판정 — **판정 불가 · 정지**(사전등록 갈래 A·B·C 어디에도 해당하지 않는다)
+
+| 갈래 | 문언 | 실측 | 판정 |
+|---|---|---|---|
+| **A** | 갈림 소비처 **1곳 이상** **그리고** **그중 배치·앵커 경로가 포함된다** | 갈림 6곳 · **배치·앵커 미포함** | **불성립**(둘째 연언지 거짓) |
+| **B** | 갈림 소비처 **0곳**(배치도 1단계 도출을 읽는다) | 갈림 **6곳** · 괄호 조항은 참 | **불성립**(주 조항 거짓) |
+| **C** | 앵커가 **정점 인덱스 기반**이고 재삼각화에 취약 | 좌표 기반 · 인덱스 매 실행 재도출 · 기수 36 동일 | **불성립**(독립 판정 · 「아니오」) |
+
+**갈래 설계가 「갈림은 있으나 전부 죽은 입력·off·인쇄」라는 상태를 예상하지 않았다.**
+A는 연언, B는 계수로 갈랐는데 실측이 그 사이에 떨어진다.
+**사후 갈래 신설·문언 변경 0** ⟹ **판정 불가 · 정지**(상시 규약).
+
+**다만 §0(2) 후보의 «판별 조항»은 명확히 답이 나왔다(사실 등재)**:
+후보 「throw는 제도 폭과 배치 폭의 **소비처 갈림** — 함정32 폭 판본」의 판별 조항은
+「배치·앵커가 ㉯를 읽는가」이고 **답은 «아니오»**다. 배치는 `pos2`(㉮)만, 앵커는
+`body.ridgePoints`+`pos2`만 읽는다. **후보는 지지되지 않는다** — 기각 여부는 갈래가
+성립하지 않았으므로 **선언하지 않는다**.
+
+---
+
+### §2 실측 — 폭 채널(계기 `8036dfd` · 인쇄 전용)
+
+```
+[dress] 폭 채널: 제도 반폭(㉮ = body.chestGirthM/4 + WIDTH_EASE_M) **27.50cm** ·
+몸통 완성 폐둘레 110.00cm · 몸 가슴둘레 84.01cm · 여유 25.99cm(배율 1.309) ·
+**㉯ fixture layout.widthM 55.00cm**(= 반폭 환산 27.50cm) — ㉮ = ㉯(항등 상태) ·
+**㉯를 읽는 물리·판정 소비처 0곳** · **안 바꾸는 소비처**: v1 제품(Garment.tsx:643) ·
+UI 착용판정(garmentFitLimits) · v1 하네스(buildGarmentSim·spikeDressing·paramSweep)
+```
+**항등 상태에서 ㉮ = ㉯ = 27.50cm** — 「다르게 나오는 자리」는 **없었다**.
+
+### §3 캡처 — **0장 · 사유 등재**
+
+Chrome 자동화 권한은 이번에 통과했으나 **다른 단계에서 실패**했다. 원문:
+```
+[capture] screencapture 실패(front): could not create image from rect
+[capture] 화면 잠김/디스플레이 절전이면 실패한다. 화면 기록 권한도 확인할 것.
+```
+(104회차의 실패 원문은 `Chrome 제어 권한이 필요하다 — 시스템 설정 > 개인정보 보호 및 보안 >
+자동화`였다. **두 회차의 사유가 다르다** — 104 = 자동화 권한 · 105 = 화면 기록/화면 상태.)
+→ **사용자 조치 대기 2건**(104 §7 ㅂ 유지 + 105 신규).
+현 상태의 dress-state md5가 기준선 A와 같으므로 `docs/captures/2b-102-일관적용/R0/` 5장이
+같은 상태의 자산이다.
+
+### 계기 증분 (인쇄 전용 · 판정 로직 0줄)
+
+```
+dressPattern.ts  [dress] 폭 채널 — ㉮/㉯ 값과 그 차 · ㉯를 읽는 물리·판정 소비처 0곳 ·
+                 안 바꾸는 소비처 3계열을 매 실행 인쇄
+```
+
+### 산출 불가 / 확인 불가
+
+- **§1 갈래 판정** — A·B·C 어디에도 해당하지 않는다. **판정 불가 · 정지.**
+- **§0(2) 후보의 기각 선언** — 판별 조항은 「아니오」로 답이 나왔으나 **갈래가 성립하지
+  않았으므로 기각을 선언하지 않는다**(사후 갈래 신설 0).
+- **104 throw의 기전** — 귀속하지 않았다. 확정된 것은 **「배치 사상이 만들 수 있는 값이
+  아니다」**와 **「44.3mm는 배치 상태의 seamGap이 아니다」** 두 코드 사실까지다.
+- **캡처** — 0장(위 §3).
+- **`PINDRESS` off에서 하드 앵커가 발화하는 구조** — **등재만 · 배선 변경 0**(회차 금지 조항).
+- **`g.widthM` 죽은 입력의 처분** — 하지 않았다(정리까지가 정의역).
+- **`PatternPreview` 슬라이더가 미리보기 폭을 못 바꾸는 사실** — 등재만.
+- **목선 · 소매 축 · 와인딩 72건 · 수밀성 감사 · 감사 6건 · 고정점 · A′** — 전부 미착수 유지.
+
+기점: 없음(기준선 A 유지 · v2-2b-78-baseline 9fbd66c 그대로 · 태그 갱신 0)
