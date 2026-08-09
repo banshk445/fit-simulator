@@ -16637,3 +16637,119 @@ dressPattern.ts  [dress] 폭 채널 — ㉮/㉯ 값과 그 차 · ㉯를 읽는 
 - **목선 · 소매 축 · 와인딩 72건 · 수밀성 감사 · 감사 6건 · 고정점 · A′** — 전부 미착수 유지.
 
 기점: 없음(기준선 A 유지 · v2-2b-78-baseline 9fbd66c 그대로 · 태그 갱신 0)
+
+---
+
+## 2026-08-09 · 106회차 — `correctPlacementPenetration` 판독 · **갈래 A 및 C** · 기준선 발화 0
+
+기점 `v2-2b-78-baseline` (9fbd66c) · 기준선 A 유효 · 착수 시 HEAD 7a57e2a · **계기 커밋 aacf487**.
+물리 0줄 · `patternPlacement.ts` **0줄**(호출부 스냅샷만) · `patternGarment`/`garmentFrame`/
+`torsoCapsule`/`clothPhysics` 0줄 · **e 변경 0 · 2단계 재시도 0 · e=3cm 실행 0 ·
+값 스윕 0 · 처방 0건 · 새 문턱 0 · 캡처 시도 0**(사용자 조치 대기 2건 미해소).
+
+### 환경 스탬프 · 해시 3종 · 회귀
+
+```
+[dress] 해시: pattern 9f7ba80b3497 · fixture 9e8b2bf13925 — **재현하려면 위 env 줄을 그대로 쓴다**(함정 26)
+```
+dress-state md5 `14e50b8919a63a7f9799220b86e508a9` **불변**(재생성 20회차) ·
+`patternHash 9f7ba80b3497` · `fixture 9e8b2bf13925` 불변 · `npx tsc -b` 통과 ·
+전 채널 비트 동일(cov 6.8% · maxStrain 2.661 · maxSeamGap 11.14 · Δ20 5.16 ·
+자기교차 1889 · 관통 50/5244 · DONE f=260).
+
+---
+
+### §1 판독 — `correctPlacementPenetration`(`patternPlacement.ts:149-186`) 7항
+
+**코드 전량(발췌 · 원문)**
+```ts
+for (let i = 0; i < count; i++) {
+  const x = positions[i*3], y = positions[i*3+1], z = positions[i*3+2];
+  if (!inside(x, y, z)) continue;                                    // ① 발화 조건
+  const c = mesh.closestPointUnsigned(x, y, z, detectionRadiusM);
+  if (!c) continue;
+  const dx = c.x - x, dy = c.y - y, dz = c.z - z;
+  const l = Math.hypot(dx, dy, dz) || 1;
+  let out = marginM;
+  for (let k = 0; k < 8; k++) {
+    const px = c.x + (dx/l)*out, py = c.y + (dy/l)*out, pz = c.z + (dz/l)*out;   // ② 변위식
+    const clash = clashAt(i, px, py, pz);
+    positions[i*3] = px; positions[i*3+1] = py; positions[i*3+2] = pz;
+    if (!clash) break;
+    out += minSepM;                                                   // ④ out만 증가
+  }
+  corrected++;
+}
+```
+
+| # | 항목 | 결과 |
+|---|---|---|
+| **1** | 발화 조건 | **관통 검출 시에만**. `if (!inside(x,y,z)) continue` — `inside` = `insideParity`(레이 패리티 · 호출부 `dressPattern.ts:391`·`:2148`). 추가 필터 `closestPointUnsigned(..., SDF_FAR=300mm)`가 `null`이면 skip |
+| **2** | 변위식 | 새 위치 = `c + (c−p)/‖c−p‖ · out`. `c` = 표면 최근접점 · `out` 시작값 = `marginM`(= `PLACE_MARGIN` 15.0mm). ⟹ **변위 크기 = `l + out`**(`l` = 관통 깊이 · p·c·새 위치가 한 직선 위) |
+| **3** | 적용 단위 | **정점별 «독립»**(`for i` 루프). 이웃 정점·엣지·시접을 참조하는 항이 **0개**. rigid transform도 uniform scale도 **아니다** |
+| **4** | 변위 상한 | **없다.** 루프 8회는 `out`(표면으로부터의 «거리»)만 `minSepM`씩 키운다 — **변위 크기의 상한이 아니다**. `l`의 상한은 `detectionRadiusM = SDF_FAR = 300mm`. ⟹ 변위가 최대 **300mm + (15.0 + 8×3.21)mm** 규모까지 구조적으로 허용된다 |
+| **5** | **핵심 판별** | **깬다.** 정점별 독립 변위이므로 이웃 두 정점이 서로 다른 표면점으로 투영되면 그 3D 거리가 임의로 변한다. rest(패턴 2D)는 고정이므로 **신장비가 1을 넘을 수 있다** ⟹ 105 §1-4의 상계를 **구조적으로 깬다** |
+| **6** | e=3cm에서 더 쉬운가 | **코드는 말하지 않는다(데이터 의존)**. 배치 평면 z 오프셋은 `body.{front,back}ExtentM + 2·COLLISION_MARGIN`(`patternGarment.ts:363-364`)이라 **폭과 무관**하다 — e를 줄여도 «평면 위치»는 안 바뀌고 패널의 x 범위만 줄어든다. **몸은 x로 넓으므로 x가 줄어드는 것이 몸에 가까워지는 방향이 아니다.** ⟹ 정성적 코드 사실로는 「더 쉬워진다」가 도출되지 않는다 |
+| **7** | 호출 시점 | `dressPattern.ts:391`(S0 배치 · `S0FIX` 기본 on) · `:2148`(`place` 훅). `dressingMachine.ts:173 doPlacement()`가 **while 루프 «밖·앞»**이고 `hooks.setAnchorHard`는 `:196`(루프 안 · `session.step` `:221` 전) ⟹ **배치 직후 · 핀 발화 «이전»이 맞다** |
+
+---
+
+### §2 판정 — **갈래 A 및 C**(둘 다 §3으로 진행 · 회차 문언이 「A «또는» C일 때」로 예상한 조합)
+
+| 갈래 | 문언 | 실측 | 판정 |
+|---|---|---|---|
+| **A** | 5번이 «깬다»(정점별 독립 변위) | 정점별 독립 · 변위 상한 없음 | **성립** |
+| **B** | 5번이 «안 깬다»(구조 보존) | — | 불성립 |
+| **C** | 발화 조건이 «관통 검출 시에만»이고 코드만으로 e=3cm 발화 여부 불명(데이터 의존) | 1번 = 관통 시에만 · 6번 = 코드가 말하지 않는다 | **성립** |
+| **D** | 5번이 코드 판독만으로 불명확 | 변위식이 닫혀 있고 재귀 없음 | 불성립 |
+
+→ **A 및 C. §3 집행.** 회차의 갈래 열거가 **함정30 재발 방지를 실제로 이행**했다 —
+A·B는 구조로, C·D는 판독 가능성으로 갈라 잔여 상태가 남지 않았고,
+**A와 C가 동시 성립하는 조합을 회차 문언이 미리 허용**했다(「A «또는» C」).
+95·105에서 판정 불가를 낸 「갈래 열거의 빈틈」이 이번엔 발생하지 않았다.
+
+---
+
+### §3 집행 — 기준선 1회(계기 `aacf487` · 인쇄 전용 · `patternPlacement.ts` 0줄)
+
+계기는 **호출부에서 before/after 스냅샷**만 뜬다(공유 라이브러리 무수정). 두 호출부 전량 배선.
+
+```
+[106 §3·배치 교정 변위] S0 배치 — 교정 반환 0정점 · **실제 이동 0정점 / 5244**
+· **발화 0 — 이 배치에서 이 함수는 좌표를 한 점도 안 바꿨다**
+· 상한 없음(변위 = 표면까지 거리 + out · out ≤ 15.0 + 8×3.21mm)
+[dress] S0 배치 관통: 0 → 교정 0정점 → 0 (패리티 근사)
+```
+
+**기준선(halfWidth 27.50cm)에서 이 함수는 «발화 0»이다.**
+`place` 훅(재배치)은 이번 실행에서 호출되지 않았다(`countPenetrating() = 0`이라
+`doPlacement`가 재시도하지 않는다 · `dressingMachine.ts:157-171`).
+
+⟹ **구조적으로는 상계를 깰 수 있으나(갈래 A) 기준선에서는 발화하지 않는다(갈래 C의 데이터 의존이
+기준선 쪽으로 확정됐다).** e=3cm에서 발화하는지는 **이번 회차 정의역 밖**이다
+(e 재실행 0 · §0 ㄹ대로 다음 회차 몫).
+
+---
+
+### 산출 불가 / 확인 불가
+
+- **e=3cm에서의 발화 여부·변위 크기** — **실행하지 않았다**(회차 조항 「e=3cm 실행 0」).
+  계기는 배선돼 있으므로 다음 회차가 `WIDTH_EASE_M`을 그 값으로 두고 1회 돌리면 바로 나온다.
+- **104 throw의 기전** — **귀속하지 않았다.** 이번 회차가 확정한 것은
+  ① 이 함수가 상계를 **깰 수 있다**(구조) ② **기준선에서는 발화 0**(실측) 두 가지다.
+- **`l`(관통 깊이)의 실제 분포** — 발화 0이라 표본이 없다.
+- **`place` 훅 경로의 계기 값** — 이번 실행에서 호출 자체가 없었다.
+- **34게이트 극단값(0.067297~22.668559)을 이 함수가 «실제로» 만들었는가** —
+  구조적 가능성까지다. 실측 연결은 e=3cm 실행이 있어야 한다.
+- **캡처** — **시도 0**(사용자 조치 대기 2건 · 104 Chrome 자동화 권한 · 105 화면 기록/화면 상태).
+- **목선 · 소매 축 · 와인딩 72건 · 수밀성 감사 · 감사 6건 · 고정점 · A′** — 전부 미착수 유지.
+
+### 계기 증분 (인쇄 전용 · 판정 로직 0줄)
+
+```
+dressPattern.ts  placeCorrectStat — correctPlacementPenetration 호출부 2곳에
+                 발화 정점 수 · 변위 중앙/p99/최대(mm) · 상한 부재 사실을 인쇄
+                 (patternPlacement.ts는 0줄 — before/after 스냅샷만)
+```
+
+기점: 없음(기준선 A 유지 · v2-2b-78-baseline 9fbd66c 그대로 · 태그 갱신 0)
