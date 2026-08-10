@@ -98,6 +98,22 @@ console.log(
   `[pattern] 제도: 목너비 ${cm(d.neckHalfWidthM)} 앞목 ${cm(d.frontNeckDropM)} 뒤목 ${cm(d.backNeckDropM)} · 어깨 경사 ${(Math.atan(d.shoulderSlope) * 180 / Math.PI).toFixed(1)}°(낙차 ${cm(d.shoulderDropM)}) 어깨선 ${cm(d.shoulderSeamM)} · 진동깊이 ${cm(d.armholeDepthM)} 암홀둘레 ${cm(d.armholeGirthM)} · 소매산 높이 ${cm(d.capHeightM)}(삼각공식 ${cm(d.capHeightTriangleM)}) 소매산둘레 ${cm(d.capGirthM)} 하부 ${cm(d.underSleeveM)} · 목선둘레 ${cm(d.necklineGirthM)} (전부 cm) · 조립 ${buildMs}ms`,
 );
 
+// ── P18 §4 — **패널 이름을 역할에서 뽑는다.** 「앞판/뒤판/소매L/소매R」 하드코딩은
+// 패널 4개 구성에서만 맞다. 같은 역할이 여럿이면 번호를 붙여 셔츠(앞판 2매)도 읽힌다.
+// 티셔츠에서는 종전과 **같은 문자열**이 나온다(로그 diff 0).
+const ROLE_LABEL: Record<string, string> = { torsoFront: "앞판", torsoBack: "뒤판", sleeve: "소매" };
+const SLEEVE_SIDE = ["L", "R"];
+function panelLabels(): string[] {
+  const seen: Record<string, number> = {};
+  return g.topology.roles.map((r) => {
+    const n = (seen[r] = (seen[r] ?? 0) + 1);
+    const total = g.topology.panelsWithRole(r).length;
+    const base = ROLE_LABEL[r] ?? r;
+    if (total === 1) return base;
+    return r === "sleeve" && total === 2 ? `${base}${SLEEVE_SIDE[n - 1]}` : `${base}${n}`;
+  });
+}
+
 const fails: string[] = [];
 const report = (rows: { name: string; ok: boolean; detail: string }[], head: string): void => {
   console.log(`\n[pattern] ${head}`);
@@ -145,7 +161,7 @@ console.log(
   `  §1.4.1 추정 4,400~4,800정점 / ~8,800~9,600삼각형 — 대조: 정점 ${totalVerts} (${totalVerts < 4400 ? "하회" : totalVerts > 4800 ? `상회 +${totalVerts - 4800}` : "대역 내"}) · 삼각형 ${totalTris} (${totalTris < 8800 ? "하회" : totalTris > 9600 ? `상회 +${totalTris - 9600}` : "대역 내"})`,
 );
 console.log(
-  `  패널별 내역: 앞판 ${g.panelCounts[0]} / 뒤판 ${g.panelCounts[1]} / 소매 ${g.panelCounts[2]}×2 — §1.4.1 추정 앞뒤 1,800~1,950 · 소매 400~450`,
+  `  패널별 내역: ${panelLabels().map((n, p) => `${n} ${g.panelCounts[p]}`).join(" / ")} — §1.4.1 추정 앞뒤 1,800~1,950 · 소매 400~450`,
 );
 
 // ── 4. 자기충돌 문턱 도출
@@ -214,19 +230,20 @@ const countPenetrating = (): { n: number; skel: number } => {
   }
   return { n, skel };
 };
-const panelOfIdx = (i: number): number => { for (let p = 3; p >= 0; p--) if (i >= g.panelStarts[p]) return p; return 0; };
+// P18 §4 — 「p=3..0 역순 색인」을 **패널 역할 표**로 대체한다(패널 수 고정 전제 제거).
+const panelOfIdx = (i: number): number => g.topology.panelOf(i);
 const placedRaw = Float32Array.from(g.positions);
 // 교정 전 자기교차 — 아래 7-2가 교정 **후**를 재므로, 배치 자체가 깨끗한지를
 // 먼저 분리해 둔다(오발화 검사와 같은 방식: 배치 원본 vs S0 교정 후).
 const xsecRaw = countSelfIntersections(placedRaw, g.tris, g.edgePairs, 0.03);
 const before = countPenetrating();
 {
-  const per = [0, 0, 0, 0];
+  const per = new Array<number>(g.panelCounts.length).fill(0);
   for (let i = 0; i < totalVerts; i++) {
     if (!insideByParity(g.positions[i * 3], g.positions[i * 3 + 1], g.positions[i * 3 + 2])) continue;
     per[panelOfIdx(i)]++;
   }
-  console.log(`[pattern] 관통 패널별(교정 전·패리티): 앞판 ${per[0]} · 뒤판 ${per[1]} · 소매L ${per[2]} · 소매R ${per[3]}`);
+  console.log(`[pattern] 관통 패널별(교정 전·패리티): ${panelLabels().map((n, p) => `${n} ${per[p]}`).join(" · ")}`);
 }
 // §4 S0의 "기울기 방향으로 1회 압출 교정" — 관통 정점은 최근접 표면점
 // 너머 margin만큼으로 투영한다(안쪽 점에서 SDF 기울기 방향 = 최근접 표면
@@ -339,7 +356,8 @@ if (after.n > 0) fails.push("배치 관통 0");
   let nx = uy * vz - uz * vy, ny = uz * vx - ux * vz, nz = ux * vy - uy * vx;
   const nl = Math.hypot(nx, ny, nz) || 1;
   nx /= nl; ny /= nl; nz /= nl;
-  const victim = g.edgePairs.find((e) => e.a >= g.panelStarts[1] && e.b >= g.panelStarts[1] && e.b < g.panelStarts[2]);
+  // P18 §4 — 「인덱스가 뒤판 구간」이 아니라 **역할이 뒤판**인 엣지를 고른다.
+  const victim = g.edgePairs.find((e) => g.topology.roleOf(e.a) === "torsoBack" && g.topology.roleOf(e.b) === "torsoBack");
   if (!victim) throw new Error("변이 대상 뒤판 엣지를 못 찾았다");
   const put = (i: number, sgn: number): void => {
     g.positions[i * 3] = cx + nx * 0.01 * sgn;
@@ -350,8 +368,9 @@ if (after.n > 0) fails.push("배치 관통 0");
   put(victim.b, -1);
   const mutated = countSelfIntersections(g.positions, g.tris, g.edgePairs, 0.03);
   g.positions.set(backup);
-  const pName = ["앞판", "뒤판", "소매L", "소매R"];
-  const pOf = (i: number): number => { for (let p = 3; p >= 0; p--) if (i >= g.panelStarts[p]) return p; return 0; };
+  // P18 §4 — 이름도 역할에서 뽑는다. 같은 역할이 여럿이면 번호를 붙인다(셔츠 앞판 2매 대비).
+  const pName = panelLabels();
+  const pOf = (i: number): number => g.topology.panelOf(i);
   console.log(
     `\n[pattern] 자기교차(엣지-삼각형): 정적 배치 ${clean.count}건 · 변이(뒤판 엣지 1개를 앞판 삼각형에 꿰뚫음) ${mutated.count}건`,
   );
