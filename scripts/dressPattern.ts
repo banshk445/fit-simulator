@@ -28,7 +28,7 @@ import { correctPlacementPenetration, countInside, countOpenEdges, countOpenEdge
 import { classifyWindingOutward, windingParitySelfCheck } from "../src/lib/windingParity";
 import { axisSection, bodyGeodesicSelfCheck, closestPointOnTriangles, horizontalSection, sleeveArmFrame, surfacePathLength } from "../src/lib/bodyGeodesic";
 import { computeBodyCoverage, deriveShoulderBand } from "../src/lib/coverageMetric";
-import { bakeSdf, createCachedSdfIterationFriction, createSdfFrictionPass, makeRadialSignedSampler, makeSkeletonSignedSampler, sampleSdf, sdfNormal } from "../src/lib/sdfCollision";
+import { bakePatternFrictionSdf, createCachedSdfIterationFriction, createSdfFrictionPass, makeRadialSignedSampler, makeSkeletonSignedSampler, sampleSdf, sdfNormal } from "../src/lib/sdfCollision";
 import {
   ARM_COLLISION_RADIUS,
   COLLISION_DETECTION_RADIUS,
@@ -42,7 +42,6 @@ import {
   LOCAL_MU_GAIN,
   MAX_DISPLACEMENT_PER_SUBSTEP,
   SDF_FAR,
-  SDF_VOXEL,
   SEAM_REST_LENGTH,
   STIFFNESS_BEND,
   SUBSTEP_DT,
@@ -835,20 +834,11 @@ const unified = createPatternUnifiedResolver(
   { torsoCap: TORSOCAP, armCap: ARMCAP, singleDeepest: SINGLE_DEEPEST, torsoPanels: [PANEL_PAT_FRONT, PANEL_PAT_BACK] },
 );
 
-// 마찰 SDF — 스파이크·1b와 같은 스택.
-const yTop = layout.topY + 0.1;
-const yBot = hemY - 0.15;
-let minX = Infinity, maxX = -Infinity, minZ = Infinity, maxZ = -Infinity;
-for (let i = 0; i < position.length; i += 3) {
-  const y = position[i + 1];
-  if (y < yBot || y > yTop) continue;
-  if (position[i] < minX) minX = position[i];
-  if (position[i] > maxX) maxX = position[i];
-  if (position[i + 2] < minZ) minZ = position[i + 2];
-  if (position[i + 2] > maxZ) maxZ = position[i + 2];
-}
-const pad = 0.08;
-const tBake = performance.now();
+// ── P2b(b) — 마찰 SDF 굽기 3단(bbox → 부호 샘플러 → bakeSdf)을
+// `sdfCollision.bakePatternFrictionSdf`로 «이사»했다. 거동 무변경(항등 리팩터).
+// 기본값(pad 0.08 · 부호 기준 radial · y 상하한)은 그 함수 한 곳에 있고
+// 여기서는 **env 스위치만** 넘긴다 — 브라우저 워커가 같은 필드를 굽게.
+//
 // ── 62회차 처방 **S3** — 마찰 SDF 부호 기준 교체(`SKELSIGN=1` · 기본 off) ──────
 // 62회차 §1 오라클이 확증한 것: 구면행진 공 오라클 확정 표본 831개에서
 //   레이패리티 0/831(0.0%) · **골격 31/831(3.7%)** · **라디얼 202/831(24.3%)**
@@ -859,14 +849,11 @@ const tBake = performance.now();
 // **필드는 전 정점 공유**이므로 몸판 마찰도 함께 바뀐다 — A 17채널의 이동은
 // 예상된 것이고 그 자체는 실패가 아니다(회차 프롬프트 §3 등재).
 const SKELSIGN = process.env.SKELSIGN === "1";
-const sdfField = bakeSdf(
-  SKELSIGN
-    ? makeSkeletonSignedSampler(wholeMesh, skeleton.segments, SDF_FAR, SDF_FAR)
-    : makeRadialSignedSampler(wholeMesh, (minX + maxX) / 2, (minZ + maxZ) / 2, SDF_FAR, SDF_FAR),
-  { x: minX - pad, y: yBot, z: minZ - pad },
-  { x: maxX + pad, y: yTop, z: maxZ + pad },
-  SDF_VOXEL, SDF_FAR,
+const tBake = performance.now();
+const { field: sdfField, box: sdfBox } = bakePatternFrictionSdf(
+  wholeMesh, skeleton.segments, position, layout.topY, hemY, { skeletonSign: SKELSIGN },
 );
+const { minX, maxX, minZ, maxZ } = sdfBox;
 console.log(`[dress] SDF 굽기 ${sdfField.nx}x${sdfField.ny}x${sdfField.nz} elapsedMs ${Math.round(performance.now() - tBake)}`);
 // ── 62회차 §1 **부호 오라클**(진단 전용 · 물리 0줄 · `SLEEVESIGN=1`) ──────────
 // S3(마찰 SDF 부호 기준 교체)의 선행 조건. 61회차가 t=0 소매 948정점에서
