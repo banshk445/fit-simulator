@@ -455,6 +455,61 @@ export function PatternPreview(): React.JSX.Element | null {
           Object.entries(byKindGap).map(([k, v]) => `${k} ${v.n}쌍 ${(v.min * 100).toFixed(1)}~${(v.max * 100).toFixed(1)}cm`).join(" · "),
         );
       }
+      // ── P20 §1 — **한 쌍을 끝까지 따라간다.** 갭이 최대인 `cuff` 쌍과 최소인 쌍을
+      // 골라 양 끝점의 소속·2D·3D·배치 파라미터를 전량 인쇄한다(인쇄 전용 · 물리 0줄).
+      // 22.2cm는 밴드 원(반지름 5.55cm) 위 두 점으로는 나올 수 없는 값이라
+      // 「중심 또는 반지름이 다르다」가 사실이고, 그 어느 것인지를 값으로 가른다.
+      {
+        const cuffSeams = g.seams.filter((sm) => sm.kind === "cuff");
+        if (cuffSeams.length) {
+          const D = g.draft.dims;
+          const halfAt = (yM: number): number => {
+            const { sleeveHalfWidthM: b0, cuffHalfWidthM: cH, capHeightM: cap, cuffYM: cy } = D;
+            if (yM <= cap || cy <= cap) return b0;
+            return b0 + (cH - b0) * Math.min(1, (yM - cap) / (cy - cap));
+          };
+          const armOf = (p: number): { name: string; sh: { x: number; y: number; z: number } } => {
+            const plus = arms[0].trueShoulder.x >= arms[1].trueShoulder.x ? arms[0] : arms[1];
+            const minus = plus === arms[0] ? arms[1] : arms[0];
+            // 배치 표와 같은 규약: 원본 쪽(홀수 인덱스 3·5)=armPlus · 미러 쪽(2·4)=armMinus
+            return p % 2 === 1 ? { name: "armPlus", sh: plus.trueShoulder } : { name: "armMinus", sh: minus.trueShoulder };
+          };
+          const dump = (label: string, sm: { a: number; b: number; gapM: number }): void => {
+            const one = (v: number): string => {
+              const p = g.topology.panelOf(v);
+              const x2 = g.pos2[v * 2], y2 = g.pos2[v * 2 + 1];
+              const hA = halfAt(y2);
+              const th = (x2 / hA) * Math.PI * g.meta.wrapShrink;
+              const r = hA / Math.PI + PATTERN_EDGE_INTERIOR_M * 0; // margin은 place(1)에서 곱해진다 — 아래 실측 3D가 정본
+              const a = armOf(p);
+              const dx = g.positions[v * 3] - a.sh.x, dy = g.positions[v * 3 + 1] - a.sh.y, dz = g.positions[v * 3 + 2] - a.sh.z;
+              return `#${v}(패널 ${p}/${g.topology.roleOf(v)}·${a.name}) 2D(${(x2 * 100).toFixed(2)},${(y2 * 100).toFixed(2)})cm` +
+                ` 3D(${(g.positions[v * 3] * 100).toFixed(2)},${(g.positions[v * 3 + 1] * 100).toFixed(2)},${(g.positions[v * 3 + 2] * 100).toFixed(2)})cm` +
+                ` halfAt ${(hA * 100).toFixed(2)}cm th ${(th * 180 / Math.PI).toFixed(1)}° r≈${(r * 100).toFixed(2)}cm` +
+                ` |어깨→점| ${(Math.hypot(dx, dy, dz) * 100).toFixed(2)}cm`;
+            };
+            console.log(`[patternPreview·P20] ${label} 갭 ${(sm.gapM * 100).toFixed(2)}cm\n    a = ${one(sm.a)}\n    b = ${one(sm.b)}`);
+          };
+          const sorted = [...cuffSeams].sort((x, y) => y.gapM - x.gapM);
+          dump("cuff 최대", sorted[0]);
+          dump("cuff 최소", sorted[sorted.length - 1]);
+          // 시접 «짝»이 어느 세그먼트에서 왔는지 — 그룹 라벨과 표본 수
+          const grp = g.seamGroups.filter((q) => q.kind === "cuff")
+            .map((q) => `${q.label}[a ${q.a.length}·b ${q.b.length} · 호장 ${(q.arcAM * 100).toFixed(2)}/${(q.arcBM * 100).toFixed(2)}cm]`);
+          console.log(`[patternPreview·P20] cuff 시접 그룹 — ${grp.join(" · ")}`);
+          // 전량은 훅으로 낸다 — 콘솔 수집이 끊겨도 값에 닿을 수 있게(임시 로그 금지 조항).
+          const win = window as unknown as { __fitDebug?: Record<string, unknown> };
+          if (!win.__fitDebug) win.__fitDebug = {};
+          win.__fitDebug.seamGaps = (): unknown => {
+            const byKind: Record<string, { n: number; minCm: number; maxCm: number }> = {};
+            for (const sm of g.seams) {
+              const k = (byKind[sm.kind] ??= { n: 0, minCm: Infinity, maxCm: -Infinity });
+              k.n++; k.minCm = Math.min(k.minCm, sm.gapM * 100); k.maxCm = Math.max(k.maxCm, sm.gapM * 100);
+            }
+            return { byKind, groups: g.seamGroups.map((q) => ({ kind: q.kind, label: q.label, a: q.a.length, b: q.b.length, arcACm: q.arcAM * 100, arcBCm: q.arcBM * 100 })) };
+          };
+        }
+      }
       console.log(
         `[patternPreview] 시접 브리지 — 스트립 ${strips.length}개 · 쌍 ${strips.reduce((a, s) => a + s.pairs.length, 0)} · 삼각형 ${strips.reduce((a, s) => a + Math.max(0, s.pairs.length - 1) * 2, 0)} · 종류별 쌍 ${JSON.stringify(byKind)}`,
       );

@@ -281,12 +281,16 @@ export function buildPatternGarment(
   }
   const total = panelCounts.reduce((a, b) => a + b, 0);
 
+  // ── P20 §1 — **패널 수 고정 4를 걷어낸다.** P18이 `panelStarts[n]` 비교는 지웠지만
+  // 아래 네 루프(2D 좌표 · 삼각형 · UV · 엣지)의 `p < 4`는 남아 있었다. 그래서 P19의
+  // 밴드 패널은 **2D 좌표도 삼각형도 UV도 엣지도 받지 못한 채** 시접만 매달려 있었다.
+  // 실측 증거: 밴드 정점 2D가 전부 (0,0) · `cuff` 시접 그룹 호장 **0.00cm** · 착장 S1 정체.
   const pos2 = new Float64Array(total * 2);
-  for (let p = 0; p < 4; p++) pos2.set(panelPos2[p], panelStarts[p] * 2);
+  for (let p = 0; p < panelCounts.length; p++) pos2.set(panelPos2[p], panelStarts[p] * 2);
 
   const triList: number[] = [];
   const panelTriRanges: { start: number; count: number }[] = [];
-  for (let p = 0; p < 4; p++) {
+  for (let p = 0; p < panelCounts.length; p++) {
     const start = triList.length / 3;
     for (let i = 0; i < panelTris[p].length; i++) triList.push(panelTris[p][i] + panelStarts[p]);
     panelTriRanges.push({ start, count: panelTris[p].length / 3 });
@@ -307,7 +311,7 @@ export function buildPatternGarment(
       return { xMin, xMax, yMin, yMax };
     });
     const scale = Math.max(...bbox.map((b) => Math.max(b.xMax - b.xMin, b.yMax - b.yMin)));
-    for (let p = 0; p < 4; p++) {
+    for (let p = 0; p < panelCounts.length; p++) {
       const b = bbox[p];
       for (let i = 0; i < panelCounts[p]; i++) {
         const gi = panelStarts[p] + i;
@@ -354,7 +358,7 @@ export function buildPatternGarment(
 
   // ── 엣지(전역)
   const edgePairs: { a: number; b: number }[] = [];
-  for (let p = 0; p < 4; p++) {
+  for (let p = 0; p < panelCounts.length; p++) {
     for (const e of panelEdges(panelTris[p])) edgePairs.push({ a: e.a + panelStarts[p], b: e.b + panelStarts[p] });
   }
 
