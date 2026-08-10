@@ -64,6 +64,7 @@ export function Controls() {
   const setGarmentShoulderWidth = useFitStore((s) => s.setGarmentShoulderWidth);
   const setGarmentSleeveLength = useFitStore((s) => s.setGarmentSleeveLength);
   const setGarmentSleeveWidth = useFitStore((s) => s.setGarmentSleeveWidth);
+  const setGarmentCuffBand = useFitStore((s) => s.setGarmentCuffBand);
   const garmentImage = useFitStore((s) => s.garmentImage);
   const setGarmentImage = useFitStore((s) => s.setGarmentImage);
   const fabric = useFitStore((s) => s.fabric);
@@ -277,6 +278,21 @@ export function Controls() {
           max={35}
           onChange={setGarmentSleeveWidth}
         />
+
+        {/* P19 §2 — **커프 밴드.** 0이면 밴드가 없다(기본). 소매 타입으로 «가르지 않는다» —
+            분기가 아니라 옵션이다(P13이 지킨 「타입 분기 0」과 같은 계열).
+            높이는 **도출값이 아니다** — 저장소 안에 근거가 될 실측이 없어 치수로 낸다.
+            밴드는 소매길이 «안»에 든다(소매길이 22cm의 뜻이 안 바뀐다). */}
+        <Slider
+          label="커프 밴드"
+          value={garmentSize.cuffBand}
+          min={0}
+          max={10}
+          onChange={setGarmentCuffBand}
+        />
+        {garmentSize.cuffBand === 0 && (
+          <div className="-mt-3 mb-4 text-xs text-slate-400">0 = 밴드 없음 · 소맷부리가 열린 채로 끝난다</div>
+        )}
 
         <div className="mb-1 text-sm text-slate-300">원단</div>
         <div className="grid grid-cols-4 gap-1.5">

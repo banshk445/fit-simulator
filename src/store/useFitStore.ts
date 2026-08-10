@@ -21,6 +21,9 @@ interface GarmentSize {
   length: number; // cm (총장)
   width: number; // cm (품 = 가슴단면)
   shoulderWidth: number; // cm (어깨너비 — 몸 어깨너비와 별개인 옷 자체의 치수)
+  // P19 §2 — 커프 밴드 높이(cm). **0이면 밴드 없음(기본)**. 이 값은 «도출이 아니다» —
+  // 저장소 안에 밴드 높이의 근거가 될 몸/옷 실측이 없어서 상수로 박지 않고 치수로 낸다.
+  cuffBand: number;
   sleeveLength: number; // cm (소매길이 — 반팔/긴팔 공통, 몸 팔길이와 무관)
   sleeveWidth: number; // cm (소매통 — 소매 둘레의 평면 실측, 반지름=이 값/2)
 }
@@ -86,6 +89,7 @@ interface FitState {
   setGarmentLength: (length: number) => void;
   setGarmentWidth: (width: number) => void;
   setGarmentShoulderWidth: (shoulderWidth: number) => void;
+  setGarmentCuffBand: (cuffBand: number) => void;
   setGarmentSleeveLength: (sleeveLength: number) => void;
   setGarmentSleeveWidth: (sleeveWidth: number) => void;
   setGarmentImage: (url: string | null) => void;
@@ -130,6 +134,8 @@ export const useFitStore = create<FitState>((set) => ({
     shoulderWidth: 45,
     sleeveLength: DEFAULT_SLEEVE_LENGTH_SHORT,
     sleeveWidth: 18,
+    // P19 §2 — **기본 0 = 밴드 없음.** 기준선 B-2·긴팔 P13 값이 그대로 유지된다.
+    cuffBand: 0,
   },
   garmentImage: null,
   fabric: "cotton",
@@ -167,6 +173,8 @@ export const useFitStore = create<FitState>((set) => ({
   setGarmentWidth: (width) => set((state) => ({ garmentSize: { ...state.garmentSize, width } })),
   setGarmentShoulderWidth: (shoulderWidth) =>
     set((state) => ({ garmentSize: { ...state.garmentSize, shoulderWidth } })),
+  setGarmentCuffBand: (cuffBand) =>
+    set((state) => ({ garmentSize: { ...state.garmentSize, cuffBand } })),
   setGarmentSleeveLength: (sleeveLength) =>
     set((state) => ({ garmentSize: { ...state.garmentSize, sleeveLength } })),
   setGarmentSleeveWidth: (sleeveWidth) =>

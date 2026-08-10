@@ -142,6 +142,9 @@ export function DressButton(): React.JSX.Element | null {
       sleeveLengthM: garmentSize.sleeveLength / 100,
       sleeveWidthM: garmentSize.sleeveWidth / 100,
     };
+    // P19 §2 — 커프 밴드는 **fixture 폴백 여부와 무관하게** 항상 슬라이더에서 온다
+    // (fixture `layout`에 그 항이 없다 — 새 옷 치수다).
+    const cuffDims = { cuffBandM: garmentSize.cuffBand / 100 };
     const worker = new Worker(new URL("../workers/patternDressWorker.ts", import.meta.url), { type: "module" });
     workerRef.current = worker;
     worker.onmessage = (ev: MessageEvent<DressWorkerMessage>) => {
@@ -212,7 +215,7 @@ export function DressButton(): React.JSX.Element | null {
       setNote(`${m.state} f=${m.frames} · ${s.toFixed(1)}s`);
       finish();
     };
-    worker.postMessage({ ringTotal, garmentDims: dims, fixture: snap?.fixture } satisfies DressWorkerRequest);
+    worker.postMessage({ ringTotal, garmentDims: { ...(dims ?? {}), ...cuffDims }, fixture: snap?.fixture } satisfies DressWorkerRequest);
   };
 
   return (

@@ -128,6 +128,10 @@ export interface PatternDraft {
     cuffHalfWidthM: number;
     /** P12 — 그 자리의 팔 단면 둘레(도출 근거). 산출 불가면 null. */
     cuffArmGirthM: number | null;
+    /** P19 — 소맷부리(=밴드가 있으면 밴드 «윗변») 패턴 y. 밴드가 없으면 `sleeveLengthM`과 같다. */
+    cuffYM: number;
+    /** P19 — 커프 밴드 높이(m). 0이면 밴드 없음. */
+    cuffBandM: number;
     /** P13 — 소맷부리 여유 = 2·base − 캡 자리 팔 둘레(하한 `ARMHOLE_ARM_CLEARANCE_M`). 산출 불가면 null. */
     cuffEaseM: number | null;
     /** P13 — 캡 높이 자리의 팔 축 단면 둘레(여유 도출의 출처). 산출 불가면 null. */
@@ -246,6 +250,14 @@ export interface GarmentDims {
   shoulderWidthM: number; // 어깨너비 — 옷 어깨점 사이(둘레 아님 · 직선 거리)
   sleeveLengthM: number;  // 소매길이 — 어깨점에서 소맷부리(직선 거리)
   sleeveWidthM: number;   // 소매통(평면 실측) → 소매 둘레 = 2×이 값
+  /**
+   * P19 §2 — 커프 «밴드» 높이(m). **0이면 밴드를 만들지 않는다**(기본).
+   * 밴드는 소매길이 «안»에 든다 — 소매 원통이 `sleeveLength − band`까지 가고 밴드가
+   * 그 아래를 채운다. 그래서 슬라이더 「소매길이」의 뜻이 안 바뀐다(어깨~소맷부리 끝).
+   * **이 값은 도출이 아니다** — 저장소 안에 밴드 «높이»의 근거가 될 실측이 없다
+   * (손목 둘레도 소매통도 높이를 주지 못한다). 그래서 상수로 박지 않고 **슬라이더로** 낸다.
+   */
+  cuffBandM?: number;
 }
 
 export function draftTshirtPattern(body: BodyMeasure, g: GarmentDims): PatternDraft {
@@ -412,7 +424,9 @@ export function draftTshirtPattern(body: BodyMeasure, g: GarmentDims): PatternDr
   const capHeightM = (lo + hi) / 2;
   const capFront = capCurveFor(capHeightM);
   const capGirthM = 2 * curveLength(capFront);
-  const underSleeveM = g.sleeveLengthM - capHeightM;
+  // P19 §2 — 밴드는 소매길이 **안**에 든다. 원통은 `sleeveLength − band`까지만 간다.
+  const cuffBandM = Math.max(0, g.cuffBandM ?? 0);
+  const underSleeveM = g.sleeveLengthM - capHeightM - cuffBandM;
 
   const cuffY = capHeightM + underSleeveM;
   // ── P12 §1 — **소맷부리 테이퍼.** 소맷부리 둘레를 팔 실측에서 도출한다(새 손 상수 0).
@@ -474,6 +488,22 @@ export function draftTshirtPattern(body: BodyMeasure, g: GarmentDims): PatternDr
 
   const necklineGirthM = 2 * (front.segments[0].lengthM + back.segments[0].lengthM);
 
+  // ── P19 §2 — **커프 밴드 패널**(단층). 접어 박는 이중층은 만들지 않는다 —
+  // 접힘은 양안정이라 물리로 강제할 층이 따로 필요하고, 위상도 한 단계 더 복잡해진다.
+  // 단층 밴드로 「소맷부리가 마감된다」는 목적은 달성된다.
+  // 둘레는 **소맷부리 둘레 그대로**다(P13 도출식 · 새 상수 0). 높이만 슬라이더에서 온다.
+  const bandPanel: PatternPanel | null = cuffBandM > 0 ? {
+    name: "cuff",
+    halfWithMirrorAxis: false,
+    segments: [
+      // 윗변 — 소매의 `cuff` 세그먼트와 **같은 방향**(+x → −x)이라 시접이 정방향으로 짝난다.
+      seg("bandTop", { kind: "line", a: { x: cuffHalfM, y: cuffY }, b: { x: -cuffHalfM, y: cuffY } }, false),
+      seg("bandLeft", { kind: "line", a: { x: -cuffHalfM, y: cuffY }, b: { x: -cuffHalfM, y: cuffY + cuffBandM } }, false),
+      seg("bandBottom", { kind: "line", a: { x: -cuffHalfM, y: cuffY + cuffBandM }, b: { x: cuffHalfM, y: cuffY + cuffBandM } }, false),
+      seg("bandRight", { kind: "line", a: { x: cuffHalfM, y: cuffY + cuffBandM }, b: { x: cuffHalfM, y: cuffY } }, false),
+    ],
+  } : null;
+
   const seams: SeamSpec[] = [
     { kind: "shoulder", a: { panel: "front", segment: "shoulder" }, b: { panel: "back", segment: "shoulder" }, reverseB: false },
     { kind: "side", a: { panel: "front", segment: "side" }, b: { panel: "back", segment: "side" }, reverseB: false },
@@ -483,10 +513,17 @@ export function draftTshirtPattern(body: BodyMeasure, g: GarmentDims): PatternDr
     { kind: "armhole", a: { panel: "back", segment: "armhole" }, b: { panel: "sleeve", segment: "capBack" }, reverseB: true },
     // 소매 안쪽 시접(통 닫기): underFront(위→아래) ↔ underBack(아래→위).
     { kind: "sleeveUnder", a: { panel: "sleeve", segment: "underFront" }, b: { panel: "sleeve", segment: "underBack" }, reverseB: true },
+    // P19 §2 — 밴드 시접 2벌. 시접 규칙은 **기존 그대로**(rest 6.00mm · limitStrain 1.2 · 새 문턱 0).
+    //  ① 소매 소맷부리 ↔ 밴드 윗변(같은 방향)
+    //  ② 밴드 통 닫기: 오른변(아래→위) ↔ 왼변(위→아래) — `sleeveUnder`와 같은 형태
+    ...(bandPanel ? [
+      { kind: "cuff", a: { panel: "sleeve", segment: "cuff" }, b: { panel: "cuff", segment: "bandTop" }, reverseB: false },
+      { kind: "cuff", a: { panel: "cuff", segment: "bandRight" }, b: { panel: "cuff", segment: "bandLeft" }, reverseB: true },
+    ] as SeamSpec[] : []),
   ];
 
   return {
-    panels: [front, back, sleeve],
+    panels: bandPanel ? [front, back, sleeve, bandPanel] : [front, back, sleeve],
     seams,
     dims: {
       chestGirthM: body.chestGirthM, neckGirthM: body.neckGirthM,
@@ -513,6 +550,7 @@ export function draftTshirtPattern(body: BodyMeasure, g: GarmentDims): PatternDr
       armGirthM: body.armSection?.maxSectionGirthM ?? 0,
       sleeveTubeRadiusM: g.sleeveWidthM / Math.PI,
       cuffHalfWidthM: cuffHalfM, cuffArmGirthM: cuffGirthM,
+      cuffYM: cuffY, cuffBandM,
       cuffEaseM, capArmGirthM,
     },
   };

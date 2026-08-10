@@ -313,6 +313,8 @@ export function PatternPreview(): React.JSX.Element | null {
           shoulderWidthM: Math.abs(f.pose.pinLeft.x - f.pose.pinRight.x),
           sleeveLengthM: garmentSize.sleeveLength / 100,
           sleeveWidthM: garmentSize.sleeveWidth / 100,
+          // P19 §2 — 미리보기도 같은 밴드 치수를 쓴다(워커와 같은 옷을 그려야 한다).
+          cuffBandM: garmentSize.cuffBand / 100,
         },
         arms,
         makeOutlineProvider(
@@ -425,7 +427,7 @@ export function PatternPreview(): React.JSX.Element | null {
           `[patternPreview·P13] 소매 제도 — 소매통(위) ${c2(D.sleeveHalfWidthM)}(둘레 ${c2(2 * D.sleeveHalfWidthM)})` +
           ` · 소맷부리 반폭 ${c2(D.cuffHalfWidthM)}(둘레 ${c2(2 * D.cuffHalfWidthM)})` +
           ` · 여유 ${c2(D.cuffEaseM)} = 2·base ${c2(2 * D.sleeveHalfWidthM)} − 캡 자리 팔 ${c2(D.capArmGirthM)}` +
-          ` · 소맷부리 자리 팔 ${c2(D.cuffArmGirthM)} · 캡높이 ${c2(D.capHeightM)} · cuffY ${c2(D.sleeveLengthM)}`,
+          ` · 소맷부리 자리 팔 ${c2(D.cuffArmGirthM)} · 캡높이 ${c2(D.capHeightM)} · cuffY ${c2(D.cuffYM)}(소매길이 ${c2(D.sleeveLengthM)} − 밴드 ${c2(D.cuffBandM)})`,
         );
         // ── P15 §1 상설 계기 — **옷 어깨너비가 제도까지 도달하는가**를 그 자리에서 본다.
         // 슬라이더 값 · 포즈 핀 간격 · 제도가 실제로 쓴 값을 나란히 낸다.
@@ -436,6 +438,21 @@ export function PatternPreview(): React.JSX.Element | null {
           ` · 핀 간격 ${(pinGapM * 100).toFixed(4)}cm · 제도 어깨너비 ${c2(D.shoulderHalfM * 2)}(반폭 ${c2(D.shoulderHalfM)})` +
           ` · 어깨선 ${c2(D.shoulderSeamM)} · 어깨경사 ${(D.shoulderSlope * 180 / Math.PI).toFixed(1)}° · 몸판 반폭 ${c2(D.halfWidthM)}` +
           ` · [몸] 어깨 관절 간격 ${(Math.abs(arms[0].trueShoulder.x - arms[1].trueShoulder.x) * 100).toFixed(2)}cm`,
+        );
+      }
+      // ── P19 §2 계기 — **배치 시점 시접 갭을 종류별로** 낸다(인쇄 전용).
+      // S1 램프가 닫아야 할 거리가 종류마다 얼마인지가 실패 진단의 첫 수다.
+      // 하네스 `check:pattern`은 fixture 경로라 밴드를 못 본다(밴드 치수가 없다) —
+      // 밴드 시접을 볼 수 있는 자리는 여기뿐이다.
+      {
+        const byKindGap: Record<string, { n: number; min: number; max: number }> = {};
+        for (const sm of g.seams) {
+          const k = (byKindGap[sm.kind] ??= { n: 0, min: Infinity, max: -Infinity });
+          k.n++; k.min = Math.min(k.min, sm.gapM); k.max = Math.max(k.max, sm.gapM);
+        }
+        console.log(
+          `[patternPreview·P19] 배치 시접 갭(종류별 · S1이 닫아야 할 거리) — ` +
+          Object.entries(byKindGap).map(([k, v]) => `${k} ${v.n}쌍 ${(v.min * 100).toFixed(1)}~${(v.max * 100).toFixed(1)}cm`).join(" · "),
         );
       }
       console.log(

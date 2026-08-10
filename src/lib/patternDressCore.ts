@@ -101,7 +101,7 @@ export interface PatternDressOptions {
    *  도출한다(= 하네스와 같은 옷). 브라우저는 슬라이더가 «실제로 대응하는» 항목만 넘긴다:
    *  `shoulderWidthM`은 포즈 핀 간격(44.9995cm)에서 나오고 슬라이더 기본값 45cm와 다르므로
    *  넘기지 않는다 — 넘기면 기본 슬라이더에서 기준선 A가 깨진다(P3 §1). */
-  garmentDims?: Partial<{ lengthM: number; widthM: number; shoulderWidthM: number; sleeveLengthM: number; sleeveWidthM: number }>;
+  garmentDims?: Partial<{ lengthM: number; widthM: number; shoulderWidthM: number; sleeveLengthM: number; sleeveWidthM: number; cuffBandM: number }>;
   /** UI 진행 표시용. 물리에 관여하지 않는다. */
   onProgress?: (frame: number, state: string) => void;
 }
@@ -258,6 +258,8 @@ export interface StageBody {
 /** 해소된 옷 치수(전 항목 필수). */
 export interface GarmentDimsResolved {
   lengthM: number; widthM: number; shoulderWidthM: number; sleeveLengthM: number; sleeveWidthM: number;
+  /** P19 — 커프 밴드 높이(m). 기본 0(밴드 없음). */
+  cuffBandM: number;
 }
 
 export interface StageGarment {
@@ -400,6 +402,8 @@ export function createPatternDressing(
       shoulderWidthM: Math.abs(pose.pinLeft.x - pose.pinRight.x),
       sleeveLengthM: Math.max(pose.armLeft.length, pose.armRight.length),
       sleeveWidthM: layout.sleeveWidthM,
+      // P19 — 밴드는 **기본 0**이다(사용자 선택 · 기본 off). fixture에는 이 항이 없다.
+      cuffBandM: 0,
       ...opts.garmentDims,
     };
     const outlineTorso = new ArrayBvhCollision();
@@ -965,7 +969,7 @@ export function createPatternDressing(
     // `sleeveLengthM`인 경계 표본을 패턴 x로 정렬). 밑단과 다른 점 하나: 소매는
     // **닫힌 관**이라 마지막↔처음을 이어 «폐곡선»으로 잰다(그 한 변이 시접 자리다).
     // 소매 한 짝(`PANEL_PAT_SLEEVE_R`)만 잰다 — 좌우는 같은 메시다.
-    const cuffYM = g.draft.dims.sleeveLengthM;
+    const cuffYM = g.draft.dims.cuffYM;
     const cuffIdx: number[] = [];
     // 소매 한 짝만 잰다(좌우는 같은 메시) — 「역할이 소매인 마지막 패널」로 고른다.
     const sleevePanels = g.topology.panelsWithRole("sleeve");

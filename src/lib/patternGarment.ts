@@ -255,11 +255,24 @@ export function buildPatternGarment(
   const sleeveFlipped = flipPanelMeshX(sleeveMesh);
   const mFront = mirrorPanelMesh(half.front);
   const mBack = mirrorPanelMesh(half.back);
+  // ── P19 §2 — **커프 밴드 패널**(있을 때만). 소매와 같은 방식으로 좌우 한 벌을 만든다.
+  const bandMesh = draft.panels[3] ? triangulatePanel(draft.panels[3].segments, sizeOpts) : null;
+  const bandFlipped = bandMesh ? flipPanelMeshX(bandMesh) : null;
 
   // P18 §1 — 패널 구성과 **역할을 한 자리에서** 정한다. 아래 배열들의 순서가 곧 패널 인덱스다.
-  const panelRoles: PanelRole[] = ["torsoFront", "torsoBack", "sleeve", "sleeve"];
-  const panelPos2 = [mFront.pos2, mBack.pos2, sleeveFlipped.pos2, sleeveMesh.pos2];
-  const panelTris = [mFront.tris, mBack.tris, sleeveFlipped.tris, sleeveMesh.tris];
+  // P19 — 밴드가 있으면 소매 역할 패널이 4매가 된다(P18이 이미 그 구성을 통과시켰다).
+  const hasBand = bandMesh !== null && bandFlipped !== null;
+  const panelRoles: PanelRole[] = hasBand
+    ? ["torsoFront", "torsoBack", "sleeve", "sleeve", "sleeve", "sleeve"]
+    : ["torsoFront", "torsoBack", "sleeve", "sleeve"];
+  const panelPos2 = hasBand
+    ? [mFront.pos2, mBack.pos2, sleeveFlipped.pos2, sleeveMesh.pos2, bandFlipped!.pos2, bandMesh!.pos2]
+    : [mFront.pos2, mBack.pos2, sleeveFlipped.pos2, sleeveMesh.pos2];
+  const panelTris = hasBand
+    ? [mFront.tris, mBack.tris, sleeveFlipped.tris, sleeveMesh.tris, bandFlipped!.tris, bandMesh!.tris]
+    : [mFront.tris, mBack.tris, sleeveFlipped.tris, sleeveMesh.tris];
+  const PANEL_PAT_BAND_L = 4;
+  const PANEL_PAT_BAND_R = 5;
   const panelCounts = panelPos2.map((p) => p.length / 2);
   const panelStarts: number[] = [];
   {
@@ -311,8 +324,12 @@ export function buildPatternGarment(
   //   `mirrorPanel[p]`  그 패널의 미러 상대 패널(자기 자신이면 «패널 안에서» 미러)
   //   `mirrorLocal[p]`  패널 «안»의 정점 사상(null이면 항등 — 상대 패널이 이미 x 반전본이다)
   // 티셔츠 값은 종전과 같다: 앞·뒤는 자기 안에서, 소매 2↔3은 항등으로 짝짓는다(비트 동일).
-  const mirrorPanel = [PANEL_PAT_FRONT, PANEL_PAT_BACK, PANEL_PAT_SLEEVE_R, PANEL_PAT_SLEEVE_L];
-  const mirrorLocal: (Int32Array | null)[] = [mFront.mirrorOf, mBack.mirrorOf, null, null];
+  const mirrorPanel = hasBand
+    ? [PANEL_PAT_FRONT, PANEL_PAT_BACK, PANEL_PAT_SLEEVE_R, PANEL_PAT_SLEEVE_L, PANEL_PAT_BAND_R, PANEL_PAT_BAND_L]
+    : [PANEL_PAT_FRONT, PANEL_PAT_BACK, PANEL_PAT_SLEEVE_R, PANEL_PAT_SLEEVE_L];
+  const mirrorLocal: (Int32Array | null)[] = hasBand
+    ? [mFront.mirrorOf, mBack.mirrorOf, null, null, null, null]
+    : [mFront.mirrorOf, mBack.mirrorOf, null, null];
   const mirrorOf = new Int32Array(total);
   for (let p = 0; p < panelCounts.length; p++) {
     const loc = mirrorLocal[p];
@@ -352,6 +369,10 @@ export function buildPatternGarment(
   const panelIndexByName = new Map<PanelName, number>([
     ["front", PANEL_PAT_FRONT], ["back", PANEL_PAT_BACK], ["sleeve", PANEL_PAT_SLEEVE_R],
   ]);
+  if (hasBand) {
+    meshByPanel.set("cuff", bandMesh!);
+    panelIndexByName.set("cuff", PANEL_PAT_BAND_R);
+  }
   const seams: PatternSeamEntry[] = [];
   const seamGroups: SeamGroup[] = [];
   const seamKeys = new Set<number>();
@@ -418,13 +439,18 @@ export function buildPatternGarment(
   const sleeveMounts: { panel: number; arm: PatternArm; flipSign: number }[] = [
     { panel: PANEL_PAT_SLEEVE_R, arm: armPlus, flipSign: 1 },
     { panel: PANEL_PAT_SLEEVE_L, arm: armMinus, flipSign: -1 },
+    // P19 §2 — 밴드도 «같은 코드»로 감긴다(§1이 표로 바꿔 둔 덕이다). 새 배치 코드 0줄.
+    ...(hasBand ? [
+      { panel: PANEL_PAT_BAND_R, arm: armPlus, flipSign: 1 },
+      { panel: PANEL_PAT_BAND_L, arm: armMinus, flipSign: -1 },
+    ] : []),
   ];
   const sleeveRadiusM = draft.dims.sleeveTubeRadiusM;
   // P12 — 소매 반폭의 y 프로파일. 제도(`patternDraft`)의 `underFront` 직선과 **같은 식**이다
   // (식을 옮겨 적지 않도록 끝점 2개를 dims에서 읽어 선형 보간한다). 캡 위쪽(y < 캡높이)은
   // `base` 고정 — 그 대역의 폭은 소매산 곡선이 정하고 테이퍼가 관여하지 않는다.
   const sleeveHalfAt = (yM: number): number => {
-    const { sleeveHalfWidthM: b, cuffHalfWidthM: cH, capHeightM: cap, sleeveLengthM: cuffY } = draft.dims;
+    const { sleeveHalfWidthM: b, cuffHalfWidthM: cH, capHeightM: cap, cuffYM: cuffY } = draft.dims;
     if (yM <= cap || cuffY <= cap) return b;
     const t = Math.min(1, (yM - cap) / (cuffY - cap));
     return b + (cH - b) * t;
