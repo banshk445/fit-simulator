@@ -99,7 +99,15 @@ export function DressButton(): React.JSX.Element | null {
       ? bakeBodySnapshot({ root, bones, bodySize, garmentSize, sleeveType, fabric }, collisionMesh)
       : null;
     if (snap) {
-      console.log(`[dress] 몸 스냅샷 — 굽기 ${snap.bakeMs.toFixed(0)}ms · 캡슐 ${snap.capsuleMs.toFixed(1)}ms · 정점 ${snap.fixture.collision.position.length / 3}`);
+      // P10 §1 — 팔 축 관절을 로그에 병기한다. 캡슐이 꺾이는 조건(소매길이 > 위팔)의
+      // 판정 근거가 이 두 수치라, 매번 임시 로그를 넣지 않도록 상설로 둔다.
+      const a = snap.fixture.pose.armLeft;
+      const seg = (p?: { x: number; y: number; z: number }, q?: { x: number; y: number; z: number }): string =>
+        p && q ? `${(100 * Math.hypot(q.x - p.x, q.y - p.y, q.z - p.z)).toFixed(1)}cm` : "—";
+      console.log(
+        `[dress] 몸 스냅샷 — 굽기 ${snap.bakeMs.toFixed(0)}ms · 캡슐 ${snap.capsuleMs.toFixed(1)}ms · 정점 ${snap.fixture.collision.position.length / 3}` +
+        ` · 위팔 ${seg(a.trueShoulder, a.elbow)} / 전완 ${seg(a.elbow, a.hand)} · 소매길이 ${garmentSize.sleeveLength.toFixed(0)}cm`,
+      );
     } else {
       console.warn("[dress] 마네킹 루트/어깨 본 미준비 — 커밋 fixture로 돈다(몸 슬라이더 미반영)");
     }

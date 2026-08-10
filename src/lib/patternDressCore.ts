@@ -22,6 +22,7 @@ import { ArrayBvhCollision } from "./bvhFromArrays";
 import { SelfCollision } from "./selfCollision";
 import { FABRIC_PRESETS } from "./fabricPresets";
 import { createGarmentSession, createPanelSplitResolver, createPatternUnifiedResolver, buildArmCapsules, makePatternSessionEnv } from "./garmentFrame";
+import type { ArmShape } from "./garmentFrame";
 import type { GarmentFrameEnv, GarmentSession } from "./garmentFrame";
 import type { Capsule } from "./torsoCapsule";
 import type { CollisionResolver } from "./clothPhysics";
@@ -50,8 +51,9 @@ export interface PatternDressFixture {
   pose: {
     pinLeft: { x: number; y: number; z: number };
     pinRight: { x: number; y: number; z: number };
-    armLeft: { dir: { x: number; y: number; z: number }; trueShoulder: { x: number; y: number; z: number }; length: number };
-    armRight: { dir: { x: number; y: number; z: number }; trueShoulder: { x: number; y: number; z: number }; length: number };
+    // P10 §1 — `ArmShape`로 통일(종전 인라인 3필드와 동형 + 선택 `elbow`/`hand`).
+    armLeft: ArmShape;
+    armRight: ArmShape;
     fabric: keyof typeof FABRIC_PRESETS;
   };
   collision: {

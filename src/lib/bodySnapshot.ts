@@ -18,7 +18,7 @@
 // 포즈(`pinLeft`/`pinRight`/`armLeft`/`armRight`)와 레이아웃(`topY`/`centerZ`)을
 // **워커 메시지 이력이 아니라 씬에서 직접** 도출하기 때문이다.
 import * as THREE from "three";
-import { findArmDirection, findShortSleeveDirection } from "./boneUtils";
+import { findArmDirection, findElbowBone, findHandBone, findShortSleeveDirection } from "./boneUtils";
 import { computeShoulderPin } from "./shoulderPin";
 import { buildTorsoProxyCapsules } from "./torsoCapsule";
 import { MannequinCollisionMesh } from "./meshCollision";
@@ -28,6 +28,9 @@ export interface ArmShape {
   dir: { x: number; y: number; z: number };
   trueShoulder: { x: number; y: number; z: number };
   length: number;
+  /** P10 §1 — 팔 축 관절(월드). v2 스냅샷에서만 채운다 — v1은 이 필드 없이 종전 직선 캡슐. */
+  elbow?: { x: number; y: number; z: number };
+  hand?: { x: number; y: number; z: number };
 }
 
 export interface ShoulderBones {
@@ -72,6 +75,19 @@ export function computeArmShapes(
     left: { dir: toMsg(dirL), trueShoulder: toMsg(scratchL), length: sleeveLengthM },
     right: { dir: toMsg(dirR), trueShoulder: toMsg(scratchR), length: sleeveLengthM },
   };
+}
+
+// P10 §1 — 팔 축 관절을 **몸 뼈대에서 뜬다**(새 상수 0). `findElbowBone`/`findHandBone`은
+// 이미 `findShortSleeveDirection`/`findArmDirection`이 쓰던 그 함수다.
+// v2 스냅샷에서만 부른다 — v1 `computeArmShapes`는 손대지 않는다(비트 동일).
+const jointScratch = new THREE.Vector3();
+function armJoints(armRoot: THREE.Object3D): { elbow: { x: number; y: number; z: number }; hand: { x: number; y: number; z: number } } {
+  const at = (bone: THREE.Object3D): { x: number; y: number; z: number } => {
+    bone.updateWorldMatrix(true, false);
+    bone.getWorldPosition(jointScratch);
+    return toMsg(jointScratch);
+  };
+  return { elbow: at(findElbowBone(armRoot)), hand: at(findHandBone(armRoot)) };
 }
 
 export interface BodySnapshotInput {
@@ -144,8 +160,8 @@ export function bakeBodySnapshot(
       pose: {
         pinLeft: toMsg(pins.left),
         pinRight: toMsg(pins.right),
-        armLeft: arms.left,
-        armRight: arms.right,
+        armLeft: { ...arms.left, ...armJoints(leftShoulder) },
+        armRight: { ...arms.right, ...armJoints(rightShoulder) },
         fabric,
       },
       collision: {

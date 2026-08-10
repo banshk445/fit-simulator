@@ -56,6 +56,10 @@ export interface ArmShape {
   dir: Vec3Like;
   trueShoulder: Vec3Like;
   length: number;
+  // P10 §1 — 팔꿈치·손 월드 좌표(몸 뼈대에서 뜬다, 새 상수 0). **선택**이다:
+  // 주지 않으면 종전 직선 캡슐 그대로다(v1 워커·하네스·커밋 fixture 경로).
+  elbow?: Vec3Like;
+  hand?: Vec3Like;
 }
 
 export interface FrameLayout {
@@ -79,6 +83,38 @@ export interface FramePose {
 export function buildArmCapsules(shape: ArmShape): Capsule[] {
   const midLength = shape.length * 0.55;
   const endLength = shape.length * 1.25;
+  // P10 §1 — **소매가 팔꿈치를 넘어갈 때만**(긴팔) 캡슐을 꺾는다: 어깨→팔꿈치 /
+  // 팔꿈치→손 두 세그먼트. 조건은 옷 실측(`length`) vs 몸 실측(위팔 길이)에서
+  // 나온다 — 새 상수 0. 반팔은 소매가 위팔 안에서 끝나고 종전 식이 이미 위팔 축
+  // (`findShortSleeveDirection`)을 따르므로 그대로 둔다 → **기준선 B 비트 동일**.
+  // (1.25배 오버슛까지로 조건을 잡으면 반팔도 꺾여 기준선 B가 갈린다 — 실측:
+  //  f 260→319 · 자기교차 2143→2070 · 밑단 합 114.04→112.84cm.)
+  // 전완 캡슐은 **손에서 끊는다**. 종전 1.25배 오버슛을 호장으로 유지해 손 너머까지
+  // 늘리는 변형을 실측했더니 **ABORT**였다(긴팔 S1 정체 f=1212 · seamGap 7.7mm ·
+  // 60프레임 무개선). 오버슛은 직선 축 근사의 보정이었고, 축이 팔을 따르면 근거가 없다.
+  if (shape.elbow && shape.hand) {
+    const upperLen = Math.hypot(
+      shape.elbow.x - shape.trueShoulder.x, shape.elbow.y - shape.trueShoulder.y, shape.elbow.z - shape.trueShoulder.z,
+    );
+    const foreLen = Math.hypot(
+      shape.hand.x - shape.elbow.x, shape.hand.y - shape.elbow.y, shape.hand.z - shape.elbow.z,
+    );
+    if (upperLen > 1e-6 && foreLen > 1e-6 && shape.length > upperLen) {
+      const t = Math.min(endLength - upperLen, foreLen) / foreLen;
+      return [
+        { top: shape.trueShoulder, bottom: shape.elbow, radius: ARM_COLLISION_RADIUS },
+        {
+          top: shape.elbow,
+          bottom: {
+            x: shape.elbow.x + (shape.hand.x - shape.elbow.x) * t,
+            y: shape.elbow.y + (shape.hand.y - shape.elbow.y) * t,
+            z: shape.elbow.z + (shape.hand.z - shape.elbow.z) * t,
+          },
+          radius: ARM_COLLISION_RADIUS,
+        },
+      ];
+    }
+  }
   const mid = {
     x: shape.trueShoulder.x + shape.dir.x * midLength,
     y: shape.trueShoulder.y + shape.dir.y * midLength,
