@@ -176,6 +176,23 @@ export interface PatternDressMetrics {
   cuffDraftCm: number;
   /** P13 — 소맷부리 여유(cm · 소매산이 이미 가진 여유). 산출 불가면 NaN. */
   cuffEaseCm: number;
+  /**
+   * P14 — **관통 정점의 자리**(인쇄 전용 · 판정 0). 총량은 `insideCount`/`insideTotal`이고
+   * 여기 담긴 것은 그 정점들이 «어디»에 있는가다. 술어는 새로 만들지 않았다.
+   */
+  pen: {
+    /** 패널별 [앞판, 뒤판, 소매L, 소매R]. */
+    byPanel: number[];
+    /** 몸판 관통의 월드 y 대역(1cm bin · 하네스 44회차 정정 ①과 같은 해상도). */
+    torsoByYCm: Record<string, number>;
+    /** 소매 관통의 **팔 축 호장** 대역(패턴 y · 1cm bin · P11 프로파일과 같은 축). */
+    sleeveByArcCm: Record<string, number>;
+    /**
+     * §2 — 소매 정점 한정 「관통(레이 패리티) ↔ 눌림(`signedClearance` ≤ 0)」 교차표.
+     * `dNull`은 부호거리 질의가 실패한 표본(정의역 밖) — 침묵으로 넘기지 않는다.
+     */
+    sleeveCross: { pen: number; touch: number; both: number; penOnly: number; touchOnly: number; dNull: number };
+  };
   /** P8 핏 리포트. 국면 경계(mm)를 함께 실어 **화면이 문턱을 스스로 밝히게** 한다. */
   fit: {
     marginMm: number;
@@ -869,6 +886,49 @@ export function createPatternDressing(
     }
     const sleeveSignAgreePct = signN ? (100 * signSame) / signN : NaN;
 
+    // ── P14 §1·§2 — **관통 정점의 자리**. 총량만 내던 채널(P10 §1-5 등재분)에 위치를 붙인다.
+    // **인쇄 전용 · 새 판정 로직 0 · 물리 0줄** — 술어는 둘 다 이미 있는 것을 그대로 부른다
+    // (`insideParity` 레이 패리티 · `signedClearance` 부호거리). 여기서 하는 일은 **세는 것**뿐이다.
+    //
+    // 분해 축은 저장소에 **이미 등재된 것**을 쓴다 — 새 축 규약 0:
+    //   · 패널: 하네스 `[63계기·관통 패널 귀속]`/`[94 §1]`과 같은 4패널 구분
+    //   · 몸판 y 대역: **1cm bin**(하네스 44회차 정정 ① — 10cm bin이 6cm 띠를 못 갈랐다)
+    //   · 소매 호장: **패턴 y = 팔 축 호장**(P12 §1-2가 확정 · P11 프로파일과 같은 축) · 1cm bin
+    //
+    // §2 대조: 함정 22가 55회차에 「소매는 `signedClearance` 질의 대상이 아니라 집합이 다르다」로
+    // 종결했는데, **P11 §4가 그 전제를 바꿨다**(소매를 전신 메시로 재기 시작했다).
+    // 그래서 이제 «같은 소매 정점»에 두 채널을 다 걸 수 있다 — 그 교집합을 낸다.
+    const penByPanel = [0, 0, 0, 0];
+    const penTorsoByYCm: Record<string, number> = {};
+    const penSleeveByArcCm: Record<string, number> = {};
+    const panelOf = (i: number): number =>
+      i < g.panelStarts[1] ? 0 : i < g.panelStarts[2] ? 1 : i < g.panelStarts[3] ? 2 : 3;
+    const isPen = (i: number): boolean =>
+      mesh().insideParity(sim.positions[i * 3], sim.positions[i * 3 + 1], sim.positions[i * 3 + 2]);
+    for (let i = 0; i < total; i++) {
+      if (!isPen(i)) continue;
+      const p = panelOf(i);
+      penByPanel[p]++;
+      if (p < 2) {
+        const yc = Math.round(sim.positions[i * 3 + 1] * 100);
+        penTorsoByYCm[`y${yc}`] = (penTorsoByYCm[`y${yc}`] ?? 0) + 1;
+      } else {
+        const sc = Math.round(g.pos2[i * 2 + 1] * 100);
+        penSleeveByArcCm[`s${sc}`] = (penSleeveByArcCm[`s${sc}`] ?? 0) + 1;
+      }
+    }
+    // 소매 정점 한정 교차표. `touch` = 핏 리포트 소매 행의 눌림과 **같은 술어**(d ≤ 0).
+    let xPen = 0, xTouch = 0, xBoth = 0, xNull = 0;
+    for (const i of sleeveIdx) {
+      const pen = isPen(i);
+      const d = dWhole(i);
+      if (d === null) { xNull++; if (pen) xPen++; continue; }
+      const touch = d <= 0;
+      if (pen) xPen++;
+      if (touch) xTouch++;
+      if (pen && touch) xBoth++;
+    }
+
     const ringIdx = [...new Set(g.necklineRing.flatMap((e) => [e.a, e.b]))];
     const hemIdx = [...chainOf(0, g.panelStarts[1]), ...chainOf(g.panelStarts[1], g.panelStarts[2])];
     // ── P12 §3 — **소맷부리 착장 후 실측 둘레.** 밑단 사슬과 같은 기계다(패턴 y가
@@ -917,6 +977,12 @@ export function createPatternDressing(
       cuffCm,
       cuffDraftCm: 200 * g.draft.dims.cuffHalfWidthM,
       cuffEaseCm: g.draft.dims.cuffEaseM === null ? NaN : 100 * g.draft.dims.cuffEaseM,
+      pen: {
+        byPanel: penByPanel,
+        torsoByYCm: penTorsoByYCm,
+        sleeveByArcCm: penSleeveByArcCm,
+        sleeveCross: { pen: xPen, touch: xTouch, both: xBoth, penOnly: xPen - xBoth, touchOnly: xTouch - xBoth, dNull: xNull },
+      },
     };
   };
 

@@ -153,6 +153,27 @@ export function DressButton(): React.JSX.Element | null {
           `소맷부리 ${Number.isFinite(q.cuffCm) ? q.cuffCm.toFixed(2) : "—"}cm(제도 ${q.cuffDraftCm.toFixed(2)}cm · 여유 ${Number.isFinite(q.cuffEaseCm) ? q.cuffEaseCm.toFixed(2) : "—"}cm) · ` +
           `ringTotal=${ringTotal ? "on" : "off(=RINGTOTAL=0)"}`,
         );
+        // 로그는 상위 bin만 낸다 — **전량은 훅으로** 낸다(임시 로그 금지 조항 · CLAUDE.md).
+        // `window.__fitDebug.dressMetrics()` — 마지막 착장의 지표 객체 그대로.
+        {
+          const win = window as unknown as { __fitDebug?: Record<string, unknown> };
+          if (!win.__fitDebug) win.__fitDebug = {};
+          win.__fitDebug.dressMetrics = (): unknown => q;
+        }
+        // ── P14 §1·§2 상설 계기 — 관통 «자리». 총량 옆에 위치 분해를 한 줄 더 낸다.
+        const P = q.pen;
+        const top = (r: Record<string, number>, n: number): string => {
+          const e = Object.entries(r).sort((a, b) => b[1] - a[1]);
+          const head = e.slice(0, n).map(([k, v]) => `${k}:${v}`).join(" ");
+          return e.length > n ? `${head} …(bin ${e.length}개 중 상위 ${n} · 전량은 q.pen)` : head || "없음";
+        };
+        const X = P.sleeveCross;
+        console.log(
+          `[dress·P14 관통자리] 패널 앞 ${P.byPanel[0]} / 뒤 ${P.byPanel[1]} / 소매L ${P.byPanel[2]} / 소매R ${P.byPanel[3]}` +
+          ` · 몸판 y대역(1cm) ${top(P.torsoByYCm, 8)}` +
+          ` · 소매 호장대역(1cm) ${top(P.sleeveByArcCm, 8)}` +
+          ` · **소매 교차표** 관통 ${X.pen} · 눌림 ${X.touch} · 둘다 ${X.both} · 관통만 ${X.penOnly} · 눌림만 ${X.touchOnly} · 부호거리 산출불가 ${X.dNull}`,
+        );
       }
       window.dispatchEvent(new CustomEvent(DRESS_RESULT_EVENT, {
         detail: { positions: m.positions, panelStarts: m.panelStarts, panelCounts: m.panelCounts },
