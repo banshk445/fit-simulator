@@ -11,23 +11,19 @@
 import { readFileSync, writeFileSync, existsSync } from "node:fs";
 import { createHash } from "node:crypto";
 import * as THREE from "three";
-import { ArrayBvhCollision, getResolverMissCount } from "../src/lib/bvhFromArrays";
-import { SelfCollision } from "../src/lib/selfCollision";
+import { getResolverMissCount } from "../src/lib/bvhFromArrays";
 import { FABRIC_PRESETS } from "../src/lib/fabricPresets";
-import { createGarmentSession, createPanelSplitResolver, createPatternUnifiedResolver, buildArmCapsules, makePatternSessionEnv } from "../src/lib/garmentFrame";
 import { applyCapsuleCollision } from "../src/lib/torsoCapsule";
 import type { Capsule } from "../src/lib/torsoCapsule";
-import { runDressing } from "../src/lib/dressingMachine";
-import { createPatternDressing } from "../src/lib/patternDressCore";
+import { createPatternDressing, RING_LIMIT_RAMP_FRAMES } from "../src/lib/patternDressCore";
 import type { PatternDressFixture, PatternDressObservers, PatternDressOptions } from "../src/lib/patternDressCore";
-import { createAnchorPinRamp, createRingLimitRamp, projectRingTotalLength } from "../src/lib/patternDressHooks";
 import { ARM_AXIS_RADIUS, nearestOnSegments } from "../src/lib/bodySkeleton";
 import { PANEL_PAT_BACK, PANEL_PAT_FRONT } from "../src/lib/patternGarment";
-import { correctPlacementPenetration, countInside, countOpenEdges, countOpenEdgesWelded, countSelfIntersections, dedupeTrianglesWelded } from "../src/lib/patternPlacement";
+import { countInside, countOpenEdges, countOpenEdgesWelded, countSelfIntersections, dedupeTrianglesWelded } from "../src/lib/patternPlacement";
 import { classifyWindingOutward, windingParitySelfCheck } from "../src/lib/windingParity";
 import { axisSection, bodyGeodesicSelfCheck, closestPointOnTriangles, horizontalSection, sleeveArmFrame, surfacePathLength } from "../src/lib/bodyGeodesic";
 import { computeBodyCoverage, deriveShoulderBand } from "../src/lib/coverageMetric";
-import { bakePatternFrictionSdf, makeRadialSignedSampler, makeSkeletonSignedSampler, sampleSdf, sdfNormal } from "../src/lib/sdfCollision";
+import { makeRadialSignedSampler, makeSkeletonSignedSampler, sampleSdf, sdfNormal } from "../src/lib/sdfCollision";
 import {
   ARM_COLLISION_RADIUS,
   COLLISION_DETECTION_RADIUS,
@@ -696,21 +692,18 @@ console.log(
   `[dress] 핀 대체물: §4 S1의 **임시 배치 앵커**만 — 대상 = 어깨 시접 앞판 쪽 정점 ${g.seams.filter((s) => s.kind === "shoulder").length}개, 목표 = 배치 시점 좌표 고정, 강도 = 램프로 1→0(S2 진입 시 0). 하드 핀(pinned=1)은 0개.`,
 );
 
-const frontMesh = new ArrayBvhCollision();
-const backMesh = new ArrayBvhCollision();
-frontMesh.rebuild(position, frontIdx);
-backMesh.rebuild(position, backIdx);
-const armCapsules = [...buildArmCapsules(pose.armLeft), ...buildArmCapsules(pose.armRight)];
+// P2d — 앞/뒤 BVH · 팔 캡슐 · 리졸버 · 마찰 SDF · 자체충돌은 코어 5단계다.
+// 굽기 경과는 그 단계 호출을 감싸 잰다(값·순서 무변경).
+const tBake = performance.now();
+const { frontMesh, backMesh, armCapsules, meshResolver, unified, sdfField, sdfBox, selfCollision } = dressing.collide();
+void frontMesh; void backMesh; void meshResolver; void selfCollision;
 // ── 49회차 P-α1 (진단 전용 · 기본 off · v1 0줄) — **관통-only 흡착**.
 // 47회차 후보 α: 양방향 흡착이 탐지반경 15cm 안 **비관통 정점까지** 표면+margin으로
 // 끌어당겨(서브스텝당 4회 = 목표까지 87.0%) 여분 둘레를 몸에 감고 면내 압축을 만든다.
 // `penetrationAxis`를 넘기면 리졸버가 "표면 밖(d≥0)은 안 건드리고 안쪽만 밀어낸다"로
 // 바뀐다(bvhFromArrays.ts:227-238). 축은 몸통 캡슐 축을 그대로 쓴다(새 상수 0).
 // ※ 이것은 **ablation이지 처방이 아니다** — 47회차가 그렇게 등록했다.
-const ADSORB_PENONLY = process.env.ADSORB_PENONLY === "1";
-const penAxis = ADSORB_PENONLY
-  ? { enabled: true, x: collision.capsules[0].top.x, z: collision.capsules[0].top.z }
-  : undefined;
+const ADSORB_PENONLY = DRESS_OPTS.penetrationAxis !== undefined;
 // 53회차 축① — **거동 무변화 실증용**. `MAGNET=1`이면 국면 판정 경로를 켜되 가중은 w ≡ 1이라
 // 기준선과 **계산 동치**여야 한다(21채널 비트 대조가 그 실증이다). 처방(가중 on)은 54회차.
 const MAGNET_AXIS1 = process.env.MAGNET === "1";
@@ -720,16 +713,6 @@ const MAGNET_AXIS1 = process.env.MAGNET === "1";
 // 문제가 원천적으로 없다(규범 9: 함수 형태 자유도 0).
 // 국면2(껍질 안착)·국면3(관통 해소)은 **불변**이다.
 const MAGNET_D0 = process.env.MAGNET_D0 === "1";
-const magnetArg = MAGNET_D0 ? { w: (): number => 0 } : MAGNET_AXIS1 ? { w: (): number => 1 } : undefined;
-const meshResolver = createPanelSplitResolver(
-  [
-    frontMesh.createResolver(MESH_MARGIN, COLLISION_DETECTION_RADIUS, undefined, undefined, undefined, penAxis, magnetArg),
-    backMesh.createResolver(MESH_MARGIN, COLLISION_DETECTION_RADIUS, undefined, undefined, undefined, penAxis, magnetArg),
-    null,
-    null,
-  ],
-  g.panelCounts,
-);
 // **45회차 승격**: 몸통 캡슐 전면 제거가 새 기준선이다(사전 등록 3/3 통과 —
 // 재현성 21채널 비트 일치 · DONE·RETRY 0 · A 대비 회귀 5종 전부 개선).
 // 기본값을 뒤집는다. `TORSOCAP=1`이 **처방 A(몸통 캡슐 구성)를 그대로 복원**하므로
@@ -739,7 +722,7 @@ const meshResolver = createPanelSplitResolver(
 // 39회차 ablation 스위치(원래 진단 전용) — 몸통 캡슐만 끈다.
 // 함정16 규범("근접을 기전으로 승격하려면 ablation으로 흔들어라")의 이행 수단이다.
 // 처방이 아니다: 관통·cov 붕괴는 예상된 부작용이고 판정 대상이 아니다.
-const TORSOCAP = process.env.TORSOCAP === "1";
+const TORSOCAP = DRESS_OPTS.torsoCap!;
 // ── 94회차 §1 **절제 스위치**(진단 전용 · 기본 on · `ARMCAP=0`으로 해제 · 처방 아님).
 // `buildArmCapsules`는 0줄 — 92 §4-1(v1 제품 경로가 그 함수를 공유한다)을 지킨다.
 // 여기(dressPattern.ts)의 호출 지점은 v2 전용이다(strategist 94 §1(a): v1 3경로는
@@ -751,16 +734,12 @@ const TORSOCAP = process.env.TORSOCAP === "1";
 //   ② 몸판(0·1)의 팔 대역 충돌자도 함께 사라진다 — 아래 호출에 패널 분기가 없다.
 // 그리고 TORSOCAP이 45회차부터 기본 off이므로 `ARMCAP=0`은 **캡슐 층 전체 절제**다.
 // 판정에서 ①②를 가르기 위해 관통을 패널별로 분해해 인쇄한다(94 체크리스트 4·5).
-const ARMCAP = process.env.ARMCAP !== "0";
+const ARMCAP = DRESS_OPTS.armCap!;
 // 42회차 처방 A — 정점당 **가장 깊이 파묻힌 캡슐 1개만** 민다(기본 on · `SINGLE=0`으로 해제).
-const SINGLE_DEEPEST = process.env.SINGLE !== "0";
+const SINGLE_DEEPEST = DRESS_OPTS.singleDeepest!;
 // ── P2b(a) — `unified`를 `garmentFrame.createPatternUnifiedResolver`로 «이사»했다.
 // 거동 무변경(항등 리팩터). 기본값은 그 함수 한 곳에 있고 여기서는 **env 스위치만** 넘긴다 —
 // 그래야 브라우저 워커가 같은 리졸버를 같은 기본값으로 쓴다(P2a §1-4).
-const unified = createPatternUnifiedResolver(
-  meshResolver, g.panelCounts, collision.capsules, armCapsules,
-  { torsoCap: TORSOCAP, armCap: ARMCAP, singleDeepest: SINGLE_DEEPEST, torsoPanels: [PANEL_PAT_FRONT, PANEL_PAT_BACK] },
-);
 
 // ── P2b(b) — 마찰 SDF 굽기 3단(bbox → 부호 샘플러 → bakeSdf)을
 // `sdfCollision.bakePatternFrictionSdf`로 «이사»했다. 거동 무변경(항등 리팩터).
@@ -776,11 +755,7 @@ const unified = createPatternUnifiedResolver(
 // Stage 1a 은행 자산이라 신규 코드 0줄이다.
 // **필드는 전 정점 공유**이므로 몸판 마찰도 함께 바뀐다 — A 17채널의 이동은
 // 예상된 것이고 그 자체는 실패가 아니다(회차 프롬프트 §3 등재).
-const SKELSIGN = process.env.SKELSIGN === "1";
-const tBake = performance.now();
-const { field: sdfField, box: sdfBox } = bakePatternFrictionSdf(
-  wholeMesh, skeleton.segments, position, layout.topY, hemY, { skeletonSign: SKELSIGN },
-);
+const SKELSIGN = DRESS_OPTS.skeletonSign!;
 const { minX, maxX, minZ, maxZ } = sdfBox;
 console.log(`[dress] SDF 굽기 ${sdfField.nx}x${sdfField.ny}x${sdfField.nz} elapsedMs ${Math.round(performance.now() - tBake)}`);
 // ── 62회차 §1 **부호 오라클**(진단 전용 · 물리 0줄 · `SLEEVESIGN=1`) ──────────
@@ -880,7 +855,7 @@ if (SLEEVESIGN) {
 
 let anchorStrength = 0;
 let collarFired = 0;
-let ringTotalFired = 0;
+// P2d — 투영 발화 누적은 코어가 센다(`dressing.ringTotalFired()`).
 // ── 27회차 계기(기록 전용 · 물리 0줄)
 // (1) 축소 잔여 일량 = 축소 전 총 길이 − 상한. 링이 "아직 일하고 있나"의 직접 채널.
 const shrinkWorkSeries: number[] = [];
@@ -898,12 +873,10 @@ const holdSeries: { ring: number; shoulder: number; hem: number; other: number }
 const ringYSeries: { f: number; st: string; y: number; top: number; bot: number; L: number }[] = [];
 let prevPos: Float32Array | null = null;
 const ringVertexSet = new Set<number>(ringClosed.flatMap((e) => [e.a, e.b]));
-// P2b(d) — 링 총 길이 투영이 순회하는 집합(같은 폐곡선 정점 · 새 정의 0).
-const ringVertexList = [...ringVertexSet];
-// P2b(d) — 링 전용 상한의 시점 분리 램프. 램프 길이 120프레임은 기존 값 그대로다.
-const ringRamp = createRingLimitRamp(COLLAR_STRAIN_LIMIT, ringRestM, 120, (f, start, maxBefore) => {
-  console.log(`  [링·시점분리] f=${f} **S2 진입**(상태기계 전이) → 상한 램프 시작 ${start.toFixed(4)} → ${COLLAR_STRAIN_LIMIT} (${120}프레임 smoothstep) · 봉합 전 링 최대 ${cm(maxBefore)}cm · seamGap ${(maxSeamGapM() * 1000).toFixed(1)}mm`);
-});
+// P2d — 링 전용 상한 램프(P2b(d))는 코어가 소유한다. 여기 남는 것은 S2 진입 인쇄뿐이다.
+dressObs.onRingClose = (f, start, maxBefore) => {
+  console.log(`  [링·시점분리] f=${f} **S2 진입**(상태기계 전이) → 상한 램프 시작 ${start.toFixed(4)} → ${COLLAR_STRAIN_LIMIT} (${RING_LIMIT_RAMP_FRAMES}프레임 smoothstep) · 봉합 전 링 최대 ${cm(maxBefore)}cm · seamGap ${(maxSeamGapM() * 1000).toFixed(1)}mm`);
+};
 
 // 목점(어깨 시접의 첫 쌍) 전역 인덱스 — 닫힘 시점 기록용.
 const neckPointPairs = g.seams.filter((x) => x.kind === "shoulder")
@@ -927,66 +900,8 @@ let closureLog: string | null = null;
 // 능선 곡선의 같은 호장 비율에 대응시킨다:
 //   s=0 → 능선의 **목 쪽 끝**(|x| = 목너비)   s=1 → 능선의 바깥 끝
 // 능선 표본은 1cm 간격이라 선형 보간으로 충분하다.
-const anchorList = (() => {
-  const nwHalf = g.draft.dims.neckHalfWidthM;
-  // 능선 곡선을 좌·우로 나눠 |x| 오름차순 폴리라인으로 만들고, 목너비 밖만 쓴다.
-  const sideCurve = (sign: number): { p: { x: number; y: number; z: number }; cum: number }[] => {
-    const pts = body.ridgePoints
-      .filter((r) => Math.sign(r.x - body.centerX) === sign && Math.abs(r.x - body.centerX) >= nwHalf)
-      .sort((a, b) => Math.abs(a.x - body.centerX) - Math.abs(b.x - body.centerX));
-    const out: { p: { x: number; y: number; z: number }; cum: number }[] = [];
-    let cum = 0;
-    for (let i = 0; i < pts.length; i++) {
-      if (i > 0) cum += Math.hypot(pts[i].x - pts[i - 1].x, pts[i].y - pts[i - 1].y, pts[i].z - pts[i - 1].z);
-      out.push({ p: { x: pts[i].x, y: pts[i].y, z: pts[i].z }, cum });
-    }
-    return out;
-  };
-  const curves = new Map<number, { p: { x: number; y: number; z: number }; cum: number }[]>([
-    [1, sideCurve(1)], [-1, sideCurve(-1)],
-  ]);
-  const at = (sign: number, s: number): { x: number; y: number; z: number } => {
-    const c = curves.get(sign)!;
-    const total = c[c.length - 1].cum;
-    const target = total * Math.min(1, Math.max(0, s));
-    for (let i = 1; i < c.length; i++) {
-      if (c[i].cum >= target) {
-        const t = (target - c[i - 1].cum) / Math.max(1e-9, c[i].cum - c[i - 1].cum);
-        return {
-          x: c[i - 1].p.x + (c[i].p.x - c[i - 1].p.x) * t,
-          y: c[i - 1].p.y + (c[i].p.y - c[i - 1].p.y) * t,
-          z: c[i - 1].p.z + (c[i].p.z - c[i - 1].p.z) * t,
-        };
-      }
-    }
-    return c[c.length - 1].p;
-  };
-  // 어깨 이음선의 호장 비율 — 패턴 좌표에서 목점→어깨점 거리 비.
-  const shoulderSeamM = g.draft.dims.shoulderSeamM;
-  // 24회차 — **목점 2개를 앵커 집합에서 뺀다**(제약 중복 제거).
-  // 목점은 링의 끝점이라 **링 원주 제약이 이미 위치를 정한다**. 거기에 앵커까지
-  // 걸면 두 목표가 경쟁하고, 23회차 실측이 그 경쟁의 크기를 8.87cm(핀 잔차)로
-  // 찍었다 — 시접 쌍은 능선이 **아닌 곳**에서 10.0mm까지 만났는데 앵커가 앞판만
-  // 능선 목표로 끌어 쌍을 벌렸다. **앵커는 봉합을 유지하는 힘이 아니라 찢는
-  // 힘이었다.** 힘을 더하거나 목표를 새로 만드는 게 아니라 중복을 없앤다.
-  // 식별은 도출이다 — **링 정점이면서 어깨 시접의 정점**(= 공유 코너의 정의).
-  const ringVerts = new Set<number>(g.necklineRing.flatMap((e) => [e.a, e.b]));
-  return g.seams
-    .filter((sm) => sm.kind === "shoulder")
-    .filter((sm) => !(ringVerts.has(sm.a) || ringVerts.has(sm.b)))
-    .map((sm) => {
-      const px = g.pos2[sm.a * 2], py = g.pos2[sm.a * 2 + 1];
-      const s = Math.hypot(Math.abs(px) - nwHalf, py) / Math.max(1e-9, shoulderSeamM);
-      const t = at(Math.sign(px) || 1, s);
-      // 20회차 단일 변경: 목표를 능선 **표면 위 margin**으로 올린다.
-      // 19회차는 목표가 표면 위(거리 0)였는데, 천은 충돌 해소가 항상 margin
-      // 만큼 밖으로 밀어내므로 **뒤판이 그 점에 도달할 수 없다** — 앞판만 핀으로
-      // 거기 박혀 있고 뒤판은 영원히 margin 밖에 머문다(실측: 목점 2쌍 갭
-      // 26.5/26.8mm, 두 점의 중점이 표면 거리 0.00~0.01cm = 몸을 사이에 두고
-      // 마주 봄). 능선점은 정의상 그 x의 **최상단** 표면점이라 바깥 방향이 +y다.
-      return { i: sm.a, x: t.x, y: t.y + COLLISION_MARGIN, z: t.z, s, sign: Math.sign(px) || 1 };
-    });
-})();
+// P2d — 앵커 목표(능선 호장 매핑 + 표면 위 margin)와 34게이트는 코어 6단계다.
+const { anchorList } = dressing.anchors();
 {
   // 배선 검증 — 목표가 배치 평면(z ≈ +11.9cm)과 구분되는지 + 전부 몸 표면 위인지.
   const ys = anchorList.map((a) => a.y), zs = anchorList.map((a) => a.z);
@@ -1034,11 +949,6 @@ const anchorList = (() => {
     );
   }
 }
-const selfCollision = new SelfCollision(
-  [...g.panelStarts], [...g.panelCounts], 0,
-  [...g.edgePairs, ...g.seams.map((s) => ({ a: s.a, b: s.b }))],
-  g.selfCollisionMinDistM, 0,
-).createResolver(g.selfCollisionMinDistM);
 // ── 31회차 계기: 패스별 링 길이 프로브(읽기 전용). 무장된 프레임에서만
 // 서브스텝 안 각 패스 경계의 링 길이를 적는다. 위치는 건드리지 않는다.
 let probeArmed = false;
@@ -1083,9 +993,10 @@ const probe = (label: string): void => {
 // sim.step 내부 분해 — 충돌(흡착)과 반복 안 마찰만 하네스에서 감쌀 수 있다.
 // 앵커(`sim.applyAnchors`)와 거리 제약은 garmentFrame이 만든 iterExtra 안이라
 // 분리 불가 → 잔여로 남긴다(정직하게 그렇게 표기한다).
-const unifiedProbed: typeof unified = (pos, pinned, n) => {
+dressObs.probe = probe;
+dressObs.wrapResolver = (r) => (pos, pinned, n) => {
   probe("0b.충돌 직전");
-  unified(pos, pinned, n);
+  r(pos, pinned, n);
   probe("1a.충돌(흡착)");
 };
 // ══ 35회차 계기 (읽기 전용 · 물리 0줄) — 흡착이 정점을 어디로 옮기는가 ══
@@ -1824,17 +1735,11 @@ const restMap = (label: string): string => {
 // **이 하네스에만 있는 것**만 넘긴다: 계기 훅 2종(probe · onCollarFired) ·
 // 프로브로 감싼 리졸버 · 자체충돌 · 앵커 목록 · 램프 2종의 초기값.
 // 반복 내 마찰 캐시(`cachedFric`)도 그 함수가 안에서 만들어 배선한다.
-const env = makePatternSessionEnv({
-  collisionResolver: unifiedProbed,
-  selfCollision,
-  sdfField: () => sdfField,
-  anchors: () => (PINDRESS ? anchorList : []),
-  collarStrainLimit: ringLimitNow,
-  pinStrength: anchorStrength,
-  probe,
-  onCollarFired: (n) => { collarFired += n; },
-});
-const session = createGarmentSession(sim, env);
+// P2d — 세션 env 조립(P2b(c))·세션 생성·앵커 램프·전이 술어는 코어 7단계다.
+// 계기 훅 2종(probe · onCollarFired)은 `dressObs`로 들어간다 — 코어는 내용을 모른다.
+dressObs.onCollarFired = (n) => { collarFired += n; };
+const { session, anchorRamp, ringRamp, frameLayout, framePose, maxSeamGapM, maxDelta20Mm, diverged, rampFrames: RAMP_FRAMES } = dressing.session();
+void session; void diverged;
 
 // ── 진단 채널
 const prevFrame = new Float32Array(sim.positions.length);
@@ -1842,26 +1747,6 @@ prevFrame.set(sim.positions);
 const deltaHist: number[] = [];
 // 60회차 계기① — deltaHist와 **같은 순서**의 병렬 배열(정착 판정식 무변경).
 const deltaArg: { f: number; i: number }[] = [];
-const maxDelta20Mm = (): number => (deltaHist.length ? Math.max(...deltaHist.slice(-20)) : Infinity);
-const maxSeamGapM = (): number => {
-  let m = 0;
-  for (const s of g.seams) {
-    const d = Math.hypot(
-      sim.positions[s.b * 3] - sim.positions[s.a * 3],
-      sim.positions[s.b * 3 + 1] - sim.positions[s.a * 3 + 1],
-      sim.positions[s.b * 3 + 2] - sim.positions[s.a * 3 + 2],
-    );
-    if (d > m) m = d;
-  }
-  return m;
-};
-const diverged = (): boolean => {
-  for (let i = 0; i < sim.positions.length; i++) {
-    const v = sim.positions[i];
-    if (!Number.isFinite(v) || Math.abs(v) > 100) return true;
-  }
-  return false;
-};
 const maxStrain = (): { v: number; at: number } => {
   let m = 0, at = -1;
   for (const c of sim.constraintPairs) {
@@ -1932,47 +1817,19 @@ const proximityPairs = (): number => {
 // 즉 배율 1.000에 3자리 이상을 요구하는 것은 float32가 표현할 수 없는 정밀도다.
 // 33회차가 "이산화 오차 허용분만 별도 명명"이라 적은 항목이 이것이다.
 // 잡아야 할 결함(30.1배)과는 6자릿수 떨어져 있으므로 탐지력은 잃지 않는다.
-const F32_HALF_ULP = Math.pow(2, -24);
-const placementRestTol = (): number => {
-  let maxCoord = 0, minRest = Infinity;
-  for (let i = 0; i < total * 3; i++) maxCoord = Math.max(maxCoord, Math.abs(sim.positions[i]));
-  for (const c of sim.constraintPairs) if (c.restLength > 0 && c.restLength < minRest) minRest = c.restLength;
-  return (2 * maxCoord * F32_HALF_ULP) / minRest;
-};
-const placementRestGate = (label: string): void => {
-  const PLACEMENT_REST_TOL = placementRestTol();
-  const acc = { torso: { n: 0, max: 1, maxAt: -1, min: 1, ext: 0, comp: 0 }, sleeve: { n: 0, max: 1, maxAt: -1, min: 1, ext: 0, comp: 0 } };
-  for (const c of sim.constraintPairs) {
-    if (c.restLength <= 0) continue;
-    if (seamKeyMap.has(c.a < c.b ? `${c.a}_${c.b}` : `${c.b}_${c.a}`)) continue;
-    const dd = Math.hypot(
-      sim.positions[c.b * 3] - sim.positions[c.a * 3],
-      sim.positions[c.b * 3 + 1] - sim.positions[c.a * 3 + 1],
-      sim.positions[c.b * 3 + 2] - sim.positions[c.a * 3 + 2],
-    );
-    const t = c.a < g.panelStarts[2] ? acc.torso : acc.sleeve;
-    const r = dd / c.restLength;
-    t.n++;
-    if (r > t.max) { t.max = r; t.maxAt = c.a; }
-    if (r < t.min) t.min = r;
-    if (dd > c.restLength) t.ext += dd - c.restLength; else t.comp += c.restLength - dd;
-  }
-  const row = (k: string, t: typeof acc.torso): string =>
+// P2d — 34게이트 계산과 throw는 코어가 한다(물리 — 실행을 끊는다). 여기 남는 것은
+// **인쇄**뿐이고, 코어가 실측치를 그대로 넘겨준다(위반해도 두 줄은 먼저 찍힌다).
+dressObs.onRestGate = (label, tol, torso, sleeve) => {
+  const row = (k: string, t: typeof torso): string =>
     `${k} n=${t.n} 최대 ${t.max.toFixed(6)}${t.maxAt >= 0 ? `@정점${t.maxAt}(패턴 ${cm(g.pos2[t.maxAt * 2])},${cm(g.pos2[t.maxAt * 2 + 1])})` : ""} · 최소 ${t.min.toFixed(6)} · 신장총 ${(t.ext * 100).toFixed(1)}cm · 압축총 ${(t.comp * 100).toFixed(1)}cm`;
-  console.log(`  [34게이트·배치 rest 보존] ${label} · 허용분 ±${PLACEMENT_REST_TOL.toExponential(2)}(float32 좌표/최단 rest에서 도출)`);
-  console.log(`    ${row("몸판(게이트)", acc.torso)}`);
-  console.log(`    ${row("소매(보고만)", acc.sleeve)}`);
-  const bad = acc.torso.max - 1 > PLACEMENT_REST_TOL || 1 - acc.torso.min > PLACEMENT_REST_TOL;
-  if (bad) {
-    throw new Error(
-      `배치 실패 — 34게이트 위반 ${label}: 몸판 신장비 ${acc.torso.min.toFixed(6)}~${acc.torso.max.toFixed(6)} (문턱 1.000000±${PLACEMENT_REST_TOL.toExponential(2)} · 값=뒤판 32회차 실측, 허용분=float32 저장 정밀도에서 도출) · 신장총 ${(acc.torso.ext * 100).toFixed(1)}cm`,
-    );
-  }
+  console.log(`  [34게이트·배치 rest 보존] ${label} · 허용분 ±${tol.toExponential(2)}(float32 좌표/최단 rest에서 도출)`);
+  console.log(`    ${row("몸판(게이트)", torso)}`);
+  console.log(`    ${row("소매(보고만)", sleeve)}`);
 };
 
 // 상태기계의 램프 길이. S1 시접 rest 램프·앵커 강도 램프아웃·앵커 위치 램프가
 // **같은 값 한 곳**을 쓴다(새 상수 신설 금지 — §4 "램프는 연속 함수로만").
-const RAMP_FRAMES = 120;
+// (값은 코어가 소유한다 — 위 `dressing.session()`의 `rampFrames`.)
 
 // ── 앵커 하드 핀 (7회차 단일 변경): 소프트(강도 1.0) → `pinned=1` 위치 고정.
 // 6회차 실측 = 목표 |x| 6.26cm인데 정점은 10.5cm(4.2cm 밖) — 소프트 앵커를
@@ -1988,24 +1845,12 @@ const RAMP_FRAMES = 120;
 // 처방: 목표까지 `RAMP_FRAMES`·같은 smoothstep으로 **나눠** 옮긴다. 프레임당
 // 증분이 작아 거리 제약 반복이 그 자리에서 분산할 시간이 생긴다. 핀의 유지력은
 // 반납하지 않는다 — 정점은 여전히 `pinned=1`이고 목표에 도달한다.
-let gateArmed = true;
-// ── P2b(d) — 앵커 하드 핀 + 위치 램프를 `patternDressHooks.createAnchorPinRamp`로
-// «이사»했다(물리 훅). 거동 무변경. 인쇄와 게이트만 콜백으로 남는다.
-const anchorRamp = createAnchorPinRamp(sim, anchorList, RAMP_FRAMES, {
-  onToggle: (hard) => console.log(
-    `[dress] 앵커 ${hard ? `**하드 핀 위치 램프 시작**(${RAMP_FRAMES}프레임 smoothstep · 순간이동 아님)` : "**핀 해제 → 소프트 램프아웃**"} ${anchorList.length}개 · seamGap ${(maxSeamGapM() * 1000).toFixed(1)}mm`,
-  ),
-  // 게이트 (ii) — 핀이 좌표를 쓴 **직후**. 램프면 s=0이라 (i)과 같아야 한다.
-  //
-  // 42회차 배선 정정: **배치 직후 첫 핀 발화에만** 돈다. 34회차 설계 의도가 그것인데
-  // `setAnchorHard`는 S1에서 `closure <= 0`이면 매 프레임 불리므로, seamGap이 다시
-  // 열려 하드 핀이 재결합하면 **시뮬 220프레임 뒤에도** "핀 발화 직후"라는 이름으로
-  // 배치 rest 정합을 검사했다(41회차 6회째 위반 = 함정 13 "시점").
-  // 재무장은 `place` 훅이 한다 — 재배치는 좌표를 배치 상태로 되돌리므로 그 뒤의
-  // 첫 핀 발화는 다시 "배치 직후"가 맞다.
-  onFirstRamp: () => { if (gateArmed) { gateArmed = false; placementRestGate("(ii) 핀 발화 직후"); } },
-});
-const setAnchorHard = anchorRamp.setAnchorHard;
+// P2d — 앵커 하드 핀 + 위치 램프(P2b(d))와 게이트 (ii) 재무장은 코어가 소유한다
+// (`gateArmed`는 P2c에서 **물리**로 판정됐다 — throw 시점을 정한다).
+// 여기 남는 것은 결합/해제 1회 인쇄뿐이다.
+dressObs.onAnchorToggle = (hard) => console.log(
+  `[dress] 앵커 ${hard ? `**하드 핀 위치 램프 시작**(${RAMP_FRAMES}프레임 smoothstep · 순간이동 아님)` : "**핀 해제 → 소프트 램프아웃**"} ${anchorList.length}개 · seamGap ${(maxSeamGapM() * 1000).toFixed(1)}mm`,
+);
 // 배선 검증 — 핀이 실제로 좌표를 잡고 있는가. 목점(s≈0)의 실측 |x|가 6회차
 // 목표 6.26cm를 유지하는지 본다(6회차는 10.5cm로 밀렸다).
 const neckAnchor = anchorList.reduce((m, a) => (a.sign > 0 && a.s < m.s ? a : m), anchorList.find((a) => a.sign > 0)!);
@@ -2016,43 +1861,14 @@ const pinResidualMm = (): number =>
     sim.positions[neckAnchor.i * 3 + 2] - neckAnchor.z,
   ) * 1000;
 
-const gravity = new THREE.Vector3(0, -9.81, 0);
-const frameLayout = { widthM: layout.widthM, heightM: garmentDims.lengthM, topY: layout.topY, centerZ: collision.centerZ, sleeveWidthM: layout.sleeveWidthM };
-const framePose = { pinLeft: pose.pinLeft, pinRight: pose.pinRight, armLeft: pose.armLeft, armRight: pose.armRight };
-const FRAMES = Math.round((process.env.SECONDS ? Number(process.env.SECONDS) : 25) * 60);
-
-// S1 램프 대상 = **어깨 제외** 잔여 시접(옆선·암홀·소매 wrap).
-// 19회차: 어깨 용접 반납 → **전 시접**이 램프 대상이다(2a-thin 구성 복귀).
-const rampSeams = g.seams;
-// 게이트 (i) — **진짜 배치 직후 · 핀 발화 전.** 상태기계의 첫 setAnchorHard는
-// 루프 안(S1 분기)에 있고 그건 이미 핀이 돈 뒤다. 여기가 유일한 "핀 전" 시점이다.
-placementRestGate("(i) 진짜 배치 직후 · 핀 발화 전");
-const result = runDressing(
-  sim, session, rampSeams.map((s) => ({ a: s.a, b: s.b, target: s.targetM, kind: s.kind })),
-  {
-    rampFrames: RAMP_FRAMES,
-    stallFrames: 60,
-    seamSlackM: 0.01,
-    settleDeltaMm: 5.6,
-    settleFrames: 20,
-    // §4 스펙 그대로. **연장 금지** — 초과는 실패로 기록한다.
-    budget: { S0: 1, S1: 240, S2: 120, S3: 720 },
-  },
-  {
-    place: (scale) => {
-      g.place(scale);
-      placeCorrectStat(`재배치(오프셋 배수 ${scale.toFixed(2)})`, g.positions, () => correctPlacementPenetration(
-        g.positions, total, wholeMesh, insideParity, PLACE_MARGIN, g.selfCollisionMinDistM, skipKeys, SDF_FAR,
-      ));
-      for (let i = 0; i < total; i++) sim.setParticle(i, g.positions[i * 3], g.positions[i * 3 + 1], g.positions[i * 3 + 2]);
-      placementRestGate(`(i) 재배치 직후 · 핀 발화 전 (오프셋 배수 ${scale.toFixed(2)})`);
-      gateArmed = true; // 재배치가 좌표를 배치 상태로 되돌렸다 → 다음 핀 발화는 다시 "배치 직후"다
-    },
-    countPenetrating: () => countInside(sim.positions, total, insideParity),
-    diverged,
-    maxSeamGapM,
-    maxDelta20Mm,
-    setAnchorHard,
+// P2d — 중력·frameLayout·framePose·프레임 예산·S1 램프 대상(전 시접)·게이트 (i)는
+// 전부 코어가 소유한다. 프레임 예산은 `DRESS_OPTS.seconds`에서 나온다.
+const FRAMES = dressing.frames;
+// ══ P2d — 실행 훅. **물리 훅은 전부 코어**(place · 전이 술어 · setAnchorHard ·
+// 링 상한 램프 · 링 총길이 투영 · Δ 기록)이고, 여기 남는 것은 계기뿐이다.
+// 계기는 `dressObs`의 불투명 콜백으로만 들어간다 — 코어는 내용을 모른다.
+// `rampSeams`(= g.seams)와 예산·문턱도 코어가 소유한다(§4 스펙 그대로).
+{
     // ── 링 원주 제약의 **시점 분리**(21회차 단일 변경 · §3.3.1/§4 등재)
     //
     // 넥밴드는 **봉제 완료된 옷의 부품**이다. 착장 중의 유지력은 하드 핀이
@@ -2074,7 +1890,7 @@ const result = runDressing(
     // 상태기계가 이미 관리하므로 `state`를 구독만 한다(새 조건식 금지 —
     // S1→S2의 AND 조건이 진실의 단일 출처다).
     // 램프는 그 시점 실측 신장에서 1.02까지 smoothstep(길이 = 기존 rampFrames).
-    beforeStep: (_frame, state) => {
+  dressObs.beforeStep = (_frame, state) => {
       // 31회차 — 표적 프레임에서만 프로브 무장. f1(문제의 +32cm) · f8 · f62(S1 최대) · 정착.
       // 34회차 **계기 라벨 정정**(함정 13 계열): 이 지도는 "t=0 = 배치 직후"가
       // 아니다. 상태기계는 루프 진입 → S1 분기에서 `setAnchorHard`를 부른 **뒤**
@@ -2137,16 +1953,16 @@ const result = runDressing(
         const gdt2 = 9.81 * SUBSTEP_DT * SUBSTEP_DT;
         probeReports.push(`  [31계기·적분 상한] ${probeFrameLabel} 관성 최대 |pos−prev| ${(vmax * 1000).toFixed(3)}mm · g·dt² ${(gdt2 * 1000).toFixed(3)}mm · 정점당 적분 변위 상한 ≈ ${((vmax + gdt2) * 1000).toFixed(3)}mm → 링 ${g.necklineRing.length}엣지(= ringLenM이 순회하는 집합 · 폐곡선 62엣지가 아니다) 전체가 그만큼 벌어져도 최대 ${((vmax + gdt2) * 2 * g.necklineRing.length * 100).toFixed(2)}cm`);
       }
-      // P2b(d) — 램프 자체는 `patternDressHooks.createRingLimitRamp`로 이사(물리 훅).
-      ringLimitNow = ringRamp.update(_frame, state, ringLenM());
-      (env as { collarStrainLimit?: number }).collarStrainLimit = ringLimitNow;
-    },
-    stateNote: () => {
+  };
+  // 링 상한은 코어가 갱신하고(물리) 그 값을 여기로 알려준다 — 계기가 같은 값을 인용한다.
+  dressObs.onRingLimit = (_f, lim) => { ringLimitNow = lim; };
+  dressObs.stateNote = () => {
       const target = Math.max(...g.seams.map((x) => x.targetM));
       const thresh = target + 0.01;
       return `링상한 ${Number.isFinite(ringLimitNow) ? ringLimitNow.toFixed(4) : "∞(일반 상한 위임)"}${Math.abs(ringLimitNow - COLLAR_STRAIN_LIMIT) < 1e-9 ? "(완전 발동)" : ""} · 앵커강도 ${anchorStrength.toFixed(3)}(게이트: seamGap ${(maxSeamGapM() * 1000).toFixed(1)}mm vs 해제창 ${(target * 1000).toFixed(1)}~${(thresh * 1000).toFixed(1)}mm)`;
-    },
-    onFrame: (frame, state) => {
+  };
+  dressObs.onFrameBeforeProject = (frame, state) => {
+      void state;
       if (frame === 1 || frame === 8) probeReports.push(restMap(`f${frame} 직후`));
       if (probeArmed && probeLog.length > 0) {
         const restM = ringRestConfirmedM;
@@ -2185,8 +2001,10 @@ const result = runDressing(
         const L0 = ringLenM();
         if (ringTotalMaxM > 0) shrinkWorkSeries.push(Math.max(0, L0 - ringTotalMaxM));
       }
-      // P2b(d) — 투영 자체는 `patternDressHooks.projectRingTotalLength`로 이사(물리 훅).
-      if (projectRingTotalLength(sim, ringVertexList, ringLenM(), ringTotalMaxM)) ringTotalFired++;
+  };
+  // ── 링 총 길이 투영(물리)은 코어가 이 사이에서 돈다. 아래는 그 «뒤»의 계기다.
+  dressObs.onFrameAfterProject = (frame, state) => {
+      void state;
       {
         // 중심 y만으로는 판정이 안 된다 — 목선은 **곡선**이라 배치 시점부터
         // 중심이 목점보다 앞목/뒤목 깊이만큼 아래다. "미끄러졌는가"를 재는 건
@@ -2284,20 +2102,12 @@ const result = runDressing(
       // 밑단 정점이 느는 처방에서 ABORT가 나면 "처방 실패"인지 "새 정점이 정착
       // 판정을 인질로 잡음"인지 **구별할 수단이 없다**(함정 1). 대역 라벨은
       // 기존 `bandOf`를 그대로 쓴다 — **새 술어 0 · 새 손 상수 0**(함정 12).
-      let md = 0, mi = -1;
-      for (let i = 0; i < sim.positions.length; i += 3) {
-        const d = Math.hypot(sim.positions[i] - prevFrame[i], sim.positions[i + 1] - prevFrame[i + 1], sim.positions[i + 2] - prevFrame[i + 2]);
-        if (d > md) { md = d; mi = i / 3; }
-      }
-      deltaHist.push(md * 1000);
-      deltaArg.push({ f: frame, i: mi });
-      prevFrame.set(sim.positions);
-    },
-  },
-  () => ({ dt: SUBSTEP_DT, gravity, preset, layout: frameLayout, pose: framePose }),
-  FRAMES, t0,
-  (s) => { anchorStrength = s; (env as { pinStrength?: number }).pinStrength = s; },
-);
+  };
+  // Δ 기록(정착 판정의 원자료)은 코어가 잰다. 계기는 그 값과 argmax만 받는다.
+  dressObs.onDelta = (frame, md, mi) => { deltaHist.push(md * 1000); deltaArg.push({ f: frame, i: mi }); };
+  dressObs.onAnchorStrength = (sv) => { anchorStrength = sv; };
+}
+const result = dressing.run();
 const elapsedS = (performance.now() - t0) / 1000;
 
 console.log(`\n[dress] 상태 전이 로그 (fixture ${fixtureHash} · pattern ${patternHash} · 예산 ${FRAMES}프레임)`);
@@ -3864,7 +3674,7 @@ console.log(`  자기교차(엣지-삼각형 · 게이트): ${xsec.count}건 (�
   st.sort((a, b) => b.v - a.v);
   console.log(`  [27계기·strain 상위 11] ${st.slice(0, 11).map((q) => `${q.v.toFixed(2)}@${PANEL_NAME[panelOfIdx(q.i)]}(${cm(g.pos2[q.i * 2])},${cm(g.pos2[q.i * 2 + 1])})`).join(" · ")}`);
 }
-console.log(`  링 총 길이 상한 발화: ${ringTotalFired}회 = ${(ringTotalFired / Math.max(1, result.frames)).toFixed(2)}/프레임 · 상한 ${cm(ringTotalMaxM)}cm(계수 ${(ringTotalMaxM / Math.max(1e-9, ringRestM)).toFixed(3)})\n  넥밴드 원주 제약 발화 누적: ${collarFired}회 = ${(collarFired / Math.max(1, result.frames)).toFixed(1)}/프레임 · 봉합 완료 f=${ringRamp.closedAtFrame() < 0 ? "미도달" : ringRamp.closedAtFrame()}(그 전까지 링 전용 상한은 일반 상한에 위임) · 링 원주 봉합 전 최대 ${cm(ringRamp.maxBeforeCloseM())}cm → 최종 ${cm(ringLenM())}cm (rest ${cm(ringRestM)}cm)`);
+console.log(`  링 총 길이 상한 발화: ${dressing.ringTotalFired()}회 = ${(dressing.ringTotalFired() / Math.max(1, result.frames)).toFixed(2)}/프레임 · 상한 ${cm(ringTotalMaxM)}cm(계수 ${(ringTotalMaxM / Math.max(1e-9, ringRestM)).toFixed(3)})\n  넥밴드 원주 제약 발화 누적: ${collarFired}회 = ${(collarFired / Math.max(1, result.frames)).toFixed(1)}/프레임 · 봉합 완료 f=${ringRamp.closedAtFrame() < 0 ? "미도달" : ringRamp.closedAtFrame()}(그 전까지 링 전용 상한은 일반 상한에 위임) · 링 원주 봉합 전 최대 ${cm(ringRamp.maxBeforeCloseM())}cm → 최종 ${cm(ringLenM())}cm (rest ${cm(ringRestM)}cm)`);
 console.log(`  관통(레이 패리티·비수밀 근사): 배치 후 ${penAfterPlace} → 정착 후 ${penEnd} / ${total}`);
 // ── 63회차 §2 — 관통의 **패널 귀속**(62 §8 최우선 등재 해소). 두 계기가 총계만 내
 // 소매분을 못 갈랐고, 그래서 62회차 S3의 효과 판정이 **원리적으로 불가능**했다.

@@ -119,6 +119,8 @@ export interface PatternDressObservers {
   onPlaced?: (scale: number) => void;
   onAnchorToggle?: (hard: boolean) => void;
   onRingClose?: (frame: number, limitStart: number, maxBeforeCloseM: number) => void;
+  /** 링 전용 상한을 그 프레임 값으로 갱신한 «직후». 계기가 같은 값을 인용한다. */
+  onRingLimit?: (frame: number, limit: number) => void;
   onAnchorStrength?: (s: number) => void;
   beforeStep?: (frame: number, state: string) => void;
   /** onFrame 전반 — **링 총 길이 투영 전**. */
@@ -163,6 +165,8 @@ export interface PatternDressResult {
   seams: { a: number; b: number }[];
   metrics: PatternDressMetrics | null;
 }
+
+type Vec3 = { x: number; y: number; z: number };
 
 const HEM_STRICT = 1e-9;
 const RAMP_FRAMES = 120;
@@ -226,10 +230,17 @@ export interface StageCollide {
   sdfBox: PatternSdfBox;
   selfCollision: CollisionResolver;
 }
-export interface StageSession {
+/** 앵커 목표 + 34게이트. 세션 조립 «전»에 계기가 읽는다. */
+export interface StageAnchors {
   anchorList: { i: number; x: number; y: number; z: number; s: number; sign: number }[];
   placementRestGate: (label: string) => void;
+}
+export interface StageSession {
   env: GarmentFrameEnv;
+  ringRamp: ReturnType<typeof createRingLimitRamp>;
+  /** `session.step()` 인자 — 정착 «후» ablation을 도는 계기가 같은 값을 써야 한다. */
+  frameLayout: { widthM: number; heightM: number; topY: number; centerZ: number; sleeveWidthM: number };
+  framePose: { pinLeft: Vec3; pinRight: Vec3; armLeft: PatternDressFixture["pose"]["armLeft"]; armRight: PatternDressFixture["pose"]["armRight"] };
   session: GarmentSession;
   anchorRamp: ReturnType<typeof createAnchorPinRamp>;
   maxSeamGapM: () => number;
@@ -252,8 +263,12 @@ export interface PatternDressing {
   place: () => StagePlace;
   sim: () => StageSim;
   collide: () => StageCollide;
+  /** 앵커 목표·34게이트. `session()`보다 먼저 계기가 검증 인쇄를 한다. */
+  anchors: () => StageAnchors;
   session: () => StageSession;
   run: () => DressingResult;
+  /** 링 총 길이 투영 발화 누적(계기 인쇄용). */
+  ringTotalFired: () => number;
   /** 대조 채널 9종. `run()` 뒤에 부른다. */
   metrics: () => PatternDressMetrics;
   frames: number;
@@ -479,14 +494,13 @@ export function createPatternDressing(
   const deltaHist: number[] = [];
   let prevFrame: Float32Array | null = null;
 
-  const session = (): StageSession => {
-    if (_session) return _session;
+  let _anchors: StageAnchors | null = null;
+  const anchors = (): StageAnchors => {
+    if (_anchors) return _anchors;
     const b = body();
     const { g, total } = garment();
     place();
-    const s = simStage();
-    const c = collide();
-    const sim = s.sim;
+    const sim = simStage().sim;
 
     // 앵커 목표 = 어깨 능선 호장 비율 매핑(6회차) + 표면 위 margin(20회차).
     const ringVertsSet = new Set<number>(g.necklineRing.flatMap((e) => [e.a, e.b]));
@@ -569,6 +583,18 @@ export function createPatternDressing(
       }
     };
 
+    _anchors = { anchorList, placementRestGate };
+    return _anchors;
+  };
+
+  const session = (): StageSession => {
+    if (_session) return _session;
+    const { g, total } = garment();
+    const s = simStage();
+    const c = collide();
+    const sim = s.sim;
+    const { anchorList, placementRestGate } = anchors();
+
     const maxDelta20Mm = (): number => (deltaHist.length ? Math.max(...deltaHist.slice(-20)) : Infinity);
     const maxSeamGapM = (): number => {
       let m = 0;
@@ -603,13 +629,17 @@ export function createPatternDressing(
     });
     const sessionObj = createGarmentSession(sim, env);
     const anchorRamp = createAnchorPinRamp(sim, anchorList, RAMP_FRAMES, {
-      onToggle: obs.onAnchorToggle,
+      // 지연 위임 — 하네스가 이 콜백을 세션 조립 «뒤»에 붙일 수 있다(구성 시점 포획 금지).
+      onToggle: (hard) => obs.onAnchorToggle?.(hard),
       onFirstRamp: () => { if (gateArmed) { gateArmed = false; placementRestGate("(ii) 핀 발화 직후"); } },
     });
     prevFrame = new Float32Array(sim.positions.length);
     prevFrame.set(sim.positions);
     _session = {
-      anchorList, placementRestGate, env, session: sessionObj, anchorRamp,
+      env, session: sessionObj, anchorRamp,
+      frameLayout: { widthM: layout.widthM, heightM: garment().garmentDims.lengthM, topY: layout.topY, centerZ: collision.centerZ, sleeveWidthM: layout.sleeveWidthM },
+      framePose: { pinLeft: pose.pinLeft, pinRight: pose.pinRight, armLeft: pose.armLeft, armRight: pose.armRight },
+      ringRamp: createRingLimitRamp(COLLAR_STRAIN_LIMIT, s.ringRestM, RING_LIMIT_RAMP_FRAMES, (f, st, mb) => obs.onRingClose?.(f, st, mb)),
       maxSeamGapM, maxDelta20Mm, diverged, countPenetrating, rampFrames: RAMP_FRAMES,
     };
     return _session;
@@ -623,15 +653,12 @@ export function createPatternDressing(
     const s = simStage();
     const se = session();
     const sim = s.sim;
-    const ringRamp = createRingLimitRamp(COLLAR_STRAIN_LIMIT, s.ringRestM, RING_LIMIT_RAMP_FRAMES, obs.onRingClose);
     const gravity = new THREE.Vector3(0, -9.81, 0);
-    const frameLayout = { widthM: layout.widthM, heightM: garment().garmentDims.lengthM, topY: layout.topY, centerZ: collision.centerZ, sleeveWidthM: layout.sleeveWidthM };
-    const framePose = { pinLeft: pose.pinLeft, pinRight: pose.pinRight, armLeft: pose.armLeft, armRight: pose.armRight };
     void b;
 
     // 게이트 (i) — **진짜 배치 직후 · 핀 발화 전.** 상태기계의 첫 setAnchorHard는
     // 루프 안(S1 분기)에 있고 그건 이미 핀이 돈 뒤다. 여기가 유일한 "핀 전" 시점이다.
-    se.placementRestGate("(i) 진짜 배치 직후 · 핀 발화 전");
+    anchors().placementRestGate("(i) 진짜 배치 직후 · 핀 발화 전");
     _result = runDressing(
       sim, se.session, g.seams.map((x) => ({ a: x.a, b: x.b, target: x.targetM, kind: x.kind })),
       { rampFrames: RAMP_FRAMES, stallFrames: 60, seamSlackM: 0.01, settleDeltaMm: 5.6, settleFrames: 20, budget: { S0: 1, S1: 240, S2: 120, S3: 720 } },
@@ -644,7 +671,7 @@ export function createPatternDressing(
           const label = `재배치(오프셋 배수 ${scale.toFixed(2)})`;
           if (obs.wrapPlaceCorrect) obs.wrapPlaceCorrect(label, g.positions, runFix); else runFix();
           for (let i = 0; i < total; i++) sim.setParticle(i, g.positions[i * 3], g.positions[i * 3 + 1], g.positions[i * 3 + 2]);
-          se.placementRestGate(`(i) 재배치 직후 · 핀 발화 전 (오프셋 배수 ${scale.toFixed(2)})`);
+          anchors().placementRestGate(`(i) 재배치 직후 · 핀 발화 전 (오프셋 배수 ${scale.toFixed(2)})`);
           // 재배치가 좌표를 배치 상태로 되돌렸다 → 다음 핀 발화는 다시 "배치 직후"다
           gateArmed = true;
           obs.onPlaced?.(scale);
@@ -656,7 +683,9 @@ export function createPatternDressing(
         setAnchorHard: se.anchorRamp.setAnchorHard,
         beforeStep: (frame, state) => {
           obs.beforeStep?.(frame, state);
-          (se.env as { collarStrainLimit?: number }).collarStrainLimit = ringRamp.update(frame, state, s.ringLenM());
+          const lim = se.ringRamp.update(frame, state, s.ringLenM());
+          (se.env as { collarStrainLimit?: number }).collarStrainLimit = lim;
+          obs.onRingLimit?.(frame, lim);
         },
         stateNote: obs.stateNote,
         onFrame: (frame, state) => {
@@ -674,7 +703,7 @@ export function createPatternDressing(
           opts.onProgress?.(frame, state);
         },
       },
-      () => ({ dt: SUBSTEP_DT, gravity, preset: s.preset, layout: frameLayout, pose: framePose }),
+      () => ({ dt: SUBSTEP_DT, gravity, preset: s.preset, layout: se.frameLayout, pose: se.framePose }),
       FRAMES, t0,
       (sv) => { (se.env as { pinStrength?: number }).pinStrength = sv; obs.onAnchorStrength?.(sv); },
     );
@@ -758,7 +787,8 @@ export function createPatternDressing(
 
   return {
     opts: { ...opts, ringTotal: ringTotalOn, s0fix, pinDress },
-    body, garment, margins, mesh, place, sim: simStage, collide, session, run, metrics,
+    body, garment, margins, mesh, place, sim: simStage, collide, anchors, session, run, metrics,
+    ringTotalFired: () => ringTotalFired,
     frames: FRAMES, t0,
   };
 }
