@@ -150,7 +150,7 @@ export function DressButton(): React.JSX.Element | null {
           `maxSeamGap ${q.maxSeamGapMm.toFixed(2)}mm · Δ20 ${q.delta20Mm.toFixed(2)}mm · 자기교차 ${q.selfIntersections} · ` +
           `관통 ${q.insideCount}/${q.insideTotal} · 목선 링 ${q.ringLenCm.toFixed(2)}cm · ` +
           `밑단 앞 ${q.hemFrontCm.toFixed(2)} / 뒤 ${q.hemBackCm.toFixed(2)} / 합 ${(q.hemFrontCm + q.hemBackCm).toFixed(2)}cm · ` +
-          `소맷부리 ${Number.isFinite(q.cuffCm) ? q.cuffCm.toFixed(2) : "—"}cm(제도 ${q.cuffDraftCm.toFixed(2)}cm) · ` +
+          `소맷부리 ${Number.isFinite(q.cuffCm) ? q.cuffCm.toFixed(2) : "—"}cm(제도 ${q.cuffDraftCm.toFixed(2)}cm · 여유 ${Number.isFinite(q.cuffEaseCm) ? q.cuffEaseCm.toFixed(2) : "—"}cm) · ` +
           `ringTotal=${ringTotal ? "on" : "off(=RINGTOTAL=0)"}`,
         );
       }

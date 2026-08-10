@@ -394,6 +394,18 @@ export function PatternPreview(): React.JSX.Element | null {
       console.log(
         `[patternPreview] 정적 배치 렌더 — 정점 ${g.panelCounts.reduce((a, b) => a + b, 0)} · 삼각형 ${g.tris.length / 3} · 시접 ${g.seams.length}쌍 · 자기충돌 문턱 ${(g.selfCollisionMinDistM * 1000).toFixed(2)}mm`,
       );
+      // ── P13 §2 상설 계기 — 소매 제도값. **착장을 돌리지 않아도** 슬라이더를 움직이면
+      // 바로 찍힌다(슬라이더↔소맷부리 정합을 그 자리에서 확인하는 자리).
+      {
+        const D = g.draft.dims;
+        const c2 = (v: number | null): string => (v === null ? "산출불가" : `${(v * 100).toFixed(2)}cm`);
+        console.log(
+          `[patternPreview·P13] 소매 제도 — 소매통(위) ${c2(D.sleeveHalfWidthM)}(둘레 ${c2(2 * D.sleeveHalfWidthM)})` +
+          ` · 소맷부리 반폭 ${c2(D.cuffHalfWidthM)}(둘레 ${c2(2 * D.cuffHalfWidthM)})` +
+          ` · 여유 ${c2(D.cuffEaseM)} = 2·base ${c2(2 * D.sleeveHalfWidthM)} − 캡 자리 팔 ${c2(D.capArmGirthM)}` +
+          ` · 소맷부리 자리 팔 ${c2(D.cuffArmGirthM)} · 캡높이 ${c2(D.capHeightM)} · cuffY ${c2(D.sleeveLengthM)}`,
+        );
+      }
       console.log(
         `[patternPreview] 시접 브리지 — 스트립 ${strips.length}개 · 쌍 ${strips.reduce((a, s) => a + s.pairs.length, 0)} · 삼각형 ${strips.reduce((a, s) => a + Math.max(0, s.pairs.length - 1) * 2, 0)} · 종류별 쌍 ${JSON.stringify(byKind)}`,
       );

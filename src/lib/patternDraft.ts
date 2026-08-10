@@ -123,6 +123,10 @@ export interface PatternDraft {
     cuffHalfWidthM: number;
     /** P12 — 그 자리의 팔 단면 둘레(도출 근거). 산출 불가면 null. */
     cuffArmGirthM: number | null;
+    /** P13 — 소맷부리 여유 = 2·base − 캡 자리 팔 둘레(하한 `ARMHOLE_ARM_CLEARANCE_M`). 산출 불가면 null. */
+    cuffEaseM: number | null;
+    /** P13 — 캡 높이 자리의 팔 축 단면 둘레(여유 도출의 출처). 산출 불가면 null. */
+    capArmGirthM: number | null;
   };
 }
 
@@ -411,8 +415,7 @@ export function draftTshirtPattern(body: BodyMeasure, g: GarmentDims): PatternDr
   //   커프 반폭 = (팔 축 수직 단면 둘레(호장 = cuffY) + ARMHOLE_ARM_CLEARANCE_M) / 2
   //   소매 반폭(y) = base + (커프반폭 − base)·(y − capHeight)/(cuffY − capHeight)   ← **직선**
   //
-  // · 여유는 `ARMHOLE_ARM_CLEARANCE_M`(2.00cm)를 **재사용**한다 — 같은 파일·같은 옷·
-  //   같은 계열이고, 104 §3이 `ARMHOLE_DEPTH_EASE_M`을 같은 논리로 재사용한 선례가 있다.
+  // · ~~여유는 `ARMHOLE_ARM_CLEARANCE_M`(2.00cm)를 재사용한다~~ → **P13이 교체했다**(아래).
   // · 호장은 **패턴 y 그대로**다 — 배치가 `trueShoulder + d·y`로 놓으므로(`patternGarment`
   //   소매 절) 패턴 y가 곧 팔 축 거리다. 그래서 **타입 분기가 없다**: 반팔은 y=22cm(위팔),
   //   긴팔은 y=58cm(정의역 밖 → 끝값 = 손목)를 각자 알아서 집는다.
@@ -423,8 +426,28 @@ export function draftTshirtPattern(body: BodyMeasure, g: GarmentDims): PatternDr
   //   반팔 2.11cm@y21.8 · 긴팔 2.08cm@y57.8로 **전 구간에서 여유 이상**이다(끼임 0).
   // · 팔 실측이 없으면(P10 이전 커밋 fixture · 전신 인덱스 없음) `base` 그대로 = **직통 원통**
   //   이고 그 경로는 **비트 동일**이다. ⟹ Node 하네스는 종전 옷을 계속 돈다(P12 §4에 등재).
+  // ── P13 §1 — **소맷부리 «여유»의 도출을 교체한다.**
+  //
+  //   소맷부리 여유 = 2·base − (capHeight 자리 팔 축 단면 둘레)      ← 소매산이 «이미 가진» 여유
+  //   커프 반폭     = (cuffY 자리 팔 둘레 + 위 여유) / 2
+  //
+  // **왜 바꾸나**: P12는 `ARMHOLE_ARM_CLEARANCE_M`을 썼는데 그 상수는 「**암홀** ≥ 팔 + 여유」의
+  // **통과 여유**다. 소맷부리는 통과 제약이 아니라 **드레이프 요소**이고, 같은 상수를 다른
+  // 목적에 쓰면 한 이름이 두 규약을 지게 된다(함정 13 계열). 실제 후퇴도 났다 —
+  // 여유가 상수로 고정되니 **소매통 슬라이더가 소맷부리에 도달하지 못했다**(P12가 라벨을
+  // 「소매통(위)」로 바꾼 것이 그 증상이다).
+  //
+  // 새 식은 **소매산에서 옷이 이미 갖고 있는 여유를 소맷부리까지 유지**한다.
+  // ⟹ 슬라이더(=`base`)가 소맷부리를 **1:1로 지배**한다(둘레 기준 d(소맷부리)/d(2·base) = 1).
+  // **새 상수 0 · 타입 분기 0 · 새 규칙 0**(정의역 밖 끝값 규칙은 P12 §1-2 그대로).
+  //
+  // **하한**: 여유가 음수가 될 수 있다(슬라이더 최소 10cm ⟹ 2·base = 20cm < 캡 자리 팔 27.2cm).
+  // 그때는 `ARMHOLE_ARM_CLEARANCE_M`을 하한으로 쓴다 — **그 상수의 본래 용도**(팔이 통과할
+  // 최소 여유)에 정확히 해당하는 자리다.
   const cuffGirthM = body.armSection ? girthAtArc(body.armSection, cuffY) : null;
-  const cuffHalfM = cuffGirthM === null ? base : (cuffGirthM + ARMHOLE_ARM_CLEARANCE_M) / 2;
+  const capArmGirthM = body.armSection ? girthAtArc(body.armSection, capHeightM) : null;
+  const cuffEaseM = capArmGirthM === null ? null : Math.max(2 * base - capArmGirthM, ARMHOLE_ARM_CLEARANCE_M);
+  const cuffHalfM = cuffGirthM === null || cuffEaseM === null ? base : (cuffGirthM + cuffEaseM) / 2;
   const sleeve: PatternPanel = {
     name: "sleeve",
     halfWithMirrorAxis: false,
@@ -485,6 +508,7 @@ export function draftTshirtPattern(body: BodyMeasure, g: GarmentDims): PatternDr
       armGirthM: body.armSection?.maxSectionGirthM ?? 0,
       sleeveTubeRadiusM: g.sleeveWidthM / Math.PI,
       cuffHalfWidthM: cuffHalfM, cuffArmGirthM: cuffGirthM,
+      cuffEaseM, capArmGirthM,
     },
   };
 }
@@ -576,7 +600,8 @@ export function checkDraft(d: PatternDraft, armGirthM: number): DraftCheck[] {
     "소매산 쪽 소매 둘레 > 팔 둘레",
     2 * d.dims.sleeveHalfWidthM > armGirthM,
     `소매산 쪽 ${cm(2 * d.dims.sleeveHalfWidthM)}cm / 팔 둘레 ${cm(armGirthM)}cm` +
-    ` · [참고] 소맷부리 ${cm(2 * d.dims.cuffHalfWidthM)}cm vs 그 자리 팔 ${d.dims.cuffArmGirthM === null ? "산출불가" : cm(d.dims.cuffArmGirthM) + "cm"}`,
+    ` · [참고] 소맷부리 ${cm(2 * d.dims.cuffHalfWidthM)}cm vs 그 자리 팔 ${d.dims.cuffArmGirthM === null ? "산출불가" : cm(d.dims.cuffArmGirthM) + "cm"}` +
+    ` · 소맷부리 여유 ${d.dims.cuffEaseM === null ? "산출불가" : cm(d.dims.cuffEaseM) + "cm"}(캡 자리 팔 ${d.dims.capArmGirthM === null ? "산출불가" : cm(d.dims.capArmGirthM) + "cm"})`,
   );
 
   // 루프 닫힘 — 인접 세그먼트 끝점이 실제로 같은 점인가(제도 버그 탐지).

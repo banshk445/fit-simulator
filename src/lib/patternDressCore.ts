@@ -174,6 +174,8 @@ export interface PatternDressMetrics {
   cuffCm: number;
   /** P12 — 제도가 그린 소맷부리 둘레(cm) = 2 × `cuffHalfWidthM`. 대조 기준. */
   cuffDraftCm: number;
+  /** P13 — 소맷부리 여유(cm · 소매산이 이미 가진 여유). 산출 불가면 NaN. */
+  cuffEaseCm: number;
   /** P8 핏 리포트. 국면 경계(mm)를 함께 실어 **화면이 문턱을 스스로 밝히게** 한다. */
   fit: {
     marginMm: number;
@@ -914,6 +916,7 @@ export function createPatternDressing(
       hemBackCm: chainLen(chainOf(g.panelStarts[1], g.panelStarts[2])) * 100,
       cuffCm,
       cuffDraftCm: 200 * g.draft.dims.cuffHalfWidthM,
+      cuffEaseCm: g.draft.dims.cuffEaseM === null ? NaN : 100 * g.draft.dims.cuffEaseM,
     };
   };
 
