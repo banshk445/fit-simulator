@@ -40,7 +40,9 @@ export const SHOULDER_PIN_OUTSET = 0.065;
 // 한다 — 렌더링 겉보기 여유(OUTSET)는 옷 어깨너비가 명시적으로 주어지지
 // 않은 예전 호출부(디버그 등)에만 쓰고, 실측 어깨너비가 있으면 그 값과
 // "메시 관통 방지용 최소 여유"(PIN_MIN_CLEARANCE, 1cm)만 비교한다.
-const PIN_MIN_CLEARANCE = 0.01;
+// P15 §1 — **export한다**(값·용법 불변). UI가 「이 입력은 삼켜진다」를 화면에 띄우려면
+// 하한을 같은 상수에서 도출해야 한다 — 같은 수를 두 번 적으면 갈린다(함정 12).
+export const PIN_MIN_CLEARANCE = 0.01;
 
 function minHalfWidth(center: THREE.Vector3, joint: THREE.Vector3): number {
   return center.distanceTo(joint) + PIN_MIN_CLEARANCE;

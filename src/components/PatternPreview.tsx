@@ -405,6 +405,16 @@ export function PatternPreview(): React.JSX.Element | null {
           ` · 여유 ${c2(D.cuffEaseM)} = 2·base ${c2(2 * D.sleeveHalfWidthM)} − 캡 자리 팔 ${c2(D.capArmGirthM)}` +
           ` · 소맷부리 자리 팔 ${c2(D.cuffArmGirthM)} · 캡높이 ${c2(D.capHeightM)} · cuffY ${c2(D.sleeveLengthM)}`,
         );
+        // ── P15 §1 상설 계기 — **옷 어깨너비가 제도까지 도달하는가**를 그 자리에서 본다.
+        // 슬라이더 값 · 포즈 핀 간격 · 제도가 실제로 쓴 값을 나란히 낸다.
+        // 셋이 갈리면 어디서 끊겼는지가 바로 드러난다(P3 §4-2가 미룬 항목의 판정 근거).
+        const pinGapM = Math.abs(f.pose.pinLeft.x - f.pose.pinRight.x);
+        console.log(
+          `[patternPreview·P15] 어깨 — 슬라이더 ${garmentSize.shoulderWidth.toFixed(0)}cm` +
+          ` · 핀 간격 ${(pinGapM * 100).toFixed(4)}cm · 제도 어깨너비 ${c2(D.shoulderHalfM * 2)}(반폭 ${c2(D.shoulderHalfM)})` +
+          ` · 어깨선 ${c2(D.shoulderSeamM)} · 어깨경사 ${(D.shoulderSlope * 180 / Math.PI).toFixed(1)}° · 몸판 반폭 ${c2(D.halfWidthM)}` +
+          ` · [몸] 어깨 관절 간격 ${(Math.abs(arms[0].trueShoulder.x - arms[1].trueShoulder.x) * 100).toFixed(2)}cm`,
+        );
       }
       console.log(
         `[patternPreview] 시접 브리지 — 스트립 ${strips.length}개 · 쌍 ${strips.reduce((a, s) => a + s.pairs.length, 0)} · 삼각형 ${strips.reduce((a, s) => a + Math.max(0, s.pairs.length - 1) * 2, 0)} · 종류별 쌍 ${JSON.stringify(byKind)}`,
