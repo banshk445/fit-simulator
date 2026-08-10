@@ -15,10 +15,14 @@
 // fixture 포즈의 핀 간격(44.9995cm)에서 나오고 슬라이더 기본값 45cm와 달라서, 넘기면
 // 기본 슬라이더에서 기준선 A가 깨진다(= 배선이 값을 오염시킨 경우).
 //
+// P4 §2/§3 — 착용 게이트 **단계 구분**(BLOCK 차단 · WARN 실행)과 몸-옷 불일치 배지.
+// 아래 본문 주석 참고.
+//
 // 결과는 `window` CustomEvent로 `PatternPreview`에 넘긴다. `?patternstate=1`의 옛
 // dress-state fetch 경로는 **그대로 남는다**(회귀 대조용 — 제거 0).
 import { useRef, useState } from "react";
-import { useFitStore } from "../store/useFitStore";
+import { DEFAULT_BODY_SIZE, useFitStore } from "../store/useFitStore";
+import { checkGarmentFit } from "../lib/garmentFitLimits";
 import type { DressWorkerMessage, DressWorkerRequest } from "../workers/patternDressWorker";
 
 export const DRESS_RESULT_EVENT = "v2-dress-result";
@@ -32,6 +36,24 @@ export function DressButton(): React.JSX.Element | null {
   // 기준선 A는 `RINGTOTAL=0`이다 — 대조 실행에서 같은 값을 쓰려면 `?ringtotal=0`.
   const ringTotal = params.get("ringtotal") !== "0";
   const garmentSize = useFitStore((s) => s.garmentSize);
+  const bodySize = useFitStore((s) => s.bodySize);
+  // ── P4 §2 — **단계 구분**(BLOCK은 막고 WARN은 돌린다).
+  // 상수가 이미 `WIDTH_RATIO_BLOCK`/`WIDTH_RATIO_WARN`으로 갈려 있고, 두 문언도
+  // 이미 다르게 쓰여 있다: BLOCK은 「시뮬레이션을 실행하지 않습니다」라 «단정»하고
+  // WARN은 「아주 타이트한 핏입니다」라 실행을 막는다고 말하지 않는다.
+  // v1은 그 문언대로 동작했는데(`FitCanvas`의 `wearable`이 `Garment` 마운트를 막는다)
+  // **v2 경로가 그 게이트를 안 읽어서** 「실행하지 않습니다」를 띄운 채 돌았다(P1 ⑤ · P3 캡처).
+  // 문언을 고치는 대신 **동작을 문언에 맞춘다** — BLOCK이면 실행 자체를 막는다.
+  const fit = checkGarmentFit(bodySize.chest, garmentSize.width);
+  const blocked = fit.verdict === "impossible";
+  // ── P4 §3 — **임시 배지**. 몸 슬라이더는 아직 패턴에 도달하지 않는다(P3 §2 실측:
+  // 가슴 100→129에서 9채널 불변). fixture가 `DEFAULT_BODY_SIZE`에서 구워졌으므로
+  // 그 값에서 벗어나면 「마네킹만 바뀐 상태」다. **P5(몸 연속화)에서 이 배지를 걷어낸다.**
+  const bodyDrifted = bodySize.chest !== DEFAULT_BODY_SIZE.chest
+    || bodySize.height !== DEFAULT_BODY_SIZE.height
+    || bodySize.armLength !== DEFAULT_BODY_SIZE.armLength
+    || bodySize.legLength !== DEFAULT_BODY_SIZE.legLength
+    || bodySize.shoulderWidth !== DEFAULT_BODY_SIZE.shoulderWidth;
   const [busy, setBusy] = useState(false);
   const [note, setNote] = useState("");
   const workerRef = useRef<Worker | null>(null);
@@ -40,6 +62,7 @@ export function DressButton(): React.JSX.Element | null {
 
   const run = (): void => {
     if (busy) { console.log("[dress] 이미 실행 중 — 이번 클릭은 무시한다(P3 §3①)"); return; }
+    if (blocked) { console.warn(`[dress] 착용 불가 — 실행하지 않는다(P4 §2). ${fit.message ?? ""}`); return; }
     workerRef.current?.terminate();
     const runId = runIdRef.current + 1;
     runIdRef.current = runId;
@@ -96,16 +119,25 @@ export function DressButton(): React.JSX.Element | null {
   };
 
   return (
-    <div className="absolute left-3 top-3 z-10 flex items-center gap-2 rounded bg-black/60 px-3 py-2 text-sm text-white">
-      <button
-        type="button"
-        disabled={busy}
-        onClick={run}
-        className="rounded bg-white px-3 py-1 text-black disabled:opacity-50"
-      >
-        착장하기
-      </button>
-      <span>{note}</span>
+    <div className="absolute left-3 top-3 z-10 flex max-w-[42rem] flex-col gap-1 rounded bg-black/60 px-3 py-2 text-sm text-white">
+      <div className="flex items-center gap-2">
+        <button
+          type="button"
+          disabled={busy || blocked}
+          onClick={run}
+          className="rounded bg-white px-3 py-1 text-black disabled:opacity-50"
+        >
+          착장하기
+        </button>
+        <span>{blocked ? "착용 불가 — 실행하지 않습니다" : note}</span>
+      </div>
+      {blocked && <div className="text-amber-300">{fit.message}</div>}
+      {!blocked && fit.verdict === "tight" && <div className="text-amber-300">{fit.message}</div>}
+      {bodyDrifted && (
+        <div className="text-sky-300">
+          몸 치수는 <b>마네킹에만</b> 반영됩니다 — 패턴·착장은 기준 체형(가슴 {DEFAULT_BODY_SIZE.chest}cm)으로 계산됩니다. (임시 · P5에서 해소)
+        </div>
+      )}
     </div>
   );
 }
