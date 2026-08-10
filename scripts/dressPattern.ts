@@ -14,8 +14,7 @@ import * as THREE from "three";
 import { ArrayBvhCollision, getResolverMissCount } from "../src/lib/bvhFromArrays";
 import { SelfCollision } from "../src/lib/selfCollision";
 import { FABRIC_PRESETS } from "../src/lib/fabricPresets";
-import { createGarmentSession, createPanelSplitResolver, createPatternUnifiedResolver, buildArmCapsules } from "../src/lib/garmentFrame";
-import type { GarmentFrameEnv } from "../src/lib/garmentFrame";
+import { createGarmentSession, createPanelSplitResolver, createPatternUnifiedResolver, buildArmCapsules, makePatternSessionEnv } from "../src/lib/garmentFrame";
 import { applyCapsuleCollision } from "../src/lib/torsoCapsule";
 import type { Capsule } from "../src/lib/torsoCapsule";
 import { runDressing } from "../src/lib/dressingMachine";
@@ -28,19 +27,14 @@ import { correctPlacementPenetration, countInside, countOpenEdges, countOpenEdge
 import { classifyWindingOutward, windingParitySelfCheck } from "../src/lib/windingParity";
 import { axisSection, bodyGeodesicSelfCheck, closestPointOnTriangles, horizontalSection, sleeveArmFrame, surfacePathLength } from "../src/lib/bodyGeodesic";
 import { computeBodyCoverage, deriveShoulderBand } from "../src/lib/coverageMetric";
-import { bakePatternFrictionSdf, createCachedSdfIterationFriction, createSdfFrictionPass, makeRadialSignedSampler, makeSkeletonSignedSampler, sampleSdf, sdfNormal } from "../src/lib/sdfCollision";
+import { bakePatternFrictionSdf, makeRadialSignedSampler, makeSkeletonSignedSampler, sampleSdf, sdfNormal } from "../src/lib/sdfCollision";
 import {
   ARM_COLLISION_RADIUS,
   COLLISION_DETECTION_RADIUS,
   COLLISION_EVERY,
   COLLISION_MARGIN,
   DEFAULT_PATTERN_CORE,
-  FRICTION_CONTACT_BAND,
-  FRICTION_MU_ITER,
-  FRICTION_MU_KINETIC,
   FRICTION_MU_STATIC,
-  LOCAL_MU_GAIN,
-  MAX_DISPLACEMENT_PER_SUBSTEP,
   SDF_FAR,
   SEAM_REST_LENGTH,
   STIFFNESS_BEND,
@@ -949,9 +943,6 @@ if (SLEEVESIGN) {
     );
   }
 }
-const cachedFric = createCachedSdfIterationFriction(() => sdfField, {
-  contactBand: FRICTION_CONTACT_BAND, muStatic: FRICTION_MU_ITER, muKinetic: FRICTION_MU_ITER, localMuGain: LOCAL_MU_GAIN,
-});
 
 let anchorStrength = 0;
 let collarFired = 0;
@@ -1887,28 +1878,22 @@ const restMap = (label: string): string => {
   return lines.join("\n");
 };
 
-const env: GarmentFrameEnv = {
-  probe,
+// ── P2b(c) — 세션 env 조립을 `garmentFrame.makePatternSessionEnv`로 «이사»했다.
+// 거동 무변경(항등 리팩터). 물리 배선(후처리 12종 off · 마찰 상수 배분 · clamp 위치 ·
+// pinCorners/pinContinuous/anchorSyncPrev)은 그 함수 한 곳에 있고, 여기서는
+// **이 하네스에만 있는 것**만 넘긴다: 계기 훅 2종(probe · onCollarFired) ·
+// 프로브로 감싼 리졸버 · 자체충돌 · 앵커 목록 · 램프 2종의 초기값.
+// 반복 내 마찰 캐시(`cachedFric`)도 그 함수가 안에서 만들어 배선한다.
+const env = makePatternSessionEnv({
   collisionResolver: unifiedProbed,
-  collisionEvery: COLLISION_EVERY,
   selfCollision,
-  orderColumn: false, orderRow: false, clampInSubstep: true, smoothing: false, postOrder: false,
-  armSoftPull: false, necklineHug: false, sleeveArmPull: false, yAlign: false, symmetry: false,
-  clampAfterPost: false,
-  maxDisplacement: MAX_DISPLACEMENT_PER_SUBSTEP,
-  friction: createSdfFrictionPass(() => sdfField, {
-    contactBand: FRICTION_CONTACT_BAND, muStatic: FRICTION_MU_STATIC, muKinetic: FRICTION_MU_KINETIC,
-  }),
-  frictionIteration: (pos, prev, pinned, n) => { cachedFric.apply(pos, prev, pinned, n); probe("1b.반복내 마찰"); },
-  frictionIterationReset: cachedFric.reset,
-  collarStrainLimit: ringLimitNow,
-  onCollarFired: (n) => { collarFired += n; },
-  pinCorners: false,
+  sdfField: () => sdfField,
   anchors: () => (PINDRESS ? anchorList : []),
-  pinContinuous: true,
+  collarStrainLimit: ringLimitNow,
   pinStrength: anchorStrength,
-  anchorSyncPrev: true,
-};
+  probe,
+  onCollarFired: (n) => { collarFired += n; },
+});
 const session = createGarmentSession(sim, env);
 
 // ── 진단 채널

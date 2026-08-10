@@ -28,8 +28,15 @@ import { enforceLeftRightSymmetry } from "./garmentStitch";
 import {
   ARM_COLLISION_RADIUS,
   ARMHOLE_ROW_FRACTION,
+  COLLISION_EVERY,
   COLLISION_MARGIN,
   COLS,
+  FRICTION_CONTACT_BAND,
+  FRICTION_MU_ITER,
+  FRICTION_MU_KINETIC,
+  FRICTION_MU_STATIC,
+  LOCAL_MU_GAIN,
+  MAX_DISPLACEMENT_PER_SUBSTEP,
   MAX_SUBSTEPS,
   PANEL_BACK,
   PANEL_FRONT,
@@ -42,6 +49,8 @@ import {
   SUBSTEP_DT,
 } from "./clothConfig";
 import type { Vec3Like } from "./clothProtocol";
+import { createCachedSdfIterationFriction, createSdfFrictionPass } from "./sdfCollision";
+import type { SdfField } from "./sdfCollision";
 
 export interface ArmShape {
   dir: Vec3Like;
@@ -146,6 +155,65 @@ export interface PatternUnifiedOpts {
   torsoMarginM?: number;
   armMarginM?: number;
   torsoPanels?: readonly number[];
+}
+
+// ── P2b(c) — **v2 패턴 착장 세션 env 조립**. `dressPattern.ts`에 있던 조립을
+// 그대로 옮긴 것이고 거동 무변경(항등 리팩터 · 값 변경 0).
+//
+// 여기 담긴 것은 **어느 소비자든 같아야 하는 물리 배선**이다:
+//   · v1 후처리 12종 전량 off(order/스무딩/softPull/hug/sleevePull/yAlign/symmetry)
+//     — v2 패턴 패널에는 COLS·ROWS 격자 규약이 없어 의미 자체가 없다(:765 핀 주석과 같은 이유)
+//   · `pinCorners: false` — v1 하드 핀은 패턴 패널에 인덱스가 안 맞는다
+//   · `clampInSubstep: true` / `clampAfterPost: false` — 워커 위치
+//   · 마찰 2종(서브스텝 말미 `friction` · 반복 내 `frictionIteration`)의 상수 배분
+//     — 중복 감쇠를 피하려고 μ를 갈라 쓴다(STATIC/KINETIC vs MU_ITER+LOCAL_MU_GAIN)
+// 브라우저 워커가 이 조립을 다시 손으로 적으면 한 줄만 어긋나도 물리가 갈린다.
+//
+// **가변 항 2개는 호출자가 env를 직접 고쳐 쓴다**(기존 그대로):
+//   `collarStrainLimit`(링 상한 램프 · 매 프레임) · `pinStrength`(앵커 램프).
+// 그래서 이 함수는 **그 env 객체 자체**를 돌려준다.
+export interface PatternSessionEnvOpts {
+  collisionResolver: CollisionResolver;
+  selfCollision: CollisionResolver | null;
+  sdfField: () => SdfField | null;
+  anchors?: () => { i: number; x: number; y: number; z: number }[];
+  /** 초기값. 이후 램프는 호출자가 env.collarStrainLimit를 갱신한다. */
+  collarStrainLimit?: number;
+  /** 초기값. 이후 램프는 호출자가 env.pinStrength를 갱신한다. */
+  pinStrength?: number;
+  /** 계기 — 위치를 건드리면 안 된다. */
+  probe?: (label: string) => void;
+  /** 계기 — 발화 카운트. */
+  onCollarFired?: (count: number) => void;
+}
+
+export function makePatternSessionEnv(o: PatternSessionEnvOpts): GarmentFrameEnv {
+  const cachedFriction = createCachedSdfIterationFriction(o.sdfField, {
+    contactBand: FRICTION_CONTACT_BAND, muStatic: FRICTION_MU_ITER, muKinetic: FRICTION_MU_ITER, localMuGain: LOCAL_MU_GAIN,
+  });
+  const env: GarmentFrameEnv = {
+    probe: o.probe,
+    collisionResolver: o.collisionResolver,
+    collisionEvery: COLLISION_EVERY,
+    selfCollision: o.selfCollision,
+    orderColumn: false, orderRow: false, clampInSubstep: true, smoothing: false, postOrder: false,
+    armSoftPull: false, necklineHug: false, sleeveArmPull: false, yAlign: false, symmetry: false,
+    clampAfterPost: false,
+    maxDisplacement: MAX_DISPLACEMENT_PER_SUBSTEP,
+    friction: createSdfFrictionPass(o.sdfField, {
+      contactBand: FRICTION_CONTACT_BAND, muStatic: FRICTION_MU_STATIC, muKinetic: FRICTION_MU_KINETIC,
+    }),
+    frictionIteration: (pos, prev, pinned, n) => { cachedFriction.apply(pos, prev, pinned, n); o.probe?.("1b.반복내 마찰"); },
+    frictionIterationReset: cachedFriction.reset,
+    collarStrainLimit: o.collarStrainLimit,
+    onCollarFired: o.onCollarFired,
+    pinCorners: false,
+    anchors: o.anchors,
+    pinContinuous: true,
+    pinStrength: o.pinStrength,
+    anchorSyncPrev: true,
+  };
+  return env;
 }
 
 export function createPatternUnifiedResolver(
