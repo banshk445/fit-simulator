@@ -1,5 +1,6 @@
 import { Controls } from "./components/Controls";
 import { FitCanvas } from "./components/FitCanvas";
+import { DressButton } from "./components/DressButton";
 
 function App() {
   return (
@@ -7,8 +8,9 @@ function App() {
       <div className="w-[30%] min-w-[280px]">
         <Controls />
       </div>
-      <div className="w-[70%]">
+      <div className="w-[70%] relative">
         <FitCanvas />
+        {import.meta.env.DEV && <DressButton />}
       </div>
     </div>
   );

@@ -12,10 +12,11 @@
 // 텍스처는 **체커**다. 사진 텍스처로는 UV 왜곡·뒤집힘이 안 보인다 —
 // 체커는 정사각형이 어디서 늘어나고 어디서 뒤집히는지 그대로 드러낸다.
 // 패널별 UV는 공통 축척이므로 네 패널의 칸 크기가 같아야 정상이다.
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import * as THREE from "three";
 import { useFitStore } from "../store/useFitStore";
 import { buildSeamBridge, updateSeamBridge, type SeamStrip } from "./seamBridge";
+import { DRESS_RESULT_EVENT } from "./DressButton";
 import { ArrayBvhCollision } from "../lib/bvhFromArrays";
 import { makeOutlineProvider } from "../lib/bodyOutline";
 import { PATTERN_EDGE_INTERIOR_M } from "../lib/patternGarment";
@@ -58,6 +59,9 @@ export function PatternPreview(): React.JSX.Element | null {
   // **정점 위치는 한 좌표도 건드리지 않는다** — 표현만 바꿔 렌더 몫을 분리한다.
   const cleanRender = new URLSearchParams(window.location.search).get("cleanrender") === "1";
   const [geos, setGeos] = useState<THREE.BufferGeometry[] | null>(null);
+  // P2c(f) — 워커 착장 결과를 받아 그리기 위한 최소 상태. 정적 배치 렌더는 그대로 두고
+  // **정점 좌표만 덮어쓴다**(지오메트리 재생성 0 · UV·인덱스·브리지 위상 불변).
+  const liveRef = useRef<{ bridge: ReturnType<typeof buildSeamBridge>; starts: number[]; counts: number[]; total: number } | null>(null);
   const [bridgeGeo, setBridgeGeo] = useState<THREE.BufferGeometry | null>(null);
   const checkerTexture = useMemo(() => makeCheckerTexture(), []);
   // ── 68회차 — **업로드 이미지 배선**. 직전 확인: v2 경로에 소비가 **애초에 없었다**
@@ -317,6 +321,7 @@ export function PatternPreview(): React.JSX.Element | null {
       const one = g.positions;
       updateSeamBridge(bridge, { front: one, back: one, sleeveLeft: one, sleeveRight: one });
       setBridgeGeo(bridge.geometry);
+      liveRef.current = { bridge, starts: [...g.panelStarts], counts: [...g.panelCounts], total: g.positions.length / 3 };
 
       setGeos(out);
       const byKind = g.seamGroups.reduce<Record<string, number>>((acc, grp) => {
@@ -332,6 +337,30 @@ export function PatternPreview(): React.JSX.Element | null {
     })();
     return () => { alive = false; };
   }, [garmentSize, useDressState, cleanRender]);
+
+  // P2c(f) — 「착장하기」 결과 반영. `?patternstate=1`의 옛 fetch 경로와 **병존**한다.
+  useEffect(() => {
+    const onResult = (ev: Event): void => {
+      const d = (ev as CustomEvent<{ positions: Float32Array }>).detail;
+      const live = liveRef.current;
+      if (!geos || !live || !d?.positions) return;
+      if (d.positions.length !== live.total * 3) {
+        console.warn(`[patternPreview] 착장 결과 정점 수 불일치(${d.positions.length / 3} vs ${live.total}) — 반영하지 않는다`);
+        return;
+      }
+      for (let p = 0; p < geos.length; p++) {
+        const attr = geos[p].getAttribute("position") as THREE.BufferAttribute;
+        (attr.array as Float32Array).set(d.positions.subarray(live.starts[p] * 3, (live.starts[p] + live.counts[p]) * 3));
+        attr.needsUpdate = true;
+        geos[p].computeVertexNormals();
+        geos[p].computeBoundingSphere();
+      }
+      updateSeamBridge(live.bridge, { front: d.positions, back: d.positions, sleeveLeft: d.positions, sleeveRight: d.positions });
+      console.log("[patternPreview] 착장 결과 반영 — 정점 좌표만 갱신(위상·UV 불변)");
+    };
+    window.addEventListener(DRESS_RESULT_EVENT, onResult);
+    return () => window.removeEventListener(DRESS_RESULT_EVENT, onResult);
+  }, [geos]);
 
   if (!geos) return null;
   return (
