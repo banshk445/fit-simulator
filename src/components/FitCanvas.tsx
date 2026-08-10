@@ -11,13 +11,13 @@ import { ArmCapsuleDebug } from "./ArmCapsuleDebug";
 import { lazy } from "react";
 import { CAPTURE_VIEWS } from "../lib/captureViews";
 
-// v2 Stage 2a — `?patterncore=1`에서만 로드되는 정적 배치 미리보기(DEV).
-// **삼항의 조건이 빌드 시 리터럴 false로 치환**되므로 프로덕션 번들에서는
-// import 자체가 도달 불가가 되어 통째로 잘린다. 이 가드가 없으면 fixture
-// 1.8MB가 dist에 청크로 남는다(실측 — `npm run build` 산출물에서 확인).
-const PatternPreview = import.meta.env.DEV
-  ? lazy(async () => ({ default: (await import("./PatternPreview")).PatternPreview }))
-  : null;
+// v2 패턴 경로 — `?patterncore=1`에서만 «마운트»된다.
+// **P9 §3 정정**: 예전에는 `import.meta.env.DEV &&` 삼항으로 감싸 프로덕션 번들에서
+// import 자체를 잘랐다(fixture 1.8MB를 dist에서 빼려던 것). 그러면 배포본에 v2가
+// 아예 없어서 데모 URL이 성립하지 않는다. 이제 **동적 import**로 남기고 마운트만
+// 파라미터로 가른다 — 파라미터 없는 진입에서는 이 청크를 **받지도 않는다**(코드 분할).
+// 기본 거동은 무변경(v1).
+const PatternPreview = lazy(async () => ({ default: (await import("./PatternPreview")).PatternPreview }));
 
 // 단위 원기둥(반지름 1, 높이 1)을 scale로 늘려 부드럽게 보간(lerp)한다.
 function useLerpedScale(targetScale: THREE.Vector3Tuple, targetPositionY: number) {
@@ -83,7 +83,7 @@ export function FitCanvas() {
   const view = query.get("view");
   const shot = view ? CAPTURE_VIEWS[view] : undefined;
   // v2 patternCore — 켜면 v1 옷 대신 패턴 정적 배치만 그린다(물리 없음).
-  const patternCore = import.meta.env.DEV && query.get("patterncore") === "1";
+  const patternCore = query.get("patterncore") === "1";
   // **68회차 정정**: 이 문장은 원래 "사진이 화면에 안 나온다"였고 그건 그때까지 참이었다
   // (v2 렌더러가 store를 안 봤다). 68회차가 `PatternPreview`에 배선을 넣어 **v2도 사진을 그린다**.
   // 경고를 지우지 않고 내용을 바꾼다 — 두 경로의 화면이 서로 다르므로(아래) 지금 무엇을

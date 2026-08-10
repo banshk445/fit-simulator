@@ -10,7 +10,7 @@ function App() {
       </div>
       <div className="w-[70%] relative">
         <FitCanvas />
-        {import.meta.env.DEV && <DressButton />}
+        <DressButton />
       </div>
     </div>
   );

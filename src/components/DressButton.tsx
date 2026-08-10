@@ -67,6 +67,16 @@ export function DressButton(): React.JSX.Element | null {
   const fresh = report && report.sig === sig ? report.m : null;
   if (!on) return null;
 
+  // ── P9 §2 — 상태 표시를 한 곳에서 만든다(대기 / 진행 / 완료 / 차단 / 실패).
+  // 사유 «본문»은 좌측 패널이 진다 — 여기서는 짧은 상태만(중복 제거).
+  const status = blocked
+    ? { t: "이 치수로는 착용 불가 — 좌측 안내 참고", c: "text-amber-300" }
+    : busy
+      ? { t: note || "착장 중…", c: "text-white" }
+      : note
+        ? { t: note, c: note.startsWith("착장 실패") || note.startsWith("오류") ? "text-rose-300" : "text-white" }
+        : { t: "치수를 맞춘 뒤 «착장하기»를 누르세요 (약 15~40초)", c: "text-slate-300" };
+
   const run = (): void => {
     if (busy) { console.log("[dress] 이미 실행 중 — 이번 클릭은 무시한다(P3 §3①)"); return; }
     if (blocked) { console.warn(`[dress] 착용 불가 — 실행하지 않는다(P4 §2). ${fit.message ?? ""}`); return; }
@@ -156,10 +166,8 @@ export function DressButton(): React.JSX.Element | null {
         >
           착장하기
         </button>
-        <span>{blocked ? "착용 불가 — 실행하지 않습니다" : note}</span>
+        <span className={status.c}>{status.t}</span>
       </div>
-      {blocked && <div className="text-amber-300">{fit.message}</div>}
-      {!blocked && fit.verdict === "tight" && <div className="text-amber-300">{fit.message}</div>}
       {showFitMap && fresh && <FitReport m={fresh} />}
       {showFitMap && !fresh && <div className="text-slate-300">핏 리포트 — 이 치수로 «착장하기»를 누르면 표시됩니다.</div>}
     </div>
