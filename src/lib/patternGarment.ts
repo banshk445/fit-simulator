@@ -42,6 +42,44 @@ export const PANEL_PAT_BACK = 1;
 export const PANEL_PAT_SLEEVE_L = 2;
 export const PANEL_PAT_SLEEVE_R = 3;
 
+// ── P18 §1 — **패널 «역할» 표.** 지금까지 소비자들은 「인덱스 2 이상이면 소매」라는
+// 관례로 패널을 갈랐다(`patternDressCore`의 `panelStarts[2]` 비교 8곳). 그 관례는
+// 몸판2/소매2 구성에서만 참이고 셔츠(앞여밈으로 앞판이 둘)·커프 밴드(패널 신설)에서
+// 곧바로 깨진다. 인덱스 대신 **역할**을 물어보게 한다 — 패널이 몇 개든 성립한다.
+//
+// **이 판에서 값은 안 바뀐다**: 티셔츠는 [torsoFront, torsoBack, sleeve, sleeve]이고
+// 그것은 종전 인덱스 관례와 정확히 같은 분할이다(항등 리팩터).
+export type PanelRole = "torsoFront" | "torsoBack" | "sleeve";
+
+/** 역할 질의 묶음. `PatternGarment`가 자기 구성으로 만들어 들고 있는다. */
+export interface PanelTopology {
+  /** 패널별 역할(패널 수와 같은 길이). */
+  roles: readonly PanelRole[];
+  /** 정점 → 패널 인덱스. */
+  panelOf: (vertex: number) => number;
+  /** 정점의 역할. */
+  roleOf: (vertex: number) => PanelRole;
+  /** 그 역할을 가진 패널 인덱스 전량. */
+  panelsWithRole: (role: PanelRole) => number[];
+  /** 몸판(앞·뒤 통칭)인가 — 종전 `i < panelStarts[2]`와 같은 판정이다. */
+  isTorso: (vertex: number) => boolean;
+}
+
+export function makePanelTopology(roles: readonly PanelRole[], panelStarts: readonly number[]): PanelTopology {
+  const panelOf = (v: number): number => {
+    for (let p = panelStarts.length - 1; p >= 0; p--) if (v >= panelStarts[p]) return p;
+    return 0;
+  };
+  const roleOf = (v: number): PanelRole => roles[panelOf(v)];
+  return {
+    roles,
+    panelOf,
+    roleOf,
+    panelsWithRole: (role) => roles.flatMap((r, p) => (r === role ? [p] : [])),
+    isTorso: (v) => { const r = roleOf(v); return r === "torsoFront" || r === "torsoBack"; },
+  };
+}
+
 // 시접 짝 한 벌(세그먼트 쌍 × 좌/우) — 경계 호장 일치 검사가 **이 단위**로
 // 이뤄져야 한다. 전체 시접을 한 폴리라인으로 이어 재면 벌 사이를 건너뛰는
 // 구간이 길이에 섞여 값이 무의미해진다(첫 실행에서 암홀 a변 20138cm).
@@ -92,6 +130,8 @@ export interface PatternGarment {
   // 용접(alias/canon)으로 결합한다(§4 개정: 제조 순서 복원).
   shoulderPairs: { a: number; b: number }[];
   mirrorOf: Int32Array;
+  /** P18 §1 — 패널 역할 질의. 소비자는 인덱스 관례 대신 이것을 쓴다. */
+  topology: PanelTopology;
   selfCollisionMinDistM: number;
   quality: { panel: string; q: MeshQuality }[];
   place: (offsetScale: number) => void;
@@ -216,6 +256,8 @@ export function buildPatternGarment(
   const mFront = mirrorPanelMesh(half.front);
   const mBack = mirrorPanelMesh(half.back);
 
+  // P18 §1 — 패널 구성과 **역할을 한 자리에서** 정한다. 아래 배열들의 순서가 곧 패널 인덱스다.
+  const panelRoles: PanelRole[] = ["torsoFront", "torsoBack", "sleeve", "sleeve"];
   const panelPos2 = [mFront.pos2, mBack.pos2, sleeveFlipped.pos2, sleeveMesh.pos2];
   const panelTris = [mFront.tris, mBack.tris, sleeveFlipped.tris, sleeveMesh.tris];
   const panelCounts = panelPos2.map((p) => p.length / 2);
@@ -554,6 +596,7 @@ export function buildPatternGarment(
     panelStarts, panelCounts,
     positions, pos2, uv, tris, panelTriRanges,
     seams, seamGroups, edgePairs, necklineRing, shoulderPairs, mirrorOf,
+    topology: makePanelTopology(panelRoles, panelStarts),
     selfCollisionMinDistM,
     quality: [
       { panel: "front(절반)", q: half.front.quality },

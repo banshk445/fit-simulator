@@ -31,7 +31,8 @@ import type { DressingResult } from "./dressingMachine";
 import { createAnchorPinRamp, createRingLimitRamp, projectRingTotalLength } from "./patternDressHooks";
 import { deriveBodySkeleton, nearestOnSegments } from "./bodySkeleton";
 import { measureBody } from "./bodyMeasure";
-import { buildPatternGarment, PANEL_PAT_BACK, PANEL_PAT_FRONT, PATTERN_EDGE_INTERIOR_M } from "./patternGarment";
+import { buildPatternGarment, PATTERN_EDGE_INTERIOR_M } from "./patternGarment";
+import type { PanelRole } from "./patternGarment";
 import { makeOutlineProvider } from "./bodyOutline";
 import { buildPatternSim } from "./buildPatternSim";
 import { correctPlacementPenetration, countInside, countSelfIntersections, makeParityInside } from "./patternPlacement";
@@ -470,8 +471,8 @@ export function createPatternDressing(
           raw: opts.hemBend.raw,
           is: (x: number, y: number): boolean => {
             const lo = g.draft.dims.lengthM - opts.hemBend!.bandM;
-            const ya = x < g.panelStarts[2] ? g.pos2[x * 2 + 1] : -1;
-            const yb = y < g.panelStarts[2] ? g.pos2[y * 2 + 1] : -1;
+            const ya = g.topology.isTorso(x) ? g.pos2[x * 2 + 1] : -1;
+            const yb = g.topology.isTorso(y) ? g.pos2[y * 2 + 1] : -1;
             return ya > lo && yb > lo; // 양 끝이 다 대역 안일 때만(경계 걸침 제외)
           },
         }
@@ -536,18 +537,24 @@ export function createPatternDressing(
     frontMesh.rebuild(b.position, b.frontIdx);
     backMesh.rebuild(b.position, b.backIdx);
     const armCapsules = [...buildArmCapsules(pose.armLeft), ...buildArmCapsules(pose.armRight)];
+    // ── P18 §1 — **리졸버 배열의 4칸 고정을 푼다.** 패널 «역할»로 채운다:
+    // 앞판은 앞 메시, 뒤판은 뒤 메시, 나머지(소매)는 null(팔 캡슐이 맡는다).
+    // 패널이 몇 개든, 앞판이 둘로 갈려도 그대로 성립한다. **티셔츠에서는 종전과 같은 배열**이다.
+    const meshFor = (role: PanelRole): ArrayBvhCollision | null =>
+      role === "torsoFront" ? frontMesh : role === "torsoBack" ? backMesh : null;
     const meshResolver = createPanelSplitResolver(
-      [
-        frontMesh.createResolver(margins().meshMarginM, COLLISION_DETECTION_RADIUS, undefined, undefined, undefined, opts.penetrationAxis, opts.magnet),
-        backMesh.createResolver(margins().meshMarginM, COLLISION_DETECTION_RADIUS, undefined, undefined, undefined, opts.penetrationAxis, opts.magnet),
-        null,
-        null,
-      ],
+      g.topology.roles.map((role) => {
+        const m = meshFor(role);
+        return m ? m.createResolver(margins().meshMarginM, COLLISION_DETECTION_RADIUS, undefined, undefined, undefined, opts.penetrationAxis, opts.magnet) : null;
+      }),
       g.panelCounts,
     );
     const unified = createPatternUnifiedResolver(
       meshResolver, g.panelCounts, collision.capsules, armCapsules,
-      { torsoCap: opts.torsoCap, armCap: opts.armCap, singleDeepest: opts.singleDeepest, torsoPanels: [PANEL_PAT_FRONT, PANEL_PAT_BACK] },
+      {
+        torsoCap: opts.torsoCap, armCap: opts.armCap, singleDeepest: opts.singleDeepest,
+        torsoPanels: [...g.topology.panelsWithRole("torsoFront"), ...g.topology.panelsWithRole("torsoBack")],
+      },
     );
     const { field: sdfField, box: sdfBox } = bakePatternFrictionSdf(
       mesh().wholeMesh, b.skeleton.segments, b.position, layout.topY, b.hemY, { skeletonSign: opts.skeletonSign },
@@ -641,7 +648,7 @@ export function createPatternDressing(
           sim.positions[cst.b * 3 + 1] - sim.positions[cst.a * 3 + 1],
           sim.positions[cst.b * 3 + 2] - sim.positions[cst.a * 3 + 2],
         );
-        const t = cst.a < g.panelStarts[2] ? acc.torso : acc.sleeve;
+        const t = g.topology.isTorso(cst.a) ? acc.torso : acc.sleeve;
         const r = dd / cst.restLength;
         t.n++;
         if (r > t.max) { t.max = r; t.maxAt = cst.a; }
@@ -829,8 +836,11 @@ export function createPatternDressing(
     }
     const lenM = g.draft.dims.lengthM;
     const strict: number[] = [];
-    for (let i = 0; i < g.panelStarts[2]; i++) if (Math.abs(g.pos2[i * 2 + 1] - lenM) < HEM_STRICT + 1e-6) strict.push(i);
-    const chainOf = (lo: number, hi: number): number[] => strict.filter((i) => i >= lo && i < hi).sort((x, y) => g.pos2[x * 2] - g.pos2[y * 2]);
+    for (let i = 0; i < total; i++) if (g.topology.isTorso(i) && Math.abs(g.pos2[i * 2 + 1] - lenM) < HEM_STRICT + 1e-6) strict.push(i);
+    // P18 §1 — 밑단 사슬을 «패널 인덱스 범위»가 아니라 **역할**로 고른다.
+    // 앞판이 둘로 갈리는 옷(셔츠 앞여밈)에서도 「앞 밑단」이 그대로 성립한다.
+    const chainOfRole = (role: PanelRole): number[] =>
+      strict.filter((i) => g.topology.roleOf(i) === role).sort((x, y) => g.pos2[x * 2] - g.pos2[y * 2]);
     const chainLen = (idx: number[]): number => {
       let l = 0;
       for (let k = 1; k < idx.length; k++) {
@@ -848,7 +858,7 @@ export function createPatternDressing(
     // 부위에서 제외했고 그 사실은 P8 문서가 진다.
     const c2 = collide();
     const dOf = (i: number): number | null => {
-      const mesh = i < g.panelStarts[1] ? c2.frontMesh : c2.backMesh;
+      const mesh = g.topology.roleOf(i) === "torsoFront" ? c2.frontMesh : c2.backMesh;
       return mesh.signedClearance(sim.positions[i * 3], sim.positions[i * 3 + 1], sim.positions[i * 3 + 2], SDF_FAR);
     };
     const fitMarginM = margins().meshMarginM;
@@ -869,7 +879,8 @@ export function createPatternDressing(
     const FIT_HALF_M = 0.025;
     const bandByY = (cy: number): number[] => {
       const out: number[] = [];
-      for (let i = 0; i < g.panelStarts[2]; i++) {
+      for (let i = 0; i < total; i++) {
+        if (!g.topology.isTorso(i)) continue;
         const y = sim.positions[i * 3 + 1];
         if (y >= cy - FIT_HALF_M && y <= cy + FIT_HALF_M) out.push(i);
       }
@@ -885,7 +896,7 @@ export function createPatternDressing(
     // 일치율이 낮으면 이 행의 눌림/여유는 못 믿는다 — 값으로 드러내고 판단은 읽는 쪽에.
     const wholeM = mesh().wholeMesh;
     const sleeveIdx: number[] = [];
-    for (let i = g.panelStarts[2]; i < total; i++) sleeveIdx.push(i);
+    for (let i = 0; i < total; i++) if (g.topology.roleOf(i) === "sleeve") sleeveIdx.push(i);
     const dWhole = (i: number): number | null =>
       wholeM.signedClearance(sim.positions[i * 3], sim.positions[i * 3 + 1], sim.positions[i * 3 + 2], SDF_FAR);
     let signSame = 0, signN = 0;
@@ -913,7 +924,7 @@ export function createPatternDressing(
     const penTorsoByYCm: Record<string, number> = {};
     const penSleeveByArcCm: Record<string, number> = {};
     const panelOf = (i: number): number =>
-      i < g.panelStarts[1] ? 0 : i < g.panelStarts[2] ? 1 : i < g.panelStarts[3] ? 2 : 3;
+      g.topology.panelOf(i);
     const isPen = (i: number): boolean =>
       mesh().insideParity(sim.positions[i * 3], sim.positions[i * 3 + 1], sim.positions[i * 3 + 2]);
     for (let i = 0; i < total; i++) {
@@ -944,19 +955,23 @@ export function createPatternDressing(
     // 새 술어 0 · 새 문턱 0 — 경계 판단은 읽는 쪽(화면)이 `fit.marginMm`으로 한다.
     fitPerVertexOut = new Float32Array(total);
     for (let i = 0; i < total; i++) {
-      const d = i < g.panelStarts[2] ? dOf(i) : dWhole(i);
+      const d = g.topology.isTorso(i) ? dOf(i) : dWhole(i);
       fitPerVertexOut[i] = d === null ? NaN : d;
     }
 
     const ringIdx = [...new Set(g.necklineRing.flatMap((e) => [e.a, e.b]))];
-    const hemIdx = [...chainOf(0, g.panelStarts[1]), ...chainOf(g.panelStarts[1], g.panelStarts[2])];
+    const hemIdx = [...chainOfRole("torsoFront"), ...chainOfRole("torsoBack")];
     // ── P12 §3 — **소맷부리 착장 후 실측 둘레.** 밑단 사슬과 같은 기계다(패턴 y가
     // `sleeveLengthM`인 경계 표본을 패턴 x로 정렬). 밑단과 다른 점 하나: 소매는
     // **닫힌 관**이라 마지막↔처음을 이어 «폐곡선»으로 잰다(그 한 변이 시접 자리다).
     // 소매 한 짝(`PANEL_PAT_SLEEVE_R`)만 잰다 — 좌우는 같은 메시다.
     const cuffYM = g.draft.dims.sleeveLengthM;
     const cuffIdx: number[] = [];
-    for (let i = g.panelStarts[3]; i < total; i++) {
+    // 소매 한 짝만 잰다(좌우는 같은 메시) — 「역할이 소매인 마지막 패널」로 고른다.
+    const sleevePanels = g.topology.panelsWithRole("sleeve");
+    const oneSleeve = sleevePanels.length ? sleevePanels[sleevePanels.length - 1] : -1;
+    for (let i = 0; i < total; i++) {
+      if (g.topology.panelOf(i) !== oneSleeve) continue;
       if (Math.abs(g.pos2[i * 2 + 1] - cuffYM) < HEM_STRICT + 1e-6) cuffIdx.push(i);
     }
     cuffIdx.sort((x, y) => g.pos2[x * 2] - g.pos2[y * 2]);
@@ -991,8 +1006,8 @@ export function createPatternDressing(
       insideCount: countInside(sim.positions, total, mesh().insideParity),
       insideTotal: total,
       ringLenCm: s.ringLenM() * 100,
-      hemFrontCm: chainLen(chainOf(0, g.panelStarts[1])) * 100,
-      hemBackCm: chainLen(chainOf(g.panelStarts[1], g.panelStarts[2])) * 100,
+      hemFrontCm: chainLen(chainOfRole("torsoFront")) * 100,
+      hemBackCm: chainLen(chainOfRole("torsoBack")) * 100,
       cuffCm,
       cuffDraftCm: 200 * g.draft.dims.cuffHalfWidthM,
       cuffEaseCm: g.draft.dims.cuffEaseM === null ? NaN : 100 * g.draft.dims.cuffEaseM,
