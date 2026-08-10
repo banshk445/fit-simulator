@@ -14,18 +14,40 @@ export const mannequinBonesRef: { current: { left: Object3D | null; right: Objec
   current: { left: null, right: null },
 };
 
-// P5 §1 — **굽기 시점 신호.** 마네킹의 A포즈(팔 방향)는 `useFrame`에서, 단위 정규화
-// (`scene.scale`)는 effect에서 적용된다. 그래서 «마운트 직후»에 구우면 GLTF 원본
-// T포즈·미정규화 몸이 잡힌다 — 실측: y 0.004~1.769 · x ±0.890(정상은 y 0~1.700 · x ±0.545).
-// 프레임이 한 번이라도 돈 뒤에 구워야 한다. Mannequin이 매 프레임 올린다.
-export const mannequinFramesRef = { current: 0 };
+// P5 §1 / P5b §1 — **굽기 시점 신호.** 마네킹의 A포즈(팔 방향)는 `useFrame`에서,
+// 단위 정규화(`scene.scale`)는 effect에서, 몸 치수 스케일은 `useFrame`의 **lerp**로 적용된다.
+// 그래서 «마운트 직후»에 구우면 GLTF 원본 T포즈·미정규화 몸이 잡힌다 —
+// 실측(P5 §3): y 0.004~1.769 · x ±0.890(정상은 y 0~1.700 · x ±0.545).
+//
+// **프레임 수를 세지 않는다.** 프레임 고정값은 취약하다 — lerp는 `t = 1 − 0.001^delta`라
+// 수렴에 걸리는 프레임 수가 프레임률과 슬라이더 이동량에 따라 달라진다.
+// 대신 **잔차를 재서** 판정한다: 스케일 lerp의 목표 대비 최대 |현재 − 목표|.
+export const mannequinPoseRef = {
+  /** A포즈·스케일 루프가 한 프레임을 마칠 때마다 오른다(0이면 아직 T포즈다). */
+  frames: 0,
+  /** 스케일 lerp의 목표 대비 최대 잔차(무차원 배율). 0으로 수렴한다. */
+  maxScaleResidual: Infinity,
+};
 
-/** 마네킹 포즈가 적용된 뒤까지 기다린다(최대 `timeoutMs`). */
-export async function awaitMannequinSettled(minFrames = 2, timeoutMs = 3000): Promise<boolean> {
+/**
+ * 잔차 문턱. 배율 1e-4는 키 1.7m에서 **0.17mm**다 —
+ * 자기충돌 문턱 3.21mm·충돌 margin 15mm의 1/19 이하라 제도·물리 어느 채널에도 안 잡힌다.
+ */
+export const POSE_SETTLE_EPS = 1e-4;
+
+/**
+ * 마네킹 포즈·스케일이 정착할 때까지 기다린다.
+ * `frames ≥ 1`(A포즈가 최소 한 번 적용됨) **그리고** 잔차 ≤ eps.
+ */
+export async function awaitMannequinSettled(
+  eps = POSE_SETTLE_EPS,
+  timeoutMs = 5000,
+): Promise<{ ok: boolean; frames: number; residual: number }> {
   const t0 = performance.now();
-  while (mannequinFramesRef.current < minFrames) {
-    if (performance.now() - t0 > timeoutMs) return false;
+  for (;;) {
+    const { frames, maxScaleResidual } = mannequinPoseRef;
+    if (frames >= 1 && maxScaleResidual <= eps) return { ok: true, frames, residual: maxScaleResidual };
+    if (performance.now() - t0 > timeoutMs) return { ok: false, frames, residual: maxScaleResidual };
     await new Promise((r) => requestAnimationFrame(() => r(null)));
   }
-  return true;
 }

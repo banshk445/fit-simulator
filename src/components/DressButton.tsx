@@ -25,7 +25,7 @@ import { useFitStore } from "../store/useFitStore";
 import { checkGarmentFit } from "../lib/garmentFitLimits";
 import { bakeBodySnapshot } from "../lib/bodySnapshot";
 import { MannequinCollisionMesh } from "../lib/meshCollision";
-import { mannequinFramesRef, mannequinBonesRef, mannequinRootRef } from "../lib/mannequinRef";
+import { mannequinPoseRef, mannequinBonesRef, mannequinRootRef, POSE_SETTLE_EPS } from "../lib/mannequinRef";
 import type { DressWorkerMessage, DressWorkerRequest } from "../workers/patternDressWorker";
 
 export const DRESS_RESULT_EVENT = "v2-dress-result";
@@ -73,8 +73,10 @@ export function DressButton(): React.JSX.Element | null {
     // 커밋된 fixture로 되돌아간다 — 그 경우 몸 슬라이더는 반영되지 않는다.
     const root = mannequinRootRef.current;
     const bones = mannequinBonesRef.current;
-    // 클릭 시점이면 이미 수 백 프레임이 지났다 — 안전용 가드다(mannequinRef 주석).
-    const settled = mannequinFramesRef.current >= 2;
+    // 클릭 시점이면 보통 이미 정착해 있다 — 잔차로 판정한다(프레임 수 고정 금지).
+    const { frames, maxScaleResidual } = mannequinPoseRef;
+    const settled = frames >= 1 && maxScaleResidual <= POSE_SETTLE_EPS;
+    if (!settled) console.warn(`[dress] 마네킹 미정착(frames ${frames} · 잔차 ${maxScaleResidual.toExponential(2)} > ${POSE_SETTLE_EPS}) — 커밋 fixture로 돈다`);
     const snap = settled && root && bones.left && bones.right
       ? bakeBodySnapshot({ root, bones, bodySize, garmentSize, sleeveType, fabric }, collisionMesh)
       : null;

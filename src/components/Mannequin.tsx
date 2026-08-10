@@ -6,7 +6,7 @@ import * as THREE from "three";
 // 임시 진단(가슴 스케일 시 몸 메시 폭발 원인 가르기): ?nocounter=1
 const NO_COUNTER = import.meta.env.DEV && new URLSearchParams(window.location.search).get("nocounter") === "1";
 import { DEFAULT_BODY_SIZE, useFitStore } from "../store/useFitStore";
-import { mannequinBonesRef, mannequinFramesRef, mannequinRootRef } from "../lib/mannequinRef";
+import { mannequinBonesRef, mannequinPoseRef, mannequinRootRef } from "../lib/mannequinRef";
 import { findShoulderBones } from "../lib/boneUtils";
 import { isBone, isDescendantOfAny, pointBoneTowardWorldDirection, worldDirection } from "../lib/boneUtils";
 
@@ -220,8 +220,8 @@ export function Mannequin() {
   const ARM_SWAY_FIXED_OUTWARD = 0.6;
   const armPoseElapsed = useRef(0);
   useFrame((_, delta) => {
-    // P5 §1 — 이 루프가 A포즈를 적용한다. 몸 스냅샷은 이 카운터가 오른 뒤에 구워야 한다.
-    mannequinFramesRef.current += 1;
+    // P5 §1 — 이 루프가 A포즈를 적용한다(카운터는 아래 스케일 루프가 올린다 — 그쪽이
+    // 같은 프레임에서 «뒤»에 돌기 때문이다. 두 루프가 다 돈 뒤라야 몸이 확정된다).
     let outwardAmount = ARM_SWAY_FIXED_OUTWARD;
     if (ENABLE_ARM_SWAY_DEBUG) {
       armPoseElapsed.current += delta;
@@ -305,6 +305,20 @@ export function Mannequin() {
         bone.scale[axis] = THREE.MathUtils.lerp(bone.scale[axis], counterChestMultiplier, t);
       }
     }
+
+    // ── P5b §1 — **정착 잔차**. 몸 스냅샷은 프레임 수가 아니라 이 값으로 판정한다
+    // (lerp 수렴 프레임 수는 프레임률·이동량에 따라 달라진다 — mannequinRef 주석).
+    // 위에서 lerp를 «적용한 뒤»의 목표 대비 최대 편차를 그대로 잰다.
+    let residual = Math.abs(outer.scale.x - heightMultiplier);
+    const acc = (v: number, target: number): void => { const d = Math.abs(v - target); if (d > residual) residual = d; };
+    for (const { bone, axis } of boneGroups.arm) acc(bone.scale[axis], armMultiplier);
+    for (const { bone, axis } of boneGroups.leg) acc(bone.scale[axis], legMultiplier);
+    for (const { bone, axis } of boneGroups.shoulder) acc(bone.scale[axis], shoulderMultiplier);
+    for (const { bone, axes } of torsoGirthBones) for (const axis of axes) acc(bone.scale[axis], chestMultiplier);
+    for (const { bone, axes } of shoulderGirthAxes) for (const axis of axes) acc(bone.scale[axis], counterChestMultiplier);
+    for (const { bone, axes } of neckCounterScaleBones) for (const axis of axes) acc(bone.scale[axis], counterChestMultiplier);
+    mannequinPoseRef.maxScaleResidual = residual;
+    mannequinPoseRef.frames += 1;
   });
 
   return (

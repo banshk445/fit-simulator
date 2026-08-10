@@ -206,22 +206,34 @@ export function PatternPreview(): React.JSX.Element | null {
       // ── P5 §1 — **워커와 같은 몸을 본다.** 여기가 옛 몸을 보면 정적 배치와 착장 결과의
       // 패턴이 서로 달라지고(정점 수까지 갈린다) 결과 반영이 거부된다.
       // 마네킹이 아직 안 붙었으면 커밋된 fixture로 되돌아간다(그때는 몸 슬라이더 미반영).
-      // 포즈·단위 정규화가 적용된 뒤에 굽는다(마운트 직후는 T포즈다 — mannequinRef 주석).
-      const settled = await awaitMannequinSettled();
+      // 포즈·단위 정규화·스케일 lerp가 «정착한 뒤»에 굽는다(마운트 직후는 T포즈다).
+      // 프레임 수가 아니라 잔차로 판정한다 — mannequinRef 주석.
+      const settle = await awaitMannequinSettled();
       if (!alive) return;
+      const settled = settle.ok;
+      if (!settled) console.warn(`[patternPreview] 마네킹 미정착(frames ${settle.frames} · 잔차 ${settle.residual.toExponential(2)}) — 커밋 fixture로 그린다`);
       const root = mannequinRootRef.current;
       const bones = mannequinBonesRef.current;
       const snap = settled && root && bones.left && bones.right
         ? bakeBodySnapshot({ root, bones, bodySize, garmentSize, sleeveType, fabric }, new MannequinCollisionMesh())
         : null;
       if (snap) {
+        // P5b §1 실측(계기는 걷었다 · 값은 보고서에 등재): 라이브 몸과 커밋 fixture의
+        // 정점 좌표 차이는 **평균 0.021mm · 최대 0.14mm**(15,882정점 전수 대조)다.
+        // 그 0.14mm가 9채널을 움직인다 — 라이브 몸을 쓰는 한 기준선 A와 비트 일치는
+        // 원리적으로 불가능하다(fixture는 과거 스냅샷, 라이브는 현재 마네킹).
         const pos = snap.fixture.collision.position;
         let mnY = Infinity, mxY = -Infinity, mnX = Infinity, mxX = -Infinity;
         for (let i = 0; i < pos.length; i += 3) {
           if (pos[i] < mnX) mnX = pos[i]; if (pos[i] > mxX) mxX = pos[i];
           if (pos[i + 1] < mnY) mnY = pos[i + 1]; if (pos[i + 1] > mxY) mxY = pos[i + 1];
         }
-        console.log(`[P5진단] 라이브 몸 — 정점 ${pos.length / 3} · y ${mnY.toFixed(3)}~${mxY.toFixed(3)} · x ${mnX.toFixed(3)}~${mxX.toFixed(3)} · 굽기 ${snap.bakeMs.toFixed(0)}ms · topY ${snap.fixture.layout.topY.toFixed(4)} · centerZ(layout) ${snap.fixture.layout.centerZ.toFixed(5)} · centerZ(collision) ${snap.fixture.collision.centerZ.toFixed(5)} · 핀간격 ${Math.abs(snap.fixture.pose.pinLeft.x - snap.fixture.pose.pinRight.x).toFixed(5)} · 팔길이 ${snap.fixture.pose.armLeft.length}`);
+        // fixture(커밋본 · 가슴 슬라이더 100에서 구운 것) 대조 기준값 — P5 §3 실측분.
+        console.log(
+          `[P5진단] 라이브 몸 — 정점 ${pos.length / 3}(fixture 15882) · y ${mnY.toFixed(3)}~${mxY.toFixed(3)}(fixture 0.000~1.700) · x ${mnX.toFixed(3)}~${mxX.toFixed(3)}(fixture ±0.545)` +
+          ` · 정착 frames ${settle.frames} 잔차 ${settle.residual.toExponential(2)} · 굽기 ${snap.bakeMs.toFixed(1)}ms · 캡슐 ${snap.capsuleMs.toFixed(2)}ms` +
+          ` · topY ${snap.fixture.layout.topY.toFixed(4)}(1.4304) · centerZ ${snap.fixture.layout.centerZ.toFixed(5)}/${snap.fixture.collision.centerZ.toFixed(5)}(-0.02787) · 핀간격 ${Math.abs(snap.fixture.pose.pinLeft.x - snap.fixture.pose.pinRight.x).toFixed(5)}(0.45000)`,
+        );
       }
       const f = (snap?.fixture ?? (await import("../../scripts/fixtures/collision-fixture.json")).default) as unknown as {
         pose: {
