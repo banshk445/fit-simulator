@@ -355,6 +355,15 @@ export function buildPatternGarment(
   const armPlus = arms[0].trueShoulder.x >= arms[1].trueShoulder.x ? arms[0] : arms[1];
   const armMinus = armPlus === arms[0] ? arms[1] : arms[0];
   const sleeveRadiusM = draft.dims.sleeveTubeRadiusM;
+  // P12 — 소매 반폭의 y 프로파일. 제도(`patternDraft`)의 `underFront` 직선과 **같은 식**이다
+  // (식을 옮겨 적지 않도록 끝점 2개를 dims에서 읽어 선형 보간한다). 캡 위쪽(y < 캡높이)은
+  // `base` 고정 — 그 대역의 폭은 소매산 곡선이 정하고 테이퍼가 관여하지 않는다.
+  const sleeveHalfAt = (yM: number): number => {
+    const { sleeveHalfWidthM: b, cuffHalfWidthM: cH, capHeightM: cap, sleeveLengthM: cuffY } = draft.dims;
+    if (yM <= cap || cuffY <= cap) return b;
+    const t = Math.min(1, (yM - cap) / (cuffY - cap));
+    return b + (cH - b) * t;
+  };
   // wrap 각을 표본 간격 하나만큼 덜 감는다. 두 시접 변이 완전히 겹친 채
   // 시작하면 시접 rest가 밀어낼 **방향**이 부동소수 오차로 정해진다 —
   // selfCollision.ts의 seamRowExclusive 주석이 기록한 잔물결 병리와 같은
@@ -509,13 +518,18 @@ export function buildPatternGarment(
       // 거울상으로 만든다(미러 쌍 정합 검사가 이것을 잡는다).
       if (e2.z < 0) e2 = { x: -e2.x, y: -e2.y, z: -e2.z };
       if (flipSign < 0) e2 = { x: -e2.x, y: -e2.y, z: -e2.z };
-      const radius = sleeveRadiusM + marginM * offsetScale;
       const start = panelStarts[panel];
-      const base = draft.dims.sleeveHalfWidthM;
       for (let i = 0; i < panelCounts[panel]; i++) {
         const gi = start + i;
         const xp = pos2[gi * 2], yp = pos2[gi * 2 + 1];
-        const th = (xp / base) * Math.PI * wrapShrink;
+        // P12 — 원통이 **원뿔**이 된다. 유지하는 불변식은 종전 그대로다:
+        // 「배치된 관의 둘레 = 그 y에서의 패턴 폭」(종전에도 2π·`sleeveTubeRadiusM` =
+        // 2·`base`로 정확히 그랬다). 반폭이 y에 따라 줄면 반경과 감는 각의 분모가
+        // 같이 줄어야 관이 닫힌 채로 있는다 — 안 그러면 소맷부리에서 시접이
+        // 19cm 벌어진 채 S1이 시작한다(테이퍼 비율에서 산출).
+        const halfAt = sleeveHalfAt(yp);
+        const radius = halfAt / Math.PI + marginM * offsetScale;
+        const th = (xp / halfAt) * Math.PI * wrapShrink;
         const c = Math.cos(th), s = Math.sin(th);
         positions[gi * 3] = arm.trueShoulder.x + d.x * yp + (e1.x * c + e2.x * s) * radius;
         positions[gi * 3 + 1] = arm.trueShoulder.y + d.y * yp + (e1.y * c + e2.y * s) * radius;

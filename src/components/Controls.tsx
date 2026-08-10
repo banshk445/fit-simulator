@@ -236,8 +236,11 @@ export function Controls() {
           max={sleeveType === "short" ? 35 : 75}
           onChange={setGarmentSleeveLength}
         />
+        {/* P12 §2 — 테이퍼 도입으로 소매통이 «한 수»가 아니게 됐다. 이 슬라이더는
+            암홀에 붙는 «위쪽» 폭이고, 소맷부리는 팔 실측에서 도출된다(사용자가 못 정한다).
+            라벨이 그 사실을 지게 한다 — 값·범위·배선은 그대로다. */}
         <Slider
-          label="소매통"
+          label="소매통(위)"
           value={garmentSize.sleeveWidth}
           min={10}
           max={35}

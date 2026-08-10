@@ -275,6 +275,11 @@ export function PatternPreview(): React.JSX.Element | null {
             // 있다. 최대가 어깨 쪽(s≈0)에서 몸통급 값으로 튀면 여기서 드러난다(함정 18: 단일 요약 금지).
             ` · 최대 ${cm(a.maxSectionGirthM)}@s=${a.maxAtSM === null ? "—" : (100 * a.maxAtSM).toFixed(1) + "cm"}`
           : "[patternPreview·P11] 팔 단면 — **산출 불가**(팔꿈치·손 좌표 없음 = 구 fixture 또는 전신 인덱스 없음)");
+        // 프로파일 전량은 로그에 쏟지 않고 훅으로 낸다(임시 로그 금지 조항 · CLAUDE.md).
+        // `window.__fitDebug.armProfile()` — 호장별 둘레 42표본 그대로.
+        const win = window as unknown as { __fitDebug?: Record<string, unknown> };
+        if (!win.__fitDebug) win.__fitDebug = {};
+        win.__fitDebug.armProfile = (): unknown => body.armSection;
       }
       const outlineTorso = new ArrayBvhCollision();
       outlineTorso.rebuild(position, torsoIndex);

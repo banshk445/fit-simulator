@@ -19,7 +19,7 @@
 // ## 재단 상수 (전부 **추정** — Stage 2a/2b 실측 확정. 근거를 각 상수에 병기)
 // 표준 상의 원형 제도의 관계식을 쓴다. 이 관계식 자체가 도출 근거이고,
 // 값은 이 저장소의 실측으로 확정된 것이 아니므로 전부 (추정)이다.
-import type { BodyMeasure } from "./bodyMeasure";
+import type { ArmSectionMeasure, BodyMeasure } from "./bodyMeasure";
 
 // 목선 둘레 = **목밑둘레 + 여유**. 목선이 앉는 자리는 목 기둥이 아니라 목밑
 // (어깨 뿌리)이다 — 9회차까지는 `body.neckGirthM`(목 기둥 최소 단면
@@ -119,6 +119,10 @@ export interface PatternDraft {
     capHeightM: number; capHeightTriangleM: number; capGirthM: number;
     underSleeveM: number; necklineGirthM: number;
     armGirthM: number; sleeveTubeRadiusM: number;
+    /** P12 — 소맷부리 반폭(테이퍼 도착점). 팔 실측이 없으면 `sleeveHalfWidthM`과 같다(직통 원통). */
+    cuffHalfWidthM: number;
+    /** P12 — 그 자리의 팔 단면 둘레(도출 근거). 산출 불가면 null. */
+    cuffArmGirthM: number | null;
   };
 }
 
@@ -199,6 +203,23 @@ export function sampleBySizeField(c: CurveDef, h: (x: number, y: number) => numb
 
 const seg = (name: string, curve: CurveDef, refined: boolean): PatternSegment =>
   ({ name, curve, refined, lengthM: curveLength(curve), samples: [] });
+
+/**
+ * P12 §1 — 팔 축 호장 `sM`에서의 단면 둘레(m). 표본 사이는 선형 보간,
+ * **정의역 밖은 끝값**(외삽하지 않는다). 긴팔 소매(58cm)는 팔 폴리라인(47.1cm)보다
+ * 길어 반드시 정의역을 벗어나므로, 그 자리의 값은 P11이 정의한 「손목 = 손 직전」이다.
+ */
+export function girthAtArc(a: ArmSectionMeasure, sM: number): number | null {
+  const p = a.profile;
+  if (!p.length) return null;
+  if (sM <= p[0].sM) return p[0].girthM;
+  if (sM >= p[p.length - 1].sM) return p[p.length - 1].girthM;
+  for (let i = 0; i + 1 < p.length; i++) {
+    const q = p[i], r = p[i + 1];
+    if (sM >= q.sM && sM <= r.sM) return q.girthM + ((r.girthM - q.girthM) * (sM - q.sM)) / (r.sM - q.sM);
+  }
+  return null;
+}
 
 // ── 제도 ────────────────────────────────────────────────────────────────
 // ── **치수 규약(정본 · P3 §1 확정)** ─────────────────────────────────────────
@@ -385,14 +406,33 @@ export function draftTshirtPattern(body: BodyMeasure, g: GarmentDims): PatternDr
   const underSleeveM = g.sleeveLengthM - capHeightM;
 
   const cuffY = capHeightM + underSleeveM;
+  // ── P12 §1 — **소맷부리 테이퍼.** 소맷부리 둘레를 팔 실측에서 도출한다(새 손 상수 0).
+  //
+  //   커프 반폭 = (팔 축 수직 단면 둘레(호장 = cuffY) + ARMHOLE_ARM_CLEARANCE_M) / 2
+  //   소매 반폭(y) = base + (커프반폭 − base)·(y − capHeight)/(cuffY − capHeight)   ← **직선**
+  //
+  // · 여유는 `ARMHOLE_ARM_CLEARANCE_M`(2.00cm)를 **재사용**한다 — 같은 파일·같은 옷·
+  //   같은 계열이고, 104 §3이 `ARMHOLE_DEPTH_EASE_M`을 같은 논리로 재사용한 선례가 있다.
+  // · 호장은 **패턴 y 그대로**다 — 배치가 `trueShoulder + d·y`로 놓으므로(`patternGarment`
+  //   소매 절) 패턴 y가 곧 팔 축 거리다. 그래서 **타입 분기가 없다**: 반팔은 y=22cm(위팔),
+  //   긴팔은 y=58cm(정의역 밖 → 끝값 = 손목)를 각자 알아서 집는다.
+  // · **직선인 이유**(「팔을 따라가는 것이 기본」 조항에 대한 답): 캡 쪽 끝은 암홀↔소매산
+  //   이즈 이분법이 `base`로 못박고 있어 프로파일 값(반폭 14.62cm)으로 내릴 수 없다.
+  //   즉 이 구간은 팔을 «따라가는» 곡선이 아니라 **두 구속 사이의 전이**다. 직선이
+  //   프로파일 추종보다 항상 «느슨한» 쪽이고(반폭 최대 +3.41cm@y12.3), 실측 최소 여유가
+  //   반팔 2.11cm@y21.8 · 긴팔 2.08cm@y57.8로 **전 구간에서 여유 이상**이다(끼임 0).
+  // · 팔 실측이 없으면(P10 이전 커밋 fixture · 전신 인덱스 없음) `base` 그대로 = **직통 원통**
+  //   이고 그 경로는 **비트 동일**이다. ⟹ Node 하네스는 종전 옷을 계속 돈다(P12 §4에 등재).
+  const cuffGirthM = body.armSection ? girthAtArc(body.armSection, cuffY) : null;
+  const cuffHalfM = cuffGirthM === null ? base : (cuffGirthM + ARMHOLE_ARM_CLEARANCE_M) / 2;
   const sleeve: PatternPanel = {
     name: "sleeve",
     halfWithMirrorAxis: false,
     segments: [
       seg("capFront", capFront, true),
-      seg("underFront", { kind: "line", a: { x: base, y: capHeightM }, b: { x: base, y: cuffY } }, false),
-      seg("cuff", { kind: "line", a: { x: base, y: cuffY }, b: { x: -base, y: cuffY } }, false),
-      seg("underBack", { kind: "line", a: { x: -base, y: cuffY }, b: { x: -base, y: capHeightM } }, false),
+      seg("underFront", { kind: "line", a: { x: base, y: capHeightM }, b: { x: cuffHalfM, y: cuffY } }, false),
+      seg("cuff", { kind: "line", a: { x: cuffHalfM, y: cuffY }, b: { x: -cuffHalfM, y: cuffY } }, false),
+      seg("underBack", { kind: "line", a: { x: -cuffHalfM, y: cuffY }, b: { x: -base, y: capHeightM } }, false),
       // capFront의 x 반전 + 방향 반전(겨드랑이 → 정점).
       seg("capBack", {
         kind: "cubic",
@@ -444,6 +484,7 @@ export function draftTshirtPattern(body: BodyMeasure, g: GarmentDims): PatternDr
       // **0 그대로**다 — 그 경로는 비트 동일이다.
       armGirthM: body.armSection?.maxSectionGirthM ?? 0,
       sleeveTubeRadiusM: g.sleeveWidthM / Math.PI,
+      cuffHalfWidthM: cuffHalfM, cuffArmGirthM: cuffGirthM,
     },
   };
 }
@@ -527,10 +568,15 @@ export function checkDraft(d: PatternDraft, armGirthM: number): DraftCheck[] {
     d.dims.neckHalfWidthM < d.dims.shoulderHalfM,
     `목너비 ${cm(d.dims.neckHalfWidthM)}cm / 어깨 반폭 ${cm(d.dims.shoulderHalfM)}cm`,
   );
+  // P12 §2 — 테이퍼 뒤로 「소매 둘레」가 한 수가 아니다. `sleeveHalfWidthM`은
+  // **소매산 쪽**(암홀에 붙는 끝)이고 이 게이트가 보는 것도 그쪽이다 — 팔이 소매에
+  // «들어가는» 자리이므로 게이트의 의미는 그대로 유효하다. 이름만 정확히 하고,
+  // 소맷부리 값은 **참고로 병기**한다(문턱 추가 0 · 판정 대상 불변).
   push(
-    "소매 둘레 > 팔 둘레",
+    "소매산 쪽 소매 둘레 > 팔 둘레",
     2 * d.dims.sleeveHalfWidthM > armGirthM,
-    `소매 둘레 ${cm(2 * d.dims.sleeveHalfWidthM)}cm / 팔 둘레 ${cm(armGirthM)}cm`,
+    `소매산 쪽 ${cm(2 * d.dims.sleeveHalfWidthM)}cm / 팔 둘레 ${cm(armGirthM)}cm` +
+    ` · [참고] 소맷부리 ${cm(2 * d.dims.cuffHalfWidthM)}cm vs 그 자리 팔 ${d.dims.cuffArmGirthM === null ? "산출불가" : cm(d.dims.cuffArmGirthM) + "cm"}`,
   );
 
   // 루프 닫힘 — 인접 세그먼트 끝점이 실제로 같은 점인가(제도 버그 탐지).

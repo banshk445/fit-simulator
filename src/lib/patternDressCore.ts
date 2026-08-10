@@ -170,6 +170,10 @@ export interface PatternDressMetrics {
   ringLenCm: number;
   hemFrontCm: number;
   hemBackCm: number;
+  /** P12 — 소맷부리 폐곡선 둘레(cm · 착장 후 실측). 제도값은 `cuffDraftCm`. */
+  cuffCm: number;
+  /** P12 — 제도가 그린 소맷부리 둘레(cm) = 2 × `cuffHalfWidthM`. 대조 기준. */
+  cuffDraftCm: number;
   /** P8 핏 리포트. 국면 경계(mm)를 함께 실어 **화면이 문턱을 스스로 밝히게** 한다. */
   fit: {
     marginMm: number;
@@ -865,6 +869,23 @@ export function createPatternDressing(
 
     const ringIdx = [...new Set(g.necklineRing.flatMap((e) => [e.a, e.b]))];
     const hemIdx = [...chainOf(0, g.panelStarts[1]), ...chainOf(g.panelStarts[1], g.panelStarts[2])];
+    // ── P12 §3 — **소맷부리 착장 후 실측 둘레.** 밑단 사슬과 같은 기계다(패턴 y가
+    // `sleeveLengthM`인 경계 표본을 패턴 x로 정렬). 밑단과 다른 점 하나: 소매는
+    // **닫힌 관**이라 마지막↔처음을 이어 «폐곡선»으로 잰다(그 한 변이 시접 자리다).
+    // 소매 한 짝(`PANEL_PAT_SLEEVE_R`)만 잰다 — 좌우는 같은 메시다.
+    const cuffYM = g.draft.dims.sleeveLengthM;
+    const cuffIdx: number[] = [];
+    for (let i = g.panelStarts[3]; i < total; i++) {
+      if (Math.abs(g.pos2[i * 2 + 1] - cuffYM) < HEM_STRICT + 1e-6) cuffIdx.push(i);
+    }
+    cuffIdx.sort((x, y) => g.pos2[x * 2] - g.pos2[y * 2]);
+    const cuffCm = cuffIdx.length >= 2
+      ? 100 * (chainLen(cuffIdx) + Math.hypot(
+        sim.positions[cuffIdx[0] * 3] - sim.positions[cuffIdx[cuffIdx.length - 1] * 3],
+        sim.positions[cuffIdx[0] * 3 + 1] - sim.positions[cuffIdx[cuffIdx.length - 1] * 3 + 1],
+        sim.positions[cuffIdx[0] * 3 + 2] - sim.positions[cuffIdx[cuffIdx.length - 1] * 3 + 2],
+      ))
+      : NaN;
 
     return {
       fit: {
@@ -891,6 +912,8 @@ export function createPatternDressing(
       ringLenCm: s.ringLenM() * 100,
       hemFrontCm: chainLen(chainOf(0, g.panelStarts[1])) * 100,
       hemBackCm: chainLen(chainOf(g.panelStarts[1], g.panelStarts[2])) * 100,
+      cuffCm,
+      cuffDraftCm: 200 * g.draft.dims.cuffHalfWidthM,
     };
   };
 
