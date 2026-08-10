@@ -239,8 +239,9 @@ export function PatternPreview(): React.JSX.Element | null {
         pose: {
           pinLeft: { x: number; y: number; z: number };
           pinRight: { x: number; y: number; z: number };
-          armLeft: { dir: { x: number; y: number; z: number }; trueShoulder: { x: number; y: number; z: number }; length: number };
-          armRight: { dir: { x: number; y: number; z: number }; trueShoulder: { x: number; y: number; z: number }; length: number };
+          // P11 — `elbow`/`hand`는 P10이 실은 **선택** 필드다(구 fixture에는 없다).
+          armLeft: { dir: { x: number; y: number; z: number }; trueShoulder: { x: number; y: number; z: number }; length: number; elbow?: { x: number; y: number; z: number }; hand?: { x: number; y: number; z: number } };
+          armRight: { dir: { x: number; y: number; z: number }; trueShoulder: { x: number; y: number; z: number }; length: number; elbow?: { x: number; y: number; z: number }; hand?: { x: number; y: number; z: number } };
         };
         collision: {
           position: number[] | Float32Array;
@@ -260,6 +261,21 @@ export function PatternPreview(): React.JSX.Element | null {
       const arms = [f.pose.armLeft, f.pose.armRight] as const;
       const skeleton = deriveBodySkeleton(position, torsoIndex, [f.pose.armLeft, f.pose.armRight], centerX, f.collision.centerZ, hemY);
       const body = measureBody(position, torsoIndex, wholeIndex, arms, skeleton, hemY, centerX, f.collision.centerZ);
+      // ── P11 §1 상설 계기 — 팔 축 수직 단면 둘레(**표면 교선 그대로** · 볼록화 없음).
+      // 커프 제도의 입력이 될 값이라 매번 임시 로그를 넣지 않도록 여기 둔다.
+      {
+        const a = body.armSection;
+        const cm = (v: number | null): string => (v === null ? "산출불가" : `${(v * 100).toFixed(2)}cm`);
+        console.log(a
+          ? `[patternPreview·P11] 팔 단면(표면 교선) — 위팔 ${cm(a.upperSectionGirthM)} · 팔꿈치 ${cm(a.elbowSectionGirthM)}` +
+            ` · 전완 ${cm(a.foreSectionGirthM)} · 손목 ${cm(a.wristSectionGirthM)}(호장 ${a.wristAtSM === null ? "—" : (a.wristAtSM * 100).toFixed(1) + "cm"})` +
+            ` · 위팔길이 ${(a.upperArmLenM * 100).toFixed(1)}cm / 전완길이 ${(a.foreArmLenM * 100).toFixed(1)}cm` +
+            ` · 표본 ${a.valid}/${a.sampled}(간격 ${(a.stepM * 1000).toFixed(0)}mm)` +
+            // 어깨 근방 오염 감시 — 축 지점이 아직 몸통 안이면 「팔 고리」로 몸통이 뽑힐 수
+            // 있다. 최대가 어깨 쪽(s≈0)에서 몸통급 값으로 튀면 여기서 드러난다(함정 18: 단일 요약 금지).
+            ` · 최대 ${cm(a.maxSectionGirthM)}@s=${a.maxAtSM === null ? "—" : (100 * a.maxAtSM).toFixed(1) + "cm"}`
+          : "[patternPreview·P11] 팔 단면 — **산출 불가**(팔꿈치·손 좌표 없음 = 구 fixture 또는 전신 인덱스 없음)");
+      }
       const outlineTorso = new ArrayBvhCollision();
       outlineTorso.rebuild(position, torsoIndex);
       const outlineWhole = new ArrayBvhCollision();

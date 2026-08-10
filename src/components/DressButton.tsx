@@ -202,7 +202,13 @@ function FitReport({ m }: { m: PatternDressMetrics }): React.JSX.Element {
   return (
     <div className="mt-1 border-t border-white/20 pt-1">
       <div className="text-slate-300">
-        핏 리포트 — 옷↔몸 간극(mm) · 경계 <b>{mm.toFixed(1)}mm</b>(흡착 margin) · 소매는 몸통 메시로 못 재 제외
+        핏 리포트 — 옷↔몸 간극(mm) · 경계 <b>{mm.toFixed(1)}mm</b>(흡착 margin)
+      </div>
+      {/* P11 §4 — 소매 행이 생겼다. **기준면이 다르다**는 사실과 부호 신뢰율을 함께 밝힌다. */}
+      <div className="text-slate-400">
+        몸통 4행 = 앞/뒤판 메시 · <b>소매 = 전신 메시</b>(팔 포함) · 소매 부호 일치율{" "}
+        <b>{Number.isFinite(m.fit.sleeveSignAgreePct) ? `${m.fit.sleeveSignAgreePct.toFixed(1)}%` : "—"}</b>
+        (레이 패리티 대조 · 낮으면 소매 판정 신뢰 불가)
       </div>
       <table className="mt-1 text-xs">
         <thead className="text-slate-400">

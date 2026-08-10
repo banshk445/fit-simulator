@@ -105,7 +105,10 @@ export interface PatternGarment {
     // 사상된 목선 반곡선 길이 vs 그 목표(같은 표본의 2D 폴리라인) — 앞/뒤.
     neckArcM: number[];
     neckArcTargetM: number[];
-    armGirthM: number;
+    // P11 §2 — **이름을 나눈다.** 이 값은 실측이 아니라 «캡슐 반경 유래 대리값»이다
+    // (2π × `ARM_COLLISION_RADIUS`). `PatternDraft.dims.armGirthM`(팔 축 수직 단면의
+    // 실측 최대)과 **다른 대상**이라 같은 이름으로 부르지 않는다(함정 19).
+    armProxyGirthM: number;
     sleeveRadiusM: number;
     torsoOffsetFrontM: number;
     torsoOffsetBackM: number;
@@ -548,7 +551,7 @@ export function buildPatternGarment(
       neckLoopY: topY, neckLoopGirthM: 2 * Math.PI * maxRadiusAt(topY), neckPointY: topY,
       ringSettlePredictY,
       neckArcM: [neckArcM[0], neckArcM[1]], neckArcTargetM: [neckArcTargetM[0], neckArcTargetM[1]],
-      armGirthM: 2 * Math.PI * ARM_COLLISION_RADIUS,
+      armProxyGirthM: 2 * Math.PI * ARM_COLLISION_RADIUS,
       sleeveRadiusM,
       torsoOffsetFrontM: torsoOffsetFront,
       torsoOffsetBackM: torsoOffsetBack,

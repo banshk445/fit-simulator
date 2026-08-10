@@ -108,7 +108,7 @@ const report = (rows: { name: string; ok: boolean; detail: string }[], head: str
 };
 
 // ── 1. 패턴 수치 자기검사
-report(checkDraft(g.draft, g.meta.armGirthM), "패턴 수치 자기검사");
+report(checkDraft(g.draft, g.meta.armProxyGirthM), "패턴 수치 자기검사");
 
 // ── 2. 삼각화 품질
 console.log("\n[pattern] 삼각화 품질 (게이트: 최소각 ≥25° · 비매니폴드 0 · 중복정점 0 · 경계 이탈 ≤0.01mm · 경계엣지 누락 0)");

@@ -32,6 +32,7 @@
 // (정의 교차검증 — metrics-log 2026-07-29 B 블록).
 import type { Vec3Like } from "./clothProtocol";
 import { nearestOnSegments } from "./bodySkeleton";
+import { axisSection } from "./bodyGeodesic";
 import { COLLISION_MARGIN } from "./clothConfig";
 import type { BodySkeleton } from "./bodySkeleton";
 
@@ -44,6 +45,9 @@ const GIRTH_BINS = 24;
 // 어깨 능선 프로파일을 뽑을 때의 x 슬래브 반폭·z 대역 반폭. 능선은 시상면
 // 근방의 상면이므로 z를 좁게 잡는다(넓히면 앞·뒤 표면이 섞여 상면이 아니라
 // 최대 y가 된다).
+// P11 §1 — 팔 축 단면의 표본 간격. **이 파일의 능선 표본 간격과 같은 1cm**
+// (`ridgePoints` 「1cm 간격」 · :385 루프 증분). 새 간격 규약을 만들지 않는다.
+const ARM_SECTION_STEP_M = 0.01;
 const RIDGE_X_HALF_M = 0.01;
 const RIDGE_Z_HALF_M = 0.04;
 
@@ -100,6 +104,147 @@ export interface BodyMeasure {
   ridgePoints: Vec3Like[];
   // 능선 상면 높이 — 프로파일 선형 보간. 표본 밖은 가장 가까운 표본.
   ridgeTopYAt: (xM: number) => number;
+  // ── P11 §1 — **팔 축 수직 단면 둘레**. 팔꿈치·손 좌표가 없으면(구 fixture) `null`.
+  // 자세한 정의·주의는 `measureArmSection` 주석. 위 세 채널과 **이름을 나눈다**.
+  armSection: ArmSectionMeasure | null;
+}
+
+/**
+ * 팔 축에 수직인 평면으로 **전신 메시**를 잘라 낸 단면 둘레.
+ *
+ * ## 어느 포락선인가 — **표면 단면 폴리라인 그대로**다
+ * `axisSection`(bodyGeodesic)이 삼각형을 평면으로 잘라 만든 **실제 교선 고리의 길이**다.
+ * 이 파일의 다른 두 채널과 **정의가 다르므로 이름을 나눈다**(103 계기 결함 ② 재발 방지):
+ *
+ * | 채널 | 포락선 | 값의 성격 |
+ * |---|---|---|
+ * | `chestGirthM`·`waistGirthM`·`neckGirthM`(`girthOfSlice`) | 각도 bin **최근접**점의 볼록껍질 = **안쪽** | 오목부를 가로지르는 「줄자」 |
+ * | `shoulderPassGirthM` / `garmentFitLimits` 슬랩 | 팔 포함 볼록껍질 = **바깥** | 「통과 단면」 |
+ * | **여기(`*SectionGirthM`)** | 볼록화 **없음** · 교선 그대로 | 표면을 «따라간» 실둘레 |
+ *
+ * ⟹ 오목한 자리에서 이 값은 줄자보다 **크게** 나온다. 커프처럼 「천이 표면을 감는」
+ * 용도에는 이쪽이 맞지만, 가슴·허리 값과 **직접 비교하지 말 것**.
+ *
+ * ## 왜 축 수직인가
+ * 수평면으로 자르면 축에 비스듬해 둘레가 부푼다(85회차 §3(b) y130). 그리고 축 방향은
+ * **구간마다 다르다** — 어깨→팔꿈치와 팔꿈치→손은 서로 다른 방향이므로 각 구간에서
+ * 그 구간의 방향을 쓴다(P10 §1이 캡슐을 꺾은 것과 같은 이유).
+ *
+ * ## 산출 불가
+ * 팔이 몸통과 붙어 고리가 하나면(`loopCount === 1`) 그 지점은 **버린다** — 추정치로
+ * 채우지 않는다. 어깨 근방이 그렇다.
+ */
+export interface ArmSectionMeasure {
+  /** 팔 축 호장(어깨 관절 기준, m) → 단면 둘레(m). 산출된 표본만. 좌·우 팔 평균이 아니라 **왼팔**이다. */
+  profile: { sM: number; girthM: number; equivRadiusM: number; loopCount: number }[];
+  /** 어깨→팔꿈치 / 팔꿈치→손 구간 길이(m). */
+  upperArmLenM: number;
+  foreArmLenM: number;
+  /** 위팔 중간(어깨→팔꿈치 50%)의 단면 둘레. 산출 불가면 null. */
+  upperSectionGirthM: number | null;
+  /** 팔꿈치(전완 구간 s=0). */
+  elbowSectionGirthM: number | null;
+  /** 전완 중간(팔꿈치→손 50%). */
+  foreSectionGirthM: number | null;
+  /** **손 직전** — 손 뼈대보다 앞에서 산출된 마지막 표본. 커프가 앉는 자리의 정의다. */
+  wristSectionGirthM: number | null;
+  /** 손목 표본의 호장(어깨 기준, m) — 정의가 「손 직전」이라 위치를 함께 낸다. */
+  wristAtSM: number | null;
+  /**
+   * 산출된 표본 중 **최대** 둘레와 그 호장. 「팔이 암홀·소매통을 통과하는가」의 구속값은
+   * 중간값이 아니라 이쪽이다(함정 18: 대역을 한 수로 요약하지 않는다 — 중간·최대를 병기).
+   * 어깨 융합 대역 오염 감시도 겸한다(몸통이 뽑히면 여기서 몸통급 값으로 드러난다).
+   */
+  maxSectionGirthM: number | null;
+  maxAtSM: number | null;
+  /** 표본 간격(m)과 시도/성공 개수 — 산출 불가를 침묵으로 넘기지 않는다. */
+  stepM: number; sampled: number; valid: number;
+}
+
+/**
+ * 축 지점이 이 고리 «안»에 있는가 — 선분 방위각이 전 각도 bin을 덮는지로 본다.
+ * 선분 하나가 걸치는 [th0, th1]은 짧은 쪽 호(|Δ| ≤ π)로 읽는다. 고리가 축을 감싸면
+ * 모든 방향에 표면이 있고, 축이 고리 밖이면 반드시 비는 방향이 생긴다.
+ */
+function axisEnclosedByLoop(segRadii: readonly [number, number, number, number, number][]): boolean {
+  const hit = new Uint8Array(GIRTH_BINS);
+  const bin = (th: number): number =>
+    Math.min(GIRTH_BINS - 1, Math.max(0, Math.floor(((th + Math.PI) / (2 * Math.PI)) * GIRTH_BINS)));
+  for (const [, , , th0, th1] of segRadii) {
+    let d = th1 - th0;
+    while (d > Math.PI) d -= 2 * Math.PI;
+    while (d < -Math.PI) d += 2 * Math.PI;
+    // 호를 bin 해상도보다 촘촘히 훑어 사이 bin이 빠지지 않게 한다.
+    const steps = Math.max(1, Math.ceil((Math.abs(d) / (2 * Math.PI)) * GIRTH_BINS * 2));
+    for (let k = 0; k <= steps; k++) hit[bin(th0 + (d * k) / steps)] = 1;
+  }
+  return hit.every((h) => h === 1);
+}
+
+/** 팔 축 폴리라인 위를 걸으며 `axisSection`을 부른다. 새 기하 연산 0 — 기존 도구 재사용. */
+export function measureArmSection(
+  position: Float32Array,
+  wholeIndex: ArrayLike<number>,
+  arm: { trueShoulder: Vec3Like; elbow?: Vec3Like; hand?: Vec3Like },
+  stepM = ARM_SECTION_STEP_M,
+): ArmSectionMeasure | null {
+  const { trueShoulder: sh, elbow, hand } = arm;
+  if (!elbow || !hand) return null;
+  const sub = (a: Vec3Like, b: Vec3Like): Vec3Like => ({ x: a.x - b.x, y: a.y - b.y, z: a.z - b.z });
+  const len = (a: Vec3Like): number => Math.hypot(a.x, a.y, a.z);
+  const upperV = sub(elbow, sh), foreV = sub(hand, elbow);
+  const upperArmLenM = len(upperV), foreArmLenM = len(foreV);
+  if (upperArmLenM < 1e-6 || foreArmLenM < 1e-6) return null;
+
+  const profile: ArmSectionMeasure["profile"] = [];
+  let sampled = 0;
+  // 구간마다 **그 구간의 방향**으로 자른다. `sM`은 어깨 기준 누적 호장이다.
+  const walk = (origin: Vec3Like, dir: Vec3Like, segLenM: number, baseS: number): void => {
+    for (let s = 0; s <= segLenM + 1e-9; s += stepM) {
+      sampled++;
+      const r = axisSection(position, wholeIndex, origin, dir, s);
+      // 고리가 하나면 팔이 몸통과 붙어 **분리 불가**다 — 버린다(추정치로 안 채운다).
+      if (!r.arm || r.loopCount < 2) continue;
+      // 어깨 근방에서는 축 지점이 아직 «몸통 안»이라 `axisSection`의 「중심이 가장 가까운
+      // 고리」가 **몸통**을 뽑는다(실측: s=3cm에서 118.89cm = 몸통급). 그래서 「축이 그
+      // 고리 «안»에 있는가」를 직접 판정한다 — 선분 방위각이 **한 바퀴를 다 덮는가**.
+      // 밖에 있는 고리는 축에서 볼 때 제한된 각도 부채꼴로만 보인다.
+      // 문턱 상수 0: 이 파일의 각도 bin 규약(`GIRTH_BINS`)을 그대로 쓰고, 기준은 **전 bin**이다.
+      // (방위각 기저는 임의여도 된다 — 「덮는가」는 기저 회전에 불변이다.)
+      if (!axisEnclosedByLoop(r.arm.segRadii)) continue;
+      // 그러나 어깨 근방에서는 축이 **정말로 몸통 안**이라 위 판정만으로는 안 걸러진다
+      // (실측: s=3cm에서 여전히 118.89cm). 그 자리는 팔이 몸통과 **융합**되어 있어
+      // 애초에 팔 단면이 존재하지 않는다. 융합은 「뽑힌 고리가 그 단면의 **최대 고리**」로
+      // 정확히 드러난다 — 팔이 분리돼 있으면 몸통이 따로 더 큰 고리로 잡히기 때문이다.
+      // **문턱 상수 0**(비교만 한다). 산출 불가는 산출 불가로 낸다.
+      if (r.otherM.some((g) => g >= r.arm!.girthM)) { /* 몸통이 따로 있다 = 분리됨 */ } else continue;
+      profile.push({ sM: baseS + s, girthM: r.arm.girthM, equivRadiusM: r.arm.equivRadiusM, loopCount: r.loopCount });
+    }
+  };
+  walk(sh, upperV, upperArmLenM, 0);
+  walk(elbow, foreV, foreArmLenM, upperArmLenM);
+
+  // 지정 호장에 가장 가까운 «산출된» 표본. 절반 간격을 넘게 떨어지면 산출 불가로 낸다.
+  const at = (target: number): number | null => {
+    let best: (typeof profile)[number] | null = null;
+    for (const p of profile) if (!best || Math.abs(p.sM - target) < Math.abs(best.sM - target)) best = p;
+    return best && Math.abs(best.sM - target) <= stepM / 2 + 1e-9 ? best.girthM : null;
+  };
+  // 손목 = **손 직전**. 손 뼈대(sM = 위팔+전완)보다 앞에서 산출된 마지막 표본.
+  const wrist = profile.length ? profile[profile.length - 1] : null;
+  const max = profile.reduce<(typeof profile)[number] | null>((b, p) => (!b || p.girthM > b.girthM ? p : b), null);
+
+  return {
+    maxSectionGirthM: max ? max.girthM : null,
+    maxAtSM: max ? max.sM : null,
+    profile, upperArmLenM, foreArmLenM,
+    upperSectionGirthM: at(upperArmLenM / 2),
+    elbowSectionGirthM: at(upperArmLenM),
+    foreSectionGirthM: at(upperArmLenM + foreArmLenM / 2),
+    wristSectionGirthM: wrist ? wrist.girthM : null,
+    wristAtSM: wrist ? wrist.sM : null,
+    stepM, sampled, valid: profile.length,
+  };
 }
 
 // Andrew monotone chain. 목밑 앞/뒤 배분을 재려면 **형상**이 필요해서
@@ -161,7 +306,12 @@ export function measureBody(
   torsoIndex: ArrayLike<number>,
   // 전신 삼각형 인덱스(팔 포함) — shoulderPassGirthM 전용.
   wholeIndex: ArrayLike<number> | null,
-  arms: readonly [{ trueShoulder: Vec3Like }, { trueShoulder: Vec3Like }],
+  // P11 §1 — `elbow`/`hand`는 **선택**이다(P10 §1이 fixture pose에 실은 값).
+  // 없으면 `armSection`이 null이고 나머지 채널은 **비트 동일**하다.
+  arms: readonly [
+    { trueShoulder: Vec3Like; elbow?: Vec3Like; hand?: Vec3Like },
+    { trueShoulder: Vec3Like; elbow?: Vec3Like; hand?: Vec3Like },
+  ],
   skeleton: BodySkeleton,
   hemY: number,
   centerX: number,
@@ -383,5 +533,9 @@ export function measureBody(
     backExtentM: slices.reduce((m, s) => (s.y <= shoulderJointY && centerZ - s.zMin > m ? centerZ - s.zMin : m), 0),
     shoulderPassGirthM,
     ridge, ridgePoints, ridgeTopYAt, loopAt,
+    // P11 §1 — **전신 인덱스**(`wholeIndex`)로 자른다. 몸통 인덱스(`torsoIndex` =
+    // front+back)는 `excludeArms`로 팔을 도려낸 것이라 팔 단면이 원리적으로 안 나온다.
+    // `wholeIndex`가 없는 호출은 산출 불가(null)로 낸다.
+    armSection: wholeIndex ? measureArmSection(position, wholeIndex, arms[0]) : null,
   };
 }

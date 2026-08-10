@@ -171,7 +171,16 @@ export interface PatternDressMetrics {
   hemFrontCm: number;
   hemBackCm: number;
   /** P8 핏 리포트. 국면 경계(mm)를 함께 실어 **화면이 문턱을 스스로 밝히게** 한다. */
-  fit: { marginMm: number; bands: FitBand[] };
+  fit: {
+    marginMm: number;
+    bands: FitBand[];
+    /**
+     * P11 §4 — 소매 행의 **부호 신뢰성**(%). `signedClearance`(면 와인딩 의존)와
+     * `insideParity`(레이 패리티 · 와인딩 무관)가 같은 안/밖을 말한 비율.
+     * 표본 0이면 NaN. 낮으면 소매 행의 눌림/여유 판정을 믿지 말 것.
+     */
+    sleeveSignAgreePct: number;
+  };
 }
 
 export interface PatternDressResult {
@@ -809,8 +818,8 @@ export function createPatternDressing(
       return mesh.signedClearance(sim.positions[i * 3], sim.positions[i * 3 + 1], sim.positions[i * 3 + 2], SDF_FAR);
     };
     const fitMarginM = margins().meshMarginM;
-    const bandOf = (name: string, idx: readonly number[]): FitBand => {
-      const raw = idx.map(dOf);
+    const bandOf = (name: string, idx: readonly number[], d: (i: number) => number | null = dOf): FitBand => {
+      const raw = idx.map(d);
       const v = raw.filter((q): q is number => q !== null).sort((x, y) => x - y);
       const qt = (f: number): number => (v.length ? v[Math.min(v.length - 1, Math.floor(f * v.length))] * 1000 : NaN);
       return {
@@ -832,6 +841,28 @@ export function createPatternDressing(
       }
       return out;
     };
+    // ── P11 §4 — **소매 행**. P8이 「몸통 메시로 못 잰다」로 비워 둔 자리다.
+    // 기준면이 다르다: 몸통 4행은 앞/뒤 «반쪽 시트», 소매는 팔을 포함한 **전신 메시**다.
+    // 값의 정의(부호거리)와 국면 경계(흡착 margin)는 **P8과 같다** — 새 문턱 0.
+    //
+    // 부호 신뢰성 자기검사: `signedClearance`의 부호는 **면 와인딩**에 의존하고 이 마네킹은
+    // 뒤집힌 영역이 있다(`bvhFromArrays.ts:120` 실측). 그래서 소매 정점에 한해
+    // 와인딩 무관 채널(`insideParity` · 레이 패리티)과 **부호 일치율**을 함께 낸다.
+    // 일치율이 낮으면 이 행의 눌림/여유는 못 믿는다 — 값으로 드러내고 판단은 읽는 쪽에.
+    const wholeM = mesh().wholeMesh;
+    const sleeveIdx: number[] = [];
+    for (let i = g.panelStarts[2]; i < total; i++) sleeveIdx.push(i);
+    const dWhole = (i: number): number | null =>
+      wholeM.signedClearance(sim.positions[i * 3], sim.positions[i * 3 + 1], sim.positions[i * 3 + 2], SDF_FAR);
+    let signSame = 0, signN = 0;
+    for (const i of sleeveIdx) {
+      const d = dWhole(i);
+      if (d === null) continue;
+      signN++;
+      if ((d < 0) === mesh().insideParity(sim.positions[i * 3], sim.positions[i * 3 + 1], sim.positions[i * 3 + 2])) signSame++;
+    }
+    const sleeveSignAgreePct = signN ? (100 * signSame) / signN : NaN;
+
     const ringIdx = [...new Set(g.necklineRing.flatMap((e) => [e.a, e.b]))];
     const hemIdx = [...chainOf(0, g.panelStarts[1]), ...chainOf(g.panelStarts[1], g.panelStarts[2])];
 
@@ -843,7 +874,9 @@ export function createPatternDressing(
           bandOf("가슴", bandByY(b.body.chestY)),
           bandOf("허리", bandByY(b.body.waistY)),
           bandOf("밑단", hemIdx),
+          bandOf("소매", sleeveIdx, dWhole),
         ],
+        sleeveSignAgreePct,
       },
       covPct: 100 * cov.exposedRatio,
       covExposed: cov.exposed,

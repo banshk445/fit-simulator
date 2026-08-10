@@ -433,11 +433,17 @@ export function draftTshirtPattern(body: BodyMeasure, g: GarmentDims): PatternDr
       armholeDepthM, armholeGirthM,
       capHeightM, capHeightTriangleM, capGirthM,
       underSleeveM, necklineGirthM,
-      // 팔 둘레·소매 튜브 반경 — 소매 여유 판정용. 팔 반경은 47번 실측
-      // (ARM_COLLISION_RADIUS 4.56cm), 튜브 반경은 v1
+      // 팔 둘레·소매 튜브 반경 — 소매 여유 판정용. 튜브 반경은 v1
       // `computeArmTubeRadius`(= 소매통/π)와 **같은 식**이라 소매 둘레가
       // 2×소매통이라는 규약이 여기서도 동일하다.
-      armGirthM: 0, sleeveTubeRadiusM: g.sleeveWidthM / Math.PI,
+      //
+      // P11 §2 — `armGirthM`은 **하드코딩 0이었다**. 이제 팔 축 수직 단면의 **최대** 둘레를
+      // 싣는다(`bodyMeasure.measureArmSection` · 표면 교선 포락선). 최대인 이유: 이 값의
+      // 용도(`checkDraft`의 암홀 통과·소매통 게이트)에서 구속하는 것은 중간값이 아니라
+      // 가장 굵은 자리다. 팔꿈치·손 좌표가 없는 fixture(P10 이전 판본)에서는 산출 불가라
+      // **0 그대로**다 — 그 경로는 비트 동일이다.
+      armGirthM: body.armSection?.maxSectionGirthM ?? 0,
+      sleeveTubeRadiusM: g.sleeveWidthM / Math.PI,
     },
   };
 }
