@@ -342,10 +342,16 @@ export function buildPatternGarment(
   }
 
   // ── 시접 테이블 도출
-  const meshOf: Record<PanelName, PanelMesh> = { front: half.front, back: half.back, sleeve: sleeveMesh };
-  const directPanel: Record<PanelName, number> = {
-    front: PANEL_PAT_FRONT, back: PANEL_PAT_BACK, sleeve: PANEL_PAT_SLEEVE_R,
-  };
+  // P18 §3 — `Record<PanelName, …>`를 **Map**으로 푼다. 종전에는 `PanelName`에 이름을
+  // 하나 더하면 이 두 줄이 곧바로 타입 에러가 났다(모든 이름을 채워야 하는 전수 레코드).
+  // 이제 **제도가 실제로 낸 패널**만 담는다 — 이름이 늘어도 여기는 안 바뀐다.
+  // 값은 종전과 같다(front/back은 절반 원본 메시 · sleeve는 제도 원본 쪽 패널).
+  const meshByPanel = new Map<PanelName, PanelMesh>([
+    ["front", half.front], ["back", half.back], ["sleeve", sleeveMesh],
+  ]);
+  const panelIndexByName = new Map<PanelName, number>([
+    ["front", PANEL_PAT_FRONT], ["back", PANEL_PAT_BACK], ["sleeve", PANEL_PAT_SLEEVE_R],
+  ]);
   const seams: PatternSeamEntry[] = [];
   const seamGroups: SeamGroup[] = [];
   const seamKeys = new Set<number>();
@@ -358,14 +364,18 @@ export function buildPatternGarment(
     seams.push({ a, b, kind, targetM: SEAM_REST_LENGTH, gapM: 0 });
   };
   for (const spec of draft.seams) {
-    const va = meshOf[spec.a.panel].segmentVerts.get(spec.a.segment);
-    const vb = meshOf[spec.b.panel].segmentVerts.get(spec.b.segment);
+    const ma = meshByPanel.get(spec.a.panel), mb = meshByPanel.get(spec.b.panel);
+    if (!ma || !mb) throw new Error(`시접 ${spec.kind}: 패널 «${!ma ? spec.a.panel : spec.b.panel}»이 조립에 없다`);
+    const va = ma.segmentVerts.get(spec.a.segment);
+    const vb = mb.segmentVerts.get(spec.b.segment);
     if (!va || !vb) throw new Error(`시접 ${spec.kind}: 세그먼트 정점 목록 없음`);
     if (va.length !== vb.length) {
       throw new Error(`시접 ${spec.kind} 표본수 불일치: ${spec.a.segment} ${va.length} vs ${spec.b.segment} ${vb.length}`);
     }
-    const startA = panelStarts[directPanel[spec.a.panel]];
-    const startB = panelStarts[directPanel[spec.b.panel]];
+    const ia0 = panelIndexByName.get(spec.a.panel), ib0 = panelIndexByName.get(spec.b.panel);
+    if (ia0 === undefined || ib0 === undefined) throw new Error(`시접 ${spec.kind}: 패널 인덱스 없음`);
+    const startA = panelStarts[ia0];
+    const startB = panelStarts[ib0];
     const direct = { a: [] as number[], b: [] as number[] };
     const mirrored = { a: [] as number[], b: [] as number[] };
     for (let k = 0; k < va.length; k++) {

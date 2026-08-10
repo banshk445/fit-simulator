@@ -82,7 +82,11 @@ export interface PatternSegment {
   samples: Vec2[];
 }
 
-export type PanelName = "front" | "back" | "sleeve";
+// P18 §3 — **값 추가만.** 기존 셋의 의미는 그대로다. 아래 셋은 다음 판(커프 밴드·셔츠)이
+// 쓸 자리이고 **지금은 아무도 만들지 않는다** — 이름을 미리 여는 이유는 소비자 쪽
+// `Record<PanelName, …>`가 이름을 늘릴 때마다 깨지지 않게 하려는 것이고, 그 결합은
+// 같은 판에서 Map으로 풀었다(`patternGarment`의 `meshByPanel`/`panelIndexByName`).
+export type PanelName = "front" | "back" | "sleeve" | "cuff" | "placket" | "collar";
 
 export interface PatternPanel {
   name: PanelName;
@@ -93,7 +97,8 @@ export interface PatternPanel {
 }
 
 export interface SeamSpec {
-  kind: "shoulder" | "side" | "armhole" | "sleeveUnder";
+  // P18 §3 — 값 추가만(기존 4종 의미 불변). 뒤 셋은 다음 판 몫이고 지금은 생성되지 않는다.
+  kind: "shoulder" | "side" | "armhole" | "sleeveUnder" | "cuff" | "placket" | "collar";
   a: { panel: PanelName; segment: string };
   b: { panel: PanelName; segment: string };
   // b 쪽 표본을 역순으로 짝지을지(루프 진행 방향이 반대인 경우).
