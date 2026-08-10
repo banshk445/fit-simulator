@@ -18,13 +18,12 @@ import { createGarmentSession, createPanelSplitResolver, createPatternUnifiedRes
 import { applyCapsuleCollision } from "../src/lib/torsoCapsule";
 import type { Capsule } from "../src/lib/torsoCapsule";
 import { runDressing } from "../src/lib/dressingMachine";
+import { createPatternDressing } from "../src/lib/patternDressCore";
+import type { PatternDressFixture, PatternDressObservers, PatternDressOptions } from "../src/lib/patternDressCore";
 import { createAnchorPinRamp, createRingLimitRamp, projectRingTotalLength } from "../src/lib/patternDressHooks";
-import { ARM_AXIS_RADIUS, deriveBodySkeleton, nearestOnSegments } from "../src/lib/bodySkeleton";
-import { measureBody } from "../src/lib/bodyMeasure";
-import { buildPatternGarment, PANEL_PAT_BACK, PANEL_PAT_FRONT, PATTERN_EDGE_INTERIOR_M } from "../src/lib/patternGarment";
-import { makeOutlineProvider } from "../src/lib/bodyOutline";
-import { buildPatternSim } from "../src/lib/buildPatternSim";
-import { correctPlacementPenetration, countInside, countOpenEdges, countOpenEdgesWelded, countSelfIntersections, dedupeTrianglesWelded, makeParityInside } from "../src/lib/patternPlacement";
+import { ARM_AXIS_RADIUS, nearestOnSegments } from "../src/lib/bodySkeleton";
+import { PANEL_PAT_BACK, PANEL_PAT_FRONT } from "../src/lib/patternGarment";
+import { correctPlacementPenetration, countInside, countOpenEdges, countOpenEdgesWelded, countSelfIntersections, dedupeTrianglesWelded } from "../src/lib/patternPlacement";
 import { classifyWindingOutward, windingParitySelfCheck } from "../src/lib/windingParity";
 import { axisSection, bodyGeodesicSelfCheck, closestPointOnTriangles, horizontalSection, sleeveArmFrame, surfacePathLength } from "../src/lib/bodyGeodesic";
 import { computeBodyCoverage, deriveShoulderBand } from "../src/lib/coverageMetric";
@@ -77,14 +76,6 @@ const fixture = JSON.parse(raw) as {
 };
 const { layout, pose, collision } = fixture;
 
-const position = Float32Array.from(collision.position);
-const torsoIndex = Uint32Array.from([...(collision.frontIndex ?? []), ...(collision.backIndex ?? [])]);
-const wholeIndex = collision.wholeBodyIndex ? Uint32Array.from(collision.wholeBodyIndex) : null;
-const frontIdx = collision.frontIndex ? Uint32Array.from(collision.frontIndex) : null;
-const backIdx = collision.backIndex ? Uint32Array.from(collision.backIndex) : null;
-const hemY = collision.capsules[collision.capsules.length - 1].bottom.y;
-const centerX = (pose.pinLeft.x + pose.pinRight.x) / 2;
-const arms = [pose.armLeft, pose.armRight] as const;
 
 // ══ 102 §1 — **margin 전 소비처 일관 적용 채널** ═════════════════════════════
 // 101이 도출은 세웠으나(3.212mm = `g.selfCollisionMinDistM`) **정착 물리 한 곳에만**
@@ -101,8 +92,40 @@ const arms = [pose.armLeft, pose.armRight] as const;
 // 그리고 도출원 `selfCollisionMinDistM`은 «메시»에서 나오는데 그 메시가 제도에서
 // 나오므로 **일관 적용은 고정점이 아니다** — 적용 후 값을 인쇄해 간극을 드러낸다.
 const MARGIN_ALL = process.env.MARGIN_ALL ? Number(process.env.MARGIN_ALL) / 1000 : COLLISION_MARGIN;
-const skeleton = deriveBodySkeleton(position, torsoIndex, [pose.armLeft, pose.armRight], centerX, collision.centerZ, hemY);
-const body = measureBody(position, torsoIndex, wholeIndex, arms, skeleton, hemY, centerX, collision.centerZ, MARGIN_ALL);
+
+// ══ P2d — **물리 호출 순서를 코어에 넘긴다**(이중 경로 해소) ═════════════════════
+// P2c까지 이 파일이 코어와 «같은 순서»를 따로 갖고 있었다. 한쪽만 고치면 조용히
+// 갈리므로(92 §4-1 전례) 순서를 `patternDressCore`로 단일화하고, 이 파일은 단계를
+// 부르며 그 «사이»에 계기를 넣는다. 계기는 `dressObs`(불투명 콜백)로만 들어간다 —
+// 코어는 계기가 무엇을 하는지 모른다. 브라우저는 옵저버를 넘기지 않는다.
+//
+// **env 파싱은 여기 한 곳**이다. 아래 각 자리의 상수는 이 값을 «별칭»으로 받는다
+// (주석과 인쇄는 원래 자리에 그대로 남는다). 코어 옵션과 하네스 인쇄가 같은 값을
+// 읽는 것이 조건이다 — env는 채널이다(P2b (b) 등재분).
+// `HEMBEND_BAND_M`/`HEMBEND_RAW`는 옵션 조립이 선언보다 앞서므로 여기로 올렸다.
+const HEMBEND_BAND_M = 0.025, HEMBEND_RAW = 0.6;
+const DRESS_OPTS: PatternDressOptions = {
+  ringTotal: process.env.RINGTOTAL !== "0",
+  marginAllM: MARGIN_ALL,
+  meshMarginM: process.env.MESHMARGIN === "self" ? "self"
+    : process.env.MESHMARGIN ? Number(process.env.MESHMARGIN) / 1000 : MARGIN_ALL,
+  placeMarginM: process.env.PLACEMARGIN ? Number(process.env.PLACEMARGIN) / 1000 : MARGIN_ALL,
+  torsoCap: process.env.TORSOCAP === "1",
+  armCap: process.env.ARMCAP !== "0",
+  singleDeepest: process.env.SINGLE !== "0",
+  s0fix: process.env.S0FIX !== "0",
+  skeletonSign: process.env.SKELSIGN === "1",
+  pinDress: PINDRESS,
+  seconds: process.env.SECONDS ? Number(process.env.SECONDS) : 25,
+  penetrationAxis: process.env.ADSORB_PENONLY === "1"
+    ? { enabled: true, x: collision.capsules[0].top.x, z: collision.capsules[0].top.z } : undefined,
+  magnet: process.env.MAGNET_D0 === "1" ? { w: (): number => 0 }
+    : process.env.MAGNET === "1" ? { w: (): number => 1 } : undefined,
+  hemBend: process.env.HEMBEND === "1" ? { raw: HEMBEND_RAW, bandM: HEMBEND_BAND_M } : undefined,
+};
+const dressObs: PatternDressObservers = {};
+const dressing = createPatternDressing(fixture as PatternDressFixture, DRESS_OPTS, dressObs);
+const { position, torsoIndex, wholeIndex, frontIdx, backIdx, hemY, centerX, skeleton, body } = dressing.body();
 
 // ══ 정본 · 몸 반경 프로파일 v1 (42회차 신설 · 영구) ══════════════════════════
 //
@@ -176,25 +199,8 @@ const bodyRadiusProfile = (() => {
   );
 }
 
-const garmentDims = {
-  lengthM: layout.heightM,
-  widthM: layout.widthM,
-  shoulderWidthM: Math.abs(pose.pinLeft.x - pose.pinRight.x),
-  sleeveLengthM: Math.max(pose.armLeft.length, pose.armRight.length),
-  sleeveWidthM: layout.sleeveWidthM,
-};
-const outlineTorso = new ArrayBvhCollision();
-outlineTorso.rebuild(position, torsoIndex);
-const outlineWhole = new ArrayBvhCollision();
-outlineWhole.rebuild(position, wholeIndex ?? torsoIndex);
-const outlineAt = makeOutlineProvider(
-  outlineTorso, outlineWhole,
-  (h) => { const sl = body.slices.reduce((b, s2) => (Math.abs(s2.y - h) < Math.abs(b.y - h) ? s2 : b), body.slices[0]); return [sl.axisX, sl.axisZ]; },
-  PATTERN_EDGE_INTERIOR_M,
-);
-// `undefined`는 sizeOpts 기본값을 그대로 쓴다 — 삼각화 설정 변경 0.
-const g = buildPatternGarment(body, garmentDims, arms, outlineAt, undefined, MARGIN_ALL);
-const total = g.panelCounts.reduce((a, b) => a + b, 0);
+// P2d — 옷 치수 도출 · 아웃라인 BVH · 제도/삼각화는 코어 2단계다(순서 단일화).
+const { garmentDims, g, total } = dressing.garment();
 const cm = (v: number): string => (v * 100).toFixed(2);
 
 // ── 옷 정의 해시 — 함정 8(측정 기준이 버전 관리 밖에 있으면 조용히 바뀐다).
@@ -271,9 +277,9 @@ console.log(
 );
 
 // ── S0 배치 관통 교정(2a와 **같은 함수**).
-const wholeMesh = new ArrayBvhCollision();
-wholeMesh.rebuild(position, wholeIndex);
-const insideParity = makeParityInside(wholeMesh);
+// P2d — 몸 BVH · 패리티 · skipKeys · S0 배치 교정은 코어 3단계다. 여기서는 그 결과만 읽는다
+// (교정 «호출»은 아래 `placeCorrectStat`가 옵저버로 감싼다 — 인쇄 위치 무변경).
+const { wholeMesh, insideParity } = dressing.mesh();
 // ── 65회차 §2 **와인딩 실측**(`WINDING=1` · 진단 전용 · 물리 0줄) ────────────────
 // `bvhFromArrays.ts:113-120`이 "이 마네킹은 일부 영역 와인딩이 뒤집혀 있다(M2-3 3연속
 // 실패 원인)"를 명기하는데 **팔 대역을 잰 회차가 없다**(64 §9). 소매 접촉 후보는
@@ -322,10 +328,7 @@ if (process.env.WINDING === "1" && wholeIndex) {
     );
   }
 }
-const skipKeys = new Set<number>();
-for (const e of [...g.edgePairs, ...g.seams.map((s) => ({ a: s.a, b: s.b }))]) {
-  skipKeys.add(Math.min(e.a, e.b) * 1_000_000 + Math.max(e.a, e.b));
-}
+const { skipKeys } = dressing.mesh();
 {
   const wt = countOpenEdges(wholeIndex ?? torsoIndex);
   console.log(`[dress] 패리티 전제(수밀성): 삼각형 ${wt.triangles} · 엣지 ${wt.edges} · 비-2회 ${wt.open}${wt.open === 0 ? " → 수밀" : " → **비수밀·패리티 근사**(v2-design §5 등재)"}`);
@@ -333,7 +336,7 @@ for (const e of [...g.edgePairs, ...g.seams.map((s) => ({ a: s.a, b: s.b }))]) {
 // S0 투영 교정은 **하네스가 덧붙인 것**이지 §4 S0의 명세 기제가 아니다(명세는
 // 오프셋 확대). 배치 원본 자기교차가 0인데 교정 후가 수백 건이면 교정이 순손해
 // 이므로, 무력화 변이를 상시 스위치로 둔다: `S0FIX=0`.
-const S0FIX = process.env.S0FIX !== "0";
+const S0FIX = DRESS_OPTS.s0fix!;
 // ── 100회차 §2 ①②③④ — **margin 채널 단일 소스**(기본값은 상수 그대로 · 비트 동일).
 // 99 §1이 등재한 선행 조건: 계기는 「호출부에 «실제로» 넘어간 값」을 읽어야 하고
 // (`:3612`·`:1473`·`:1477`·`:3901`이 문자열 「15」를 하드로 박고 있었다 — 함정 12),
@@ -353,9 +356,7 @@ const S0FIX = process.env.S0FIX !== "0";
 // 숫자를 손으로 적지 않는다 — 메시가 바뀌면 도출값이 따라 움직인다(함정 12 규범).
 // 기각한 대안: 같은 도출원의 **절반**(중립면 규약 = 자기충돌 문턱이 「1겹 두께」라는 해석).
 //   저장소가 그 규약을 **어디에서도 진술하지 않으므로** 채택하면 «미진술 가정»이 하나 는다.
-const MESH_MARGIN = process.env.MESHMARGIN === "self" ? g.selfCollisionMinDistM
-  : process.env.MESHMARGIN ? Number(process.env.MESHMARGIN) / 1000 : MARGIN_ALL;
-const PLACE_MARGIN = process.env.PLACEMARGIN ? Number(process.env.PLACEMARGIN) / 1000 : MARGIN_ALL;
+const { meshMarginM: MESH_MARGIN, placeMarginM: PLACE_MARGIN } = dressing.margins();
 const MM = (m: number): string => (m * 1000).toFixed(1);
 console.log(`[dress] margin 채널: 정착 물리(mesh 리졸버) ${MM(MESH_MARGIN)}mm${process.env.MESHMARGIN === "self" ? `(**도출 = g.selfCollisionMinDistM** — 옷↔몸 배제거리 ≡ 옷↔옷 배제거리)` : ""} · 배치 교정(correctPlacementPenetration) ${MM(PLACE_MARGIN)}mm · 상수 COLLISION_MARGIN ${MM(COLLISION_MARGIN)}mm` +
   `${MESH_MARGIN === PLACE_MARGIN ? " — 두 채널 동일" : ` — **두 채널 상이(차 ${MM(PLACE_MARGIN - MESH_MARGIN)}mm)**`}` +
@@ -405,14 +406,8 @@ const placeCorrectStat = (label: string, pos: Float32Array, run: () => number): 
       : ` · **발화 0 — 이 배치에서 이 함수는 좌표를 한 점도 안 바꿨다**`) +
     ` · 상한 없음(변위 = 표면까지 거리 + out · out ≤ ${MM(PLACE_MARGIN)} + 8×${(g.selfCollisionMinDistM * 1000).toFixed(2)}mm)`);
 };
-const penBefore = countInside(g.positions, total, insideParity);
-let corrected = 0;
-if (S0FIX) {
-  placeCorrectStat("S0 배치", g.positions, () => (corrected = correctPlacementPenetration(
-    g.positions, total, wholeMesh, insideParity, PLACE_MARGIN, g.selfCollisionMinDistM, skipKeys, SDF_FAR,
-  )));
-}
-const penAfterPlace = countInside(g.positions, total, insideParity);
+dressObs.wrapPlaceCorrect = placeCorrectStat;
+const { penBefore, corrected, penAfter: penAfterPlace } = dressing.place();
 console.log(`[dress] S0 배치 관통: ${penBefore} → 교정 ${corrected}정점 → ${penAfterPlace} (패리티 근사)${S0FIX ? "" : " · **교정 off(S0FIX=0)**"}`);
 // 46회차 — t=0 자기교차(정착 분해의 대조 기준).
 let xs0Count = -1;
@@ -507,20 +502,10 @@ const preset = FABRIC_PRESETS[pose.fabric];
 //     나왔을 때 그것이 **약해서가 아님**을 확보하려는 것이다(귀무 쪽 보호).
 // **둘 다 스윕하지 않는다** — 스윕해서 좋은 값을 고르면 그 순간 함정 14다.
 const HEMBEND = process.env.HEMBEND === "1";
-const HEMBEND_BAND_M = 0.025, HEMBEND_RAW = 0.6;
-const hemBendProbe = HEMBEND
-  ? {
-      raw: HEMBEND_RAW,
-      is: (a: number, b: number): boolean => {
-        const lo = g.draft.dims.lengthM - HEMBEND_BAND_M;
-        const ya = a < g.panelStarts[2] ? g.pos2[a * 2 + 1] : -1;
-        const yb = b < g.panelStarts[2] ? g.pos2[b * 2 + 1] : -1;
-        return ya > lo && yb > lo; // 양 끝이 다 대역 안일 때만(경계 걸침 제외)
-      },
-    }
-  : undefined;
-const ps = buildPatternSim(g, preset.iterations, false, hemBendProbe);
-const sim = ps.sim;
+// P2d — 상수 2개는 옵션 조립 때문에 상단으로 올라갔고(`DRESS_OPTS` 바로 위),
+// 대역 술어는 코어가 만든다(`hemBend: { raw, bandM }`). 값·식 무변경.
+// P2d — 시뮬 조립 + 링 폐곡선화(`setCollarRing`) + 링 rest/총길이 상한은 코어 4단계다.
+const { ps, sim, ringJoinPairs, ringClosed, ringLenM, ringRestConfirmedM, ringRestM, ringTotalMaxM } = dressing.sim();
 const DIAG = process.env.DIAG === "1";
 const edgeKeySet = new Set(g.edgePairs.map((e) => Math.min(e.a, e.b) * 1_000_000 + Math.max(e.a, e.b)));
 const seamKeySet = new Set(g.seams.map((e) => Math.min(e.a, e.b) * 1_000_000 + Math.max(e.a, e.b)));
@@ -551,7 +536,6 @@ console.log("[dress] 알려진 이탈: 질량 균일(§3.3은 Voronoi 면적 비
 // 풀린다. slack이 0으로 가면 상한이 1.02로 **연속적으로** 수렴하므로
 // (§4 "램프는 연속 함수로만") 별도의 전이 시점이 필요 없다.
 // S3 이후는 상태로 고정한다 — 정착 중 갭이 튀어도 다시 완화되지 않게.
-let ringRestM = 0;
 let ringLimitNow = COLLAR_STRAIN_LIMIT;
 // 21회차 — 링 제약의 **시점 분리**. 아래 beforeStep 주석 참고.
 // ── 26회차: **링 총 길이 상한**.
@@ -586,23 +570,9 @@ let ringLimitNow = COLLAR_STRAIN_LIMIT;
 // 머리 대역은 목 최소 단면(neckY) **위** 슬라이스이고 둘레 계기는 몸통과 같다.
 // (추정: "머리 통과 이상은 필요 없다"는 재단 관행의 해석이고 이 저장소의
 //  실측으로 확정된 것이 아니다 — Stage 2c 체형 일반화에서 확인할 것.)
-const headGirthM = body.slices.reduce((m, sl) => (sl.y > body.neckY && sl.girthM > m ? sl.girthM : m), 0);
-let ringTotalMaxM = 0;
-let ringRestConfirmedM = 0;
 let ringPlacedM = 0;
 // 38회차 계기 C — 폐곡선 순회 순서(정점 인덱스). 위 검증 블록이 만들어 내보낸다.
 let ringOrder: number[] = [];
-const ringLenM = (): number => {
-  let l = 0;
-  for (const e of g.necklineRing) {
-    l += Math.hypot(
-      sim.positions[e.b * 3] - sim.positions[e.a * 3],
-      sim.positions[e.b * 3 + 1] - sim.positions[e.a * 3 + 1],
-      sim.positions[e.b * 3 + 2] - sim.positions[e.a * 3 + 2],
-    );
-  }
-  return l;
-};
 
 // ── 넥밴드 원주 제약 (2회차 단일 변경) — v1 칼라 기계를 패턴 목선 링에 배선.
 // 실물 부품(리브)이고 보조 힘이 아니다. clothPhysics는 이 기계를 이미 갖고
@@ -624,31 +594,9 @@ const ringLenM = (): number => {
 // 접합의 rest는 시접 target 그 자체다. 아래에서 그 값을 강제로 심는다
 // (`setCollarRing`이 현재 좌표에서 rest를 뜨므로, 그 두 쌍만 target 거리로
 //  잠깐 옮겼다 되돌린다 — clothPhysics 무수정).
-const ringJoinPairs = (() => {
-  const ringVerts = new Set<number>(g.necklineRing.flatMap((e) => [e.a, e.b]));
-  return g.seams.filter((sm) => sm.kind === "shoulder" && ringVerts.has(sm.a) && ringVerts.has(sm.b));
-})();
-const ringClosed = [...g.necklineRing, ...ringJoinPairs.map((sm) => ({ a: sm.a, b: sm.b }))];
+// P2d — 폐곡선 구성과 rest 심기는 코어 4단계가 끝냈다(위 destructure). 아래는 **배선 검증**이다.
 {
   const joinRestM = Math.max(...g.seams.map((sm) => sm.targetM));
-  const saved = ringJoinPairs.map((sm) => [
-    sim.positions[sm.b * 3], sim.positions[sm.b * 3 + 1], sim.positions[sm.b * 3 + 2],
-  ] as [number, number, number]);
-  for (const sm of ringJoinPairs) {
-    const dx = sim.positions[sm.b * 3] - sim.positions[sm.a * 3];
-    const dy = sim.positions[sm.b * 3 + 1] - sim.positions[sm.a * 3 + 1];
-    const dz = sim.positions[sm.b * 3 + 2] - sim.positions[sm.a * 3 + 2];
-    const l = Math.hypot(dx, dy, dz) || 1;
-    sim.positions[sm.b * 3] = sim.positions[sm.a * 3] + (dx / l) * joinRestM;
-    sim.positions[sm.b * 3 + 1] = sim.positions[sm.a * 3 + 1] + (dy / l) * joinRestM;
-    sim.positions[sm.b * 3 + 2] = sim.positions[sm.a * 3 + 2] + (dz / l) * joinRestM;
-  }
-  sim.setCollarRing(ringClosed);
-  ringJoinPairs.forEach((sm, k) => {
-    sim.positions[sm.b * 3] = saved[k][0];
-    sim.positions[sm.b * 3 + 1] = saved[k][1];
-    sim.positions[sm.b * 3 + 2] = saved[k][2];
-  });
   // 배선 검증 — 위상이 실제로 닫혔는가(전 정점 차수 2 · 단일 순환).
   const deg = new Map<number, number>();
   const adj = new Map<number, number[]>();
@@ -710,21 +658,10 @@ const ringClosed = [...g.necklineRing, ...ringJoinPairs.map((sm) => ({ a: sm.a, 
   }
 }
 {
-  let ringM = 0;
-  for (const e of g.necklineRing) {
-    ringM += Math.hypot(
-      sim.positions[e.b * 3] - sim.positions[e.a * 3],
-      sim.positions[e.b * 3 + 1] - sim.positions[e.a * 3 + 1],
-      sim.positions[e.b * 3 + 2] - sim.positions[e.a * 3 + 2],
-    );
-  }
-  ringRestM = ringM + 2 * Math.max(...g.seams.map((sm) => sm.targetM));
-  // 29회차 확정 — 제약이 순회하는 집합(necklineRing)에서 직접 뜬 rest.
-  // ringRestM(하네스 재구성분)은 ringLimitStart 배선 때문에 이번 회차엔 못 고친다.
-  ringRestConfirmedM = ringM;
+  // P2d — rest·총길이 상한 자체는 코어가 정했다(`dressing.sim()`). 여기는 인쇄와
+  // 계기 보관뿐이다. `ringM`은 코어가 확정한 값(= 같은 집합에서 뜬 것)을 그대로 쓴다.
+  const ringM = ringRestConfirmedM;
   ringPlacedM = ringM;
-  // RINGTOTAL=0 — 26회차 총 길이 상한 제거(= 25회차 상태 재현). 계기용 ablation.
-  ringTotalMaxM = process.env.RINGTOTAL === "0" ? 0 : headGirthM;
   console.log(
     `[dress] 링 **총 길이** 상한: ${cm(ringTotalMaxM)}cm = 머리 최대 둘레(목 최소 단면 위 슬라이스 최대) · rest ${cm(ringRestM)}cm 대비 계수 **${(ringTotalMaxM / Math.max(1e-9, ringRestM)).toFixed(3)}**(도출) · 적용 = step 직후 무게중심 등방 축소 1회/프레임(상시) · 엣지별 상한은 병존`,
   );
