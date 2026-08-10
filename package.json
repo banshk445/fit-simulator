@@ -26,6 +26,7 @@
     "check:outline": "tsx scripts/checkOutline.ts",
     "dress:pattern": "tsx scripts/dressPattern.ts",
     "check:boundary": "tsx scripts/checkBoundary.ts",
+    "check:topology": "tsx scripts/checkTopology.ts",
     "report": "tsx scripts/roundReport.ts"
   },
   "build": {
