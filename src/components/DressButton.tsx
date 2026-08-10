@@ -26,6 +26,7 @@ import { checkGarmentFit } from "../lib/garmentFitLimits";
 import { bakeBodySnapshot } from "../lib/bodySnapshot";
 import { MannequinCollisionMesh } from "../lib/meshCollision";
 import { mannequinPoseRef, mannequinBonesRef, mannequinRootRef, POSE_SETTLE_EPS } from "../lib/mannequinRef";
+import type { PatternDressMetrics } from "../lib/patternDressCore";
 import type { DressWorkerMessage, DressWorkerRequest } from "../workers/patternDressWorker";
 
 export const DRESS_RESULT_EVENT = "v2-dress-result";
@@ -54,10 +55,16 @@ export function DressButton(): React.JSX.Element | null {
   // P5 — 굽기는 비싸다(§2 실측). 인스턴스를 유지해 `StaticGeometryGenerator`가
   // 내부 지오메트리를 재사용하게 한다(`meshCollision.ts` 주석).
   const collisionMesh = useMemo(() => new MannequinCollisionMesh(), []);
+  const showFitMap = useFitStore((st) => st.showFitMap);
   const [busy, setBusy] = useState(false);
   const [note, setNote] = useState("");
+  // ── P8 — 핏 리포트. **현재 슬라이더 상태의 결과만** 보여준다.
+  // 치수를 바꾸면 지난 리포트는 그 옷의 것이 아니므로 즉시 감춘다(P2c 경쟁 처리와 같은 취지).
+  const [report, setReport] = useState<{ sig: string; m: PatternDressMetrics } | null>(null);
   const workerRef = useRef<Worker | null>(null);
   const runIdRef = useRef(0);
+  const sig = JSON.stringify([garmentSize, bodySize, sleeveType]);
+  const fresh = report && report.sig === sig ? report.m : null;
   if (!on) return null;
 
   const run = (): void => {
@@ -68,6 +75,7 @@ export function DressButton(): React.JSX.Element | null {
     runIdRef.current = runId;
     setBusy(true);
     setNote("착장 중…");
+    setReport(null);
     const t0 = performance.now();
     // ── P5 §1 — **살아있는 마네킹에서 몸을 뜬다.** 실패하면(루트·본 미준비)
     // 커밋된 fixture로 되돌아간다 — 그 경우 몸 슬라이더는 반영되지 않는다.
@@ -130,6 +138,7 @@ export function DressButton(): React.JSX.Element | null {
       window.dispatchEvent(new CustomEvent(DRESS_RESULT_EVENT, {
         detail: { positions: m.positions, panelStarts: m.panelStarts, panelCounts: m.panelCounts },
       }));
+      if (m.metrics) setReport({ sig, m: m.metrics });
       setNote(`${m.state} f=${m.frames} · ${s.toFixed(1)}s`);
       finish();
     };
@@ -151,6 +160,55 @@ export function DressButton(): React.JSX.Element | null {
       </div>
       {blocked && <div className="text-amber-300">{fit.message}</div>}
       {!blocked && fit.verdict === "tight" && <div className="text-amber-300">{fit.message}</div>}
+      {showFitMap && fresh && <FitReport m={fresh} />}
+      {showFitMap && !fresh && <div className="text-slate-300">핏 리포트 — 이 치수로 «착장하기»를 누르면 표시됩니다.</div>}
+    </div>
+  );
+}
+
+/**
+ * P8 — 부위별 핏 리포트(수치).
+ *
+ * **문턱은 새로 만들지 않았다.** 판정 경계는 물리가 흡착 목표로 쓰는 껍질 거리
+ * (`COLLISION_MARGIN`, 워커가 `fit.marginMm`으로 실어 보낸다)이고, 하네스 53계기b의
+ * 국면 3분할과 **같은 경계**다. v1 히트맵의 0/1/3cm는 코드가 스스로
+ * 「실측 아님, 눈대중 초기값」이라 적어 둔 값이라 재사용하지 않았다(Garment.tsx:204).
+ *
+ * 값은 `signedClearance` = 옷 정점에서 몸 표면까지의 부호거리다(+가 뜬 것).
+ */
+function FitReport({ m }: { m: PatternDressMetrics }): React.JSX.Element {
+  const mm = m.fit.marginMm;
+  const label = (med: number): { t: string; c: string } =>
+    !Number.isFinite(med) ? { t: "산출 불가", c: "text-slate-400" }
+      : med <= 0 ? { t: "눌림", c: "text-rose-300" }
+      : med <= mm ? { t: "밀착", c: "text-amber-300" }
+      : { t: "여유", c: "text-sky-300" };
+  return (
+    <div className="mt-1 border-t border-white/20 pt-1">
+      <div className="text-slate-300">
+        핏 리포트 — 옷↔몸 간극(mm) · 경계 <b>{mm.toFixed(1)}mm</b>(흡착 margin) · 소매는 몸통 메시로 못 재 제외
+      </div>
+      <table className="mt-1 text-xs">
+        <thead className="text-slate-400">
+          <tr><th className="pr-3 text-left">부위</th><th className="pr-3 text-right">중앙</th><th className="pr-3 text-right">p25~p75</th><th className="pr-3 text-left">판정</th><th className="text-left">눌림/밀착/여유</th></tr>
+        </thead>
+        <tbody>
+          {m.fit.bands.map((b) => {
+            const l = label(b.medianMm);
+            return (
+              <tr key={b.name}>
+                <td className="pr-3">{b.name}</td>
+                <td className="pr-3 text-right">{Number.isFinite(b.medianMm) ? b.medianMm.toFixed(1) : "—"}</td>
+                <td className="pr-3 text-right text-slate-400">
+                  {Number.isFinite(b.p25Mm) ? `${b.p25Mm.toFixed(1)}~${b.p75Mm.toFixed(1)}` : "—"}
+                </td>
+                <td className={`pr-3 ${l.c}`}>{l.t}</td>
+                <td className="text-slate-400">{b.touchN} / {b.snugN} / {b.looseN} <span className="opacity-60">(표본 {b.n}/{b.domain})</span></td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
     </div>
   );
 }

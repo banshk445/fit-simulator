@@ -135,6 +135,25 @@ export interface PatternDressObservers {
   stateNote?: () => string;
 }
 
+/**
+ * P8 — **부위별 핏**. 값은 `signedClearance`(옷 정점 → 몸 표면 부호거리)이고,
+ * 하네스의 53계기b(`phaseStat`)가 쓰는 것과 **같은 원자료·같은 국면 경계**다.
+ * 새 물리 0줄 · 새 술어 0 — 정착 «후» 1회 읽는다.
+ */
+export interface FitBand {
+  /** 부위 이름(목선 · 가슴 · 허리 · 밑단). */
+  name: string;
+  /** 유효 표본 / 정의역 크기. `signedClearance`가 null이면 탈락한다(97 §1 결함 A). */
+  n: number;
+  domain: number;
+  /** 간극 분위수(mm). 표본 0이면 NaN. */
+  p25Mm: number; medianMm: number; p75Mm: number;
+  /** 국면 3분할 — 경계는 흡착 margin 그 자체다(물리가 껍질 목표로 쓰는 거리). */
+  touchN: number;
+  snugN: number;
+  looseN: number;
+}
+
 export interface PatternDressMetrics {
   covPct: number;
   covExposed: number;
@@ -149,6 +168,8 @@ export interface PatternDressMetrics {
   ringLenCm: number;
   hemFrontCm: number;
   hemBackCm: number;
+  /** P8 핏 리포트. 국면 경계(mm)를 함께 실어 **화면이 문턱을 스스로 밝히게** 한다. */
+  fit: { marginMm: number; bands: FitBand[] };
 }
 
 export interface PatternDressResult {
@@ -777,7 +798,51 @@ export function createPatternDressing(
       }
       return l;
     };
+    // ── P8 — 부위별 핏. `signedClearance`는 **몸통 메시**(앞/뒤)만 본다.
+    // 소매 정점은 그 메시에서 `excludeArms`로 지워진 팔 대역을 향하므로 **잴 수 없다** —
+    // 부위에서 제외했고 그 사실은 P8 문서가 진다.
+    const c2 = collide();
+    const dOf = (i: number): number | null => {
+      const mesh = i < g.panelStarts[1] ? c2.frontMesh : c2.backMesh;
+      return mesh.signedClearance(sim.positions[i * 3], sim.positions[i * 3 + 1], sim.positions[i * 3 + 2], SDF_FAR);
+    };
+    const fitMarginM = margins().meshMarginM;
+    const bandOf = (name: string, idx: readonly number[]): FitBand => {
+      const raw = idx.map(dOf);
+      const v = raw.filter((q): q is number => q !== null).sort((x, y) => x - y);
+      const qt = (f: number): number => (v.length ? v[Math.min(v.length - 1, Math.floor(f * v.length))] * 1000 : NaN);
+      return {
+        name, n: v.length, domain: raw.length,
+        p25Mm: qt(0.25), medianMm: qt(0.5), p75Mm: qt(0.75),
+        touchN: v.filter((x) => x <= 0).length,
+        snugN: v.filter((x) => x > 0 && x <= fitMarginM).length,
+        looseN: v.filter((x) => x > fitMarginM).length,
+      };
+    };
+    // 대역은 **몸에서 뜬다**(새 손 상수 0). 폭 ±2.5cm는 하네스 101 §2-2 가슴 대역과 같은 값이고
+    // 근거는 `bodyMeasure` 슬라이스 간격(1cm)이다.
+    const FIT_HALF_M = 0.025;
+    const bandByY = (cy: number): number[] => {
+      const out: number[] = [];
+      for (let i = 0; i < g.panelStarts[2]; i++) {
+        const y = sim.positions[i * 3 + 1];
+        if (y >= cy - FIT_HALF_M && y <= cy + FIT_HALF_M) out.push(i);
+      }
+      return out;
+    };
+    const ringIdx = [...new Set(g.necklineRing.flatMap((e) => [e.a, e.b]))];
+    const hemIdx = [...chainOf(0, g.panelStarts[1]), ...chainOf(g.panelStarts[1], g.panelStarts[2])];
+
     return {
+      fit: {
+        marginMm: fitMarginM * 1000,
+        bands: [
+          bandOf("목선", ringIdx),
+          bandOf("가슴", bandByY(b.body.chestY)),
+          bandOf("허리", bandByY(b.body.waistY)),
+          bandOf("밑단", hemIdx),
+        ],
+      },
       covPct: 100 * cov.exposedRatio,
       covExposed: cov.exposed,
       covTotal: cov.samples,
