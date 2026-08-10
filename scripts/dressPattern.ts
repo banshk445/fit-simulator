@@ -14,7 +14,7 @@ import * as THREE from "three";
 import { ArrayBvhCollision, getResolverMissCount } from "../src/lib/bvhFromArrays";
 import { SelfCollision } from "../src/lib/selfCollision";
 import { FABRIC_PRESETS } from "../src/lib/fabricPresets";
-import { createGarmentSession, createPanelSplitResolver, buildArmCapsules } from "../src/lib/garmentFrame";
+import { createGarmentSession, createPanelSplitResolver, createPatternUnifiedResolver, buildArmCapsules } from "../src/lib/garmentFrame";
 import type { GarmentFrameEnv } from "../src/lib/garmentFrame";
 import { applyCapsuleCollision } from "../src/lib/torsoCapsule";
 import type { Capsule } from "../src/lib/torsoCapsule";
@@ -827,25 +827,13 @@ const TORSOCAP = process.env.TORSOCAP === "1";
 const ARMCAP = process.env.ARMCAP !== "0";
 // 42회차 처방 A — 정점당 **가장 깊이 파묻힌 캡슐 1개만** 민다(기본 on · `SINGLE=0`으로 해제).
 const SINGLE_DEEPEST = process.env.SINGLE !== "0";
-const unified = (positions: Float32Array, pinned: Uint8Array, n: number): void => {
-  meshResolver(positions, pinned, n);
-  let offset = 0;
-  for (let p = 0; p < g.panelCounts.length; p++) {
-    const count = g.panelCounts[p];
-    const pos = positions.subarray(offset * 3, (offset + count) * 3);
-    const pin = pinned.subarray(offset, offset + count);
-    if (TORSOCAP && (p === PANEL_PAT_FRONT || p === PANEL_PAT_BACK)) {
-      // 42회차 P2 재시도 — **정점당 캡슐 1개만**(가장 깊이 파묻힌 것). 사전 반증 (a) 참:
-      // 19단 스택에서 한 정점이 4~7개를 동시 발화시켜 실효 완화가 0.35 → 0.76~0.83으로
-      // 2.4배 약해지고 축(y) 성분이 새로 생겼다. 캡슐 2개인 기준선에선 링 밴드에서
-      // 1개만 발화하므로 이 플래그가 켜져도 **거동이 같다**(비트 동일 확인 대상).
-      applyCapsuleCollision(pos, pin, count, collision.capsules, COLLISION_MARGIN, undefined, undefined, SINGLE_DEEPEST);
-    }
-    if (ARMCAP) applyCapsuleCollision(pos, pin, count, armCapsules, 0.006);
-    offset += count;
-  }
-  void n;
-};
+// ── P2b(a) — `unified`를 `garmentFrame.createPatternUnifiedResolver`로 «이사»했다.
+// 거동 무변경(항등 리팩터). 기본값은 그 함수 한 곳에 있고 여기서는 **env 스위치만** 넘긴다 —
+// 그래야 브라우저 워커가 같은 리졸버를 같은 기본값으로 쓴다(P2a §1-4).
+const unified = createPatternUnifiedResolver(
+  meshResolver, g.panelCounts, collision.capsules, armCapsules,
+  { torsoCap: TORSOCAP, armCap: ARMCAP, singleDeepest: SINGLE_DEEPEST, torsoPanels: [PANEL_PAT_FRONT, PANEL_PAT_BACK] },
+);
 
 // 마찰 SDF — 스파이크·1b와 같은 스택.
 const yTop = layout.topY + 0.1;

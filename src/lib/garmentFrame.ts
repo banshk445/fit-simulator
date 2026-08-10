@@ -124,6 +124,60 @@ export function createPanelSplitResolver(resolvers: readonly (CollisionResolver 
   };
 }
 
+// ── P2b(a) — **v2 패턴 착장의 통합 리졸버**. `dressPattern.ts`에 있던 `unified` 클로저를
+// 그대로 옮긴 것이고 **거동 무변경**이다(항등 리팩터 · 값 변경 0 · 물리 수정 0).
+//
+// 왜 여기로 옮기는가: v2 브라우저 워커가 «같은» 리졸버를 써야 한다. v1이 이미 같은 이유로
+// `createUnifiedResolver`를 이 파일로 이사시켰다(M0 · `garmentWorker.ts:151` 「워커는
+// 살아있는 상태 객체만 관리한다」). 복제하면 v1/v2에 이어 **세 번째 경로**가 생기고,
+// 92 §4-1이 이중 경로 때문에 처방을 집행 금지로 막은 전례가 있다.
+//
+// **기본값은 여기 한 곳에만 둔다** — 스크립트와 브라우저가 갈릴 수 없게.
+//   `torsoCap`  기본 **false** — 45회차 승격(몸통 캡슐 전면 제거가 새 기준선)
+//   `armCap`    기본 **true**  — 94회차 절제 스위치의 기본 on
+//   `singleDeepest` 기본 **true** — 42회차 처방 A(정점당 가장 깊이 파묻힌 캡슐 1개만)
+//   `armMarginM` 기본 **0.006** — `dressPattern.ts`가 쓰던 리터럴 그대로
+// `torsoPanels`는 호출부가 넘긴다(패널 인덱스 정본은 `patternGarment.ts`이고
+// 이 파일이 그것을 import하면 순환이 된다).
+export interface PatternUnifiedOpts {
+  torsoCap?: boolean;
+  armCap?: boolean;
+  singleDeepest?: boolean;
+  torsoMarginM?: number;
+  armMarginM?: number;
+  torsoPanels?: readonly number[];
+}
+
+export function createPatternUnifiedResolver(
+  meshResolver: CollisionResolver,
+  panelCounts: readonly number[],
+  torsoCapsules: readonly Capsule[],
+  armCapsules: readonly Capsule[],
+  opts: PatternUnifiedOpts = {},
+): CollisionResolver {
+  const torsoCap = opts.torsoCap ?? false;
+  const armCap = opts.armCap ?? true;
+  const singleDeepest = opts.singleDeepest ?? true;
+  const torsoMarginM = opts.torsoMarginM ?? COLLISION_MARGIN;
+  const armMarginM = opts.armMarginM ?? 0.006;
+  const torsoPanels = opts.torsoPanels ?? [0, 1];
+  return (positions, pinned, n) => {
+    meshResolver(positions, pinned, n);
+    let offset = 0;
+    for (let p = 0; p < panelCounts.length; p++) {
+      const count = panelCounts[p];
+      const pos = positions.subarray(offset * 3, (offset + count) * 3);
+      const pin = pinned.subarray(offset, offset + count);
+      if (torsoCap && torsoPanels.includes(p)) {
+        applyCapsuleCollision(pos, pin, count, torsoCapsules, torsoMarginM, undefined, undefined, singleDeepest);
+      }
+      if (armCap) applyCapsuleCollision(pos, pin, count, armCapsules, armMarginM);
+      offset += count;
+    }
+    void n;
+  };
+}
+
 export const PANEL_COUNTS: readonly number[] = [
   PARTICLES_PER_PANEL,
   PARTICLES_PER_PANEL,
