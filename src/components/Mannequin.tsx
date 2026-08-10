@@ -6,7 +6,8 @@ import * as THREE from "three";
 // 임시 진단(가슴 스케일 시 몸 메시 폭발 원인 가르기): ?nocounter=1
 const NO_COUNTER = import.meta.env.DEV && new URLSearchParams(window.location.search).get("nocounter") === "1";
 import { DEFAULT_BODY_SIZE, useFitStore } from "../store/useFitStore";
-import { mannequinRootRef } from "../lib/mannequinRef";
+import { mannequinBonesRef, mannequinFramesRef, mannequinRootRef } from "../lib/mannequinRef";
+import { findShoulderBones } from "../lib/boneUtils";
 import { isBone, isDescendantOfAny, pointBoneTowardWorldDirection, worldDirection } from "../lib/boneUtils";
 
 // public/models/mannequin.glb — Adobe Fuse/Mixamo 기반의 맨몸 남성 캐릭터
@@ -106,10 +107,13 @@ export function Mannequin() {
   // 공유 모듈에 등록한다.
   useEffect(() => {
     mannequinRootRef.current = outerRef.current;
+    // P5 §1 — v2 몸 스냅샷이 쓸 어깨 본. `Garment.tsx`와 **같은 함수**로 찾는다.
+    mannequinBonesRef.current = findShoulderBones(nodes);
     return () => {
       mannequinRootRef.current = null;
+      mannequinBonesRef.current = { left: null, right: null };
     };
-  }, []);
+  }, [nodes]);
 
   // 마네킹처럼 보이도록 원본 텍스처/머티리얼을 무광 회색으로 통일하고,
   // 헬멧 바이저 등 마네킹에 어울리지 않는 파츠는 숨긴다.
@@ -216,6 +220,8 @@ export function Mannequin() {
   const ARM_SWAY_FIXED_OUTWARD = 0.6;
   const armPoseElapsed = useRef(0);
   useFrame((_, delta) => {
+    // P5 §1 — 이 루프가 A포즈를 적용한다. 몸 스냅샷은 이 카운터가 오른 뒤에 구워야 한다.
+    mannequinFramesRef.current += 1;
     let outwardAmount = ARM_SWAY_FIXED_OUTWARD;
     if (ENABLE_ARM_SWAY_DEBUG) {
       armPoseElapsed.current += delta;

@@ -46,6 +46,10 @@ function makeCheckerTexture(): THREE.DataTexture {
 let __r74 = 0;
 export function PatternPreview(): React.JSX.Element | null {
   const garmentSize = useFitStore((s) => s.garmentSize);
+  // P5 — 몸 슬라이더가 패턴에 도달한다. 이 의존성이 재제도를 건다.
+  const bodySize = useFitStore((s) => s.bodySize);
+  const sleeveType = useFitStore((s) => s.sleeveType);
+  const fabric = useFitStore((s) => s.fabric);
   // `?patternstate=1` — 2b 하네스가 남긴 최종 상태(시뮬 결과)를 그린다.
   // 없으면 2a 정적 배치를 그린다. 물리는 여전히 여기서 돌지 않는다.
   const useDressState = new URLSearchParams(window.location.search).get("patternstate") === "1";
@@ -190,14 +194,36 @@ export function PatternPreview(): React.JSX.Element | null {
     void (async () => {
       // 동적 import — patternCore off 실행에 fixture(1.7MB)와 패턴 코드가
       // 번들에 들어가지 않게 한다.
-      const [{ deriveBodySkeleton }, { measureBody }, { buildPatternGarment }, fixtureMod] = await Promise.all([
+      const [{ deriveBodySkeleton }, { measureBody }, { buildPatternGarment }, { bakeBodySnapshot }, { MannequinCollisionMesh }, { mannequinBonesRef, mannequinRootRef, awaitMannequinSettled }] = await Promise.all([
         import("../lib/bodySkeleton"),
         import("../lib/bodyMeasure"),
         import("../lib/patternGarment"),
-        import("../../scripts/fixtures/collision-fixture.json"),
+        import("../lib/bodySnapshot"),
+        import("../lib/meshCollision"),
+        import("../lib/mannequinRef"),
       ]);
       if (!alive) return;
-      const f = fixtureMod.default as unknown as {
+      // ── P5 §1 — **워커와 같은 몸을 본다.** 여기가 옛 몸을 보면 정적 배치와 착장 결과의
+      // 패턴이 서로 달라지고(정점 수까지 갈린다) 결과 반영이 거부된다.
+      // 마네킹이 아직 안 붙었으면 커밋된 fixture로 되돌아간다(그때는 몸 슬라이더 미반영).
+      // 포즈·단위 정규화가 적용된 뒤에 굽는다(마운트 직후는 T포즈다 — mannequinRef 주석).
+      const settled = await awaitMannequinSettled();
+      if (!alive) return;
+      const root = mannequinRootRef.current;
+      const bones = mannequinBonesRef.current;
+      const snap = settled && root && bones.left && bones.right
+        ? bakeBodySnapshot({ root, bones, bodySize, garmentSize, sleeveType, fabric }, new MannequinCollisionMesh())
+        : null;
+      if (snap) {
+        const pos = snap.fixture.collision.position;
+        let mnY = Infinity, mxY = -Infinity, mnX = Infinity, mxX = -Infinity;
+        for (let i = 0; i < pos.length; i += 3) {
+          if (pos[i] < mnX) mnX = pos[i]; if (pos[i] > mxX) mxX = pos[i];
+          if (pos[i + 1] < mnY) mnY = pos[i + 1]; if (pos[i + 1] > mxY) mxY = pos[i + 1];
+        }
+        console.log(`[P5진단] 라이브 몸 — 정점 ${pos.length / 3} · y ${mnY.toFixed(3)}~${mxY.toFixed(3)} · x ${mnX.toFixed(3)}~${mxX.toFixed(3)} · 굽기 ${snap.bakeMs.toFixed(0)}ms · topY ${snap.fixture.layout.topY.toFixed(4)} · centerZ(layout) ${snap.fixture.layout.centerZ.toFixed(5)} · centerZ(collision) ${snap.fixture.collision.centerZ.toFixed(5)} · 핀간격 ${Math.abs(snap.fixture.pose.pinLeft.x - snap.fixture.pose.pinRight.x).toFixed(5)} · 팔길이 ${snap.fixture.pose.armLeft.length}`);
+      }
+      const f = (snap?.fixture ?? (await import("../../scripts/fixtures/collision-fixture.json")).default) as unknown as {
         pose: {
           pinLeft: { x: number; y: number; z: number };
           pinRight: { x: number; y: number; z: number };
@@ -205,7 +231,7 @@ export function PatternPreview(): React.JSX.Element | null {
           armRight: { dir: { x: number; y: number; z: number }; trueShoulder: { x: number; y: number; z: number }; length: number };
         };
         collision: {
-          position: number[];
+          position: number[] | Float32Array;
           frontIndex: number[] | null;
           backIndex: number[] | null;
           wholeBodyIndex: number[] | null;
@@ -213,6 +239,7 @@ export function PatternPreview(): React.JSX.Element | null {
           centerZ: number;
         };
       };
+      if (!alive) return;
       const position = Float32Array.from(f.collision.position);
       const torsoIndex = Uint32Array.from([...(f.collision.frontIndex ?? []), ...(f.collision.backIndex ?? [])]);
       const wholeIndex = f.collision.wholeBodyIndex ? Uint32Array.from(f.collision.wholeBodyIndex) : null;
@@ -339,7 +366,7 @@ export function PatternPreview(): React.JSX.Element | null {
       );
     })();
     return () => { alive = false; };
-  }, [garmentSize, useDressState, cleanRender]);
+  }, [garmentSize, bodySize, sleeveType, fabric, useDressState, cleanRender]);
 
   // P2c(f) — 「착장하기」 결과 반영. `?patternstate=1`의 옛 fetch 경로와 **병존**한다.
   useEffect(() => {

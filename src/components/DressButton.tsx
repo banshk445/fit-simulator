@@ -20,9 +20,12 @@
 //
 // 결과는 `window` CustomEvent로 `PatternPreview`에 넘긴다. `?patternstate=1`의 옛
 // dress-state fetch 경로는 **그대로 남는다**(회귀 대조용 — 제거 0).
-import { useRef, useState } from "react";
-import { DEFAULT_BODY_SIZE, useFitStore } from "../store/useFitStore";
+import { useMemo, useRef, useState } from "react";
+import { useFitStore } from "../store/useFitStore";
 import { checkGarmentFit } from "../lib/garmentFitLimits";
+import { bakeBodySnapshot } from "../lib/bodySnapshot";
+import { MannequinCollisionMesh } from "../lib/meshCollision";
+import { mannequinFramesRef, mannequinBonesRef, mannequinRootRef } from "../lib/mannequinRef";
 import type { DressWorkerMessage, DressWorkerRequest } from "../workers/patternDressWorker";
 
 export const DRESS_RESULT_EVENT = "v2-dress-result";
@@ -46,14 +49,11 @@ export function DressButton(): React.JSX.Element | null {
   // 문언을 고치는 대신 **동작을 문언에 맞춘다** — BLOCK이면 실행 자체를 막는다.
   const fit = checkGarmentFit(bodySize.chest, garmentSize.width);
   const blocked = fit.verdict === "impossible";
-  // ── P4 §3 — **임시 배지**. 몸 슬라이더는 아직 패턴에 도달하지 않는다(P3 §2 실측:
-  // 가슴 100→129에서 9채널 불변). fixture가 `DEFAULT_BODY_SIZE`에서 구워졌으므로
-  // 그 값에서 벗어나면 「마네킹만 바뀐 상태」다. **P5(몸 연속화)에서 이 배지를 걷어낸다.**
-  const bodyDrifted = bodySize.chest !== DEFAULT_BODY_SIZE.chest
-    || bodySize.height !== DEFAULT_BODY_SIZE.height
-    || bodySize.armLength !== DEFAULT_BODY_SIZE.armLength
-    || bodySize.legLength !== DEFAULT_BODY_SIZE.legLength
-    || bodySize.shoulderWidth !== DEFAULT_BODY_SIZE.shoulderWidth;
+  const sleeveType = useFitStore((st) => st.sleeveType);
+  const fabric = useFitStore((st) => st.fabric);
+  // P5 — 굽기는 비싸다(§2 실측). 인스턴스를 유지해 `StaticGeometryGenerator`가
+  // 내부 지오메트리를 재사용하게 한다(`meshCollision.ts` 주석).
+  const collisionMesh = useMemo(() => new MannequinCollisionMesh(), []);
   const [busy, setBusy] = useState(false);
   const [note, setNote] = useState("");
   const workerRef = useRef<Worker | null>(null);
@@ -69,7 +69,23 @@ export function DressButton(): React.JSX.Element | null {
     setBusy(true);
     setNote("착장 중…");
     const t0 = performance.now();
-    const dims = {
+    // ── P5 §1 — **살아있는 마네킹에서 몸을 뜬다.** 실패하면(루트·본 미준비)
+    // 커밋된 fixture로 되돌아간다 — 그 경우 몸 슬라이더는 반영되지 않는다.
+    const root = mannequinRootRef.current;
+    const bones = mannequinBonesRef.current;
+    // 클릭 시점이면 이미 수 백 프레임이 지났다 — 안전용 가드다(mannequinRef 주석).
+    const settled = mannequinFramesRef.current >= 2;
+    const snap = settled && root && bones.left && bones.right
+      ? bakeBodySnapshot({ root, bones, bodySize, garmentSize, sleeveType, fabric }, collisionMesh)
+      : null;
+    if (snap) {
+      console.log(`[dress] 몸 스냅샷 — 굽기 ${snap.bakeMs.toFixed(0)}ms · 캡슐 ${snap.capsuleMs.toFixed(1)}ms · 정점 ${snap.fixture.collision.position.length / 3}`);
+    } else {
+      console.warn("[dress] 마네킹 루트/어깨 본 미준비 — 커밋 fixture로 돈다(몸 슬라이더 미반영)");
+    }
+    // 옷 치수는 스냅샷 `layout`에 이미 들어 있다. 커밋 fixture로 되돌아가는 경우에만
+    // override가 필요하므로 그때만 넘긴다(P3 §1의 4종 · 어깨너비는 포즈에서 나온다).
+    const dims = snap ? undefined : {
       lengthM: garmentSize.length / 100,
       widthM: garmentSize.width / 100,
       sleeveLengthM: garmentSize.sleeveLength / 100,
@@ -115,7 +131,7 @@ export function DressButton(): React.JSX.Element | null {
       setNote(`${m.state} f=${m.frames} · ${s.toFixed(1)}s`);
       finish();
     };
-    worker.postMessage({ ringTotal, garmentDims: dims } satisfies DressWorkerRequest);
+    worker.postMessage({ ringTotal, garmentDims: dims, fixture: snap?.fixture } satisfies DressWorkerRequest);
   };
 
   return (
@@ -133,11 +149,6 @@ export function DressButton(): React.JSX.Element | null {
       </div>
       {blocked && <div className="text-amber-300">{fit.message}</div>}
       {!blocked && fit.verdict === "tight" && <div className="text-amber-300">{fit.message}</div>}
-      {bodyDrifted && (
-        <div className="text-sky-300">
-          몸 치수는 <b>마네킹에만</b> 반영됩니다 — 패턴·착장은 기준 체형(가슴 {DEFAULT_BODY_SIZE.chest}cm)으로 계산됩니다. (임시 · P5에서 해소)
-        </div>
-      )}
     </div>
   );
 }

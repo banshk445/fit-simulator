@@ -7,9 +7,10 @@ import { useFitStore } from "../store/useFitStore";
 import { MannequinCollisionMesh } from "../lib/meshCollision";
 import { ArrayBvhCollision } from "../lib/bvhFromArrays";
 import { mannequinRootRef } from "../lib/mannequinRef";
+import { computeArmShapes as computeArmShapesShared } from "../lib/bodySnapshot";
 import { buildTorsoProxyCapsules, type Capsule } from "../lib/torsoCapsule";
 import { capsuleGapBands, computeCapsuleGapChannels, type GridView } from "../lib/drapeMetrics";
-import { findArmDirection, findShortSleeveDirection, findShoulderBones } from "../lib/boneUtils";
+import { findShoulderBones } from "../lib/boneUtils";
 import { computeShoulderPin } from "../lib/shoulderPin";
 import { compositeGarmentTexture } from "../lib/garmentTextureComposite";
 import { neckHoleColumnRange, torsoColumnRange } from "../lib/buildGarmentSim";
@@ -56,12 +57,8 @@ interface Props {
 
 const shoulderVec = new THREE.Vector3();
 const rightShoulderVec = new THREE.Vector3();
-const leftDirVec = new THREE.Vector3();
-const rightDirVec = new THREE.Vector3();
+// (P5 §1 — 팔 방향 스크래치 2개는 `lib/bodySnapshot`으로 함께 이사했다.)
 
-function toMsg(v: THREE.Vector3): { x: number; y: number; z: number } {
-  return { x: v.x, y: v.y, z: v.z };
-}
 
 // 46번(프록시 바인딩 — 렌더링 해상도 분리): 물리는 검증된 저해상도
 // (COLS x ROWS)를 그대로 유지하고, 화면에 그리는 지오메트리만 이보다
@@ -1455,41 +1452,11 @@ export function Garment({ imageUrl }: Props) {
     sleeveNormalTexRight,
   ]);
 
-  // 어깨/팔 방향과 소매 길이에서 현재 팔 모양(ArmShapeMsg)을 계산한다 —
-  // init(빌드)과 step(매 프레임) 양쪽에서 같은 공식을 쓰게 한 곳에 모은다.
-  // 46번(전면 재설계): 반지름 필드는 더 이상 없다 — 굵기는 워커가 실제
-  // 팔에 대해 고정 반지름(ARM_COLLISION_RADIUS)으로 충돌시켜 결정한다.
+  // P5 §1 — 이 함수는 `lib/bodySnapshot.computeArmShapes`로 **이사**했다(항등 추출).
+  // v2(`?patterncore=1`)에서는 이 컴포넌트가 마운트되지 않아 같은 조립을 쓸 수 없었다.
+  // 인자·순서·식 전부 그대로이고 v1 거동은 무변경이다. 주석 정본은 그 파일에 있다.
   function computeArmShapes(): { left: ArmShapeMsg; right: ArmShapeMsg } | null {
-    const { left: leftBone, right: rightBone } = shoulderBones;
-    if (!leftBone || !rightBone) return null;
-
-    leftBone.updateWorldMatrix(true, false);
-    rightBone.updateWorldMatrix(true, false);
-    leftBone.getWorldPosition(shoulderVec);
-    rightBone.getWorldPosition(rightShoulderVec);
-
-    // 33번: 반팔은 위팔(어깨~팔꿈치) 방향을 따라야 한다 — 어깨~손 직선
-    // 방향(findArmDirection)은 팔꿈치가 굽은 포즈에서 위팔 구간과 상당히
-    // 어긋나, 반팔 소매가 어깨에서 뚝 떨어져 팔꿈치 쪽으로 삐져나가는
-    // 원인이었다(자세한 경위는 boneUtils.ts의 findShortSleeveDirection
-    // 주석 참고). 긴팔은 손목까지 닿아야 하므로 기존 방향을 그대로 쓴다.
-    if (sleeveType === "long") {
-      leftDirVec.copy(findArmDirection(leftBone));
-      rightDirVec.copy(findArmDirection(rightBone));
-    } else {
-      leftDirVec.copy(findShortSleeveDirection(leftBone));
-      rightDirVec.copy(findShortSleeveDirection(rightBone));
-    }
-
-    // 36번(큰 재설계): 길이는 몸 치수에서 계산하지 않고 옷 실측
-    // (garmentSize.sleeveLength) 그대로 쓴다 — 옷이 짧으면 손목에 못
-    // 미치고, 길면 손을 덮는 게 그대로 드러난다.
-    const length = garmentSize.sleeveLength / 100;
-
-    return {
-      left: { dir: toMsg(leftDirVec), trueShoulder: toMsg(shoulderVec), length },
-      right: { dir: toMsg(rightDirVec), trueShoulder: toMsg(rightShoulderVec), length },
-    };
+    return computeArmShapesShared(shoulderBones, sleeveType, garmentSize.sleeveLength / 100);
   }
 
   // 몸 실측이 바뀔 때만(매 프레임이 아니라) 충돌 메시를 다시 굽어 워커로

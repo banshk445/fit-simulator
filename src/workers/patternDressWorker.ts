@@ -8,9 +8,13 @@
 // 계기 훅은 넘기지 않는다(P2b §2 「계기 6」). 물리 훅 3종은 코어가 배선한다.
 // `placementRestGate`는 물리다 — 코어에서 throw하고 여기서는 `ok:false + error`로
 // 돌려준다(브라우저에는 프로세스 종료가 없으므로 실패 «상태»가 전달 형식이다).
-import { runPatternDressing, type PatternDressOptions, type PatternDressResult } from "../lib/patternDressCore";
+import { runPatternDressing, type PatternDressFixture, type PatternDressOptions, type PatternDressResult } from "../lib/patternDressCore";
 
-export type DressWorkerRequest = Omit<PatternDressOptions, "onProgress">;
+// P5 — `fixture`가 오면 **살아있는 마네킹에서 뜬 몸**을 쓰고, 없으면 커밋된 fixture로
+// 되돌아간다(회귀 대조용 경로 유지 · 제거 0).
+export type DressWorkerRequest = Omit<PatternDressOptions, "onProgress"> & {
+  fixture?: PatternDressFixture;
+};
 
 export type DressWorkerMessage =
   | { type: "progress"; frame: number; state: string }
@@ -24,16 +28,19 @@ const PROGRESS_EVERY = 30;
 
 self.onmessage = async (ev: MessageEvent<DressWorkerRequest>): Promise<void> => {
   try {
-    // 동적 import — fixture(1.7MB)를 워커 번들에만 싣는다.
-    const fixtureMod = await import("../../scripts/fixtures/collision-fixture.json");
+    // 살아있는 몸이 오면 그것을 쓴다. 없을 때만 커밋된 fixture를 동적 import한다
+    // (1.7MB — 안 쓰면 로드도 안 한다).
+    const { fixture, ...opts } = ev.data;
+    const body: PatternDressFixture = fixture
+      ?? ((await import("../../scripts/fixtures/collision-fixture.json")).default as never);
     const t = performance.now();
-    const r = runPatternDressing(fixtureMod.default as never, {
-      ...ev.data,
+    const r = runPatternDressing(body, {
+      ...opts,
       onProgress: (frame, state) => {
         if (frame % PROGRESS_EVERY === 0) self.postMessage({ type: "progress", frame, state } satisfies DressWorkerMessage);
       },
     });
-    console.log(`[dressWorker] ${r.state} f=${r.frames} retry=${r.retry} · ${Math.round(performance.now() - t)}ms · ${r.error ?? "실패 없음"}`);
+    console.log(`[dressWorker] ${r.state} f=${r.frames} retry=${r.retry} · ${Math.round(performance.now() - t)}ms · 몸=${fixture ? "라이브(마네킹 스냅샷)" : "커밋 fixture"} · ${r.error ?? "실패 없음"}`);
     self.postMessage(
       { type: "done", ...r } as DressWorkerMessage,
       { transfer: [r.positions.buffer, r.tris.buffer, r.uv.buffer] },
