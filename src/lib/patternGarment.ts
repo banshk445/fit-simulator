@@ -305,13 +305,20 @@ export function buildPatternGarment(
     }
   }
 
-  // ── 미러 쌍 맵(전역)
+  // ── 미러 쌍 맵(전역) — **P18 §2에서 일반화**.
+  // 종전에는 「패널 0·1은 자기 안에서 미러, 패널 2↔3은 통째로 짝」이 코드에 박혀 있었다.
+  // 이제 패널마다 **두 가지만** 말하면 된다:
+  //   `mirrorPanel[p]`  그 패널의 미러 상대 패널(자기 자신이면 «패널 안에서» 미러)
+  //   `mirrorLocal[p]`  패널 «안»의 정점 사상(null이면 항등 — 상대 패널이 이미 x 반전본이다)
+  // 티셔츠 값은 종전과 같다: 앞·뒤는 자기 안에서, 소매 2↔3은 항등으로 짝짓는다(비트 동일).
+  const mirrorPanel = [PANEL_PAT_FRONT, PANEL_PAT_BACK, PANEL_PAT_SLEEVE_R, PANEL_PAT_SLEEVE_L];
+  const mirrorLocal: (Int32Array | null)[] = [mFront.mirrorOf, mBack.mirrorOf, null, null];
   const mirrorOf = new Int32Array(total);
-  for (let i = 0; i < panelCounts[0]; i++) mirrorOf[panelStarts[0] + i] = panelStarts[0] + mFront.mirrorOf[i];
-  for (let i = 0; i < panelCounts[1]; i++) mirrorOf[panelStarts[1] + i] = panelStarts[1] + mBack.mirrorOf[i];
-  for (let i = 0; i < panelCounts[2]; i++) {
-    mirrorOf[panelStarts[2] + i] = panelStarts[3] + i;
-    mirrorOf[panelStarts[3] + i] = panelStarts[2] + i;
+  for (let p = 0; p < panelCounts.length; p++) {
+    const loc = mirrorLocal[p];
+    for (let i = 0; i < panelCounts[p]; i++) {
+      mirrorOf[panelStarts[p] + i] = panelStarts[mirrorPanel[p]] + (loc ? loc[i] : i);
+    }
   }
 
   // ── 목선 링(전역) — 미러 상대까지.
