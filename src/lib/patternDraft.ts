@@ -201,11 +201,20 @@ const seg = (name: string, curve: CurveDef, refined: boolean): PatternSegment =>
   ({ name, curve, refined, lengthM: curveLength(curve), samples: [] });
 
 // ── 제도 ────────────────────────────────────────────────────────────────
+// ── **치수 규약(정본 · P3 §1 확정)** ─────────────────────────────────────────
+// 이 저장소의 옷 치수는 전부 **평면 실측(반둘레)**이다 — 옷을 눕혀 잰 값이고,
+// 완성 «둘레»는 그 2배다. 이미 이 파일과 store가 그 규약으로 쓰고 있었고
+// (`sleeveWidthM` 주석 · `useFitStore` 기본값 주석 「가슴단면(품)은 가슴둘레의
+//  절반 안팎」), P3이 그것을 정본으로 확정한다. UI 라벨 「품 55cm」 =
+// **몸판 1매 평면 폭 55cm = 완성 폐둘레 110cm**다.
+// **알려진 불일치 1건**: v1 미리보기 원통 `FitCanvas.tsx:48`은 `width/(2π)`로
+// 품을 «폐둘레»로 읽는다(반지름이 절반이 된다). v1 렌더 전용이고 이 판의
+// 정의역 밖이라 고치지 않았다 — P3 보고서 §6에 남긴다.
 export interface GarmentDims {
   lengthM: number;        // 총장 — 목점(HPS)에서 밑단
-  widthM: number;         // 품(가슴단면) = 몸판 1매의 전체 폭
-  shoulderWidthM: number; // 어깨너비 — 옷 어깨점 사이
-  sleeveLengthM: number;  // 소매길이 — 어깨점에서 소맷부리
+  widthM: number;         // 품(가슴단면) = 몸판 1매의 평면 폭 → 완성 폐둘레 = 2×이 값
+  shoulderWidthM: number; // 어깨너비 — 옷 어깨점 사이(둘레 아님 · 직선 거리)
+  sleeveLengthM: number;  // 소매길이 — 어깨점에서 소맷부리(직선 거리)
   sleeveWidthM: number;   // 소매통(평면 실측) → 소매 둘레 = 2×이 값
 }
 
@@ -241,7 +250,23 @@ export function draftTshirtPattern(body: BodyMeasure, g: GarmentDims): PatternDr
   // 문턱 1.000±3.33e-5 · 신장총 14841.6cm). **함정14 §경계선 조건 ②대로 값을 바꾸지 않고
   // 실패로 기록하고 되돌린다** — 아래 값은 1단계의 «항등 역산값»이다(기준선 A 복원).
   const WIDTH_EASE_M = 0.06497769876168244;
-  const halfWidthM = body.chestGirthM / WIDTH_CHEST_DIVISOR + WIDTH_EASE_M;
+  // ── P3 §1 — **품 슬라이더를 살린다**(104의 몸 도출 형식을 되돌린다).
+  //
+  // 104의 형식(`B/4 + e`)은 슬라이더를 죽였다 — 이 줄이 `g.widthM`을 안 읽으므로
+  // 「품 55cm」를 움직여도 제도가 그대로였다(P1 ①). 되돌리는 근거:
+  //  ① 104 §2는 스스로를 «항등 재표현»이라 적었고, e를 실제로 바꾼 §3 2단계는
+  //     34게이트 위반으로 **실패·원복**했다 ⟹ 몸 도출 형식이 «다른 값»을 낸 적이 없다.
+  //  ② 이 제품은 핏 «시뮬레이터»다. 옷 치수는 옷의 것이고 몸을 따라 자동으로
+  //     커지면 「이 옷이 이 몸에 맞는가」라는 질문 자체가 사라진다.
+  //  ③ 아래 값은 `0.55/2`와 **비트 동일**이다(위 104 주석의 역산이 그 항등이다).
+  //     기본 슬라이더 55cm에서 기준선 A가 그대로 나온다.
+  // **몸은 폭 말고 전부에 여전히 관여한다** — 진동깊이(`B/4 + 3cm`) · 목선(목밑둘레) ·
+  // 능선 앵커 · 외곽선. 폭만 슬라이더가 정한다.
+  // 몸이 커져 옷이 안 맞는 경우는 «착용 불가»로 보여야 할 것이고(P1 ⑤ wearable 게이트)
+  // 제도를 몰래 키워 가리는 것이 아니다.
+  void WIDTH_CHEST_DIVISOR; void WIDTH_EASE_M;
+  // 규약: `widthM` = 몸판 1매의 **평면 폭**(= 완성 폐둘레의 1/2). `GarmentDims` 주석 참고.
+  const halfWidthM = g.widthM / 2;
   const shoulderHalfM = g.shoulderWidthM / 2;
 
   // 목 — 목선 둘레가 목밑둘레 + 여유가 되도록 목너비를 이분법으로 푼다.

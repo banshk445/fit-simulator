@@ -94,8 +94,11 @@ export interface PatternDressOptions {
   /** `HEMBEND` — 밑단 대역 bend 강화 프로브(기본 미적용). 술어는 코어가 만든다
    *  (제도 총장에서 대역을 뜬다 — 하네스가 같은 식을 다시 적지 않게). */
   hemBend?: { raw: number; bandM: number };
-  /** 옷 치수 override. 미지정이면 fixture `layout`/`pose`에서 도출(= 하네스와 같은 옷). */
-  garmentDims?: { lengthM: number; widthM: number; shoulderWidthM: number; sleeveLengthM: number; sleeveWidthM: number };
+  /** 옷 치수 override — **부분 지정**. 준 항목만 덮고 나머지는 fixture `layout`/`pose`에서
+   *  도출한다(= 하네스와 같은 옷). 브라우저는 슬라이더가 «실제로 대응하는» 항목만 넘긴다:
+   *  `shoulderWidthM`은 포즈 핀 간격(44.9995cm)에서 나오고 슬라이더 기본값 45cm와 다르므로
+   *  넘기지 않는다 — 넘기면 기본 슬라이더에서 기준선 A가 깨진다(P3 §1). */
+  garmentDims?: Partial<{ lengthM: number; widthM: number; shoulderWidthM: number; sleeveLengthM: number; sleeveWidthM: number }>;
   /** UI 진행 표시용. 물리에 관여하지 않는다. */
   onProgress?: (frame: number, state: string) => void;
 }
@@ -189,8 +192,13 @@ export interface StageBody {
   body: ReturnType<typeof measureBody>;
   marginAllM: number;
 }
+/** 해소된 옷 치수(전 항목 필수). */
+export interface GarmentDimsResolved {
+  lengthM: number; widthM: number; shoulderWidthM: number; sleeveLengthM: number; sleeveWidthM: number;
+}
+
 export interface StageGarment {
-  garmentDims: NonNullable<PatternDressOptions["garmentDims"]>;
+  garmentDims: GarmentDimsResolved;
   outlineTorso: ArrayBvhCollision;
   outlineWhole: ArrayBvhCollision;
   g: Garment;
@@ -321,12 +329,13 @@ export function createPatternDressing(
   const garment = (): StageGarment => {
     if (_garment) return _garment;
     const b = body();
-    const garmentDims = opts.garmentDims ?? {
+    const garmentDims: GarmentDimsResolved = {
       lengthM: layout.heightM,
       widthM: layout.widthM,
       shoulderWidthM: Math.abs(pose.pinLeft.x - pose.pinRight.x),
       sleeveLengthM: Math.max(pose.armLeft.length, pose.armRight.length),
       sleeveWidthM: layout.sleeveWidthM,
+      ...opts.garmentDims,
     };
     const outlineTorso = new ArrayBvhCollision();
     outlineTorso.rebuild(b.position, b.torsoIndex);

@@ -230,7 +230,10 @@ export function PatternPreview(): React.JSX.Element | null {
         {
           lengthM: garmentSize.length / 100,
           widthM: garmentSize.width / 100,
-          shoulderWidthM: garmentSize.shoulderWidth / 100,
+          // P3 §1 — **어깨너비만 fixture 포즈에서 온다**(핀 간격 44.9995cm).
+          // 슬라이더(기본 45cm)를 쓰면 워커가 그리는 옷과 여기 정적 배치가 서로 다른
+          // 패턴이 되고, 기본값에서 기준선 A도 깨진다. 워커와 «같은 옷»을 그려야 한다.
+          shoulderWidthM: Math.abs(f.pose.pinLeft.x - f.pose.pinRight.x),
           sleeveLengthM: garmentSize.sleeveLength / 100,
           sleeveWidthM: garmentSize.sleeveWidth / 100,
         },
