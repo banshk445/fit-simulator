@@ -696,6 +696,7 @@ console.log(
 // 굽기 경과는 그 단계 호출을 감싸 잰다(값·순서 무변경).
 const tBake = performance.now();
 const { frontMesh, backMesh, armCapsules, meshResolver, unified, sdfField, sdfBox, selfCollision } = dressing.collide();
+// 이 넷은 계기가 참조하지 않지만 단계 반환값이라 이름만 받아 둔다(배선 가시성).
 void frontMesh; void backMesh; void meshResolver; void selfCollision;
 // ── 49회차 P-α1 (진단 전용 · 기본 off · v1 0줄) — **관통-only 흡착**.
 // 47회차 후보 α: 양방향 흡착이 탐지반경 15cm 안 **비관통 정점까지** 표면+margin으로
@@ -1739,11 +1740,8 @@ const restMap = (label: string): string => {
 // 계기 훅 2종(probe · onCollarFired)은 `dressObs`로 들어간다 — 코어는 내용을 모른다.
 dressObs.onCollarFired = (n) => { collarFired += n; };
 const { session, anchorRamp, ringRamp, frameLayout, framePose, maxSeamGapM, maxDelta20Mm, diverged, rampFrames: RAMP_FRAMES } = dressing.session();
-void session; void diverged;
 
 // ── 진단 채널
-const prevFrame = new Float32Array(sim.positions.length);
-prevFrame.set(sim.positions);
 const deltaHist: number[] = [];
 // 60회차 계기① — deltaHist와 **같은 순서**의 병렬 배열(정착 판정식 무변경).
 const deltaArg: { f: number; i: number }[] = [];
