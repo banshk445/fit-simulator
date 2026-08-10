@@ -413,6 +413,12 @@ export function buildPatternGarment(
   const positions = new Float32Array(total * 3);
   const armPlus = arms[0].trueShoulder.x >= arms[1].trueShoulder.x ? arms[0] : arms[1];
   const armMinus = armPlus === arms[0] ? arms[1] : arms[0];
+  // P19 §1 — 소매 «장착 표». 패널 하나가 어느 팔에 어떤 거울 부호로 감기는가.
+  // 리터럴 두 벌이던 것을 데이터로 옮긴 것이고 값은 그대로다(항등).
+  const sleeveMounts: { panel: number; arm: PatternArm; flipSign: number }[] = [
+    { panel: PANEL_PAT_SLEEVE_R, arm: armPlus, flipSign: 1 },
+    { panel: PANEL_PAT_SLEEVE_L, arm: armMinus, flipSign: -1 },
+  ];
   const sleeveRadiusM = draft.dims.sleeveTubeRadiusM;
   // P12 — 소매 반폭의 y 프로파일. 제도(`patternDraft`)의 `underFront` 직선과 **같은 식**이다
   // (식을 옮겨 적지 않도록 끝점 2개를 dims에서 읽어 선형 보간한다). 캡 위쪽(y < 캡높이)은
@@ -563,7 +569,11 @@ export function buildPatternGarment(
     // 반원통이면 두 시접 변이 π·r ≈ 18cm 벌어진 채 시작해 S1 램프가 그
     // 거리를 전부 좁혀야 하고, 2a-thin 스파이크가 수렴을 실증한 배치는
     // 전원통이었다(spikePanels.ts). 관통 위험은 게이트로 측정한다.
-    for (const [panel, arm, flipSign] of [[PANEL_PAT_SLEEVE_R, armPlus, 1], [PANEL_PAT_SLEEVE_L, armMinus, -1]] as const) {
+    // ── P19 §1 — **소매 배치의 「정확히 2매」 전제를 푼다**(P18 §4-8).
+    // 어느 패널이 어느 팔에 어떤 부호로 감기는지를 **표**(`sleeveMounts`)로 받는다.
+    // 소매 역할 패널이 몇 매든(밴드 포함) 같은 코드로 감긴다.
+    // 티셔츠 표는 종전 리터럴과 **같은 순서·같은 값**이라 비트 동일이다.
+    for (const { panel, arm, flipSign } of sleeveMounts) {
       const d = norm(arm.dir);
       const up = { x: 0, y: 1, z: 0 };
       // e1 = 팔 축에 직교하는 "위쪽" 방향(어깨 능선 쪽) — 소매산 정점이 이
