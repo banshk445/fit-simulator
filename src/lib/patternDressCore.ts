@@ -222,6 +222,13 @@ export interface PatternDressResult {
   uv: Float32Array;
   seams: { a: number; b: number }[];
   metrics: PatternDressMetrics | null;
+  /**
+   * P17 §2 — **정점별 옷↔몸 부호거리(m)**. 핏 맵이 색을 입히는 원자료다.
+   * 술어는 핏 리포트와 **같은 것**을 쓴다(몸판 = 앞/뒤판 메시 · 소매 = 전신 메시) —
+   * 표와 색이 다른 것을 말하면 안 된다. 질의 실패는 `NaN`.
+   * `metrics`가 없으면(실패 실행) 길이 0.
+   */
+  fitPerVertex: Float32Array;
 }
 
 type Vec3 = { x: number; y: number; z: number };
@@ -334,6 +341,8 @@ export interface PatternDressing {
   ringTotalFired: () => number;
   /** 대조 채널 9종. `run()` 뒤에 부른다. */
   metrics: () => PatternDressMetrics;
+  /** P17 §2 — 정점별 옷↔몸 부호거리(m). **`metrics()`를 부른 뒤에만** 채워져 있다. */
+  fitPerVertex: () => Float32Array;
   frames: number;
   t0: number;
 }
@@ -774,6 +783,8 @@ export function createPatternDressing(
     return _result;
   };
 
+  // P17 §2 — 정점별 핏 값은 `metrics()` 안에서 채워진다(같은 술어를 두 번 돌리지 않는다).
+  let fitPerVertexOut: Float32Array = new Float32Array(0);
   const metrics = (): PatternDressMetrics => {
     const b = body();
     const { g, total } = garment();
@@ -929,6 +940,14 @@ export function createPatternDressing(
       if (pen && touch) xBoth++;
     }
 
+    // ── P17 §2 — **핏 맵 원자료.** 위 `dOf`/`dWhole`을 그대로 정점 전체에 돌린다.
+    // 새 술어 0 · 새 문턱 0 — 경계 판단은 읽는 쪽(화면)이 `fit.marginMm`으로 한다.
+    fitPerVertexOut = new Float32Array(total);
+    for (let i = 0; i < total; i++) {
+      const d = i < g.panelStarts[2] ? dOf(i) : dWhole(i);
+      fitPerVertexOut[i] = d === null ? NaN : d;
+    }
+
     const ringIdx = [...new Set(g.necklineRing.flatMap((e) => [e.a, e.b]))];
     const hemIdx = [...chainOf(0, g.panelStarts[1]), ...chainOf(g.panelStarts[1], g.panelStarts[2])];
     // ── P12 §3 — **소맷부리 착장 후 실측 둘레.** 밑단 사슬과 같은 기계다(패턴 y가
@@ -989,6 +1008,7 @@ export function createPatternDressing(
   return {
     opts: { ...opts, ringTotal: ringTotalOn, s0fix, pinDress },
     body, garment, margins, mesh, place, sim: simStage, collide, anchors, session, run, metrics,
+    fitPerVertex: () => fitPerVertexOut,
     ringTotalFired: () => ringTotalFired,
     frames: FRAMES, t0,
   };
@@ -999,7 +1019,7 @@ export function runPatternDressing(fixture: PatternDressFixture, opts: PatternDr
   const d = createPatternDressing(fixture, opts);
   const t0 = d.t0;
   const now = (): number => (typeof performance !== "undefined" ? performance.now() : 0);
-  const shell = (): Omit<PatternDressResult, "ok" | "error" | "state" | "frames" | "retry" | "metrics"> => {
+  const shell = (): Omit<PatternDressResult, "ok" | "error" | "state" | "frames" | "retry" | "metrics" | "fitPerVertex"> => {
     const { g } = d.garment();
     return {
       elapsedMs: now() - t0,
@@ -1016,7 +1036,7 @@ export function runPatternDressing(fixture: PatternDressFixture, opts: PatternDr
   try {
     result = d.run();
   } catch (e) {
-    return { ok: false, error: e instanceof Error ? e.message : String(e), state: "ABORT", frames: 0, retry: 0, ...shell(), metrics: null };
+    return { ok: false, error: e instanceof Error ? e.message : String(e), state: "ABORT", frames: 0, retry: 0, ...shell(), metrics: null, fitPerVertex: new Float32Array(0) };
   }
   return {
     ok: result.failure === null,
@@ -1025,6 +1045,8 @@ export function runPatternDressing(fixture: PatternDressFixture, opts: PatternDr
     frames: result.frames,
     retry: result.retries,
     ...shell(),
+    // 순서 주의: `metrics()`가 `fitPerVertex`를 채운다 — 먼저 부른 뒤에 읽는다.
     metrics: d.metrics(),
+    fitPerVertex: d.fitPerVertex(),
   };
 }

@@ -307,24 +307,34 @@ export function Controls() {
           />
           <span>핏 맵</span>
         </label>
+        {/* P17 §2 — 범례를 **실제 경계에 맞춘다.** 옛 문구(관통/타이트/적정/헐렁)는 v1의
+            0/1/3cm 눈대중 스케일이었고 v2 화면에는 그 색이 아예 안 입혀지고 있었다.
+            지금 색은 핏 리포트와 **같은 술어·같은 경계**(흡착 margin 15.0mm)를 쓴다 —
+            표와 색이 다른 것을 말하지 않는다. 회색은 «부호거리 산출 불가»이고
+            **없는 값을 색으로 지어내지 않는다**는 뜻이다. */}
         {showFitMap && (
-          <div className="mt-3 flex flex-wrap gap-x-4 gap-y-1.5 text-xs text-slate-300">
-            <span className="flex items-center gap-1.5">
-              <span className="h-3 w-3 rounded-full" style={{ backgroundColor: "#8c00d9" }} />
-              관통(디버그)
-            </span>
-            <span className="flex items-center gap-1.5">
-              <span className="h-3 w-3 rounded-full" style={{ backgroundColor: "#d92626" }} />
-              타이트
-            </span>
-            <span className="flex items-center gap-1.5">
-              <span className="h-3 w-3 rounded-full" style={{ backgroundColor: "#f2d91a" }} />
-              적정
-            </span>
-            <span className="flex items-center gap-1.5">
-              <span className="h-3 w-3 rounded-full" style={{ backgroundColor: "#2673f2" }} />
-              헐렁
-            </span>
+          <div className="mt-3 space-y-1.5 text-xs text-slate-300">
+            <div className="flex flex-wrap gap-x-4 gap-y-1.5">
+              <span className="flex items-center gap-1.5">
+                <span className="h-3 w-3 rounded-full" style={{ backgroundColor: "#e64047" }} />
+                눌림 (≤ 0mm)
+              </span>
+              <span className="flex items-center gap-1.5">
+                <span className="h-3 w-3 rounded-full" style={{ backgroundColor: "#f2c733" }} />
+                밀착 (≤ 15.0mm)
+              </span>
+              <span className="flex items-center gap-1.5">
+                <span className="h-3 w-3 rounded-full" style={{ backgroundColor: "#478ceb" }} />
+                여유 (&gt; 15.0mm)
+              </span>
+              <span className="flex items-center gap-1.5">
+                <span className="h-3 w-3 rounded-full" style={{ backgroundColor: "#8c8c94" }} />
+                산출 불가
+              </span>
+            </div>
+            <div className="text-slate-400">
+              옷↔몸 간극 · 경계는 핏 리포트와 같다(흡착 margin). <b>«착장하기»를 눌러야 색이 입혀진다.</b>
+            </div>
           </div>
         )}
       </section>

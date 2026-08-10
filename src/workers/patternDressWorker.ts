@@ -18,8 +18,8 @@ export type DressWorkerRequest = Omit<PatternDressOptions, "onProgress"> & {
 
 export type DressWorkerMessage =
   | { type: "progress"; frame: number; state: string }
-  | ({ type: "done" } & Omit<PatternDressResult, "positions" | "tris" | "uv"> & {
-      positions: Float32Array; tris: Uint32Array; uv: Float32Array;
+  | ({ type: "done" } & Omit<PatternDressResult, "positions" | "tris" | "uv" | "fitPerVertex"> & {
+      positions: Float32Array; tris: Uint32Array; uv: Float32Array; fitPerVertex: Float32Array;
     })
   | { type: "error"; error: string };
 
@@ -43,7 +43,8 @@ self.onmessage = async (ev: MessageEvent<DressWorkerRequest>): Promise<void> => 
     console.log(`[dressWorker] ${r.state} f=${r.frames} retry=${r.retry} · ${Math.round(performance.now() - t)}ms · 몸=${fixture ? "라이브(마네킹 스냅샷)" : "커밋 fixture"} · ${r.error ?? "실패 없음"}`);
     self.postMessage(
       { type: "done", ...r } as DressWorkerMessage,
-      { transfer: [r.positions.buffer, r.tris.buffer, r.uv.buffer] },
+      // P17 §2 — 핏 맵 원자료도 함께 넘긴다(복사 아님 · transfer).
+      { transfer: [r.positions.buffer, r.tris.buffer, r.uv.buffer, r.fitPerVertex.buffer] },
     );
   } catch (e) {
     self.postMessage({ type: "error", error: e instanceof Error ? `${e.message}\n${e.stack ?? ""}` : String(e) } satisfies DressWorkerMessage);

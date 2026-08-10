@@ -44,12 +44,19 @@ function makeCheckerTexture(): THREE.DataTexture {
 }
 
 let __r74 = 0;
+
+// ── P17 §1 — **마지막 착장 결과.** 모듈 스코프인 이유는 위 주석 참고(remount 생존).
+// `sig`가 현재 치수와 다르면 입히지 않는다 — 옛 옷의 드레이프를 새 치수에 씌우지 않는다.
+let lastResult: { sig: string; positions: Float32Array; fitPerVertex: Float32Array; marginMm: number } | null = null;
 export function PatternPreview(): React.JSX.Element | null {
   const garmentSize = useFitStore((s) => s.garmentSize);
   // P5 — 몸 슬라이더가 패턴에 도달한다. 이 의존성이 재제도를 건다.
   const bodySize = useFitStore((s) => s.bodySize);
   const sleeveType = useFitStore((s) => s.sleeveType);
   const fabric = useFitStore((s) => s.fabric);
+  // P17 §1 — `DressButton`이 결과에 실어 보내는 것과 **같은 식**이다(같은 수를 두 번 적지 않으려면
+  // 한쪽이 보내고 한쪽이 비교하는 형태가 최소다 — 값은 둘 다 store에서 온다).
+  const renderSig = JSON.stringify([garmentSize, bodySize, sleeveType, fabric]);
   // `?patternstate=1` — 2b 하네스가 남긴 최종 상태(시뮬 결과)를 그린다.
   // 없으면 2a 정적 배치를 그린다. 물리는 여전히 여기서 돌지 않는다.
   const useDressState = new URLSearchParams(window.location.search).get("patternstate") === "1";
@@ -66,7 +73,17 @@ export function PatternPreview(): React.JSX.Element | null {
   // P2c(f) — 워커 착장 결과를 받아 그리기 위한 최소 상태. 정적 배치 렌더는 그대로 두고
   // **정점 좌표만 덮어쓴다**(지오메트리 재생성 0 · UV·인덱스·브리지 위상 불변).
   const liveRef = useRef<{ bridge: ReturnType<typeof buildSeamBridge>; starts: number[]; counts: number[]; total: number } | null>(null);
+  // P17 §1 — 지오메트리 설치 세대. 로그에서 「설치」와 「결과 반영」의 순서를 읽기 위한 것.
+  const buildGenRef = useRef(0);
+  // P17 §1 — 마지막 결과는 **모듈 스코프**에 둔다(아래 `lastResult`). 컴포넌트 ref로는
+  // 부족하다 — 마네킹이 늦게 오는 동안 이 컴포넌트가 **remount**되고(설치 세대가 계속 #1인
+  // 것이 그 증거다) ref가 함께 사라진다.
+  // P17 §2 — 핏 맵. v2에는 색 경로가 **아예 없었다**(토글이 리포트 표만 켰다).
+  const showFitMap = useFitStore((s) => s.showFitMap);
   const [bridgeGeo, setBridgeGeo] = useState<THREE.BufferGeometry | null>(null);
+  // P17 §2 — **정점색이 실제로 있을 때만** 핏 맵을 그린다. 없는데 `vertexColors`를 켜면
+  // three가 색을 (0,0,0)으로 읽어 옷이 **새까맣게** 나온다(배포에서 실측했다).
+  const [hasFitColor, setHasFitColor] = useState(false);
   const checkerTexture = useMemo(() => makeCheckerTexture(), []);
   // ── 68회차 — **업로드 이미지 배선**. 직전 확인: v2 경로에 소비가 **애초에 없었다**
   // (체커가 무조건 붙고 store를 안 봤다). 캠페인 내내 캡처가 체커였던 이유다.
@@ -386,6 +403,11 @@ export function PatternPreview(): React.JSX.Element | null {
       setBridgeGeo(bridge.geometry);
       liveRef.current = { bridge, starts: [...g.panelStarts], counts: [...g.panelCounts], total: g.positions.length / 3 };
 
+      // ── P17 §1 — **지오메트리 설치 시점을 값으로 남긴다.** 이 설치가 착장 결과보다
+      // «늦게» 오면 정착 좌표가 정적 배치로 덮인다(그 순간이 화면 실패의 정체다).
+      buildGenRef.current += 1;
+      setHasFitColor(false);
+      console.log(`[patternPreview·P17] 지오메트리 설치 #${buildGenRef.current} — 정점 ${g.positions.length / 3}`);
       setGeos(out);
       const byKind = g.seamGroups.reduce<Record<string, number>>((acc, grp) => {
         acc[grp.kind] = (acc[grp.kind] ?? 0) + grp.a.length;
@@ -423,27 +445,77 @@ export function PatternPreview(): React.JSX.Element | null {
     return () => { alive = false; };
   }, [garmentSize, bodySize, sleeveType, fabric, useDressState, cleanRender]);
 
+  // P17 §1 — 결과를 지오메트리에 입히는 **한 곳**. 리스너와 「설치 직후 재적용」이 같이 쓴다.
+  const applyResult = (d: { positions: Float32Array; fitPerVertex?: Float32Array; marginMm?: number }, why: string): boolean => {
+    const live = liveRef.current;
+    if (!geos || !live || d.positions.length !== live.total * 3) return false;
+    let painted = false;
+    for (let p = 0; p < geos.length; p++) {
+      const attr = geos[p].getAttribute("position") as THREE.BufferAttribute;
+      (attr.array as Float32Array).set(d.positions.subarray(live.starts[p] * 3, (live.starts[p] + live.counts[p]) * 3));
+      attr.needsUpdate = true;
+      geos[p].computeVertexNormals();
+      geos[p].computeBoundingSphere();
+      // ── P17 §2 — **핏 맵 정점색.** 경계는 워커가 실어 보낸 흡착 margin 그대로다(새 문턱 0).
+      //   d ≤ 0        눌림   빨강
+      //   0 < d ≤ margin 밀착  노랑
+      //   d > margin    여유   파랑
+      //   NaN(질의 실패)       회색 — **없는 값을 색으로 지어내지 않는다**
+      const fv = d.fitPerVertex;
+      const mm = d.marginMm;
+      if (fv && fv.length === live.total && Number.isFinite(mm)) {
+        const col = new Float32Array(live.counts[p] * 3);
+        for (let k = 0; k < live.counts[p]; k++) {
+          const v = fv[live.starts[p] + k];
+          const rgb = !Number.isFinite(v) ? [0.55, 0.55, 0.58]
+            : v <= 0 ? [0.90, 0.25, 0.28]
+            : v * 1000 <= (mm as number) ? [0.95, 0.78, 0.20]
+            : [0.28, 0.55, 0.92];
+          col[k * 3] = rgb[0]; col[k * 3 + 1] = rgb[1]; col[k * 3 + 2] = rgb[2];
+        }
+        geos[p].setAttribute("color", new THREE.BufferAttribute(col, 3));
+        painted = true;
+      }
+    }
+    setHasFitColor(painted);
+    updateSeamBridge(live.bridge, { front: d.positions, back: d.positions, sleeveLeft: d.positions, sleeveRight: d.positions });
+    console.log(`[patternPreview] 착장 결과 반영(${why}) — 정점 좌표${d.fitPerVertex ? "·핏색" : ""} 갱신(위상·UV 불변 · 설치 세대 #${buildGenRef.current})`);
+    return true;
+  };
+
   // P2c(f) — 「착장하기」 결과 반영. `?patternstate=1`의 옛 fetch 경로와 **병존**한다.
   useEffect(() => {
     const onResult = (ev: Event): void => {
-      const d = (ev as CustomEvent<{ positions: Float32Array }>).detail;
+      const d = (ev as CustomEvent<{ positions: Float32Array; sig?: string; fitPerVertex?: Float32Array; marginMm?: number }>).detail;
       const live = liveRef.current;
-      if (!geos || !live || !d?.positions) return;
+      // P17 §1 — **말없는 실패 경로였다**(함정 25). 결과가 왔는데 그릴 대상이 아직 없으면
+      // 조용히 버려졌고, 그 뒤에 도착한 정적 배치 지오메트리가 화면에 남았다.
+      if (!geos || !live || !d?.positions) {
+        console.warn(`[patternPreview·P17] 착장 결과 **버림** — geos ${geos ? "있음" : "없음"} · live ${live ? "있음" : "없음"} · positions ${d?.positions ? "있음" : "없음"}(설치 세대 #${buildGenRef.current})`);
+        return;
+      }
       if (d.positions.length !== live.total * 3) {
         console.warn(`[patternPreview] 착장 결과 정점 수 불일치(${d.positions.length / 3} vs ${live.total}) — 반영하지 않는다`);
         return;
       }
-      for (let p = 0; p < geos.length; p++) {
-        const attr = geos[p].getAttribute("position") as THREE.BufferAttribute;
-        (attr.array as Float32Array).set(d.positions.subarray(live.starts[p] * 3, (live.starts[p] + live.counts[p]) * 3));
-        attr.needsUpdate = true;
-        geos[p].computeVertexNormals();
-        geos[p].computeBoundingSphere();
+      // 나중에 지오메트리가 다시 서면 그때 다시 입히려고 들고 있는다(P17 §1).
+      if (d.sig && d.fitPerVertex) {
+        lastResult = { sig: d.sig, positions: d.positions, fitPerVertex: d.fitPerVertex, marginMm: d.marginMm ?? NaN };
       }
-      updateSeamBridge(live.bridge, { front: d.positions, back: d.positions, sleeveLeft: d.positions, sleeveRight: d.positions });
-      console.log("[patternPreview] 착장 결과 반영 — 정점 좌표만 갱신(위상·UV 불변)");
+      applyResult(d, "이벤트");
     };
     window.addEventListener(DRESS_RESULT_EVENT, onResult);
+    // ── P17 §1 — **지오메트리가 (다시) 선 직후 마지막 결과를 다시 입힌다.**
+    // 이것이 화면 실패의 처방이다: 착장 결과가 «설치보다 먼저» 도착해도 정착 좌표가 남는다.
+    // 치수가 달라졌으면(서명 불일치) 입히지 않는다 — 옛 드레이프를 새 옷에 씌우지 않는다.
+    if (lastResult) {
+      if (lastResult.sig !== renderSig) {
+        console.log("[patternPreview·P17] 마지막 착장 결과 **버림** — 치수가 달라졌다(정적 배치를 그린다)");
+        lastResult = null;
+      } else {
+        applyResult(lastResult, "설치 후 재적용");
+      }
+    }
     return () => window.removeEventListener(DRESS_RESULT_EVENT, onResult);
   }, [geos]);
 
@@ -454,7 +526,17 @@ export function PatternPreview(): React.JSX.Element | null {
         const sf = panelSurface(i);
         return (
           <mesh key={i} geometry={geo}>
-            <meshStandardMaterial map={sf.map} color={sf.color} side={THREE.DoubleSide} roughness={0.85} />
+            {/* P17 §2 — 핏 맵이 켜지면 **정점색**을 그린다(텍스처를 끈다). 색은 워커가 보낸
+                정점별 부호거리에서 나오고 경계는 흡착 margin 그대로다 — 표와 색이 같은 것을 말한다.
+                핏 맵이 켜졌는데 아직 착장 결과가 없으면 색 속성이 없어 흰색이 된다(정상). */}
+            <meshStandardMaterial
+              key={showFitMap && hasFitColor ? "fit" : "tex"}
+              map={showFitMap && hasFitColor ? undefined : sf.map}
+              color={showFitMap && hasFitColor ? "#ffffff" : sf.color}
+              vertexColors={showFitMap && hasFitColor}
+              side={THREE.DoubleSide}
+              roughness={0.85}
+            />
           </mesh>
         );
       })}

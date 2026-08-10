@@ -20,7 +20,7 @@
 //
 // 결과는 `window` CustomEvent로 `PatternPreview`에 넘긴다. `?patternstate=1`의 옛
 // dress-state fetch 경로는 **그대로 남는다**(회귀 대조용 — 제거 0).
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useFitStore } from "../store/useFitStore";
 import { checkGarmentFit } from "../lib/garmentFitLimits";
 import { bakeBodySnapshot } from "../lib/bodySnapshot";
@@ -57,6 +57,22 @@ export function DressButton(): React.JSX.Element | null {
   const collisionMesh = useMemo(() => new MannequinCollisionMesh(), []);
   const showFitMap = useFitStore((st) => st.showFitMap);
   const [busy, setBusy] = useState(false);
+  // ── P17 §2 — **마네킹이 오기 전에는 돌리지 않는다.**
+  // 그전에 누르면 조용히 커밋 fixture(P10 이전 판본)로 돌아 «몸 슬라이더가 반영 안 된» 결과가
+  // 나오고, 그 사이 미리보기가 계속 다시 서면서 정착 좌표를 정적 배치로 덮는다
+  // (배포에서 실측한 화면 실패의 뿌리 — P17 §1). 배포는 마네킹이 38MB라 이 창이 넓다.
+  // `mannequinPoseRef`는 반응형이 아니므로 준비될 때까지만 짧게 폴링한다(준비되면 멈춘다).
+  const [bodyReady, setBodyReady] = useState(false);
+  useEffect(() => {
+    if (bodyReady) return;
+    const id = setInterval(() => {
+      const b = mannequinBonesRef.current;
+      if (mannequinPoseRef.frames >= 1 && mannequinPoseRef.maxScaleResidual <= POSE_SETTLE_EPS && mannequinRootRef.current && b.left && b.right) {
+        setBodyReady(true);
+      }
+    }, 400);
+    return () => clearInterval(id);
+  }, [bodyReady]);
   const [note, setNote] = useState("");
   // ── P8 — 핏 리포트. **현재 슬라이더 상태의 결과만** 보여준다.
   // 치수를 바꾸면 지난 리포트는 그 옷의 것이 아니므로 즉시 감춘다(P2c 경쟁 처리와 같은 취지).
@@ -64,6 +80,10 @@ export function DressButton(): React.JSX.Element | null {
   const workerRef = useRef<Worker | null>(null);
   const runIdRef = useRef(0);
   const sig = JSON.stringify([garmentSize, bodySize, sleeveType]);
+  // P17 §1 — **렌더용 서명은 원단까지 포함한다.** 렌더 지오메트리는 원단이 바뀌어도 다시 서고
+  // (물성이 달라지면 정착 좌표도 달라진다), 그때 옛 결과를 다시 입히면 안 된다.
+  // 리포트의 `sig`(P8)는 건드리지 않는다 — 그쪽 규칙은 그대로다.
+  const renderSig = JSON.stringify([garmentSize, bodySize, sleeveType, fabric]);
   const fresh = report && report.sig === sig ? report.m : null;
   if (!on) return null;
 
@@ -71,6 +91,8 @@ export function DressButton(): React.JSX.Element | null {
   // 사유 «본문»은 좌측 패널이 진다 — 여기서는 짧은 상태만(중복 제거).
   const status = blocked
     ? { t: "이 치수로는 착용 불가 — 좌측 안내 참고", c: "text-amber-300" }
+    : !bodyReady
+      ? { t: "마네킹 불러오는 중 — 준비되면 «착장하기»가 켜집니다", c: "text-slate-300" }
     : busy
       ? { t: note || "착장 중…", c: "text-white" }
       : note
@@ -80,6 +102,7 @@ export function DressButton(): React.JSX.Element | null {
   const run = (): void => {
     if (busy) { console.log("[dress] 이미 실행 중 — 이번 클릭은 무시한다(P3 §3①)"); return; }
     if (blocked) { console.warn(`[dress] 착용 불가 — 실행하지 않는다(P4 §2). ${fit.message ?? ""}`); return; }
+    if (!bodyReady) { console.warn("[dress] 마네킹 미준비 — 실행하지 않는다(P17 §2). 준비되면 버튼이 켜진다."); return; }
     workerRef.current?.terminate();
     const runId = runIdRef.current + 1;
     runIdRef.current = runId;
@@ -175,8 +198,15 @@ export function DressButton(): React.JSX.Element | null {
           ` · **소매 교차표** 관통 ${X.pen} · 눌림 ${X.touch} · 둘다 ${X.both} · 관통만 ${X.penOnly} · 눌림만 ${X.touchOnly} · 부호거리 산출불가 ${X.dNull}`,
         );
       }
+      // P17 §1·§2 — **서명과 핏 값을 함께 보낸다.**
+      // ·`sig`: 렌더가 지오메트리를 다시 세울 때 이 결과가 아직 «그 옷»의 것인지 판정한다
+      //   (레이스로 정착 좌표가 정적 배치에 덮이던 화면 실패의 처방 · P17 §1).
+      // ·`fitPerVertex`: 핏 맵 색의 원자료. 문턱은 `marginMm`으로 함께 보낸다(새 문턱 0).
       window.dispatchEvent(new CustomEvent(DRESS_RESULT_EVENT, {
-        detail: { positions: m.positions, panelStarts: m.panelStarts, panelCounts: m.panelCounts },
+        detail: {
+          positions: m.positions, panelStarts: m.panelStarts, panelCounts: m.panelCounts,
+          sig: renderSig, fitPerVertex: m.fitPerVertex, marginMm: m.metrics ? m.metrics.fit.marginMm : NaN,
+        },
       }));
       if (m.metrics) setReport({ sig, m: m.metrics });
       setNote(`${m.state} f=${m.frames} · ${s.toFixed(1)}s`);
@@ -190,7 +220,7 @@ export function DressButton(): React.JSX.Element | null {
       <div className="flex items-center gap-2">
         <button
           type="button"
-          disabled={busy || blocked}
+          disabled={busy || blocked || !bodyReady}
           onClick={run}
           className="rounded bg-white px-3 py-1 text-black disabled:opacity-50"
         >
