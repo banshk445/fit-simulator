@@ -25,7 +25,7 @@ import { useFitStore } from "../store/useFitStore";
 import { checkGarmentFit } from "../lib/garmentFitLimits";
 import { bakeBodySnapshot } from "../lib/bodySnapshot";
 import { MannequinCollisionMesh } from "../lib/meshCollision";
-import { mannequinPoseRef, mannequinBonesRef, mannequinRootRef, POSE_SETTLE_EPS } from "../lib/mannequinRef";
+import { mannequinPoseRef, mannequinBonesRef, mannequinRootRef, POSE_SETTLE_EPS, POSE_STOP_TIMEOUT_MS, poseStopped } from "../lib/mannequinRef";
 import type { PatternDressMetrics } from "../lib/patternDressCore";
 import type { DressWorkerMessage, DressWorkerRequest } from "../workers/patternDressWorker";
 
@@ -62,17 +62,51 @@ export function DressButton(): React.JSX.Element | null {
   // 나오고, 그 사이 미리보기가 계속 다시 서면서 정착 좌표를 정적 배치로 덮는다
   // (배포에서 실측한 화면 실패의 뿌리 — P17 §1). 배포는 마네킹이 38MB라 이 창이 넓다.
   // `mannequinPoseRef`는 반응형이 아니므로 준비될 때까지만 짧게 폴링한다(준비되면 멈춘다).
+  //
+  // ── P23 §1 — **「굽어도 되는 시점」의 정의가 바뀐다.** 종전 조건(잔차 ≤ eps)은 실측에서
+  // 0.75s에 통과하는데 스케일 lerp의 고정점은 3.3s다 — 그 사이에 구우면 몸 메시가 실행마다
+  // 달라진다(P22 §2-4: 1.5s 프로토콜은 기준선 재현 1/3 · 15s는 3/3). 그래서 **멎었는가**
+  // (`poseStopped`)를 함께 본다. 상한 `POSE_STOP_TIMEOUT_MS`에 걸리면 그 사실을 로그로
+  // 남기고 준비 상태로 넘긴다 — 말없이 막아 두지 않는다(함정 25).
   const [bodyReady, setBodyReady] = useState(false);
+  const [stopTimedOut, setStopTimedOut] = useState(false);
   useEffect(() => {
     if (bodyReady) return;
+    const t0 = performance.now();
     const id = setInterval(() => {
       const b = mannequinBonesRef.current;
-      if (mannequinPoseRef.frames >= 1 && mannequinPoseRef.maxScaleResidual <= POSE_SETTLE_EPS && mannequinRootRef.current && b.left && b.right) {
+      const base = mannequinPoseRef.frames >= 1 && mannequinPoseRef.maxScaleResidual <= POSE_SETTLE_EPS
+        && mannequinRootRef.current && b.left && b.right;
+      if (!base) return;
+      const waited = performance.now() - t0;
+      if (poseStopped()) {
+        console.log(
+          `[dress·P23] 포즈 멈춤 — 대기 ${Math.round(waited)}ms · frames ${mannequinPoseRef.frames}` +
+          ` · 스케일 잔차 ${mannequinPoseRef.maxScaleResidual.toExponential(2)}` +
+          ` · 스케일 정지 ${mannequinPoseRef.scaleStillFrames}프레임` +
+          ` · 팔 이동 ${mannequinPoseRef.maxArmDeltaM.toExponential(2)}m`,
+        );
+        mannequinPoseRef.stopWaitMs = waited;
+        setBodyReady(true);
+      } else if (waited > POSE_STOP_TIMEOUT_MS) {
+        console.warn(
+          `[dress·P23] 포즈 «미정지»로 상한 도달 — 대기 ${Math.round(waited)}ms > ${POSE_STOP_TIMEOUT_MS}ms` +
+          ` · 스케일 정지 ${mannequinPoseRef.scaleStillFrames}프레임` +
+          ` · 팔 이동 ${mannequinPoseRef.maxArmDeltaM.toExponential(2)}m — 그대로 굽는다(결과가 실행마다 다를 수 있다)`,
+        );
+        mannequinPoseRef.stopWaitMs = waited;
+        setStopTimedOut(true);
         setBodyReady(true);
       }
-    }, 400);
+    }, 100);
     return () => clearInterval(id);
   }, [bodyReady]);
+  // P23 §1 — 포즈 정착 추이 계기(인쇄 전용). `window.__fitDebug.poseState()`.
+  useEffect(() => {
+    const win = window as unknown as { __fitDebug?: Record<string, unknown> };
+    if (!win.__fitDebug) win.__fitDebug = {};
+    win.__fitDebug.poseState = (): unknown => ({ ...mannequinPoseRef });
+  }, []);
   const [note, setNote] = useState("");
   // ── P8 — 핏 리포트. **현재 슬라이더 상태의 결과만** 보여준다.
   // 치수를 바꾸면 지난 리포트는 그 옷의 것이 아니므로 즉시 감춘다(P2c 경쟁 처리와 같은 취지).
@@ -118,6 +152,12 @@ export function DressButton(): React.JSX.Element | null {
     const { frames, maxScaleResidual } = mannequinPoseRef;
     const settled = frames >= 1 && maxScaleResidual <= POSE_SETTLE_EPS;
     if (!settled) console.warn(`[dress] 마네킹 미정착(frames ${frames} · 잔차 ${maxScaleResidual.toExponential(2)} > ${POSE_SETTLE_EPS}) — 커밋 fixture로 돈다`);
+    // P23 §2 — 굽기까지 실제로 기다린 시간과 「멎었는가」를 실행마다 남긴다.
+    console.log(
+      `[dress·P23] 굽기 — 대기 ${Math.round(mannequinPoseRef.stopWaitMs)}ms · 멎음 ${poseStopped() ? "예" : "아니오"}` +
+      `${stopTimedOut ? " · **상한 도달 실행**" : ""} · 스케일 정지 ${mannequinPoseRef.scaleStillFrames}프레임` +
+      ` · 팔 이동 ${mannequinPoseRef.maxArmDeltaM.toExponential(2)}m`,
+    );
     const snap = settled && root && bones.left && bones.right
       ? bakeBodySnapshot({ root, bones, bodySize, garmentSize, sleeveType, fabric }, collisionMesh)
       : null;

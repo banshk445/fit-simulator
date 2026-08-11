@@ -7,7 +7,7 @@ import * as THREE from "three";
 const NO_COUNTER = import.meta.env.DEV && new URLSearchParams(window.location.search).get("nocounter") === "1";
 import { DEFAULT_BODY_SIZE, useFitStore } from "../store/useFitStore";
 import { mannequinBonesRef, mannequinPoseRef, mannequinRootRef } from "../lib/mannequinRef";
-import { findShoulderBones } from "../lib/boneUtils";
+import { findElbowBone, findHandBone, findShoulderBones } from "../lib/boneUtils";
 import { isBone, isDescendantOfAny, pointBoneTowardWorldDirection, worldDirection } from "../lib/boneUtils";
 
 // public/models/mannequin.glb — Adobe Fuse/Mixamo 기반의 맨몸 남성 캐릭터
@@ -74,6 +74,12 @@ function classifyBone(name: string): BoneCategory | null {
 }
 
 const ALL_AXES: Axis[] = ["x", "y", "z"];
+
+// P23 §1 — 팔 관절 멈춤 판정용 스크래치(양팔 × 어깨·팔꿈치·손 × xyz = 18값).
+const armProbe = new THREE.Vector3();
+const armPrev = new Float64Array(18);
+// P23 §1 — 스케일 값의 직전 프레임 사본(개수는 본 구성에 따라 정해진다).
+const scalePrev: number[] = [];
 
 // "길이 방향" 축은 모델마다 다를 수 있다 (Soldier.glb는 로컬 Y가 길이 방향이지만
 // Xbot.glb는 로컬 X였다 — Y로 하드코딩했다가 팔이 길어지는 대신 두꺼워지는
@@ -219,6 +225,9 @@ export function Mannequin() {
   const ENABLE_ARM_SWAY_DEBUG = false;
   const ARM_SWAY_FIXED_OUTWARD = 0.6;
   const armPoseElapsed = useRef(0);
+  // P23 §1 — 팔 관절 6점(양팔 × 어깨·팔꿈치·손)의 직전 프레임 월드 좌표.
+  const armSeeded = useRef(false);
+  const scaleSeeded = useRef(false);
   useFrame((_, delta) => {
     // P5 §1 — 이 루프가 A포즈를 적용한다(카운터는 아래 스케일 루프가 올린다 — 그쪽이
     // 같은 프레임에서 «뒤»에 돌기 때문이다. 두 루프가 다 돈 뒤라야 몸이 확정된다).
@@ -309,16 +318,57 @@ export function Mannequin() {
     // ── P5b §1 — **정착 잔차**. 몸 스냅샷은 프레임 수가 아니라 이 값으로 판정한다
     // (lerp 수렴 프레임 수는 프레임률·이동량에 따라 달라진다 — mannequinRef 주석).
     // 위에서 lerp를 «적용한 뒤»의 목표 대비 최대 편차를 그대로 잰다.
+    // P23 §1 — 같은 순회에서 **프레임 간 변화량**도 잰다. 잔차(목표 대비 편차)와 다른 양이다:
+    // lerp는 고정점에 닿으면 `lerp(a,t,α) === a`가 되어 **값이 멎지만** 잔차는 0이 아닌 채로
+    // 남는다(실측 1.33e-15에서 평탄). 「굽어도 되는 시점」은 잔차가 아니라 **멎었는가**다.
     let residual = Math.abs(outer.scale.x - heightMultiplier);
-    const acc = (v: number, target: number): void => { const d = Math.abs(v - target); if (d > residual) residual = d; };
+    let step = 0;
+    let k = 0;
+    const acc = (v: number, target: number): void => {
+      const d = Math.abs(v - target); if (d > residual) residual = d;
+      if (k < scalePrev.length) { const c = Math.abs(v - scalePrev[k]); if (c > step) step = c; }
+      scalePrev[k] = v; k += 1;
+    };
+    acc(outer.scale.x, heightMultiplier);
     for (const { bone, axis } of boneGroups.arm) acc(bone.scale[axis], armMultiplier);
     for (const { bone, axis } of boneGroups.leg) acc(bone.scale[axis], legMultiplier);
     for (const { bone, axis } of boneGroups.shoulder) acc(bone.scale[axis], shoulderMultiplier);
     for (const { bone, axes } of torsoGirthBones) for (const axis of axes) acc(bone.scale[axis], chestMultiplier);
     for (const { bone, axes } of shoulderGirthAxes) for (const axis of axes) acc(bone.scale[axis], counterChestMultiplier);
     for (const { bone, axes } of neckCounterScaleBones) for (const axis of axes) acc(bone.scale[axis], counterChestMultiplier);
+    if (k > scalePrev.length) { scalePrev.length = k; scaleSeeded.current = false; }
+    mannequinPoseRef.scaleStillFrames = scaleSeeded.current && step === 0 ? mannequinPoseRef.scaleStillFrames + 1 : 0;
+    scaleSeeded.current = true;
     mannequinPoseRef.maxScaleResidual = residual;
     mannequinPoseRef.frames += 1;
+
+    // ── P23 §1 — **팔 포즈가 실제로 멈췄는지** 잰다. 위 잔차는 스케일 lerp의 목표 대비
+    // 편차이고, 몸 스냅샷이 읽는 것은 **어깨·팔꿈치·손의 월드 좌표**다(`bodySnapshot`).
+    // 두 루프(A포즈 → 스케일)가 다 돈 «뒤»가 그 프레임의 확정 상태라 여기서 잰다.
+    // 새 상수 0 — 문턱을 쓰지 않고 **프레임 간 이동량이 정확히 0인가**만 본다.
+    const { left: armL, right: armR } = mannequinBonesRef.current;
+    if (armL && armR) {
+      let k = 0;
+      let moved = 0;
+      for (const root of [armL, armR]) {
+        for (const bone of [root, findElbowBone(root), findHandBone(root)]) {
+          bone.updateWorldMatrix(true, false);
+          bone.getWorldPosition(armProbe);
+          for (const v of [armProbe.x, armProbe.y, armProbe.z]) {
+            const d = Math.abs(v - armPrev[k]);
+            if (d > moved) moved = d;
+            armPrev[k] = v;
+            k += 1;
+          }
+        }
+      }
+      if (armSeeded.current) {
+        mannequinPoseRef.maxArmDeltaM = moved;
+        mannequinPoseRef.armStillFrames = moved === 0 ? mannequinPoseRef.armStillFrames + 1 : 0;
+      } else {
+        armSeeded.current = true;
+      }
+    }
   });
 
   return (
