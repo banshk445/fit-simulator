@@ -178,6 +178,39 @@ export interface PatternDressMetrics {
   /** P13 — 소맷부리 여유(cm · 소매산이 이미 가진 여유). 산출 불가면 NaN. */
   cuffEaseCm: number;
   /**
+   * P21 §2 — **비결정성 진단 채널 3종**(인쇄 전용 · 판정 0).
+   * 실행마다 「입력이 같은가 / 초기 상태가 같은가 / 도달 형상이 같은가」를 가르는 데 쓴다.
+   */
+  diag: {
+    /** 거리 제약 쌍 수(초기화 층). */
+    constraintCount: number;
+    /** 정점 수 · 시접 쌍 수. */
+    vertexCount: number;
+    seamCount: number;
+    /** 몸 «메시» 좌표 해시(입력 층). */
+    bodyDigest: string;
+    /**
+     * P21 §2 — 몸 «인덱스» 해시. 좌표가 같아도 **삼각형 순회 순서**가 다르면
+     * `axisSection`(팔 단면)의 부동소수 누적 순서가 달라져 둘레가 ULP로 흔들린다.
+     * 그 흔들림이 `sampleBySizeField`의 `round(total)+1` 경계를 넘기면 정점 수가 바뀐다.
+     */
+    bodyIndexDigest: string;
+    /**
+     * P21 §2 — 팔 «관절» 해시(입력 층). 메시 해시가 못 덮는 자리다 —
+     * 포즈(어깨·팔꿈치·손)는 마네킹 본에서 오고 `POSE_SETTLE_EPS`(0.17mm)를 통과한
+     * 잔차가 남는다. 제도가 그 값을 읽으므로(P11 팔 단면 · P13 소맷부리) 여기가 흔들리면
+     * 옷 자체가 실행마다 미세하게 달라진다.
+     */
+    armDigest: string;
+    /** 제도가 낸 소맷부리 반폭·그 자리 팔 둘레(m) — 위 흔들림이 옷에 닿았는지의 직접 채널. */
+    cuffHalfWidthM: number;
+    cuffArmGirthM: number;
+    /** 배치 직후 좌표 해시(조립·배치 층) — 물리 전 초기 상태가 같은가. */
+    placedDigest: string;
+    /** 정착 후 좌표 해시(정착 층) — 도달 «형상»이 같은가. */
+    settledDigest: string;
+  };
+  /**
    * P14 — **관통 정점의 자리**(인쇄 전용 · 판정 0). 총량은 `insideCount`/`insideTotal`이고
    * 여기 담긴 것은 그 정점들이 «어디»에 있는가다. 술어는 새로 만들지 않았다.
    */
@@ -460,6 +493,8 @@ export function createPatternDressing(
       if (obs.wrapPlaceCorrect) obs.wrapPlaceCorrect("S0 배치", g.positions, run); else run();
     }
     const penAfter = countInside(g.positions, total, m.insideParity);
+    // P21 §2 — **물리에 들어가기 «직전»** 좌표 해시. 실행마다 초기 상태가 같은지의 채널이다.
+    placedDigestOut = digestOf(g.positions, total * 3);
     _place = { penBefore, corrected, penAfter };
     return _place;
   };
@@ -794,6 +829,18 @@ export function createPatternDressing(
     return _result;
   };
 
+  // P21 §2 — 결정성 대조용 해시. 부동소수 비트가 아니라 **0.01mm로 반올림한 정수**를 섞는다
+  // (같은 형상이면 같은 값이 나오되 마지막 비트 잡음에 안 흔들리게).
+  const digestOf = (a: ArrayLike<number>, n = a.length): string => {
+    let h = 0x811c9dc5;
+    for (let i = 0; i < n; i++) {
+      const v = Math.round(a[i] * 100000) | 0;
+      h ^= v; h = Math.imul(h, 0x01000193);
+    }
+    return (h >>> 0).toString(16).padStart(8, "0");
+  };
+  let placedDigestOut = "";
+
   // P17 §2 — 정점별 핏 값은 `metrics()` 안에서 채워진다(같은 술어를 두 번 돌리지 않는다).
   let fitPerVertexOut: Float32Array = new Float32Array(0);
   const metrics = (): PatternDressMetrics => {
@@ -1015,6 +1062,27 @@ export function createPatternDressing(
       cuffCm,
       cuffDraftCm: 200 * g.draft.dims.cuffHalfWidthM,
       cuffEaseCm: g.draft.dims.cuffEaseM === null ? NaN : 100 * g.draft.dims.cuffEaseM,
+      diag: {
+        constraintCount: sim.constraintPairs.length,
+        vertexCount: total,
+        seamCount: g.seams.length,
+        bodyDigest: digestOf(b.position),
+        bodyIndexDigest: digestOf(b.wholeIndex ?? b.torsoIndex),
+        armDigest: digestOf([
+          pose.armLeft.trueShoulder.x, pose.armLeft.trueShoulder.y, pose.armLeft.trueShoulder.z,
+          pose.armLeft.dir.x, pose.armLeft.dir.y, pose.armLeft.dir.z, pose.armLeft.length,
+          pose.armLeft.elbow?.x ?? 0, pose.armLeft.elbow?.y ?? 0, pose.armLeft.elbow?.z ?? 0,
+          pose.armLeft.hand?.x ?? 0, pose.armLeft.hand?.y ?? 0, pose.armLeft.hand?.z ?? 0,
+          pose.armRight.trueShoulder.x, pose.armRight.trueShoulder.y, pose.armRight.trueShoulder.z,
+          pose.armRight.dir.x, pose.armRight.dir.y, pose.armRight.dir.z, pose.armRight.length,
+          pose.armRight.elbow?.x ?? 0, pose.armRight.elbow?.y ?? 0, pose.armRight.elbow?.z ?? 0,
+          pose.armRight.hand?.x ?? 0, pose.armRight.hand?.y ?? 0, pose.armRight.hand?.z ?? 0,
+        ]),
+        cuffHalfWidthM: g.draft.dims.cuffHalfWidthM,
+        cuffArmGirthM: g.draft.dims.cuffArmGirthM ?? NaN,
+        placedDigest: placedDigestOut,
+        settledDigest: digestOf(sim.positions, total * 3),
+      },
       pen: {
         byPanel: penByPanel,
         torsoByYCm: penTorsoByYCm,

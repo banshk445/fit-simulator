@@ -187,6 +187,13 @@ export function DressButton(): React.JSX.Element | null {
           win.__fitDebug.dressMetrics = (): unknown => q;
         }
         // ── P14 §1·§2 상설 계기 — 관통 «자리». 총량 옆에 위치 분해를 한 줄 더 낸다.
+        // ── P21 §2 — 비결정성 진단 한 줄. 「입력 / 초기 / 도달」 세 해시를 나란히 낸다.
+        const G = q.diag;
+        console.log(
+          `[dress·P21 결정성] 몸메시 ${G.bodyDigest} · 몸인덱스 ${G.bodyIndexDigest} · 팔관절 ${G.armDigest} · 배치 ${G.placedDigest} · 정착 ${G.settledDigest}` +
+          ` · 소맷부리 반폭 ${(G.cuffHalfWidthM * 100).toFixed(4)}cm(그 자리 팔 ${(G.cuffArmGirthM * 100).toFixed(4)}cm)` +
+          ` · 정점 ${G.vertexCount} · 제약 ${G.constraintCount}쌍 · 시접 ${G.seamCount}쌍`,
+        );
         const P = q.pen;
         const top = (r: Record<string, number>, n: number): string => {
           const e = Object.entries(r).sort((a, b) => b[1] - a[1]);

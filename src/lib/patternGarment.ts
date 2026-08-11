@@ -431,7 +431,16 @@ export function buildPatternGarment(
   const shoulderPairs = seams.filter((sm) => sm.kind === "shoulder").map((sm) => ({ a: sm.a, b: sm.b }));
 
   // ── 자기충돌 문턱 도출(§3.2)
-  const edgeMinM = Math.min(half.front.quality.edgeMinM, half.back.quality.edgeMinM, sleeveMesh.quality.edgeMinM);
+  // P21 §1 — **조립 층 누락 ①.** 밴드 메시가 이 최소값에 빠져 있었다. 자기충돌 문턱은
+  // 「가장 짧은 엣지」에서 나오는데(§3.2) 밴드가 더 짧으면 문턱이 밴드에 대해 과대해진다.
+  // 패널 목록에서 도출한다 — 패널이 늘어도 따라간다.
+  const panelMeshes: { panel: string; q: MeshQuality }[] = [
+    { panel: "front(절반)", q: half.front.quality },
+    { panel: "back(절반)", q: half.back.quality },
+    { panel: "sleeve", q: sleeveMesh.quality },
+    ...(hasBand ? [{ panel: "cuff(밴드)", q: bandMesh!.quality }] : []),
+  ];
+  const edgeMinM = Math.min(...panelMeshes.map((m) => m.q.edgeMinM));
   const selfCollisionMinDistM = edgeMinM * SELF_COLLISION_EDGE_FACTOR;
 
   // ── 정적 배치(§4 S0) ---------------------------------------------------
@@ -655,11 +664,9 @@ export function buildPatternGarment(
     seams, seamGroups, edgePairs, necklineRing, shoulderPairs, mirrorOf,
     topology: makePanelTopology(panelRoles, panelStarts),
     selfCollisionMinDistM,
-    quality: [
-      { panel: "front(절반)", q: half.front.quality },
-      { panel: "back(절반)", q: half.back.quality },
-      { panel: "sleeve", q: sleeveMesh.quality },
-    ],
+    // P21 §1 — **조립 층 누락 ②.** 품질 배열이 리터럴 3개였다 ⟹ `check:pattern`의
+    // 삼각화 품질 게이트가 **밴드를 아예 안 봤다**. 같은 목록에서 낸다.
+    quality: panelMeshes,
     place,
     meta: {
       neckLoopY: topY, neckLoopGirthM: 2 * Math.PI * maxRadiusAt(topY), neckPointY: topY,
