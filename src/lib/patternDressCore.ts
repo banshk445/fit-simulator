@@ -209,6 +209,24 @@ export interface PatternDressMetrics {
     placedDigest: string;
     /** 정착 후 좌표 해시(정착 층) — 도달 «형상»이 같은가. */
     settledDigest: string;
+    /**
+     * P22 §1 — **비트 해시**(반올림 0). P21 §0의 9단계를 순서대로 찍어
+     * 「어디부터 갈리는가」를 한 줄에서 읽게 한다. 위 해시들과 **병존**한다.
+     */
+    bits: {
+      /** 1·2 입력 — 몸 메시 좌표 · 메시 인덱스 · 팔 관절. */
+      bodyPos: string; bodyIdx: string; arms: string;
+      /** P22 §4 — 팔 포즈를 **축(제도가 쓰는 것)** 과 **방향 벡터**로 갈라 센다. */
+      armsAxis: string; armsDir: string;
+      /** 3 몸 실측 — 팔 축 단면 프로파일 전량 · 슬라이스 둘레 · 능선. */
+      armProfile: string; slices: string; ridge: string;
+      /** 4 제도 — 소맷부리 반폭·여유 · 세그먼트 길이 전량 · 표본 수 전량. */
+      draftDims: string; segLens: string; segCounts: string;
+      /** 5 조립 — 패턴 2D · 삼각형 · 엣지 쌍. */
+      pos2: string; tris: string; edges: string;
+      /** 6 배치 · 8 정착. */
+      placed: string; settled: string;
+    };
   };
   /**
    * P14 — **관통 정점의 자리**(인쇄 전용 · 판정 0). 총량은 `insideCount`/`insideTotal`이고
@@ -495,6 +513,7 @@ export function createPatternDressing(
     const penAfter = countInside(g.positions, total, m.insideParity);
     // P21 §2 — **물리에 들어가기 «직전»** 좌표 해시. 실행마다 초기 상태가 같은지의 채널이다.
     placedDigestOut = digestOf(g.positions, total * 3);
+    placedBitsOut = bitHash(g.positions.subarray(0, total * 3));
     _place = { penBefore, corrected, penAfter };
     return _place;
   };
@@ -839,7 +858,20 @@ export function createPatternDressing(
     }
     return (h >>> 0).toString(16).padStart(8, "0");
   };
+  // ── P22 §1 — **반올림 없는 «비트» 해시.** 위 `digestOf`는 0.01mm로 반올림해
+  // ULP 차이를 지운다(P21 §3이 갈래 A를 못 가른 이유). 여기서는 원시 바이트를 센다.
+  // 인쇄 전용 · 물리 0줄 · 기존 해시는 대조용으로 **남긴다**.
+  const bitHash = (view: ArrayBufferView): string => {
+    const b = new Uint8Array(view.buffer, view.byteOffset, view.byteLength);
+    let h = 0x811c9dc5;
+    for (let i = 0; i < b.length; i++) { h ^= b[i]; h = Math.imul(h, 0x01000193); }
+    return (h >>> 0).toString(16).padStart(8, "0");
+  };
+  /** 낱개 수를 비트로 해싱 — 배열로 모아 한 번에 센다(f64 원본 비트 보존). */
+  const bitHashNums = (nums: readonly number[]): string => bitHash(Float64Array.from(nums));
+
   let placedDigestOut = "";
+  let placedBitsOut = "";
 
   // P17 §2 — 정점별 핏 값은 `metrics()` 안에서 채워진다(같은 술어를 두 번 돌리지 않는다).
   let fitPerVertexOut: Float32Array = new Float32Array(0);
@@ -1082,6 +1114,49 @@ export function createPatternDressing(
         cuffArmGirthM: g.draft.dims.cuffArmGirthM ?? NaN,
         placedDigest: placedDigestOut,
         settledDigest: digestOf(sim.positions, total * 3),
+        bits: {
+          bodyPos: bitHash(b.position),
+          bodyIdx: bitHash(b.wholeIndex ?? b.torsoIndex),
+          armsAxis: bitHashNums([
+            pose.armLeft.trueShoulder.x, pose.armLeft.trueShoulder.y, pose.armLeft.trueShoulder.z, pose.armLeft.length,
+            pose.armLeft.elbow?.x ?? 0, pose.armLeft.elbow?.y ?? 0, pose.armLeft.elbow?.z ?? 0,
+            pose.armLeft.hand?.x ?? 0, pose.armLeft.hand?.y ?? 0, pose.armLeft.hand?.z ?? 0,
+            pose.armRight.trueShoulder.x, pose.armRight.trueShoulder.y, pose.armRight.trueShoulder.z, pose.armRight.length,
+            pose.armRight.elbow?.x ?? 0, pose.armRight.elbow?.y ?? 0, pose.armRight.elbow?.z ?? 0,
+            pose.armRight.hand?.x ?? 0, pose.armRight.hand?.y ?? 0, pose.armRight.hand?.z ?? 0,
+          ]),
+          armsDir: bitHashNums([
+            pose.armLeft.dir.x, pose.armLeft.dir.y, pose.armLeft.dir.z,
+            pose.armRight.dir.x, pose.armRight.dir.y, pose.armRight.dir.z,
+          ]),
+          arms: bitHashNums([
+            pose.armLeft.trueShoulder.x, pose.armLeft.trueShoulder.y, pose.armLeft.trueShoulder.z,
+            pose.armLeft.dir.x, pose.armLeft.dir.y, pose.armLeft.dir.z, pose.armLeft.length,
+            pose.armLeft.elbow?.x ?? 0, pose.armLeft.elbow?.y ?? 0, pose.armLeft.elbow?.z ?? 0,
+            pose.armLeft.hand?.x ?? 0, pose.armLeft.hand?.y ?? 0, pose.armLeft.hand?.z ?? 0,
+            pose.armRight.trueShoulder.x, pose.armRight.trueShoulder.y, pose.armRight.trueShoulder.z,
+            pose.armRight.dir.x, pose.armRight.dir.y, pose.armRight.dir.z, pose.armRight.length,
+            pose.armRight.elbow?.x ?? 0, pose.armRight.elbow?.y ?? 0, pose.armRight.elbow?.z ?? 0,
+            pose.armRight.hand?.x ?? 0, pose.armRight.hand?.y ?? 0, pose.armRight.hand?.z ?? 0,
+          ]),
+          armProfile: b.body.armSection
+            ? bitHashNums(b.body.armSection.profile.flatMap((q) => [q.sM, q.girthM, q.equivRadiusM]))
+            : "—",
+          slices: bitHashNums(b.body.slices.flatMap((q) => [q.y, q.girthM])),
+          ridge: bitHashNums(b.body.ridge.flatMap((q) => [q.xM, q.topY])),
+          draftDims: bitHashNums([
+            g.draft.dims.cuffHalfWidthM, g.draft.dims.cuffEaseM ?? 0, g.draft.dims.cuffArmGirthM ?? 0,
+            g.draft.dims.capArmGirthM ?? 0, g.draft.dims.capHeightM, g.draft.dims.cuffYM,
+            g.draft.dims.armholeGirthM, g.draft.dims.capGirthM, g.draft.dims.necklineGirthM,
+          ]),
+          segLens: bitHashNums(g.draft.panels.flatMap((pn) => pn.segments.map((sg) => sg.lengthM))),
+          segCounts: bitHashNums(g.draft.panels.flatMap((pn) => pn.segments.map((sg) => sg.samples.length))),
+          pos2: bitHash(g.pos2),
+          tris: bitHash(g.tris),
+          edges: bitHashNums(g.edgePairs.flatMap((e) => [e.a, e.b])),
+          placed: placedBitsOut,
+          settled: bitHash(sim.positions.subarray(0, total * 3)),
+        },
       },
       pen: {
         byPanel: penByPanel,

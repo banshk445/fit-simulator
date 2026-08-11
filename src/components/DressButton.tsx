@@ -194,6 +194,16 @@ export function DressButton(): React.JSX.Element | null {
           ` · 소맷부리 반폭 ${(G.cuffHalfWidthM * 100).toFixed(4)}cm(그 자리 팔 ${(G.cuffArmGirthM * 100).toFixed(4)}cm)` +
           ` · 정점 ${G.vertexCount} · 제약 ${G.constraintCount}쌍 · 시접 ${G.seamCount}쌍`,
         );
+        // ── P22 §1 — 비트 해시 한 줄. P21 §0의 9단계를 **순서대로** 찍어
+        // 「어디부터 갈리는가」를 눈으로 읽게 한다(반올림 0).
+        const B = G.bits;
+        console.log(
+          `[dress·P22 비트] 입력[몸 ${B.bodyPos} 인덱스 ${B.bodyIdx} 팔 ${B.arms}(축 ${B.armsAxis} 방향 ${B.armsDir})]` +
+          ` → 실측[팔단면 ${B.armProfile} 슬라이스 ${B.slices} 능선 ${B.ridge}]` +
+          ` → 제도[치수 ${B.draftDims} 세그길이 ${B.segLens} 표본수 ${B.segCounts}]` +
+          ` → 조립[2D ${B.pos2} 삼각 ${B.tris} 엣지 ${B.edges}]` +
+          ` → 배치 ${B.placed} → 정착 ${B.settled}`,
+        );
         const P = q.pen;
         const top = (r: Record<string, number>, n: number): string => {
           const e = Object.entries(r).sort((a, b) => b[1] - a[1]);
