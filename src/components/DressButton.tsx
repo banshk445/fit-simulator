@@ -25,7 +25,7 @@ import { useFitStore } from "../store/useFitStore";
 import { checkGarmentFit } from "../lib/garmentFitLimits";
 import { bakeBodySnapshot } from "../lib/bodySnapshot";
 import { MannequinCollisionMesh } from "../lib/meshCollision";
-import { mannequinPoseRef, mannequinBonesRef, mannequinRootRef, POSE_SETTLE_EPS, POSE_STOP_TIMEOUT_MS, poseStopped } from "../lib/mannequinRef";
+import { mannequinPoseRef, mannequinBonesRef, mannequinRootRef, POSE_SETTLE_EPS, POSE_STOP_TIMEOUT_MS, poseStopped, awaitMannequinSettled } from "../lib/mannequinRef";
 import type { PatternDressMetrics } from "../lib/patternDressCore";
 import type { DressWorkerMessage, DressWorkerRequest } from "../workers/patternDressWorker";
 
@@ -133,7 +133,22 @@ export function DressButton(): React.JSX.Element | null {
         ? { t: note, c: note.startsWith("착장 실패") || note.startsWith("오류") ? "text-rose-300" : "text-white" }
         : { t: "치수를 맞춘 뒤 «착장하기»를 누르세요 (약 15~40초)", c: "text-slate-300" };
 
-  const run = (): void => {
+  // ── P25 §2 — **굽기 직전에 「멎었는가」를 다시 본다.**
+  //
+  // P23이 만든 결정성은 `bodyReady`가 **sticky**라 「첫 로드 후 한 번」만 유효했다
+  // (`:73` effect가 `if (bodyReady) return`으로 두 번째부터 아예 안 돈다).
+  // 슬라이더를 움직이면 A포즈 고정이 풀리고 재고정에 4.6~5.0초가 걸리는데(P24 §3-5),
+  // 그 사이에 누르면 `run()`이 잔차만 보고(`settled`) 그대로 구웠다 — P23 이전 상태다.
+  //
+  // **`bodyReady`를 non-sticky로 만들지 않은 이유**: ① 슬라이더는 «드래그»라 값이 연속으로
+  // 바뀐다 — non-sticky면 드래그 내내 버튼이 꺼져 조작이 끊긴다. ② `bodyReady`의 뜻은
+  // 「마네킹이 왔는가」(P17 §2)이고 「멎었는가」는 다른 축이다. 한 상태에 두 뜻을 얹으면
+  // 이름과 실제가 어긋난다(함정 13). ③ 대기가 필요한 자리는 **굽기 직전 한 곳**뿐이라
+  // 여기에 두면 진입점이 하나여서 누락이 없다.
+  //
+  // 상한은 `POSE_STOP_TIMEOUT_MS`(5000ms) 재사용 — **새 상수 0**. 걸리면 경고를 찍고
+  // 그대로 굽는다(함정 25 · 말없이 막지 않는다).
+  const run = async (): Promise<void> => {
     if (busy) { console.log("[dress] 이미 실행 중 — 이번 클릭은 무시한다(P3 §3①)"); return; }
     if (blocked) { console.warn(`[dress] 착용 불가 — 실행하지 않는다(P4 §2). ${fit.message ?? ""}`); return; }
     if (!bodyReady) { console.warn("[dress] 마네킹 미준비 — 실행하지 않는다(P17 §2). 준비되면 버튼이 켜진다."); return; }
@@ -144,6 +159,24 @@ export function DressButton(): React.JSX.Element | null {
     setNote("착장 중…");
     setReport(null);
     const t0 = performance.now();
+    // P25 §2 — 아직 안 멎었으면 **여기서 기다린다.** 화면에는 대기 중임을 적는다.
+    if (!poseStopped()) {
+      setNote("포즈 정착 대기 중…");
+      const w0 = performance.now();
+      const r = await awaitMannequinSettled();
+      const waited = performance.now() - w0;
+      mannequinPoseRef.stopWaitMs = waited;
+      if (r.ok) {
+        console.log(`[dress·P25] 굽기 전 대기 ${Math.round(waited)}ms — 멎음 확인(잔차 ${r.residual.toExponential(2)})`);
+      } else {
+        console.warn(
+          `[dress·P25] 굽기 전 대기가 상한 도달 — ${Math.round(waited)}ms > ${POSE_STOP_TIMEOUT_MS}ms` +
+          ` · 스케일 정지 ${mannequinPoseRef.scaleStillFrames}프레임 · 팔 이동 ${mannequinPoseRef.maxArmDeltaM.toExponential(2)}m` +
+          ` — 그대로 굽는다(결과가 실행마다 다를 수 있다)`,
+        );
+      }
+      setNote("착장 중…");
+    }
     // ── P5 §1 — **살아있는 마네킹에서 몸을 뜬다.** 실패하면(루트·본 미준비)
     // 커밋된 fixture로 되돌아간다 — 그 경우 몸 슬라이더는 반영되지 않는다.
     const root = mannequinRootRef.current;
@@ -281,7 +314,7 @@ export function DressButton(): React.JSX.Element | null {
         <button
           type="button"
           disabled={busy || blocked || !bodyReady}
-          onClick={run}
+          onClick={() => { void run(); }}
           className="rounded bg-white px-3 py-1 text-black disabled:opacity-50"
         >
           착장하기
