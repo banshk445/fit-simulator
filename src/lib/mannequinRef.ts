@@ -48,6 +48,12 @@ export const mannequinPoseRef = {
   scaleStillFrames: 0,
   /** P23 §2 — 「준비 조건 충족」까지 실제로 기다린 ms. 실행마다 보고에 병기한다. */
   stopWaitMs: -1,
+  /**
+   * P24 §3 — 마지막 프레임의 팔 관절 월드 좌표 18값(양팔 × 어깨·팔꿈치·손 × xyz).
+   * 몸 스냅샷이 읽는 바로 그 값이라, **슬라이더가 팔에 닿는지**를 착장 없이 확인할 수 있다.
+   * 인쇄 전용.
+   */
+  armSample: [] as number[],
 };
 
 /**

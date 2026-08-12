@@ -6,7 +6,7 @@ import * as THREE from "three";
 // 임시 진단(가슴 스케일 시 몸 메시 폭발 원인 가르기): ?nocounter=1
 const NO_COUNTER = import.meta.env.DEV && new URLSearchParams(window.location.search).get("nocounter") === "1";
 import { DEFAULT_BODY_SIZE, useFitStore } from "../store/useFitStore";
-import { mannequinBonesRef, mannequinPoseRef, mannequinRootRef } from "../lib/mannequinRef";
+import { mannequinBonesRef, mannequinPoseRef, mannequinRootRef, poseStopped } from "../lib/mannequinRef";
 import { findElbowBone, findHandBone, findShoulderBones } from "../lib/boneUtils";
 import { isBone, isDescendantOfAny, pointBoneTowardWorldDirection, worldDirection } from "../lib/boneUtils";
 
@@ -228,9 +228,31 @@ export function Mannequin() {
   // P23 §1 — 팔 관절 6점(양팔 × 어깨·팔꿈치·손)의 직전 프레임 월드 좌표.
   const armSeeded = useRef(false);
   const scaleSeeded = useRef(false);
+  // P24 §2 — A포즈 되먹임 고정 상태. 스케일이 다시 움직이면 풀린다(위 주석).
+  const armPoseLocked = useRef(false);
   useFrame((_, delta) => {
     // P5 §1 — 이 루프가 A포즈를 적용한다(카운터는 아래 스케일 루프가 올린다 — 그쪽이
     // 같은 프레임에서 «뒤»에 돌기 때문이다. 두 루프가 다 돈 뒤라야 몸이 확정된다).
+    //
+    // ── P24 §2 — **되먹임을 1회성으로 만든다.**
+    // 이 루프는 `worldDirection`으로 **자기가 직전 프레임에 쓴 `bone.quaternion`이 섞인
+    // 월드 행렬**을 다시 읽어(`boneUtils.ts:189-195`) 델타를 만들고(`:208`)
+    // `premultiply(...).normalize()`로 **누적 곱**을 한다(`:227`). 읽는 값이 쓴 값에
+    // 의존하는 닫힌 고리라 **고정점이 없다** — 스케일 lerp는 증분이 언더플로하면 정확히
+    // 멎지만(`lerp(a,t,α) === a`) 쿼터니언 누적곱+정규화는 마지막 비트가 계속 흔들린다.
+    // P23 §1-2 ③이 그것을 값으로 잡았다(17초 관측 · 하한 1 ULP · `armStillFrames` 0).
+    //
+    // **해제 조건은 「스케일이 다시 움직였는가」 하나다** — 조건을 손으로 열거하지 않는다.
+    // 몸 슬라이더 5축(키·팔·다리·어깨너비·가슴둘레)은 **전부** 아래 스케일 루프의 lerp를
+    // 거치므로 어느 하나가 움직이면 `scaleStillFrames`가 0으로 떨어진다. 목록을 적으면
+    // 축이 늘 때 빠뜨린다(P20·P21이 그 실패였다) — 신호 하나에 매단다.
+    // (A포즈 루프가 스케일 루프보다 «먼저» 도므로 해제는 1프레임 늦다 — 무해.)
+    if (mannequinPoseRef.scaleStillFrames === 0) {
+      if (armPoseLocked.current) console.log("[dress·P24] A포즈 고정 해제 — 스케일이 다시 움직였다");
+      armPoseLocked.current = false;
+    }
+    if (armPoseLocked.current) return;
+
     let outwardAmount = ARM_SWAY_FIXED_OUTWARD;
     if (ENABLE_ARM_SWAY_DEBUG) {
       armPoseElapsed.current += delta;
@@ -247,6 +269,18 @@ export function Mannequin() {
       const sign = Math.sign(shoulderPos.x) || 1;
       const outwardDown = new THREE.Vector3(sign * outwardAmount, -1, 0).normalize();
       pointBoneTowardWorldDirection(bone, currentDir, outwardDown);
+    }
+
+    // P24 §2 — 멎었으면 **여기서 고정**한다. 판정은 P23의 `poseStopped` 그대로 —
+    // 새 상수 0 · 새 문턱 0(`POSE_SETTLE_EPS` 재사용). 흔들림 관측용 디버그 스윙이
+    // 켜져 있으면 고정하지 않는다(그때는 계속 움직이는 것이 의도다).
+    if (!ENABLE_ARM_SWAY_DEBUG && poseStopped()) {
+      armPoseLocked.current = true;
+      console.log(
+        `[dress·P24] A포즈 고정 — frames ${mannequinPoseRef.frames}` +
+        ` · 스케일 정지 ${mannequinPoseRef.scaleStillFrames}프레임` +
+        ` · 팔 이동 ${mannequinPoseRef.maxArmDeltaM.toExponential(2)}m`,
+      );
     }
   });
 
@@ -362,6 +396,7 @@ export function Mannequin() {
           }
         }
       }
+      mannequinPoseRef.armSample = Array.from(armPrev);
       if (armSeeded.current) {
         mannequinPoseRef.maxArmDeltaM = moved;
         mannequinPoseRef.armStillFrames = moved === 0 ? mannequinPoseRef.armStillFrames + 1 : 0;
