@@ -17522,3 +17522,54 @@ boundary/outline/topology PASS · pattern 기존 실패 1건 유지 · tsc -b ·
 하네스가 물리 diff 0인 이유: 하네스는 커밋 fixture를 읽고 마네킹을 안 돌린다(기준선 A 무영향).
 
 기점: `fb251d2`(P26)
+
+---
+
+## 2026-08-13 — 제품 축 P27b: 캡처 보강 (촬영만 · 판정 0)
+
+계기: 브라우저 라이브 경로(`npm run dev` · localhost:5173) · `scripts/capture.ts` ·
+`window.__fitDebug.poseState()`. **9채널 측정 0 · 하네스 실행 0 · 코드 0줄.**
+
+### 캡처 3장
+
+공통: 반팔(`sleeveType short` 기본) · 핏맵 off · `autofit=1&newcore=1` ·
+정착 대기 **12000ms**(P27은 9000ms — 대기가 다르므로 P27 png와 md5 대조는 무효) ·
+크롭·창 P27과 동일 **2234×1640px** · 27회차 프리셋(`front`/`sideXplus`) 그대로.
+
+| # | 파일 | 조건 | 뷰 | md5 | 크기 |
+|---|---|---|---|---|---|
+| 1 | `docs/captures/p27b-비균등스케일/chest129-front.png` | 가슴 129 | front | 2f33d805d2bf9a86a96b437a8f7d5e97 | 392,564 B |
+| 2 | `docs/captures/p27b-비균등스케일/chest129-sideXplus.png` | 가슴 129 | sideXplus | 888a55ec48630faf6218ae60f94ee855 | 321,861 B |
+| 3 | `docs/captures/p27b-비균등스케일/chest100-sideXplus.png` | 기본값(100) | sideXplus | 48e861799cd07f4f22269a12a70859d0 | 333,767 B |
+
+URL: `?autofit=1&newcore=1&chest=129` / `?autofit=1&newcore=1`(대조군은 `chest=100`을
+명시로 주지 않았다 — P27 §3-7과 같은 base여야 짝이 된다).
+
+### 슬라이더·포즈 해시 (판독 시점)
+
+| 조건 | height | chest | armLen | legLen | shoulderW | armDigest18 | scaleDigest | targetKey | 팔 정지 | maxArmDeltaM |
+|---|---|---|---|---|---|---|---|---|---|---|
+| 가슴 129 · front | 170 | 129 | 60 | 85 | 45 | **c18d5341** | 181b5490 | 1,1,1,1,1.29 | 1261프레임 | 0 |
+| 가슴 129 · sideXplus | 170 | 129 | 60 | 85 | 45 | **c18d5341** | 181b5490 | 1,1,1,1,1.29 | 1186프레임 | 0 |
+| 기본값 · sideXplus | 170 | 100 | 60 | 85 | 45 | **b34c4f2d** | 408ff818 | 1,1,1,1,1 | 1206프레임 | 0 |
+
+`sleeve short` · `fitmap false` · `newCore true` 3조건 전부.
+기본값의 `b34c4f2d`는 P27 §3-1 반팔 기본값 `arm18`과 같은 값(조건별 재현 유지).
+`targetKey` 마지막 성분 1.29 = 몸통둘레 배율 ⟹ 이 조건이 비균등(다른 축 1.0).
+
+### 계기 사실 (값과 함께 인용할 것)
+
+`armDigest18`은 **촬영한 그 탭이 아니라 같은 URL을 다시 연 별도 탭**에서 읽었다 —
+① Chrome의 AppleScript JS 실행이 off ② `claude-in-chrome`은 자기 탭 그룹의 탭만 실행.
+연결의 근거는 조건별 결정성(P27 §3)이다.
+부수: 비활성 탭이면 rAF가 멎어 `poseState()`가 `frames 0` · `armDigest18 ""`을 준다
+(13초를 기다려도 0). 실패 신호가 빈 문자열뿐 — 판독 전 `frames > 0` 확인 필요(수리 0).
+착장 로그는 판독 탭 기본값 조건에서만 확인(`대기 401ms · frames 4 · 팔 이동 0.00e+0m`) —
+촬영 3장 각각의 착장 로그는 **미확인**(`capture.ts`는 콘솔을 수집하지 않는다).
+
+### 회귀
+
+코드 0줄이라 게이트·하네스·`dress:pattern` 실행 0. 기준선 갱신 0 · 새 문턱 0 · 처방 0 ·
+프리셋 신설 0. P27 갈래 G는 여전히 **미판정**(CC 자체 화면 판정 0).
+
+기점: `fafb91d`(P27) · 노트 커밋 `7146aa9`
