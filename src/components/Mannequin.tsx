@@ -6,7 +6,7 @@ import * as THREE from "three";
 // 임시 진단(가슴 스케일 시 몸 메시 폭발 원인 가르기): ?nocounter=1
 const NO_COUNTER = import.meta.env.DEV && new URLSearchParams(window.location.search).get("nocounter") === "1";
 import { DEFAULT_BODY_SIZE, useFitStore } from "../store/useFitStore";
-import { mannequinBonesRef, mannequinPoseRef, mannequinRootRef, poseStopped } from "../lib/mannequinRef";
+import { mannequinBonesRef, mannequinPoseRef, mannequinRootRef, poseStopped, POSE_SETTLE_EPS } from "../lib/mannequinRef";
 import { findElbowBone, findHandBone, findShoulderBones } from "../lib/boneUtils";
 import { isBone, isDescendantOfAny, pointBoneTowardWorldDirection, worldDirection } from "../lib/boneUtils";
 
@@ -228,6 +228,9 @@ export function Mannequin() {
   // P23 §1 — 팔 관절 6점(양팔 × 어깨·팔꿈치·손)의 직전 프레임 월드 좌표.
   const armSeeded = useRef(false);
   const scaleSeeded = useRef(false);
+  // P26 §2 — 목표 배율 서명(직전 프레임)과 「대입했다」 표시(로그 1회용).
+  const lastTargetKey = useRef("");
+  const snappedRef = useRef(false);
   // P24 §2 — A포즈 되먹임 고정 상태. 스케일이 다시 움직이면 풀린다(위 주석).
   const armPoseLocked = useRef(false);
   useFrame((_, delta) => {
@@ -317,21 +320,50 @@ export function Mannequin() {
     // 같다 — 가슴둘레 슬라이더 비율을 girth 축 스케일에 그대로 곱해도 된다.
     const chestMultiplier = bodySize.chest / DEFAULT_BODY_SIZE.chest;
 
-    const s = THREE.MathUtils.lerp(outer.scale.x, heightMultiplier, t);
-    outer.scale.setScalar(s);
+    // ── P26 §2 — **잔차가 문턱 아래로 내려가면 목표값을 그대로 대입하고 끝낸다.**
+    //
+    // `lerp(a, target, t)`의 `t = 1 − 0.001^delta`는 **프레임 delta에 의존**한다. 고정점 근방에서
+    // `(target − a)·t`가 `ulp(a)/2` 경계에 걸치면 delta가 큰 프레임에서만 `a`가 1 ULP 움직인다.
+    // target이 **정확히 1.0**이면 `a`가 1.0에 도달해 `target − a = 0`이 되어 완전히 멎지만,
+    // 1.1처럼 이진수로 표현 못 하는 값이면 **영원히 진동한다**(P25 §3-2 실측:
+    // `scaleStillFrames` 96 → 7 → 4~17 반복). 그래서 P23·P24의 「스케일 비트 동일」은
+    // **기본값에서만** 성립했고, 몸 슬라이더를 만지면 실행마다 다른 몸이 구워졌다.
+    //
+    // 대입하면 도착점이 **유일**해진다 — 궤적과 무관하게 항상 `target`이다.
+    // 그래서 「되돌려도 원래 몸으로 안 돌아온다」(P25 §3-4)도 같이 풀린다.
+    //
+    // 조건 둘: ① **직전 프레임 잔차** ≤ `POSE_SETTLE_EPS`(새 문턱 0 · 재사용)
+    //          ② target이 직전 프레임과 **같을 것** — 슬라이더를 움직인 그 프레임에 대입하면
+    //             전환 애니메이션이 통째로 사라진다(옛 잔차는 새 target을 모른다).
+    // `t` 식은 건드리지 않는다.
+    const targetKey = `${heightMultiplier},${armMultiplier},${legMultiplier},${shoulderMultiplier},${chestMultiplier}`;
+    const targetChanged = targetKey !== lastTargetKey.current;
+    lastTargetKey.current = targetKey;
+    const snap = !targetChanged && mannequinPoseRef.maxScaleResidual <= POSE_SETTLE_EPS;
+    if (snap && !snappedRef.current) {
+      snappedRef.current = true;
+      console.log(
+        `[dress·P26] 스케일 대입 — 잔차 ${mannequinPoseRef.maxScaleResidual.toExponential(2)} ≤ ${POSE_SETTLE_EPS}` +
+        ` · 대상 전체키/팔/다리/어깨/몸통둘레/상쇄 · 배율 ${targetKey}`,
+      );
+    }
+    if (!snap) snappedRef.current = false;
+    const to = (cur: number, target: number): number => (snap ? target : THREE.MathUtils.lerp(cur, target, t));
+
+    outer.scale.setScalar(to(outer.scale.x, heightMultiplier));
 
     for (const { bone, axis } of boneGroups.arm) {
-      bone.scale[axis] = THREE.MathUtils.lerp(bone.scale[axis], armMultiplier, t);
+      bone.scale[axis] = to(bone.scale[axis], armMultiplier);
     }
     for (const { bone, axis } of boneGroups.leg) {
-      bone.scale[axis] = THREE.MathUtils.lerp(bone.scale[axis], legMultiplier, t);
+      bone.scale[axis] = to(bone.scale[axis], legMultiplier);
     }
     for (const { bone, axis } of boneGroups.shoulder) {
-      bone.scale[axis] = THREE.MathUtils.lerp(bone.scale[axis], shoulderMultiplier, t);
+      bone.scale[axis] = to(bone.scale[axis], shoulderMultiplier);
     }
     for (const { bone, axes } of torsoGirthBones) {
       for (const axis of axes) {
-        bone.scale[axis] = THREE.MathUtils.lerp(bone.scale[axis], chestMultiplier, t);
+        bone.scale[axis] = to(bone.scale[axis], chestMultiplier);
       }
     }
     // 위 torsoGirthBones 스케일이 어깨/팔/목/머리 쪽으로 새어 들어가는 걸
@@ -340,12 +372,12 @@ export function Mannequin() {
     const counterChestMultiplier = NO_COUNTER ? 1 : 1 / chestMultiplier;
     for (const { bone, axes } of shoulderGirthAxes) {
       for (const axis of axes) {
-        bone.scale[axis] = THREE.MathUtils.lerp(bone.scale[axis], counterChestMultiplier, t);
+        bone.scale[axis] = to(bone.scale[axis], counterChestMultiplier);
       }
     }
     for (const { bone, axes } of neckCounterScaleBones) {
       for (const axis of axes) {
-        bone.scale[axis] = THREE.MathUtils.lerp(bone.scale[axis], counterChestMultiplier, t);
+        bone.scale[axis] = to(bone.scale[axis], counterChestMultiplier);
       }
     }
 
@@ -371,6 +403,15 @@ export function Mannequin() {
     for (const { bone, axes } of shoulderGirthAxes) for (const axis of axes) acc(bone.scale[axis], counterChestMultiplier);
     for (const { bone, axes } of neckCounterScaleBones) for (const axis of axes) acc(bone.scale[axis], counterChestMultiplier);
     if (k > scalePrev.length) { scalePrev.length = k; scaleSeeded.current = false; }
+    // P26 §3 — 스케일 값 전량의 «비트» 해시(FNV-1a on raw f64 bytes) + 목표 서명.
+    {
+      const buf = new Float64Array(scalePrev.slice(0, k));
+      const b = new Uint8Array(buf.buffer);
+      let h = 0x811c9dc5;
+      for (let i = 0; i < b.length; i++) { h ^= b[i]; h = Math.imul(h, 0x01000193); }
+      mannequinPoseRef.scaleDigest = (h >>> 0).toString(16).padStart(8, "0");
+      mannequinPoseRef.targetKey = targetKey;
+    }
     mannequinPoseRef.scaleStillFrames = scaleSeeded.current && step === 0 ? mannequinPoseRef.scaleStillFrames + 1 : 0;
     scaleSeeded.current = true;
     mannequinPoseRef.maxScaleResidual = residual;
