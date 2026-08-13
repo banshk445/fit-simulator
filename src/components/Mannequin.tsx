@@ -8,7 +8,7 @@ const NO_COUNTER = import.meta.env.DEV && new URLSearchParams(window.location.se
 import { DEFAULT_BODY_SIZE, useFitStore } from "../store/useFitStore";
 import { mannequinBonesRef, mannequinPoseRef, mannequinRootRef, poseStopped, POSE_SETTLE_EPS } from "../lib/mannequinRef";
 import { findElbowBone, findHandBone, findShoulderBones } from "../lib/boneUtils";
-import { isBone, isDescendantOfAny, pointBoneTowardWorldDirection, worldDirection } from "../lib/boneUtils";
+import { isBone, isDescendantOfAny, setBoneTowardWorldDirection } from "../lib/boneUtils";
 
 // public/models/mannequin.glb — Adobe Fuse/Mixamo 기반의 맨몸 남성 캐릭터
 // ("Ch36")를 T포즈로 내려받아 Blender로 glTF 변환한 파일. 단일 메시라
@@ -267,11 +267,12 @@ export function Mannequin() {
     for (const { bone } of boneGroups.arm) {
       const child = firstBoneChild(bone);
       if (!child) continue;
-      const currentDir = worldDirection(bone, child);
       bone.getWorldPosition(shoulderPos);
       const sign = Math.sign(shoulderPos.x) || 1;
       const outwardDown = new THREE.Vector3(sign * outwardAmount, -1, 0).normalize();
-      pointBoneTowardWorldDirection(bone, currentDir, outwardDown);
+      // P27 §2 — 절대 구성판으로 바꾼다(누적곱 제거). v1이 직접 부르는
+      // `pointBoneTowardWorldDirection`은 **손대지 않았다**(`checkDemoSmoke.ts:165`).
+      setBoneTowardWorldDirection(bone, child, outwardDown);
     }
 
     // P24 §2 — 멎었으면 **여기서 고정**한다. 판정은 P23의 `poseStopped` 그대로 —
@@ -438,6 +439,12 @@ export function Mannequin() {
         }
       }
       mannequinPoseRef.armSample = Array.from(armPrev);
+      {
+        const ab = new Uint8Array(armPrev.buffer, armPrev.byteOffset, armPrev.byteLength);
+        let ah = 0x811c9dc5;
+        for (let i = 0; i < ab.length; i++) { ah ^= ab[i]; ah = Math.imul(ah, 0x01000193); }
+        mannequinPoseRef.armDigest18 = (ah >>> 0).toString(16).padStart(8, "0");
+      }
       if (armSeeded.current) {
         mannequinPoseRef.maxArmDeltaM = moved;
         mannequinPoseRef.armStillFrames = moved === 0 ? mannequinPoseRef.armStillFrames + 1 : 0;

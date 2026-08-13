@@ -61,6 +61,11 @@ export const mannequinPoseRef = {
    */
   scaleDigest: "",
   targetKey: "",
+  /**
+   * P27 §2 — `armSample` **18값 전량**의 원시 비트 해시(인쇄 전용).
+   * P26 §3-3은 첫 3값만 봤고, 그것으로는 「팔이 같다」를 말할 수 없었다(§6-3 미실시분).
+   */
+  armDigest18: "",
 };
 
 /**

@@ -198,6 +198,55 @@ export function worldDirection(bone: THREE.Object3D, child: THREE.Object3D): THR
 // bone이 현재 currentDirWorld를 가리키고 있는데, 대신 targetDirWorld를
 // 가리키도록 회전시킨다. bone.quaternion은 부모 로컬 공간 기준이므로,
 // 월드 공간 회전량을 부모의 월드 회전으로 컨쥬게이트해 로컬 공간으로 변환한다.
+// ── P27 §2 — **절대 구성판.** `pointBoneTowardWorldDirection`(아래)은 매 프레임
+// `bone.quaternion`에 최소호 델타를 **누적 곱**한다 — 읽는 값이 쓴 값에 의존하는 닫힌 고리라
+// 고정점이 없고(P23 §1-2 ③), P24가 되먹임을 멈춘 뒤에도 **어느 값에서 멈추는지가 궤적에**
+// 달렸다(P24 §4). 스케일을 유일화해도 이 회전은 유일해지지 않았다(P26 §3-2).
+//
+// 이 함수는 **현재 `quaternion`을 읽지 않는다.** 입력은 (bind 회전 · 자식 bind 오프셋 ·
+// 부모 월드 회전 · 목표 방향) 넷뿐이고, 같은 입력이면 항상 같은 출력이다.
+//
+// **roll 규약 = bind 기준**(P27 §1-1 (a)). 목표 «방향»만으로는 그 축 둘레 roll 1자유도가
+// 남는데, 누적곱은 직전 roll을 물려받아 암묵적으로 정해왔다. 여기서는 **본의 원래(bind)
+// 자세에서 목표 방향까지의 최소호**로 정한다 — 가장 보수적이고, 첫 프레임에서는
+// 누적곱판과 같은 결과다(그때 `quaternion`이 곧 bind이므로).
+//
+// **알려진 한계**: 조상에 비균등 스케일이 있으면(가슴둘레 슬라이더가 몸통 본에 축별로 다른
+// 스케일을 건다) 월드 방향은 회전만으로 정해지지 않는다. 누적곱판은 실제 월드 위치 차이를
+// 매 프레임 다시 재서 그 왜곡을 따라갔지만, 이 함수는 따라가지 않는다 —
+// **정확도를 조금 내주고 결정성을 얻는다.** 그 대가는 P27 §3이 값으로 잰다.
+const p27Bind = new THREE.Quaternion();
+const p27Dir = new THREE.Vector3();
+const p27Target = new THREE.Vector3();
+const p27ParentQuat = new THREE.Quaternion();
+const p27Arc = new THREE.Quaternion();
+export function setBoneTowardWorldDirection(
+  bone: THREE.Object3D,
+  child: THREE.Object3D,
+  targetDirWorld: THREE.Vector3,
+) {
+  const parent = bone.parent;
+  if (!parent) return;
+  // bind 회전은 **최초 1회** 잡는다 — 이 함수가 처음 불리는 시점의 `quaternion`이 곧 bind다
+  // (그전에 아무도 안 건드린다). 이후에는 이 사본만 쓴다.
+  const ud = bone.userData as { __p27Bind?: THREE.Quaternion };
+  if (!ud.__p27Bind) ud.__p27Bind = bone.quaternion.clone();
+  p27Bind.copy(ud.__p27Bind);
+
+  // 자식의 bind 로컬 오프셋 방향 — 본이 「어디를 가리키는가」의 정의다(상수).
+  p27Dir.copy(child.position);
+  if (p27Dir.lengthSq() < 1e-20) return;
+  p27Dir.normalize().applyQuaternion(p27Bind);
+
+  // 목표 방향을 부모 로컬로 내린다. 부모 월드는 먼저 갱신한다(읽기 전 갱신 · 순서 고정).
+  parent.updateWorldMatrix(true, false);
+  parent.getWorldQuaternion(p27ParentQuat);
+  p27Target.copy(targetDirWorld).applyQuaternion(p27ParentQuat.invert()).normalize();
+
+  p27Arc.setFromUnitVectors(p27Dir, p27Target);
+  bone.quaternion.copy(p27Arc.multiply(p27Bind)).normalize();
+}
+
 export function pointBoneTowardWorldDirection(
   bone: THREE.Object3D,
   currentDirWorld: THREE.Vector3,
