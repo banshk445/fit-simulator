@@ -70,6 +70,8 @@ export function DressButton(): React.JSX.Element | null {
   // 남기고 준비 상태로 넘긴다 — 말없이 막아 두지 않는다(함정 25).
   const [bodyReady, setBodyReady] = useState(false);
   const [stopTimedOut, setStopTimedOut] = useState(false);
+  // ── P30 — `base` 미충족이 «말없이» 오래 가는 것을 막는 고지. 관측한 것만 담는다.
+  const [stallNote, setStallNote] = useState<string | null>(null);
   useEffect(() => {
     if (bodyReady) return;
     const t0 = performance.now();
@@ -77,8 +79,26 @@ export function DressButton(): React.JSX.Element | null {
       const b = mannequinBonesRef.current;
       const base = mannequinPoseRef.frames >= 1 && mannequinPoseRef.maxScaleResidual <= POSE_SETTLE_EPS
         && mannequinRootRef.current && b.left && b.right;
-      if (!base) return;
       const waited = performance.now() - t0;
+      // ── P30 — **`base` 미충족일 때도 상한을 «본다».** 종전에는 `if (!base) return`이
+      // 상한 검사(아래 `else if`)보다 앞에 있어, 렌더 프레임이 0인 동안에는 상한 경로에
+      // 영영 도달하지 못했다. 백그라운드 탭은 rAF가 멎어 `frames`가 0으로 고정되므로
+      // 정확히 그 상태가 된다 — 93분을 둬도 버튼이 안 켜지고 화면은 「불러오는 중」에
+      // 머문다(P29 §3-7 실측). P23 §1이 상한을 둔 취지인 「말없이 막아 두지 않는다」
+      // (함정 25)가 이 경로에서만 성립하지 않았다.
+      //
+      // **그대로 굽지는 않는다.** `frames === 0`은 포즈가 «정착하지 않은» 상태이고,
+      // 그 상태로 구우면 P23~P27이 닫은 비결정성이 되살아난다(P25 §3-2 · P26 §3-2 ·
+      // P27 §3-1이 그 대가를 실측했다). 여기서 늘리는 것은 **고지뿐이고 차단은 유지**한다.
+      if (!base) {
+        if (waited > POSE_STOP_TIMEOUT_MS) {
+          setStallNote(document.hidden
+            ? "이 탭이 뒤에 있어 마네킹 준비가 멈췄습니다 — 앞으로 두면 이어서 진행됩니다"
+            : `마네킹 준비가 ${Math.round(waited / 1000)}초째 진행되지 않습니다 (렌더 프레임 ${mannequinPoseRef.frames})`);
+        }
+        return;
+      }
+      setStallNote(null);
       if (poseStopped()) {
         console.log(
           `[dress·P23] 포즈 멈춤 — 대기 ${Math.round(waited)}ms · frames ${mannequinPoseRef.frames}` +
@@ -126,7 +146,11 @@ export function DressButton(): React.JSX.Element | null {
   const status = blocked
     ? { t: "이 치수로는 착용 불가 — 좌측 안내 참고", c: "text-amber-300" }
     : !bodyReady
-      ? { t: "마네킹 불러오는 중 — 준비되면 «착장하기»가 켜집니다", c: "text-slate-300" }
+      // P30 — 상한을 넘도록 준비가 안 되면 「불러오는 중」 대신 «관측한 사유»를 낸다.
+      // 차단은 그대로다(버튼은 계속 비활성) — 바뀐 것은 침묵뿐이다.
+      ? stallNote
+        ? { t: stallNote, c: "text-amber-300" }
+        : { t: "마네킹 불러오는 중 — 준비되면 «착장하기»가 켜집니다", c: "text-slate-300" }
     : busy
       ? { t: note || "착장 중…", c: "text-white" }
       : note
