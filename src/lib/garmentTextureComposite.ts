@@ -253,6 +253,11 @@ function findPrintBoundingBox(
 // PRINT_MAX_FRAME_FRACTION 발동 여부). **인쇄만 하고 계산에 관여하지 않는다.**
 export interface CompositeOptions {
   uMax?: number;
+  // P32 §1 — 원본 프레임 «안»에서 옷이 차지하는 픽셀 박스. 주어지면 프린트의
+  // 위치·상대 폭을 이 박스 기준으로 읽어 캔버스의 «같은 상대 자리»에 싣는다.
+  // 미전달(또는 null)이면 종전 상수 배치 그대로다 — **v1은 이 인자를 안 넘기므로
+  // 계산이 종전과 비트 동일**하다(`Garment.tsx:341`).
+  garmentRegion?: { x: number; y: number; w: number; h: number } | null;
   onDiag?: (d: {
     color: { r: number; g: number; b: number };
     printBox: PrintBox | null;
@@ -317,10 +322,45 @@ export function compositeGarmentTexture(image: HTMLImageElement, opts?: Composit
   // v2 적응: 패널이 쓰는 u 대역 [0, uMax]를 기준으로 폭·중심을 잡는다.
   // uMax=1이면 `OUTPUT_SIZE*PRINT_WIDTH_FRACTION` / `(OUTPUT_SIZE-destW)/2`로 환원된다.
   const panelW = OUTPUT_SIZE * uMax;
-  const destW = panelW * PRINT_WIDTH_FRACTION;
-  const destH = destW / printAspect;
-  const destX = (panelW - destW) / 2;
-  const destY = OUTPUT_SIZE * PRINT_TOP_FRACTION;
+
+  // ── P32 §1 — 원본 위치·크기 승계 ──────────────────────────────────────────
+  // 캔버스 세로 [0, OUTPUT_SIZE]가 패널 v[1, 0](어깨선→밑단) 전체이고,
+  // 가로 [0, panelW]가 패널 u[0, uMax] 전체다(P31 §1-2 실측). 그래서 옷 박스
+  // 안에서의 상대 좌표를 그대로 곱하면 «같은 자리»가 된다. 새 상수 0.
+  const gr = opts?.garmentRegion;
+  let destW: number;
+  let destH: number;
+  let destX: number;
+  let destY: number;
+  if (gr && gr.w > 0 && gr.h > 0) {
+    destW = panelW * (printBox.w / gr.w);
+    destH = destW / printAspect;
+    destX = panelW * ((printBox.x - gr.x) / gr.w);
+    destY = OUTPUT_SIZE * ((printBox.y - gr.y) / gr.h);
+  } else {
+    // 폴백 — 상대 좌표를 못 얻었다(크롭 분석 실패 · v1 경로 · ?autofit=1).
+    // 눈대중 상수 2개는 **이 경로 전용**으로 남는다(P32 §1 · 삭제 0).
+    destW = panelW * PRINT_WIDTH_FRACTION;
+    destH = destW / printAspect;
+    destX = (panelW - destW) / 2;
+    destY = OUTPUT_SIZE * PRINT_TOP_FRACTION;
+    // 캔버스 하단 초과 금지 — `destH`에 상한이 없어 종횡비 0.5면 밑단 3cm
+    // 앞까지 내려간다(P31 §2-3). 종횡비를 지키려 폭도 같은 비율로 줄이고,
+    // **잘렸다는 사실을 조용히 넘기지 않는다**(P15 클램프-고지 선례).
+    const maxH = OUTPUT_SIZE - destY;
+    if (destH > maxH) {
+      const shrink = maxH / destH;
+      console.warn(
+        `[P32 폴백 클램프] 프린트 세로가 캔버스를 넘어 축소했다 — ` +
+        `종횡비 ${printAspect.toFixed(3)} · destH ${destH.toFixed(1)}px → ${maxH.toFixed(1)}px ` +
+        `(×${shrink.toFixed(3)}) · destW ${destW.toFixed(1)}px → ${(destW * shrink).toFixed(1)}px. ` +
+        `상대 좌표(garmentRegion) 없이 상수 배치로 떨어진 경로다.`,
+      );
+      destH = maxH;
+      destW *= shrink;
+      destX = (panelW - destW) / 2;
+    }
+  }
   ctx.drawImage(image, printBox.x, printBox.y, printBox.w, printBox.h, destX, destY, destW, destH);
 
   return canvas;

@@ -1,5 +1,6 @@
 import { create } from "zustand";
 import type { FabricType } from "../lib/fabricPresets";
+import type { GarmentRegion } from "../lib/garmentSegmentation";
 import { DEFAULT_NEW_CORE } from "../lib/clothConfig";
 
 interface BodySize {
@@ -34,6 +35,9 @@ interface FitState {
   bodySize: BodySize;
   garmentSize: GarmentSize;
   garmentImage: string | null;
+  // P32 §1 — 업로드 프레임 «안»에서 옷이 차지하는 픽셀 박스. null이면 상대
+  // 좌표를 낼 근거가 없어 프린트 배치가 종전 상수 경로로 떨어진다.
+  garmentRegion: GarmentRegion | null;
   fabric: FabricType;
   sleeveType: SleeveType;
   // 47번(디버그 전용): garmentWorker가 실제로 충돌 계산에 쓰는 팔 캡슐을
@@ -92,7 +96,7 @@ interface FitState {
   setGarmentCuffBand: (cuffBand: number) => void;
   setGarmentSleeveLength: (sleeveLength: number) => void;
   setGarmentSleeveWidth: (sleeveWidth: number) => void;
-  setGarmentImage: (url: string | null) => void;
+  setGarmentImage: (url: string | null, region?: GarmentRegion | null) => void;
   setSleeveType: (sleeveType: SleeveType) => void;
 }
 
@@ -138,6 +142,7 @@ export const useFitStore = create<FitState>((set) => ({
     cuffBand: 0,
   },
   garmentImage: null,
+  garmentRegion: null,
   fabric: "cotton",
   sleeveType: "short",
   showArmCapsules: false,
@@ -179,7 +184,7 @@ export const useFitStore = create<FitState>((set) => ({
     set((state) => ({ garmentSize: { ...state.garmentSize, sleeveLength } })),
   setGarmentSleeveWidth: (sleeveWidth) =>
     set((state) => ({ garmentSize: { ...state.garmentSize, sleeveWidth } })),
-  setGarmentImage: (garmentImage) => set({ garmentImage }),
+  setGarmentImage: (garmentImage, garmentRegion = null) => set({ garmentImage, garmentRegion }),
   setSleeveType: (sleeveType) =>
     set((state) => {
       const len = state.garmentSize.sleeveLength;

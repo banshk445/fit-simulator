@@ -104,8 +104,10 @@ export function Controls() {
       // 모델이 옷을 입고 찍은 라이프스타일 사진이면 배경/얼굴을 걷어내고
       // 옷 영역 위주로 잘라낸다(플랫레이 상품샷은 자를 배경이 없어 그대로
       // 반환됨) — garmentSegmentation.ts 참고.
-      const url = await cropToGarmentRegion(file);
-      setGarmentImage(url);
+      // P32 §1 — 옷 박스를 함께 받아 store에 싣는다. null이면 프린트 배치가
+      // 종전 상수 경로로 떨어진다(폴백의 폴백).
+      const { url, garment } = await cropToGarmentRegion(file);
+      setGarmentImage(url, garment);
     } catch {
       // 세그멘테이션이 실패해도 원본 이미지는 그대로 쓸 수 있게 폴백한다.
       setGarmentImage(URL.createObjectURL(file));

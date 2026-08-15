@@ -95,6 +95,8 @@ export function PatternPreview(): React.JSX.Element | null {
   // 없거나 로드 실패면 **체커로 폴백**한다(기존 캡처 재현성 보존).
   // 물리·지오메트리·UV·`patternstate` 경로는 한 줄도 건드리지 않는다.
   const garmentImage = useFitStore((s) => s.garmentImage);
+  // P32 §1 — 옷 박스(원본 프레임 픽셀). null이면 합성이 종전 상수 배치로 떨어진다.
+  const garmentRegion = useFitStore((s) => s.garmentRegion);
   // ── 74회차 판별 로그 L1/L2/L3 (진단 전용 · console.log만 · 거동 0 · 새 상수 0) ──
   __r74 += 1;
   console.log(`[74판별·L1 렌더] #${__r74} garmentImage=${garmentImage === null ? "null" : typeof garmentImage + ":" + String(garmentImage).slice(0, 40)}`);
@@ -170,6 +172,7 @@ export function PatternPreview(): React.JSX.Element | null {
         console.log(`[74판별·L3d composite 호출 직전] uMax=${uMax}`);
         const canvas = compositeGarmentTexture(img, {
           uMax,
+          garmentRegion,
           onDiag: (d) => {
             console.log(
               `[71계기·합성 판별자] 대표색 rgb(${d.color.r}, ${d.color.g}, ${d.color.b})` +
@@ -178,7 +181,15 @@ export function PatternPreview(): React.JSX.Element | null {
               ` · 프레임 비율 ${(d.frameFracW * 100).toFixed(1)}% × ${(d.frameFracH * 100).toFixed(1)}%` +
               ` · PRINT_MAX_FRAME_FRACTION ${d.maxFrameFired ? "**발동**(프린트 버림)" : "미발동"}` +
               ` · **재스캔(G2′)** ${d.rescan ? `성분 ${d.rescan.components}개 중 경계접촉 ${d.rescan.excluded}개 제외 → ${d.rescan.box ? `bbox ${d.rescan.box.w.toFixed(0)}×${d.rescan.box.h.toFixed(0)}px @(${d.rescan.box.x.toFixed(0)},${d.rescan.box.y.toFixed(0)})` : "남은 성분 없음"}` : "미실행(1패스 통과)"}` +
-              ` · uMax ${uMax.toFixed(4)}`,
+              ` · uMax ${uMax.toFixed(4)}` +
+              // P32 §2 — 어느 배치 경로가 실제로 돌았는지. 상대 좌표가 성립하면
+              // 프린트가 옷 박스 안에서 차지한 «상대» 위치·폭을 그대로 찍는다.
+              ` · **배치** ${garmentRegion && d.printBox
+                ? `상대승계(옷박스 ${garmentRegion.w.toFixed(0)}×${garmentRegion.h.toFixed(0)}px @(${garmentRegion.x.toFixed(0)},${garmentRegion.y.toFixed(0)})` +
+                  ` → relX ${((d.printBox.x - garmentRegion.x) / garmentRegion.w).toFixed(4)}` +
+                  ` relY ${((d.printBox.y - garmentRegion.y) / garmentRegion.h).toFixed(4)}` +
+                  ` relW ${(d.printBox.w / garmentRegion.w).toFixed(4)})`
+                : "상수 폴백(garmentRegion 없음)"}`,
             );
           },
         });
@@ -197,7 +208,7 @@ export function PatternPreview(): React.JSX.Element | null {
       }
     })();
     return () => { alive = false; if (made) made.dispose(); };
-  }, [garmentImage, geos]);
+  }, [garmentImage, geos, garmentRegion]);
 
   // **B** — 패널 인덱스(`patternGarment.ts:39-43` FRONT=0 / BACK=1 / SLEEVE_L=2 / SLEEVE_R=3)를
   // 그대로 쓴다. 머티리얼 인스턴스는 이미 메시마다 별개다(70 §5-2) — 배선만 바꾼다.
