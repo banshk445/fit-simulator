@@ -27,7 +27,9 @@
     "dress:pattern": "tsx scripts/dressPattern.ts",
     "check:boundary": "tsx scripts/checkBoundary.ts",
     "check:topology": "tsx scripts/checkTopology.ts",
-    "report": "tsx scripts/roundReport.ts"
+    "report": "tsx scripts/roundReport.ts",
+    "v3:s1": "tsx scripts/v3S1.ts",
+    "v3:s1ab": "tsx scripts/v3S1ab.ts"
   },
   "build": {
     "appId": "com.fitsimulator.app",
