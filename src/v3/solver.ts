@@ -62,7 +62,32 @@ export type InplaneConstraint = {
   lambda: [number, number, number];
 };
 
-export type Constraint = DistanceConstraint | InplaneConstraint;
+/** 이면각 힌지 굽힘 제약 (v3-01 §3: Wang 데이터가 이미 힌지형이라 그대로 소비한다).
+ *
+ * ARCSim `physics.cpp:113-129`의 에너지:
+ *   E = ke · (l²/(2a)) · (θ − θ_ideal)² / 4,   a = a₀ + a₁ (인접 두 면의 정지 면적 합)
+ * XPBD 제약 하나의 에너지가 C²/(2α)이고 C = θ − θ₀ 이므로
+ *   1/(2α) = ke·l²/(8a)  ⟹  **α = 4a/(ke·l²)**.
+ * `shape = 4a/l²`를 접어 두고 α = shape/ke 로 쓴다. ke 단위는 **N·m**(v3-02 §0-3).
+ */
+export type BendConstraint = {
+  kind: 'bend';
+  /** 공유 엣지 */
+  p0: number;
+  p1: number;
+  /** 양쪽 날개 정점 */
+  p2: number;
+  p3: number;
+  /** 정지 이면각 [rad]. 평면 제도이므로 0이어야 한다(S2 완료 조건 ①) */
+  restAngle: number;
+  /** 굽힘 강성 [N·m] */
+  ke: number;
+  /** 4a/l² — α = shape/ke */
+  shape: number;
+  lambda: number;
+};
+
+export type Constraint = DistanceConstraint | InplaneConstraint | BendConstraint;
 
 export type SolverParams = {
   /** 프레임 시간간격 [s] */
@@ -73,6 +98,9 @@ export type SolverParams = {
   gravity: number;
   /** 속도 감쇠 [1/s]. 서브스텝 수와 무관하게 만들기 위해 exp(-damping*h)로 쓴다 */
   damping: number;
+  /** 정점별 외력 [N] (3n). 없으면 중력만. S2 인장 시험이 하중을 «질량비 없이»
+   * 걸기 위해 쓴다 — 무거운 추로 대신하면 하중과 관성이 함께 커진다. */
+  extForce?: Float64Array;
 };
 
 export function makeSolver(n: number): Solver {
@@ -163,6 +191,173 @@ export function makeInplane(
   return out;
 }
 
+/** 내부 삼각 엣지마다 힌지 굽힘 제약을 만든다. 정지 길이·면적은 정지 2D 좌표에서 뜬다
+ * (제도가 평면이므로 restUV가 곧 정지 형상이다 — 별도 배열을 만들지 않는다, 함정 12). */
+export function makeBend(
+  tris: ArrayLike<number>,
+  restUV: ArrayLike<number>,
+  ke: number,
+): BendConstraint[] {
+  // 엣지 → (반대편 정점, 삼각형 면적) 두 개까지
+  const edges = new Map<string, { a: number; b: number; wings: number[]; areas: number[] }>();
+  for (let t = 0; t < tris.length; t += 3) {
+    const v = [tris[t], tris[t + 1], tris[t + 2]];
+    const area = triArea(restUV, v[0], v[1], v[2]);
+    for (let i = 0; i < 3; i++) {
+      const a = v[i];
+      const b = v[(i + 1) % 3];
+      const w = v[(i + 2) % 3];
+      const key = a < b ? `${a}_${b}` : `${b}_${a}`;
+      let e = edges.get(key);
+      if (!e) {
+        e = { a: Math.min(a, b), b: Math.max(a, b), wings: [], areas: [] };
+        edges.set(key, e);
+      }
+      e.wings.push(w);
+      e.areas.push(area);
+    }
+  }
+  const out: BendConstraint[] = [];
+  for (const e of edges.values()) {
+    if (e.wings.length !== 2) continue; // 경계 엣지 — 힌지 없음
+    const l = Math.hypot(
+      restUV[e.b * 2] - restUV[e.a * 2],
+      restUV[e.b * 2 + 1] - restUV[e.a * 2 + 1],
+    );
+    const a = e.areas[0] + e.areas[1];
+    out.push({
+      kind: 'bend',
+      p0: e.a,
+      p1: e.b,
+      p2: e.wings[0],
+      p3: e.wings[1],
+      restAngle: 0, // 평면 제도 ⟹ 0. 하네스가 실측으로 확인한다(완료 조건 ①)
+      ke,
+      shape: (4 * a) / (l * l),
+      lambda: 0,
+    });
+  }
+  return out;
+}
+
+/** 이면각 [rad]. 평면이면 0. 부호는 엣지 방향 기준. */
+export function dihedral(s: Solver, c: BendConstraint): number {
+  const o0 = c.p0 * 3;
+  const o1 = c.p1 * 3;
+  const o2 = c.p2 * 3;
+  const o3 = c.p3 * 3;
+  const ex = s.pos[o1] - s.pos[o0];
+  const ey = s.pos[o1 + 1] - s.pos[o0 + 1];
+  const ez = s.pos[o1 + 2] - s.pos[o0 + 2];
+  const d2x = s.pos[o2] - s.pos[o0];
+  const d2y = s.pos[o2 + 1] - s.pos[o0 + 1];
+  const d2z = s.pos[o2 + 2] - s.pos[o0 + 2];
+  const d3x = s.pos[o3] - s.pos[o0];
+  const d3y = s.pos[o3 + 1] - s.pos[o0 + 1];
+  const d3z = s.pos[o3 + 2] - s.pos[o0 + 2];
+  // n1 = e × d2, n2 = d3 × e  ⟹ 평면일 때 두 법선이 «같은» 방향(θ=0)
+  const n1x = ey * d2z - ez * d2y;
+  const n1y = ez * d2x - ex * d2z;
+  const n1z = ex * d2y - ey * d2x;
+  const n2x = d3y * ez - d3z * ey;
+  const n2y = d3z * ex - d3x * ez;
+  const n2z = d3x * ey - d3y * ex;
+  const l1 = Math.hypot(n1x, n1y, n1z);
+  const l2 = Math.hypot(n2x, n2y, n2z);
+  const le = Math.hypot(ex, ey, ez);
+  if (l1 < 1e-14 || l2 < 1e-14 || le < 1e-14) return 0;
+  const a1x = n1x / l1;
+  const a1y = n1y / l1;
+  const a1z = n1z / l1;
+  const a2x = n2x / l2;
+  const a2y = n2y / l2;
+  const a2z = n2z / l2;
+  const cx = a1y * a2z - a1z * a2y;
+  const cy = a1z * a2x - a1x * a2z;
+  const cz = a1x * a2y - a1y * a2x;
+  const sin = (cx * ex + cy * ey + cz * ez) / le;
+  const cos = a1x * a2x + a1y * a2y + a1z * a2z;
+  return Math.atan2(sin, cos);
+}
+
+const b0 = new Float64Array(3);
+const b1 = new Float64Array(3);
+const b2 = new Float64Array(3);
+const b3 = new Float64Array(3);
+
+/** θ의 정점별 기울기. 하네스가 유한차분으로 검증한다(v3S2.ts 자기검사). */
+function bendGradients(s: Solver, c: BendConstraint): number {
+  const o0 = c.p0 * 3;
+  const o1 = c.p1 * 3;
+  const o2 = c.p2 * 3;
+  const o3 = c.p3 * 3;
+  const ex = s.pos[o1] - s.pos[o0];
+  const ey = s.pos[o1 + 1] - s.pos[o0 + 1];
+  const ez = s.pos[o1 + 2] - s.pos[o0 + 2];
+  const d2x = s.pos[o2] - s.pos[o0];
+  const d2y = s.pos[o2 + 1] - s.pos[o0 + 1];
+  const d2z = s.pos[o2 + 2] - s.pos[o0 + 2];
+  const d3x = s.pos[o3] - s.pos[o0];
+  const d3y = s.pos[o3 + 1] - s.pos[o0 + 1];
+  const d3z = s.pos[o3 + 2] - s.pos[o0 + 2];
+  const n1x = ey * d2z - ez * d2y;
+  const n1y = ez * d2x - ex * d2z;
+  const n1z = ex * d2y - ey * d2x;
+  const n2x = d3y * ez - d3z * ey;
+  const n2y = d3z * ex - d3x * ez;
+  const n2z = d3x * ey - d3y * ex;
+  const l1 = Math.hypot(n1x, n1y, n1z);
+  const l2 = Math.hypot(n2x, n2y, n2z);
+  const le2 = ex * ex + ey * ey + ez * ez;
+  const le = Math.sqrt(le2);
+  if (l1 < 1e-14 || l2 < 1e-14 || le < 1e-14) return 0;
+  // ∇p2θ = −n̂1/hA,  hA = |n1|/|e|  ⟹  −n1·|e|/|n1|²
+  const kA = -le / (l1 * l1);
+  const kB = -le / (l2 * l2);
+  b2[0] = kA * n1x;
+  b2[1] = kA * n1y;
+  b2[2] = kA * n1z;
+  b3[0] = kB * n2x;
+  b3[1] = kB * n2y;
+  b3[2] = kB * n2z;
+  const tA = (d2x * ex + d2y * ey + d2z * ez) / le2;
+  const tB = (d3x * ex + d3y * ey + d3z * ez) / le2;
+  for (let i = 0; i < 3; i++) {
+    b0[i] = (tA - 1) * b2[i] + (tB - 1) * b3[i];
+    b1[i] = -tA * b2[i] - tB * b3[i];
+  }
+  return dihedral(s, c);
+}
+
+function projectBend(s: Solver, c: BendConstraint, h2: number): void {
+  const w0 = s.invMass[c.p0];
+  const w1 = s.invMass[c.p1];
+  const w2 = s.invMass[c.p2];
+  const w3 = s.invMass[c.p3];
+  if (w0 + w1 + w2 + w3 === 0) return;
+  const theta = bendGradients(s, c);
+  const denomW =
+    w0 * (b0[0] * b0[0] + b0[1] * b0[1] + b0[2] * b0[2]) +
+    w1 * (b1[0] * b1[0] + b1[1] * b1[1] + b1[2] * b1[2]) +
+    w2 * (b2[0] * b2[0] + b2[1] * b2[1] + b2[2] * b2[2]) +
+    w3 * (b3[0] * b3[0] + b3[1] * b3[1] + b3[2] * b3[2]);
+  if (denomW < 1e-20) return;
+  const C = theta - c.restAngle;
+  const at = c.shape / c.ke / h2; // α = 4a/(ke·l²)
+  const dl = (-C - at * c.lambda) / (denomW + at);
+  c.lambda += dl;
+  const o0 = c.p0 * 3;
+  const o1 = c.p1 * 3;
+  const o2 = c.p2 * 3;
+  const o3 = c.p3 * 3;
+  for (let i = 0; i < 3; i++) {
+    s.pos[o0 + i] += w0 * dl * b0[i];
+    s.pos[o1 + i] += w1 * dl * b1[i];
+    s.pos[o2 + i] += w2 * dl * b2[i];
+    s.pos[o3 + i] += w3 * dl * b3[i];
+  }
+}
+
 /** 한 프레임 = substeps개 서브스텝. 서브스텝당 제약 투영 1회. */
 export function step(s: Solver, cs: Constraint[], p: SolverParams): void {
   const h = p.dt / p.substeps;
@@ -177,6 +372,12 @@ export function step(s: Solver, cs: Constraint[], p: SolverParams): void {
       s.prev[o + 2] = s.pos[o + 2];
       if (s.invMass[v] === 0) continue;
       s.vel[o + 1] -= p.gravity * h;
+      if (p.extForce) {
+        const w = s.invMass[v];
+        s.vel[o] += p.extForce[o] * w * h;
+        s.vel[o + 1] += p.extForce[o + 1] * w * h;
+        s.vel[o + 2] += p.extForce[o + 2] * w * h;
+      }
       s.pos[o] += s.vel[o] * h;
       s.pos[o + 1] += s.vel[o + 1] * h;
       s.pos[o + 2] += s.vel[o + 2] * h;
@@ -186,6 +387,9 @@ export function step(s: Solver, cs: Constraint[], p: SolverParams): void {
       if (c.kind === 'dist') {
         c.lambda = 0;
         projectDistance(s, c, h2);
+      } else if (c.kind === 'bend') {
+        c.lambda = 0;
+        projectBend(s, c, h2);
       } else {
         c.lambda[0] = 0;
         c.lambda[1] = 0;
