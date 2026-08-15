@@ -126,6 +126,15 @@ interface PrintBox {
 
 // 대표색과 충분히 다른 픽셀들의 바운딩 박스를 원본 이미지 픽셀 좌표로
 // 구한다 — 없으면(무지 옷) null.
+// P34 §1 — 반환을 `{box, parts}`로 넓혔다. `box`는 **종전과 비트 동일**하고,
+// `parts`는 **경계에 안 닿는 8-연결 성분들의 개별 bbox**다(78회차 재스캔이 쓰는
+// 것과 «같은 집합» — 새 규칙 0). 성분 분리는 이제 항상 돌지만 `box` 산출 경로에는
+// 관여하지 않는다(재스캔 발동 조건·`onRescan` 발화 시점도 종전 그대로).
+interface PrintScan {
+  box: PrintBox | null;
+  parts: PrintBox[];
+}
+
 function findPrintBoundingBox(
   image: HTMLImageElement,
   srcW: number,
@@ -133,18 +142,18 @@ function findPrintBoundingBox(
   color: { r: number; g: number; b: number },
   onOversize?: (box: PrintBox) => void,
   onRescan?: (d: { components: number; excluded: number; box: PrintBox | null }) => void,
-): PrintBox | null {
+): PrintScan {
   const scanCanvas = document.createElement("canvas");
   scanCanvas.width = SCAN_SIZE;
   scanCanvas.height = SCAN_SIZE;
   const ctx = scanCanvas.getContext("2d");
-  if (!ctx) return null;
+  if (!ctx) return { box: null, parts: [] };
   ctx.drawImage(image, 0, 0, SCAN_SIZE, SCAN_SIZE);
   let data: Uint8ClampedArray;
   try {
     data = ctx.getImageData(0, 0, SCAN_SIZE, SCAN_SIZE).data;
   } catch {
-    return null; // cross-origin 오염 등 — 안전하게 "프린트 없음"으로 취급.
+    return { box: null, parts: [] }; // cross-origin 오염 등 — 안전하게 "프린트 없음"으로 취급.
   }
 
   const { r: r0, g: g0, b: b0 } = color;
@@ -172,7 +181,7 @@ function findPrintBoundingBox(
     }
   }
 
-  if (maxX < 0) return null;
+  if (maxX < 0) return { box: null, parts: [] };
 
   const scaleX = srcW / SCAN_SIZE;
   const scaleY = srcH / SCAN_SIZE;
@@ -186,9 +195,8 @@ function findPrintBoundingBox(
   // (이전에는 "프린트 없음"과 "프레임 초과"가 둘 다 null이라 판별자가 못 갈랐다.)
   const oversized = (b: PrintBox): boolean =>
     b.w >= srcW * PRINT_MAX_FRAME_FRACTION || b.h >= srcH * PRINT_MAX_FRAME_FRACTION;
-  if (!oversized(box)) return box;
 
-  // ── 78회차 처방 **G2′** — 문턱에 걸렸을 때만 도는 재스캔. ────────────────────
+  // ── 78회차 처방 **G2′**의 성분 분리 — P34에서 «항상» 돌린다. ────────────────
   // 알파 없는 흰 배경 자산에서는 배경이 통째로 "프린트"로 잡혀 bbox가 프레임 전체가
   // 된다(76·77회차 실측: 100%×100%). 색으로는 못 가른다 — 배경을 완벽히 지워도
   // **실루엣 1픽셀 후광 링**이 남고 그 밝기가 프린트와 겹친다(후광 min 64 vs 프린트 med 113).
@@ -200,6 +208,7 @@ function findPrintBoundingBox(
   const label = new Int32Array(SCAN_SIZE * SCAN_SIZE).fill(-1);
   const stack: number[] = [];
   let nComp = 0, nExcluded = 0;
+  const parts: PrintBox[] = [];
   let rMinX = SCAN_SIZE, rMinY = SCAN_SIZE, rMaxX = -1, rMaxY = -1;
   for (let start = 0; start < mask.length; start++) {
     if (mask[start] === 0 || label[start] !== -1) continue;
@@ -230,19 +239,29 @@ function findPrintBoundingBox(
       }
     }
     if (touchesEdge) { nExcluded++; continue; }
+    // P34 — 성분 «개별» bbox. 합집합(rescanBox)은 아래에서 종전대로 따로 낸다.
+    parts.push({
+      x: cMinX * scaleX, y: cMinY * scaleY,
+      w: (cMaxX - cMinX + 1) * scaleX, h: (cMaxY - cMinY + 1) * scaleY,
+    });
     if (cMinX < rMinX) rMinX = cMinX;
     if (cMaxX > rMaxX) rMaxX = cMaxX;
     if (cMinY < rMinY) rMinY = cMinY;
     if (cMaxY > rMaxY) rMaxY = cMaxY;
   }
+
+  // 1패스가 문턱을 안 넘으면 종전대로 여기서 끝난다 — `onRescan`은 발화하지 않는다
+  // (「재스캔 미실행」이라는 판별자의 뜻을 P34가 바꾸지 않는다).
+  if (!oversized(box)) return { box, parts };
+
   const rescanBox: PrintBox | null = rMaxX < 0 ? null : {
     x: rMinX * scaleX, y: rMinY * scaleY,
     w: (rMaxX - rMinX + 1) * scaleX, h: (rMaxY - rMinY + 1) * scaleY,
   };
   if (onRescan) onRescan({ components: nComp, excluded: nExcluded, box: rescanBox });
-  if (rescanBox && !oversized(rescanBox)) return rescanBox;
+  if (rescanBox && !oversized(rescanBox)) return { box: rescanBox, parts };
   if (onOversize) onOversize(box);
-  return null;
+  return { box: null, parts };
 }
 
 // ── 71회차 v2 적응 (선택 인자 · **미전달이면 v1과 계산 동치**) ────────────────
@@ -268,6 +287,9 @@ export interface CompositeOptions {
     // 78회차 G2′ — 재스캔이 돌았는지, 경계 접촉 성분을 몇 개 뺐는지, 그 결과 bbox.
     // 재스캔이 안 돌면 null이다(1패스 미발동 = 경로 불변의 직접 증거).
     rescan: { components: number; excluded: number; box: PrintBox | null } | null;
+    // P34 — 경계에 안 닿는 성분들의 «개별» bbox. 성분별 배치가 실제로 몇 개를
+    // 옮겼는지 밖에서 셀 수 있어야 한다(빈 배열이면 상수 폴백으로 떨어진 것).
+    parts: PrintBox[];
   }) => void;
 }
 
@@ -292,11 +314,12 @@ export function compositeGarmentTexture(image: HTMLImageElement, opts?: Composit
 
   let oversize: PrintBox | null = null;
   let rescan: { components: number; excluded: number; box: PrintBox | null } | null = null;
-  const printBox = findPrintBoundingBox(
+  const scan = findPrintBoundingBox(
     image, srcW, srcH, representativeColor,
     (b) => { oversize = b; },
     (d) => { rescan = d; },
   );
+  const printBox = scan.box;
   if (opts?.onDiag) {
     // 판별자 — 문턱 전 상자(`printBox ?? oversize`)로 프레임 비율을 낸다.
     // `maxFrameFired`는 **문턱이 실제로 걸렸을 때만** 참이다(프린트 없음과 구분된다).
@@ -314,6 +337,7 @@ export function compositeGarmentTexture(image: HTMLImageElement, opts?: Composit
       maxFrameFired: oversize !== null,
       corner00,
       rescan,
+      parts: scan.parts,
     });
   }
   if (!printBox) return canvas;
@@ -328,6 +352,29 @@ export function compositeGarmentTexture(image: HTMLImageElement, opts?: Composit
   // 가로 [0, panelW]가 패널 u[0, uMax] 전체다(P31 §1-2 실측). 그래서 옷 박스
   // 안에서의 상대 좌표를 그대로 곱하면 «같은 자리»가 된다. 새 상수 0.
   const gr = opts?.garmentRegion;
+
+  // ── P34 §1 — **성분별 개별 배치**. ────────────────────────────────────────
+  // 종전에는 후보 화소 «전량»의 단일 bbox 하나를 옮겼다. 그래서 목 리브/라벨
+  // (69px)이 프린트 본체(866px)와 한 상자에 묶여 상단을 끌어올렸다(P33 §1-3).
+  // 성분을 각자 «자기» 상대 자리에 옮기면 그 묶임이 원리적으로 사라진다 —
+  // **선택 규칙이 없으므로 새 문턱도 반례도 없다**(「최대 성분만」의 반례였던
+  // 가슴+소매 2프린트도 둘 다 제자리로 간다).
+  // 집합은 재스캔 G2′가 쓰는 것과 «같다» — 경계에 닿는 성분 제외(새 규칙 0).
+  // 잡음 성분이 옷 전역에 흩어져 있으면 **원본과 같은 자리**에 그대로 찍힌다.
+  // `garmentRegion`이 없으면(v1 · ?autofit=1 · 크롭 실패) 아래 상수 폴백 그대로다.
+  if (gr && gr.w > 0 && gr.h > 0 && scan.parts.length > 0) {
+    for (const part of scan.parts) {
+      const pw = panelW * (part.w / gr.w);
+      const ph = pw / (part.w / part.h);
+      ctx.drawImage(
+        image, part.x, part.y, part.w, part.h,
+        panelW * ((part.x - gr.x) / gr.w), OUTPUT_SIZE * ((part.y - gr.y) / gr.h), pw, ph,
+      );
+    }
+    return canvas;
+  }
+
+
   let destW: number;
   let destH: number;
   let destX: number;

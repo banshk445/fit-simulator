@@ -182,6 +182,9 @@ export function PatternPreview(): React.JSX.Element | null {
               ` · PRINT_MAX_FRAME_FRACTION ${d.maxFrameFired ? "**발동**(프린트 버림)" : "미발동"}` +
               ` · **재스캔(G2′)** ${d.rescan ? `성분 ${d.rescan.components}개 중 경계접촉 ${d.rescan.excluded}개 제외 → ${d.rescan.box ? `bbox ${d.rescan.box.w.toFixed(0)}×${d.rescan.box.h.toFixed(0)}px @(${d.rescan.box.x.toFixed(0)},${d.rescan.box.y.toFixed(0)})` : "남은 성분 없음"}` : "미실행(1패스 통과)"}` +
               ` · uMax ${uMax.toFixed(4)}` +
+              // P34 — 성분별 배치가 몇 개를 옮겼는지. 0이면 상수 폴백으로 떨어진 것이다.
+              ` · **성분** ${d.parts.length}개` +
+              (d.parts.length ? ` [${d.parts.slice(0, 4).map((q) => `${q.w.toFixed(0)}×${q.h.toFixed(0)}@(${q.x.toFixed(0)},${q.y.toFixed(0)})`).join(" ")}${d.parts.length > 4 ? " …" : ""}]` : "") +
               // P32 §2 — 어느 배치 경로가 실제로 돌았는지. 상대 좌표가 성립하면
               // 프린트가 옷 박스 안에서 차지한 «상대» 위치·폭을 그대로 찍는다.
               ` · **배치** ${garmentRegion && d.printBox
