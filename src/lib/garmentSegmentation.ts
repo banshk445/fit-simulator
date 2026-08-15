@@ -279,6 +279,9 @@ export async function cropToGarmentRegion(file: File): Promise<CropResult> {
     // 위에서부터 훑으며 "피부 비율이 높은 구간(얼굴/목)"을 지나 다시
     // 낮아지는 지점을 찾는다 — 그 지점부터가 옷(어깨선) 시작점이라고 본다.
     let sawSkinBand = false;
+    // P33 §1 — 띠가 «어느 행에서» 걸렸는지. 진짜 얼굴은 전경 상단에서 걸리고
+    // 프린트 오탐은 옷 한복판에서 걸린다 — 그 차이를 값으로 남긴다(판정용 아님).
+    let skinEnterRow = -1;
     let garmentTop = top;
     for (let y = top; y <= bottom; y++) {
       let winFg = 0;
@@ -294,6 +297,7 @@ export async function cropToGarmentRegion(file: File): Promise<CropResult> {
       const frac = winFg > 0 ? winSkin / winFg : 0;
       if (!sawSkinBand && frac > SKIN_ROW_ENTER_FRACTION) {
         sawSkinBand = true;
+        skinEnterRow = y;
       } else if (sawSkinBand && frac < SKIN_ROW_EXIT_FRACTION) {
         garmentTop = y;
         break;
@@ -303,6 +307,13 @@ export async function cropToGarmentRegion(file: File): Promise<CropResult> {
     // 전경 bbox의 top을 그대로 쓴다(위 루프가 break 없이 끝나면 garmentTop은
     // top으로 남아 있다).
     if (!sawSkinBand) garmentTop = top;
+    // P33 §1 판별자 — 크롭이 «무엇을 근거로» 옷 상단을 정했는지. 분석 해상도(aw×ah)
+    // 좌표다. 원본 환산은 ×(fullH/ah). 인쇄만 하고 계산에 관여하지 않는다.
+    console.log(
+      `[P33계기·크롭 판별자] 분석 ${aw}×${ah} · 전경 bbox y[${top}, ${bottom}] x[${left}, ${right}]` +
+      ` · 피부띠 ${sawSkinBand ? `**걸림** enter y=${skinEnterRow}(전경상단에서 +${skinEnterRow - top}행 · 전경높이의 ${(((skinEnterRow - top) / Math.max(1, bottom - top + 1)) * 100).toFixed(1)}%)` : "미발동"}` +
+      ` · garmentTop ${garmentTop}(트리밍 ${garmentTop - top}행)`,
+    );
 
     // 얼굴 구간을 뺀 나머지(옷 후보) 범위에서 "전경이면서 피부가 아닌"
     // 픽셀만으로 좌/우 경계를 다시 좁혀, 옆으로 노출된 손/팔뚝도 어느
