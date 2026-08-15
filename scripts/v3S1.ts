@@ -9,6 +9,7 @@ import {
   makeSolver,
   makeInplane,
   assignMassFromMesh,
+  substepsFor,
   step,
   type Constraint,
   type Solver,
@@ -16,6 +17,45 @@ import {
 } from '../src/v3/solver.ts';
 
 const G = 9.81;
+
+/** ③′ 결합계 서브스텝 불변성 [v3-04 승격 · §4].
+ *
+ * ③(단일 스프링)은 이 축을 «원리적으로» 못 본다 — 제약 1개는 어떤 h에서도 정확히
+ * 수렴한다(v3-04 실측 r=1.00000000). 해석해가 있는 «결합»계로 승격한다.
+ *
+ * 장면: 균일 인장 사슬 N칸. 0번 고정, 끝에 F. 중력 0. 해석해 ΔL = N·F/k_el.
+ * 문턱 r ≥ 0.95 의 «근거»: r은 실효 강성에 곱해지는 오차라 늘어남 오차와 1:1이다.
+ *   S2가 이미 쓰는 «모델» 오차 문턱이 ±10%이므로 **수치** 오차 예산을 그 절반인
+ *   5%로 잡는다. 이 값은 v3-04 회차 프롬프트 §3-A가 지정한 것이고 측정 «전»에 정해졌다.
+ * 서브스텝 수는 손으로 고르지 않고 `substepsFor`가 산정한다 — 처방의 자체 검증이다.
+ */
+const CHAIN = { N: 21, kEl: 2e3, mNode: 1e-3, F: 1, seconds: 6, rMin: 0.95 };
+
+function chainScene(substeps: number) {
+  const { N, kEl, mNode, F } = CHAIN;
+  const rest = 1 / N;
+  const s = makeSolver(N + 1);
+  for (let v = 0; v <= N; v++) {
+    s.pos[v * 3] = v * rest;
+    s.invMass[v] = v === 0 ? 0 : 1 / mNode;
+  }
+  const cs: Constraint[] = [];
+  for (let i = 0; i < N; i++) cs.push({ kind: 'dist', i, j: i + 1, rest, k: kEl, lambda: 0 });
+  const ext = new Float64Array((N + 1) * 3);
+  ext[N * 3] = F;
+  const p: SolverParams = {
+    dt: 1 / 60,
+    substeps,
+    gravity: 0,
+    damping: 40,
+    extForce: ext,
+    iterations: 1,
+  };
+  for (let f = 0; f < CHAIN.seconds * 60; f++) step(s, cs, p);
+  let mv = 0;
+  for (let v = 0; v <= N; v++) mv = Math.max(mv, Math.abs(s.vel[v * 3]));
+  return { r: (N * F) / kEl / (s.pos[N * 3] - 1), mv };
+}
 
 // ── 사전 등록 장면 ─────────────────────────────────────────────────────────
 /** ① 자유낙하: 제약 0 · 감쇠 0 · 1.0 s 낙하 */
@@ -172,7 +212,9 @@ console.log(
     `③sub=${SUBSTEP_PAIR.join('vs')} | 보조시트 ${SHEET.nx}x${SHEET.ny} ${SHEET.size}m ρ=${SHEET.areaDensity}kg/m² ` +
     `kU/kV/kS=${SHEET.kU}/${SHEET.kV}/${SHEET.kS}N/m damp=${SHEET.damping}/s T=${SHEET.seconds}s`,
 );
-console.log(`[문턱] ①±1% ②±2% ③±1% (사전 등록 · 결과에 맞춰 조정 금지)`);
+console.log(
+  `[문턱] ①±1% ②±2% ③±1% ③′결합계 r≥${CHAIN.rMin} (사전 등록 · 결과에 맞춰 조정 금지)`,
+);
 
 let pass = true;
 const verdict = (ok: boolean) => (ok ? 'PASS' : 'FAIL');
@@ -203,6 +245,20 @@ console.log(
     `상대차=${(relErr(sB.stretch, sA.stretch) * 100).toFixed(4)}% → ${verdict(okSub)}`,
 );
 
+// ③′ 결합계 (v3-04 승격)
+const autoSub = substepsFor(1 / 60, CHAIN.kEl, CHAIN.mNode, CHAIN.rMin);
+const chAuto = chainScene(autoSub);
+const chLow = chainScene(16);
+const okChain = chAuto.r >= CHAIN.rMin;
+pass &&= okChain;
+console.log(
+  `③′ 결합계   사슬 ${CHAIN.N}칸 k_el=${CHAIN.kEl.toExponential(0)} · substepsFor 산정=${autoSub} ` +
+    `r=${fmt(chAuto.r, 5)} (문턱 ${CHAIN.rMin}) 잔류속도=${chAuto.mv.toExponential(1)} → ${verdict(okChain)}`,
+);
+console.log(
+  `            대조: 손으로 고른 sub=16이면 r=${fmt(chLow.r, 5)} — ③(단일 제약)은 이 축을 «원리적으로» 못 본다`,
+);
+
 const diag = Math.hypot(SHEET.size, SHEET.size);
 const hA = sheetScene(SUBSTEP_PAIR[0], true);
 const okSheetMass = Math.abs(hA.totalMass - hA.totalArea * SHEET.areaDensity) < 1e-12;
@@ -231,7 +287,7 @@ console.log(
 );
 
 const branch = pass
-  ? 'A — ①②③ 전부 통과 (S1 성립)'
+  ? "A — ①②③③′ 전부 통과 (S1 성립 · ③′는 v3-04 승격분)"
   : !okFall
     ? 'D — ① 실패(적분기)'
     : !okSpring

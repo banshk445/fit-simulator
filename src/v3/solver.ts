@@ -101,7 +101,37 @@ export type SolverParams = {
   /** 정점별 외력 [N] (3n). 없으면 중력만. S2 인장 시험이 하중을 «질량비 없이»
    * 걸기 위해 쓴다 — 무거운 추로 대신하면 하중과 관성이 함께 커진다. */
   extForce?: Float64Array;
+  /** 서브스텝당 제약 투영 반복 수. 기본 1(small-steps). λ는 «서브스텝마다» 0으로
+   * 초기화하고 반복 사이에는 «누적»한다 — XPBD 유도가 그 형태다. */
+  iterations?: number;
 };
+
+/** 결합 제약계가 «명목» 강성을 내려면 서브스텝이 **원소** 진동을 풀어야 한다.
+ *
+ * v3-04 실측 법칙(균일 인장 사슬 · 2자릿수 대역에서 적합 오차 0.00~4.5%):
+ *   실효 강성비  r ≈ 1/(1 + (h·ω_el)²),   ω_el = √(k_el / m_절점),  h = dt/substeps
+ * — **사슬 길이 N에는 거의 무관하다**(N≥9에서 포화). 제약이 «1개»면 r=1이 정확히
+ * 성립하므로(N=1 실측 1.00000000) 단일 제약 계기는 이 축을 원리적으로 못 본다.
+ *
+ * r ≥ rTarget 을 만족하는 최소 서브스텝 수를 돌려준다.
+ */
+export function substepsFor(dt: number, kEl: number, mNode: number, rTarget = 0.95): number {
+  const hwMax = Math.sqrt(1 / rTarget - 1);
+  const w = Math.sqrt(kEl / mNode);
+  return Math.max(1, Math.ceil((dt * w) / hwMax));
+}
+
+/** 천 메시용 편의형: 멤브레인 강성 k [N/m] · 면밀도 ρ [kg/m²] · 엣지 길이 d [m].
+ * 삼각 메시에서 원소 스프링 ≈ k(폭/길이 = 1), 절점 질량 ≈ ρ·d² ⟹ ω_el = √(k/ρ)/d. */
+export function substepsForCloth(
+  dt: number,
+  k: number,
+  areaDensity: number,
+  edgeLen: number,
+  rTarget = 0.95,
+): number {
+  return substepsFor(dt, k, areaDensity * edgeLen * edgeLen, rTarget);
+}
 
 export function makeSolver(n: number): Solver {
   return {
@@ -382,21 +412,21 @@ export function step(s: Solver, cs: Constraint[], p: SolverParams): void {
       s.pos[o + 1] += s.vel[o + 1] * h;
       s.pos[o + 2] += s.vel[o + 2] * h;
     }
-    // 제약 투영 (서브스텝마다 λ 초기화)
+    // λ 초기화는 «서브스텝마다» 한 번. 반복 사이에는 누적한다(XPBD 유도 그대로).
     for (const c of cs) {
-      if (c.kind === 'dist') {
-        c.lambda = 0;
-        projectDistance(s, c, h2);
-      } else if (c.kind === 'bend') {
-        c.lambda = 0;
-        projectBend(s, c, h2);
-      } else {
+      if (c.kind === 'inplane') {
         c.lambda[0] = 0;
         c.lambda[1] = 0;
         c.lambda[2] = 0;
-        projectInplane(s, c, h2);
-      }
+      } else c.lambda = 0;
     }
+    const iters = p.iterations ?? 1;
+    for (let it = 0; it < iters; it++)
+      for (const c of cs) {
+        if (c.kind === 'dist') projectDistance(s, c, h2);
+        else if (c.kind === 'bend') projectBend(s, c, h2);
+        else projectInplane(s, c, h2);
+      }
     // 속도 갱신
     for (let v = 0; v < s.n; v++) {
       if (s.invMass[v] === 0) continue;
