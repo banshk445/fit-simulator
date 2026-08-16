@@ -31,7 +31,8 @@
     "v3:s1": "tsx scripts/v3S1.ts",
     "v3:s1ab": "tsx scripts/v3S1ab.ts",
     "v3:s2": "tsx scripts/v3S2.ts",
-    "v3:conv": "tsx scripts/v3Conv.ts"
+    "v3:conv": "tsx scripts/v3Conv.ts",
+    "v3:s2b": "tsx scripts/v3S2b.ts"
   },
   "build": {
     "appId": "com.fitsimulator.app",
