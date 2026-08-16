@@ -133,6 +133,38 @@ export function substepsForCloth(
   return substepsFor(dt, k, areaDensity * edgeLen * edgeLen, rTarget);
 }
 
+/** 굽힘 제약의 «원소» 진동수 [rad/s] — v3-06 #16.
+ *
+ * v3-04가 신장에서 찾은 법칙 `r ≈ 1/(1+(h·ω)²)`의 ω를 굽힘에도 «같은 정의»로 쓴다:
+ *   ω² = (1/α)·Σᵢ wᵢ|∇Cᵢ|²,   α = shape/ke
+ * 폐형 비례식(v3-05 §1의 `ω_bend ∝ 1/d²`)을 쓰지 않고 **현재 상태에서 기울기를 직접
+ * 계산**한다. 이유: 비례식은 «정규 격자» 가정 위에 있는데 등록 장면은 원소 종횡비가
+ * 2.2이고 v3 실제 메시는 비정형이다. 상태에서 재면 가정이 필요 없다.
+ */
+export function bendOmega(s: Solver, c: BendConstraint): number {
+  bendGradients(s, c);
+  const denomW =
+    s.invMass[c.p0] * (b0[0] * b0[0] + b0[1] * b0[1] + b0[2] * b0[2]) +
+    s.invMass[c.p1] * (b1[0] * b1[0] + b1[1] * b1[1] + b1[2] * b1[2]) +
+    s.invMass[c.p2] * (b2[0] * b2[0] + b2[1] * b2[1] + b2[2] * b2[2]) +
+    s.invMass[c.p3] * (b3[0] * b3[0] + b3[1] * b3[1] + b3[2] * b3[2]);
+  return Math.sqrt((c.ke / c.shape) * denomW);
+}
+
+/** 굽힘 제약 집합이 r ≥ rTarget 을 내는 최소 서브스텝 수(가장 «빠른» 제약 기준).
+ * 멤브레인은 `substepsForCloth`가 그대로 담당한다 — 실제 예산은 **둘 중 큰 쪽**이다. */
+export function substepsForBending(
+  dt: number,
+  s: Solver,
+  bends: readonly BendConstraint[],
+  rTarget = 0.95,
+): number {
+  let wMax = 0;
+  for (const c of bends) wMax = Math.max(wMax, bendOmega(s, c));
+  if (!(wMax > 0)) return 1;
+  return Math.max(1, Math.ceil((dt * wMax) / Math.sqrt(1 / rTarget - 1)));
+}
+
 export function makeSolver(n: number): Solver {
   return {
     pos: new Float64Array(n * 3),
