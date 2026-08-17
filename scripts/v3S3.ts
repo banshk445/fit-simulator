@@ -234,6 +234,10 @@ for (const mu of [0.2, 0.4, 0.8]) {
 console.log(`   ⟹ ② ${ok2 ? 'PASS' : 'FAIL'} (±10%)`);
 
 /* ── ④ 비용 ───────────────────────────────────────────────────────────── */
+// SKIP4=1 이면 ④만 건너뛴다 — ①②③의 «값»에는 영향이 없다(장면·상태를 공유하지
+// 않는 독립 블록이다). v3-12가 회귀로 ①②만 재실행하려고 넣었다: ④ 한 블록이
+// 40분을 넘겨 v3-11이 재실행을 포기했던 자리다.
+if (process.env.SKIP4 !== '1') {
 console.log(`\n④ 비용 — 충돌 있음/없음 · 주기 every=1 vs N. **N을 정하지 않는다**(#15 입력)`);
 console.log(
   `   ${'every'.padStart(7)}${'질의'.padStart(12)}${'충돌ms'.padStart(10)}${'총ms'.padStart(10)}${'충돌비중'.padStart(10)}${'관통정점'.padStart(10)}${'최대깊이[mm]'.padStart(14)}`,
@@ -261,6 +265,8 @@ console.log(
     );
   }
   console.log(`   (sub=${sub} · 정점 ${nu * nu} · T=2.5s · 충돌체 1개)`);
+
+}
 }
 
 console.log(

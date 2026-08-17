@@ -603,6 +603,24 @@ if (doRun('1')) {
   }
 }
 
+/* ── ⑤ 미지정 호출이 자기충돌 코드를 «한 줄도» 안 밟는지 값으로 확인 ────── */
+if (doRun('5')) {
+  console.log(`\n⑤ 가드 — selfCollision 미지정이면 자기충돌 코드가 «한 줄도» 돌지 않아야 한다`);
+  const a = accordion(NU);
+  run(a.s, a.con, a.sub, 0.2, 6, undefined, BODY);
+  const zero = Array.from(selfStats).every((v) => v === 0);
+  // 같은 장면을 «두 번» 돌려 위치가 비트 동일한지도 본다(결정성 · 잔여 상태 0)
+  const b = accordion(NU);
+  run(b.s, b.con, b.sub, 0.2, 6, undefined, BODY);
+  let same = a.s.pos.length === b.s.pos.length;
+  for (let i = 0; same && i < a.s.pos.length; i++) same = a.s.pos[i] === b.s.pos[i];
+  console.log(
+    `   selfStats 8칸 전부 0 = ${zero}  ·  두 번 실행 위치 비트 동일 = ${same}  ⟹ ${zero && same ? 'PASS' : 'FAIL'}`,
+  );
+  console.log(`   selfStats = [${Array.from(selfStats).join(', ')}]`);
+  if (!(zero && same)) process.exitCode = 1;
+}
+
 /* ── ④a 비용: 자기충돌 있음/없음 × 정점 수 ─────────────────────────────── */
 if (doRun('4a')) {
   const TC = Number(process.env.TC ?? 0.3);
