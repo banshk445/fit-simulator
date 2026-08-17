@@ -36,7 +36,8 @@
     "v3:def": "tsx scripts/v3Def.ts",
     "v3:lay": "tsx scripts/v3Lay.ts",
     "v3:asp": "tsx scripts/v3Asp.ts",
-    "v3:req": "tsx scripts/v3Req.ts"
+    "v3:req": "tsx scripts/v3Req.ts",
+    "v3:s3": "tsx scripts/v3S3.ts"
   },
   "build": {
     "appId": "com.fitsimulator.app",

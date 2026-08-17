@@ -89,6 +89,124 @@ export type BendConstraint = {
 
 export type Constraint = DistanceConstraint | InplaneConstraint | BendConstraint;
 
+/* ── S3 몸 충돌 — «단방향». 흡착·인력 항 0 ─────────────────────────────────
+ *
+ * v2는 `bvhFromArrays.ts:105-115`에서 「탐지 반경 안이면 부호 없이 margin 거리로 스냅」
+ * 했다(= 흡착). v3는 **관통했을 때만 밀어낸다.** 밖에 있으면 «아무 일도 안 한다».
+ *
+ * 부호는 해석 형상에서 닫힌 형식으로 나온다 — BVH도 레이 패리티도 필요 없다.
+ * 메시 몸의 부호 판정은 S4 몫이다(설계 §2-4의 수밀 제약이 거기서 걸린다).
+ */
+export type Collider =
+  /** 반평면. 법선 n 쪽이 «바깥»(자유 공간)이고 반대쪽이 고체다. */
+  | { kind: 'plane'; p: readonly [number, number, number]; n: readonly [number, number, number] }
+  | { kind: 'sphere'; c: readonly [number, number, number]; r: number }
+  /** 무한 원기둥. a는 «단위» 축 벡터. */
+  | {
+      kind: 'cylinder';
+      c: readonly [number, number, number];
+      a: readonly [number, number, number];
+      r: number;
+    };
+
+export type CollisionParams = {
+  colliders: readonly Collider[];
+  /** 옷 두께 [m] — 표면에서 이만큼 떨어진 곳을 접촉면으로 본다 */
+  thickness: number;
+  /** 쿨롱 마찰계수. ARCSim 원단 파일에 마찰 항이 «없다» ⟹ 출처 미확보(시험용 상수) */
+  mu: number;
+  /** 충돌 해소 주기(서브스텝). 기본 1 = 매 서브스텝 */
+  every?: number;
+};
+
+/** 부호 있는 거리와 «바깥» 방향 법선. d > 0 이면 자유 공간. */
+function sdf(c: Collider, x: number, y: number, z: number, out: Float64Array): number {
+  if (c.kind === 'plane') {
+    out[0] = c.n[0];
+    out[1] = c.n[1];
+    out[2] = c.n[2];
+    return (x - c.p[0]) * c.n[0] + (y - c.p[1]) * c.n[1] + (z - c.p[2]) * c.n[2];
+  }
+  if (c.kind === 'sphere') {
+    const dx = x - c.c[0];
+    const dy = y - c.c[1];
+    const dz = z - c.c[2];
+    const l = Math.hypot(dx, dy, dz);
+    if (l < 1e-12) {
+      out[0] = 0;
+      out[1] = 1;
+      out[2] = 0;
+      return -c.r;
+    }
+    out[0] = dx / l;
+    out[1] = dy / l;
+    out[2] = dz / l;
+    return l - c.r;
+  }
+  const dx = x - c.c[0];
+  const dy = y - c.c[1];
+  const dz = z - c.c[2];
+  const t = dx * c.a[0] + dy * c.a[1] + dz * c.a[2];
+  const rx = dx - t * c.a[0];
+  const ry = dy - t * c.a[1];
+  const rz = dz - t * c.a[2];
+  const l = Math.hypot(rx, ry, rz);
+  if (l < 1e-12) {
+    out[0] = 1;
+    out[1] = 0;
+    out[2] = 0;
+    return -c.r;
+  }
+  out[0] = rx / l;
+  out[1] = ry / l;
+  out[2] = rz / l;
+  return l - c.r;
+}
+
+const cn = new Float64Array(3);
+
+/** 직전 `step` 호출의 충돌 계기. [해소 정점 수, 최대 관통 깊이, 질의 횟수, 충돌 ms] */
+export const collisionStats = new Float64Array(4);
+
+/** 단방향 관통 해소 + 쿨롱 마찰. */
+function resolveCollisions(s: Solver, cp: CollisionParams): void {
+  for (let v = 0; v < s.n; v++) {
+    if (s.invMass[v] === 0) continue;
+    const o = v * 3;
+    for (const col of cp.colliders) {
+      collisionStats[2]++;
+      const d = sdf(col, s.pos[o], s.pos[o + 1], s.pos[o + 2], cn) - cp.thickness;
+      if (d >= 0) continue; // 밖 ⟹ «아무 일도 안 한다»(흡착 0)
+      const depth = -d;
+      if (depth > collisionStats[1]) collisionStats[1] = depth;
+      collisionStats[0]++;
+      // 1) 법선 방향으로 «밀어낸다»
+      s.pos[o] += depth * cn[0];
+      s.pos[o + 1] += depth * cn[1];
+      s.pos[o + 2] += depth * cn[2];
+      // 2) 쿨롱 마찰 — 이번 서브스텝의 «접선» 변위를 μ·depth 만큼까지 되돌린다.
+      //    정지/운동을 따로 두지 않는다: min(1, μ·depth/|Δx_t|)가 둘을 함께 준다.
+      //    평형에서 depth ≈ h²g·cosθ, |Δx_t| ≈ h²g·sinθ ⟹ 임계는 tanθ = μ.
+      if (cp.mu > 0) {
+        let tx = s.pos[o] - s.prev[o];
+        let ty = s.pos[o + 1] - s.prev[o + 1];
+        let tz = s.pos[o + 2] - s.prev[o + 2];
+        const dn = tx * cn[0] + ty * cn[1] + tz * cn[2];
+        tx -= dn * cn[0];
+        ty -= dn * cn[1];
+        tz -= dn * cn[2];
+        const tl = Math.hypot(tx, ty, tz);
+        if (tl > 1e-15) {
+          const k = Math.min(1, (cp.mu * depth) / tl);
+          s.pos[o] -= tx * k;
+          s.pos[o + 1] -= ty * k;
+          s.pos[o + 2] -= tz * k;
+        }
+      }
+    }
+  }
+}
+
 export type SolverParams = {
   /** 프레임 시간간격 [s] */
   dt: number;
@@ -104,6 +222,8 @@ export type SolverParams = {
   /** 서브스텝당 제약 투영 반복 수. 기본 1(small-steps). λ는 «서브스텝마다» 0으로
    * 초기화하고 반복 사이에는 «누적»한다 — XPBD 유도가 그 형태다. */
   iterations?: number;
+  /** 몸 충돌. 없으면 충돌 코드가 «한 줄도» 돌지 않는다(기존 경로 비트 동일). */
+  collision?: CollisionParams;
 };
 
 /** 결합 제약계가 «명목» 강성을 내려면 서브스텝이 **원소** 진동을 풀어야 한다.
@@ -459,6 +579,12 @@ export function step(s: Solver, cs: Constraint[], p: SolverParams): void {
         else if (c.kind === 'bend') projectBend(s, c, h2);
         else projectInplane(s, c, h2);
       }
+    // 몸 충돌 — 제약 투영 «뒤», 속도 갱신 «앞». 단방향 · 흡착 0.
+    if (p.collision && sub % (p.collision.every ?? 1) === 0) {
+      const t0 = performance.now();
+      resolveCollisions(s, p.collision);
+      collisionStats[3] += performance.now() - t0;
+    }
     // 속도 갱신
     for (let v = 0; v < s.n; v++) {
       if (s.invMass[v] === 0) continue;
