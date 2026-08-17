@@ -216,6 +216,434 @@ function resolveCollisions(s: Solver, cp: CollisionParams): void {
   }
 }
 
+/* ── S3b 자기충돌 — 정점–삼각형 + 엣지–엣지 · «흡착·인력 항 0» ───────────────
+ *
+ * **분리 거리 = 2×thickness.** S3는 몸 «표면»에서 thickness만큼 띄운다. 옷–옷은
+ * 양쪽이 다 옷이므로 각 면이 상대에게서 thickness를 요구한다 ⟹ 합이 2×다.
+ *
+ * **정점–삼각형만으로는 부족하다.** 두 삼각형의 최근접 «특징 쌍»이 엣지–엣지인
+ * 배치 — 양쪽 정점이 전부 상대 삼각형 «밖»으로 투영되는 경우, 즉 접힘선끼리 X로
+ * 교차하는 자리 — 에서는 정점–삼각형 거리가 계속 sep보다 커서 한 번도 발화하지
+ * 않는데 두 면은 이미 서로를 통과하고 있다. 그래서 엣지–엣지를 **함께** 넣는다.
+ *
+ * **인접 제외 = 정점을 하나라도 공유하는 쌍**(위상 0링). 공유 정점 쌍은 거리가
+ * 정의상 0이라 제외가 «필수»다. 대가: 엣지 하나를 사이에 둔 급격한 접힘은
+ * 자기충돌이 막지 않고 굽힘 제약만 저항한다(접힘 반경 < 엣지 1개 대역).
+ *
+ * **자기접촉 마찰은 넣지 않는다.** μ가 출처 미확보(#23)라 두 번째 마찰 항을 넣으면
+ * 근거 없는 상수를 하나 더 곱하는 것이 된다. 대가: 접힌 층끼리 «미끄러진다» —
+ * 구겨진 더미가 실제보다 더 풀린다. 완료 조건 ①②는 이 항 없이 판정된다.
+ */
+export type SelfCollisionParams = {
+  /** 삼각형 인덱스 (3T) */
+  tris: ArrayLike<number>;
+  /** 옷 두께 [m]. 두 층의 «분리 거리»는 2×thickness */
+  thickness: number;
+};
+
+/** 직전 `step` 호출의 자기충돌 계기.
+ * [0] 근접 쌍(협역 기하까지 간 쌍) · [1] 해소 횟수(접촉 수) · [2] 최대 침투 깊이 [m]
+ * [3] 광역 ms · [4] 협역 ms · [5] 해소 ms · [6] 총 ms */
+export const selfStats = new Float64Array(7);
+
+type ScBucket = { cx: number; cy: number; cz: number; t: number[] };
+const scBuckets = new Map<number, ScBucket>();
+let scLo = new Int32Array(0);
+let scHi = new Int32Array(0);
+let scBox = new Float64Array(0);
+let scCon = new Float64Array(0);
+let scCount = 0;
+
+const SC_CLAMP = 2047;
+const scClamp = (v: number) => (v < -SC_CLAMP ? -SC_CLAMP : v > SC_CLAMP ? SC_CLAMP : v | 0);
+const scKey = (cx: number, cy: number, cz: number) =>
+  ((cx + 2048) * 4096 + (cy + 2048)) * 4096 + (cz + 2048);
+
+/* 쌍마다 특징 15개(정점–삼각형 6 + 엣지–엣지 9)를 재고 **sep 안인 것을 전부** 낸다.
+ *
+ * 처음에는 «가장 가까운 하나»만 냈다(중복 밀기를 피하려고). 실측에서 그 판이
+ * 대조군보다 «나빴다»(교차 58 vs 7): 면–면으로 겹친 두 삼각형을 점 하나로만
+ * 버티니 두 층이 가위질하듯 서로를 지나갔고, 최근접 특징이 정점↔엣지로 바뀔 때마다
+ * 법선이 튀어 떨림이 됐다. 중복 밀기 걱정은 해소 패스가 «간극을 다시 재는»
+ * Gauss–Seidel로 바뀌면서 사라졌다 — 먼저 처리된 접촉이 떼어 놓으면 나머지는
+ * depth ≤ 0으로 건너뛴다. 그래서 전부 낸다. */
+let scSep = 0;
+
+/** sep 안이면 접촉 하나를 기록한다. 기록 형식 12칸:
+ * [0..3] 정점 4개 · [4..7] 기울기 계수(∇ₖC = coefₖ·n) · [8..10] 법선 · [11] 침투 깊이 */
+function scEmit(
+  d2: number,
+  i0: number,
+  i1: number,
+  i2: number,
+  i3: number,
+  c0: number,
+  c1: number,
+  c2: number,
+  c3: number,
+  dx: number,
+  dy: number,
+  dz: number,
+): void {
+  if (d2 >= scSep * scSep) return; // sep 밖 ⟹ «아무 일도 안 한다»(흡착 0)
+  const d = Math.sqrt(d2);
+  // d≈0(정확히 겹침)이면 방향이 정의되지 않는다 — 이 특징은 버린다. 같은 쌍의
+  // 나머지 14개 특징이 사실상 함께 걸리므로 해소가 비지 않는다(측도 0 배치).
+  if (d <= 1e-12) return;
+  if (scCount * 12 + 12 > scCon.length) {
+    const grown = new Float64Array(Math.max(4096, scCon.length * 2));
+    grown.set(scCon);
+    scCon = grown;
+  }
+  const o = scCount * 12;
+  scCon[o] = i0;
+  scCon[o + 1] = i1;
+  scCon[o + 2] = i2;
+  scCon[o + 3] = i3;
+  scCon[o + 4] = c0;
+  scCon[o + 5] = c1;
+  scCon[o + 6] = c2;
+  scCon[o + 7] = c3;
+  scCon[o + 8] = dx / d;
+  scCon[o + 9] = dy / d;
+  scCon[o + 10] = dz / d;
+  scCon[o + 11] = scSep - d;
+  if (scSep - d > selfStats[2]) selfStats[2] = scSep - d;
+  scCount++;
+}
+
+const scBary = new Float64Array(3);
+const scPt = new Float64Array(3);
+
+function scSetBary(u: number, v: number, w: number, x: number, y: number, z: number): void {
+  scBary[0] = u;
+  scBary[1] = v;
+  scBary[2] = w;
+  scPt[0] = x;
+  scPt[1] = y;
+  scPt[2] = z;
+}
+
+/** 점 p에서 삼각형 abc의 최근접점 — Ericson, *Real-Time Collision Detection* §5.1.5.
+ * 무게중심 좌표를 `scBary`에, 점을 `scPt`에 쓴다. */
+function closestPtTri(
+  P: Float64Array,
+  oa: number,
+  ob: number,
+  oc: number,
+  px: number,
+  py: number,
+  pz: number,
+): void {
+  const ax = P[oa];
+  const ay = P[oa + 1];
+  const az = P[oa + 2];
+  const bx = P[ob];
+  const by = P[ob + 1];
+  const bz = P[ob + 2];
+  const cx = P[oc];
+  const cy = P[oc + 1];
+  const cz = P[oc + 2];
+  const abx = bx - ax;
+  const aby = by - ay;
+  const abz = bz - az;
+  const acx = cx - ax;
+  const acy = cy - ay;
+  const acz = cz - az;
+  const d1 = abx * (px - ax) + aby * (py - ay) + abz * (pz - az);
+  const d2 = acx * (px - ax) + acy * (py - ay) + acz * (pz - az);
+  if (d1 <= 0 && d2 <= 0) return scSetBary(1, 0, 0, ax, ay, az);
+  const d3 = abx * (px - bx) + aby * (py - by) + abz * (pz - bz);
+  const d4 = acx * (px - bx) + acy * (py - by) + acz * (pz - bz);
+  if (d3 >= 0 && d4 <= d3) return scSetBary(0, 1, 0, bx, by, bz);
+  const vc = d1 * d4 - d3 * d2;
+  if (vc <= 0 && d1 >= 0 && d3 <= 0) {
+    const v = d1 / (d1 - d3);
+    return scSetBary(1 - v, v, 0, ax + v * abx, ay + v * aby, az + v * abz);
+  }
+  const d5 = abx * (px - cx) + aby * (py - cy) + abz * (pz - cz);
+  const d6 = acx * (px - cx) + acy * (py - cy) + acz * (pz - cz);
+  if (d6 >= 0 && d5 <= d6) return scSetBary(0, 0, 1, cx, cy, cz);
+  const vb = d5 * d2 - d1 * d6;
+  if (vb <= 0 && d2 >= 0 && d6 <= 0) {
+    const w = d2 / (d2 - d6);
+    return scSetBary(1 - w, 0, w, ax + w * acx, ay + w * acy, az + w * acz);
+  }
+  const va = d3 * d6 - d5 * d4;
+  if (va <= 0 && d4 - d3 >= 0 && d5 - d6 >= 0) {
+    const w = (d4 - d3) / (d4 - d3 + (d5 - d6));
+    return scSetBary(0, 1 - w, w, bx + w * (cx - bx), by + w * (cy - by), bz + w * (cz - bz));
+  }
+  const den = 1 / (va + vb + vc);
+  const v = vb * den;
+  const w = vc * den;
+  scSetBary(1 - v - w, v, w, ax + abx * v + acx * w, ay + aby * v + acy * w, az + abz * v + acz * w);
+}
+
+const scST = new Float64Array(2);
+const cl01 = (v: number) => (v < 0 ? 0 : v > 1 ? 1 : v);
+
+/** 두 선분의 최근접 매개변수 s·t — Ericson §5.1.9. `scST`에 쓴다. */
+function closestSegSeg(P: Float64Array, o1: number, o2: number, o3: number, o4: number): void {
+  const d1x = P[o2] - P[o1];
+  const d1y = P[o2 + 1] - P[o1 + 1];
+  const d1z = P[o2 + 2] - P[o1 + 2];
+  const d2x = P[o4] - P[o3];
+  const d2y = P[o4 + 1] - P[o3 + 1];
+  const d2z = P[o4 + 2] - P[o3 + 2];
+  const rx = P[o1] - P[o3];
+  const ry = P[o1 + 1] - P[o3 + 1];
+  const rz = P[o1 + 2] - P[o3 + 2];
+  const a = d1x * d1x + d1y * d1y + d1z * d1z;
+  const e = d2x * d2x + d2y * d2y + d2z * d2z;
+  const f = d2x * rx + d2y * ry + d2z * rz;
+  let sv: number;
+  let tv: number;
+  if (a <= 1e-20 && e <= 1e-20) {
+    sv = 0;
+    tv = 0;
+  } else if (a <= 1e-20) {
+    sv = 0;
+    tv = cl01(f / e);
+  } else {
+    const c = d1x * rx + d1y * ry + d1z * rz;
+    if (e <= 1e-20) {
+      tv = 0;
+      sv = cl01(-c / a);
+    } else {
+      const b = d1x * d2x + d1y * d2y + d1z * d2z;
+      const den = a * e - b * b;
+      sv = den !== 0 ? cl01((b * f - c * e) / den) : 0;
+      tv = (b * sv + f) / e;
+      if (tv < 0) {
+        tv = 0;
+        sv = cl01(-c / a);
+      } else if (tv > 1) {
+        tv = 1;
+        sv = cl01((b - c) / a);
+      }
+    }
+  }
+  scST[0] = sv;
+  scST[1] = tv;
+}
+
+/** 정점 p vs 삼각형 (iu,iv,iw). n = (p − q)/|·| ⟹ 계수는 p에 +1, 삼각형에 −무게중심 */
+function scVT(
+  P: Float64Array,
+  p: number,
+  iu: number,
+  iv: number,
+  iw: number,
+): void {
+  const op = p * 3;
+  closestPtTri(P, iu * 3, iv * 3, iw * 3, P[op], P[op + 1], P[op + 2]);
+  const dx = P[op] - scPt[0];
+  const dy = P[op + 1] - scPt[1];
+  const dz = P[op + 2] - scPt[2];
+  scEmit(
+    dx * dx + dy * dy + dz * dz,
+    p,
+    iu,
+    iv,
+    iw,
+    1,
+    -scBary[0],
+    -scBary[1],
+    -scBary[2],
+    dx,
+    dy,
+    dz,
+  );
+}
+
+/** 엣지 (p1,p2) vs 엣지 (q1,q2) */
+function scEE(P: Float64Array, p1: number, p2: number, q1: number, q2: number): void {
+  const o1 = p1 * 3;
+  const o2 = p2 * 3;
+  const o3 = q1 * 3;
+  const o4 = q2 * 3;
+  closestSegSeg(P, o1, o2, o3, o4);
+  const sv = scST[0];
+  const tv = scST[1];
+  const dx = P[o1] + sv * (P[o2] - P[o1]) - (P[o3] + tv * (P[o4] - P[o3]));
+  const dy = P[o1 + 1] + sv * (P[o2 + 1] - P[o1 + 1]) - (P[o3 + 1] + tv * (P[o4 + 1] - P[o3 + 1]));
+  const dz = P[o1 + 2] + sv * (P[o2 + 2] - P[o1 + 2]) - (P[o3 + 2] + tv * (P[o4 + 2] - P[o3 + 2]));
+  scEmit(dx * dx + dy * dy + dz * dz, p1, p2, q1, q2, 1 - sv, sv, -(1 - tv), -tv, dx, dy, dz);
+}
+
+const scEA = new Int32Array(6);
+const scEB = new Int32Array(6);
+
+/** 정점–삼각형 + 엣지–엣지 근접 해소. 겹쳤을 때만 밀어낸다(흡착·인력 0). */
+function resolveSelfCollisions(s: Solver, sp: SelfCollisionParams): void {
+  const t0 = performance.now();
+  const tris = sp.tris;
+  const T = (tris.length / 3) | 0;
+  if (T < 2) return;
+  const sep = 2 * sp.thickness;
+  scSep = sep;
+  const P = s.pos;
+
+  /* ── 광역 — 셀 크기를 «두께·엣지 길이»에서 도출한다(손 상수 0) ──────────
+   * 삼각형 AABB를 thickness씩 양쪽으로 넓혀 «겹치는 모든 셀»에 넣는다. 그러면
+   * 표면 거리가 sep(=2·thickness) 미만인 두 삼각형은 확장 AABB가 반드시 겹치고
+   * ⟹ 셀을 최소 하나 공유한다 — 셀 크기와 «무관하게» 누락이 0이다. 즉 셀 크기는
+   * 정확성이 아니라 비용만 정한다: 작으면 삽입 수가, 크면 헛 쌍이 는다. 둘이
+   * 갈리는 지점 = 확장 AABB의 전형 폭이므로
+   *     cell = mean(엣지 길이) + sep = mean(엣지) + 2·thickness
+   * 로 둔다(삼각형 AABB 폭 ≈ 엣지 길이 · 확장분이 양쪽 thickness씩).
+   * 엣지 길이는 «제약이 실제로 순회하는 집합»(sp.tris)에서 직접 뜬다(함정 12). */
+  if (scLo.length < T * 3) {
+    scLo = new Int32Array(T * 3);
+    scHi = new Int32Array(T * 3);
+    scBox = new Float64Array(T * 6);
+  }
+  let sumLen = 0;
+  for (let t = 0; t < T; t++) {
+    const o0 = tris[t * 3] * 3;
+    const o1 = tris[t * 3 + 1] * 3;
+    const o2 = tris[t * 3 + 2] * 3;
+    sumLen +=
+      Math.hypot(P[o1] - P[o0], P[o1 + 1] - P[o0 + 1], P[o1 + 2] - P[o0 + 2]) +
+      Math.hypot(P[o2] - P[o1], P[o2 + 1] - P[o1 + 1], P[o2 + 2] - P[o1 + 2]) +
+      Math.hypot(P[o0] - P[o2], P[o0 + 1] - P[o2 + 1], P[o0 + 2] - P[o2 + 2]);
+    const b = t * 6;
+    for (let k = 0; k < 3; k++) {
+      scBox[b + k] = Math.min(P[o0 + k], P[o1 + k], P[o2 + k]) - sp.thickness;
+      scBox[b + 3 + k] = Math.max(P[o0 + k], P[o1 + k], P[o2 + k]) + sp.thickness;
+    }
+  }
+  const cell = sumLen / (3 * T) + sep;
+  if (!(cell > 0)) return; // 발산·퇴화 메시 — 광역을 만들 수 없다
+  const inv = 1 / cell;
+
+  scBuckets.clear();
+  for (let t = 0; t < T; t++) {
+    const b = t * 6;
+    for (let k = 0; k < 3; k++) {
+      scLo[t * 3 + k] = scClamp(Math.floor(scBox[b + k] * inv));
+      scHi[t * 3 + k] = scClamp(Math.floor(scBox[b + 3 + k] * inv));
+    }
+    for (let cx = scLo[t * 3]; cx <= scHi[t * 3]; cx++)
+      for (let cy = scLo[t * 3 + 1]; cy <= scHi[t * 3 + 1]; cy++)
+        for (let cz = scLo[t * 3 + 2]; cz <= scHi[t * 3 + 2]; cz++) {
+          const key = scKey(cx, cy, cz);
+          let bk = scBuckets.get(key);
+          if (!bk) {
+            bk = { cx, cy, cz, t: [] };
+            scBuckets.set(key, bk);
+          }
+          bk.t.push(t);
+        }
+  }
+  const t1 = performance.now();
+
+  /* ── 협역 ─────────────────────────────────────────────────────────────── */
+  scCount = 0;
+  for (const bk of scBuckets.values()) {
+    const list = bk.t;
+    for (let ii = 0; ii < list.length; ii++)
+      for (let jj = ii + 1; jj < list.length; jj++) {
+        const i = list[ii];
+        const j = list[jj];
+        // 중복 제거 — 두 셀 «범위»의 최소 모서리 셀에서만 한 번 처리한다. 두
+        // 삼각형이 이 셀을 함께 점유하므로 그 최소 모서리도 반드시 함께 점유한다
+        // ⟹ 정확히 한 번 방문된다(Set 없이 중복 0 · 누락 0).
+        if (
+          bk.cx !== Math.max(scLo[i * 3], scLo[j * 3]) ||
+          bk.cy !== Math.max(scLo[i * 3 + 1], scLo[j * 3 + 1]) ||
+          bk.cz !== Math.max(scLo[i * 3 + 2], scLo[j * 3 + 2])
+        )
+          continue;
+        const a0 = tris[i * 3];
+        const a1 = tris[i * 3 + 1];
+        const a2 = tris[i * 3 + 2];
+        const b0 = tris[j * 3];
+        const b1 = tris[j * 3 + 1];
+        const b2 = tris[j * 3 + 2];
+        // 인접 제외 — 정점을 하나라도 공유하면 근접이 «정상»이다
+        if (
+          a0 === b0 || a0 === b1 || a0 === b2 ||
+          a1 === b0 || a1 === b1 || a1 === b2 ||
+          a2 === b0 || a2 === b1 || a2 === b2
+        )
+          continue;
+        const bi = i * 6;
+        const bj = j * 6;
+        if (
+          scBox[bi] > scBox[bj + 3] || scBox[bj] > scBox[bi + 3] ||
+          scBox[bi + 1] > scBox[bj + 4] || scBox[bj + 1] > scBox[bi + 4] ||
+          scBox[bi + 2] > scBox[bj + 5] || scBox[bj + 2] > scBox[bi + 5]
+        )
+          continue;
+        selfStats[0]++;
+
+        scVT(P, a0, b0, b1, b2);
+        scVT(P, a1, b0, b1, b2);
+        scVT(P, a2, b0, b1, b2);
+        scVT(P, b0, a0, a1, a2);
+        scVT(P, b1, a0, a1, a2);
+        scVT(P, b2, a0, a1, a2);
+        scEA[0] = a0; scEA[1] = a1; scEA[2] = a1; scEA[3] = a2; scEA[4] = a2; scEA[5] = a0;
+        scEB[0] = b0; scEB[1] = b1; scEB[2] = b1; scEB[3] = b2; scEB[4] = b2; scEB[5] = b0;
+        for (let p = 0; p < 3; p++)
+          for (let q = 0; q < 3; q++)
+            scEE(P, scEA[p * 2], scEA[p * 2 + 1], scEB[q * 2], scEB[q * 2 + 1]);
+
+      }
+  }
+  const t2 = performance.now();
+
+  /* ── 해소 — C = d − sep, ∇ₖC = coefₖ·n ⟹ λ = depth/Σ wₖ coefₖ².
+   *
+   * **간극을 «적용 시점의» 위치에서 다시 잰다**(Gauss–Seidel). 협역이 재 둔 depth를
+   * 그대로 쓰면(Jacobi) 한 정점이 여러 접촉에 걸릴 때 교정이 «겹쳐 더해져» 과잉
+   * 밀기가 된다 — 실측에서 그대로 발산했다(천이 4.3 m 날아가고 |v| 172 m/s ·
+   * 엣지 신장 3.39 · 최대 침투가 sep에 포화). 서브스텝 h가 1e-4 s 규모라 위치
+   * 교정이 속도 갱신에서 1e4배로 증폭되는 것이 발산의 경로다.
+   *
+   * 두 형태 모두 Σₖ coefₖ·xₖ 가 «두 특징 사이의 차 벡터»이므로 현재 간극은
+   * (Σₖ coefₖ·xₖ)·n 로 4회 내적이면 나온다 — 협역을 다시 돌 필요가 없다.
+   *
+   * **depth ≤ 0이면 건너뛴다.** 이미 sep 밖이면 «아무 일도 안 한다» — 이 가드가
+   * 없으면 음수 depth가 두 층을 «당기는» 항이 된다(절대 조항 위반). */
+  for (let k = 0; k < scCount; k++) {
+    const o = k * 12;
+    const nx = scCon[o + 8];
+    const ny = scCon[o + 9];
+    const nz = scCon[o + 10];
+    let gap = 0;
+    let denom = 0;
+    for (let q = 0; q < 4; q++) {
+      const c = scCon[o + 4 + q];
+      const ov = scCon[o + q] * 3;
+      gap += c * (s.pos[ov] * nx + s.pos[ov + 1] * ny + s.pos[ov + 2] * nz);
+      denom += s.invMass[scCon[o + q]] * c * c;
+    }
+    const depth = sep - gap;
+    if (depth <= 0) continue; // 이미 떨어져 있다 ⟹ 흡착 0
+    if (denom < 1e-20) continue;
+    const lam = depth / denom;
+    selfStats[1]++;
+    for (let q = 0; q < 4; q++) {
+      const v = scCon[o + q];
+      const w = s.invMass[v];
+      if (w === 0) continue;
+      const g = lam * w * scCon[o + 4 + q];
+      const ov = v * 3;
+      s.pos[ov] += g * scCon[o + 8];
+      s.pos[ov + 1] += g * scCon[o + 9];
+      s.pos[ov + 2] += g * scCon[o + 10];
+    }
+  }
+  const t3 = performance.now();
+  selfStats[3] += t1 - t0;
+  selfStats[4] += t2 - t1;
+  selfStats[5] += t3 - t2;
+  selfStats[6] += t3 - t0;
+}
+
 export type SolverParams = {
   /** 프레임 시간간격 [s] */
   dt: number;
@@ -233,6 +661,8 @@ export type SolverParams = {
   iterations?: number;
   /** 몸 충돌. 없으면 충돌 코드가 «한 줄도» 돌지 않는다(기존 경로 비트 동일). */
   collision?: CollisionParams;
+  /** 자기충돌(S3b). 없으면 자기충돌 코드가 «한 줄도» 돌지 않는다. */
+  selfCollision?: SelfCollisionParams;
 };
 
 /** 결합 제약계가 «명목» 강성을 내려면 서브스텝이 **원소** 진동을 풀어야 한다.
@@ -588,6 +1018,9 @@ export function step(s: Solver, cs: Constraint[], p: SolverParams): void {
         else if (c.kind === 'bend') projectBend(s, c, h2);
         else projectInplane(s, c, h2);
       }
+    // 자기충돌 — 제약 투영 «뒤», 몸 충돌 «앞». 몸 관통이 더 단단한 조건이므로
+    // 마지막에 두어 자기충돌이 몸 안으로 밀어 넣은 것을 그 자리에서 되돌린다.
+    if (p.selfCollision) resolveSelfCollisions(s, p.selfCollision);
     // 몸 충돌 — 제약 투영 «뒤», 속도 갱신 «앞». 단방향 · 흡착 0.
     if (p.collision && sub % (p.collision.every ?? 1) === 0) {
       const t0 = performance.now();
