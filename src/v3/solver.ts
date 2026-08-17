@@ -165,8 +165,11 @@ function sdf(c: Collider, x: number, y: number, z: number, out: Float64Array): n
 
 const cn = new Float64Array(3);
 
-/** 직전 `step` 호출의 충돌 계기. [해소 정점 수, 최대 관통 깊이, 질의 횟수, 충돌 ms] */
-export const collisionStats = new Float64Array(4);
+/** 직전 `step` 호출의 충돌 계기.
+ * [0] 해소 정점 수 · [1] 최대 관통 깊이 · [2] 질의 횟수 · [3] 충돌 ms
+ * [4] 0이 아닌 최소 depth · [5] 0이 아닌 최소 |Δx_t| · [6] |Δx_t| < 1e-300 횟수 ·
+ * [7] depth < 1e-300 횟수  — #24 진단용(v3-11). **기록만 하고 물리는 안 바꾼다.** */
+export const collisionStats = new Float64Array(8);
 
 /** 단방향 관통 해소 + 쿨롱 마찰. */
 function resolveCollisions(s: Solver, cp: CollisionParams): void {
@@ -196,6 +199,12 @@ function resolveCollisions(s: Solver, cp: CollisionParams): void {
         ty -= dn * cn[1];
         tz -= dn * cn[2];
         const tl = Math.hypot(tx, ty, tz);
+        // #24 진단 계기 — 기록만. 분기·값에 영향 없음.
+        if (depth > 0 && (collisionStats[4] === 0 || depth < collisionStats[4]))
+          collisionStats[4] = depth;
+        if (tl > 0 && (collisionStats[5] === 0 || tl < collisionStats[5])) collisionStats[5] = tl;
+        if (tl > 0 && tl < 1e-300) collisionStats[6]++;
+        if (depth > 0 && depth < 1e-300) collisionStats[7]++;
         if (tl > 1e-15) {
           const k = Math.min(1, (cp.mu * depth) / tl);
           s.pos[o] -= tx * k;
