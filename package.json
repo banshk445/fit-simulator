@@ -39,6 +39,7 @@
     "v3:req": "tsx scripts/v3Req.ts",
     "v3:s3": "tsx scripts/v3S3.ts",
     "v3:s3b": "tsx scripts/v3S3b.ts",
+    "v3:s4": "tsx scripts/v3S4.ts",
     "v3:body": "tsx scripts/v3Body.ts"
   },
   "build": {
