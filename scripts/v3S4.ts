@@ -73,7 +73,7 @@ const DT = 1 / 60;
 /** 멤브레인 강성 [N/m] — S3·S3b와 «같은 값» */
 const KMEM = Number(process.env.MATK ?? 100);
 /** 시험용 원단 — ARCSim gray-interlock. S3·S3b·v3-16과 «같은 값» */
-const MAT = { rho: Number(process.env.MATRHO ?? 0.187), B: 23.191698e-6 };
+const MAT = { rho: Number(process.env.MATRHO ?? 0.187), B: Number(process.env.MATB ?? 23.191698e-6) };
 /** 옷 두께 [m] — S3·S3b·v3-13과 «같은 값». 옷–옷 분리 거리는 2× */
 const THICK = 1e-3;
 const SEP = 2 * THICK;
