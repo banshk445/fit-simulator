@@ -83,6 +83,8 @@ const MU = 0.3;
 const DAMP = 6;
 /** SDF 메모리 예산 — v3-13이 상주 GLB 자산에 앵커해 정한 값 그대로 */
 const SDF_BUDGET = 64 * 1024 * 1024;
+/** v3-19 고정 해상도 [m] — §0 헤더의 등록 사유 참고. env는 진단용이다. */
+const D_FIXED = Number(process.env.D_MM ?? 11) / 1000;
 /** S3b ② 허용오차 — 한 서브스텝의 재수렴 폭. v3-12 등록분 그대로 */
 const TOL_SELF = 1e-4;
 /** 정착 문턱 [m/s] — S3b ② 허용오차(0.1mm)를 «프레임 이동»으로 환산. 헤더 참고 */
@@ -375,6 +377,18 @@ const Y_HEM = Y_TOP - L;
  * 30cm로 부풀었다 — 타원은 몸의 모양이 아니다. 옷이 덮는 높이대의 몸 정점을
  * (x,z)로 투영해 볼록 껍질을 잡고, 그것을 δ만큼 부풀린 볼록체의 경계를 쓴다.
  * δ는 「놓인 정점의 몸 SDF ≥ SEP」로 이분법으로 «푼다» — 고르는 수는 0이다. */
+/* ── v3-21 배치: «높이별» 실루엣 튜브 ────────────────────────────────────
+ * v3-18~20의 배치는 옷 높이대 «전체»의 볼록 껍질 하나를 모든 높이에 썼다. 그 껍질은
+ * 가장 넓은 곳(어깨)이 정하므로 둘레가 128.84cm가 되고, 패널 110cm는 거기 못 미쳐
+ * **옆선이 9.24cm · 어깨가 22.88cm 벌어진 채** 시작했다(v3-18 §3 표). 그 틈을 봉제가
+ * f=0에 한꺼번에 당긴 것이 v3-19의 과도 구간이다.
+ *
+ * 여기서는 **높이마다** 몸 단면의 볼록 껍질을 잡고, 그 높이에서 옷이 «필요로 하는»
+ * 둘레와 «몸을 비우는 데 필요한» 둘레 중 **큰 쪽**으로 맞춘다:
+ *   P(y) = max( P_body(y) + 여유,  4 × 그 높이의 패널 반폭 )
+ * ⟹ 옷이 몸보다 큰 대역(몸통)에서는 **옆선이 정확히 만나고**, 몸이 더 큰 대역(어깨)에서는
+ *   몸을 비우되 **필요한 만큼만** 벌어진다. 기둥이 아니므로 면내 변형이 0은 아니다 —
+ *   §2가 그 크기를 «값으로» 낸다(회차 프롬프트 §2 조건 ④). */
 const AXIS_Z = (() => {
   let z0 = Infinity, z1 = -Infinity;
   for (let v = 0; v < prim0.pos.length / 3; v++) {
@@ -385,121 +399,165 @@ const AXIS_Z = (() => {
   return (z0 + z1) / 2;
 })();
 
-/** 지지함수 h(θ) = max_p (p·u_θ), u_θ = (sinθ, cosθ) — 옷 높이대 몸 정점의 볼록 껍질.
- * 대역은 «몸판이 덮는 곳»뿐이다: 높이 [밑단, 어깨선] × |x| ≤ 어깨너비/2.
- * 뻗은 팔(|x| ≤ 0.89)까지 넣으면 껍질 둘레가 3.7m가 되어 패널이 «평면»으로 놓인다 —
- * 그 바깥은 몸판이 아니라 «소매»가 덮는 대역이고, 컷은 패턴에서 온다(손 상수 0). */
 const NTH = 720;
-const HSUP = (() => {
+const TH_S = new Float64Array(NTH), TH_C = new Float64Array(NTH);
+for (let k = 0; k < NTH; k++) { const t = (k / NTH) * 2 * Math.PI; TH_S[k] = Math.sin(t); TH_C[k] = Math.cos(t); }
+
+/** 높이 y의 «슬랩»에서 잡은 몸 단면 볼록 껍질의 지지함수. 대역은 몸판이 덮는 |x| ≤ 어깨/2. */
+function supportAt(y: number, half: number): Float64Array {
   const h = new Float64Array(NTH).fill(-Infinity);
-  const sn = new Float64Array(NTH), cs = new Float64Array(NTH);
-  for (let k = 0; k < NTH; k++) { const th = (k / NTH) * 2 * Math.PI; sn[k] = Math.sin(th); cs[k] = Math.cos(th); }
   for (let v = 0; v < prim0.pos.length / 3; v++) {
-    const y = prim0.pos[v * 3 + 1];
-    if (y < Y_HEM || y > Y_TOP) continue;
+    const py = prim0.pos[v * 3 + 1];
+    if (Math.abs(py - y) > half) continue;
     const x = prim0.pos[v * 3];
     if (Math.abs(x) > SW / 2) continue;
     const z = prim0.pos[v * 3 + 2] - AXIS_Z;
-    for (let k = 0; k < NTH; k++) { const d = x * sn[k] + z * cs[k]; if (d > h[k]) h[k] = d; }
+    for (let k = 0; k < NTH; k++) { const d = x * TH_S[k] + z * TH_C[k]; if (d > h[k]) h[k] = d; }
   }
+  // 슬랩이 비면(옷 높이대 밖) 이웃 값을 쓰도록 0으로 두지 않고 «작은 값»으로 채운다
+  for (let k = 0; k < NTH; k++) if (!Number.isFinite(h[k])) h[k] = 0;
   return h;
-})();
+}
 
-/** 부풀린 볼록체의 경계 — 지지함수 (h+δ)에서 닫힌 형식으로 나온다:
- *  p(θ) = (h·sinθ + h′·cosθ,  h·cosθ − h′·sinθ) */
-function silhouette(delta: number): [number, number][] {
+/** 지지함수 (h+δ)·scale 의 경계점: p(θ) = (h·sinθ + h′·cosθ, h·cosθ − h′·sinθ) */
+function boundaryOf(h: Float64Array, delta: number, scale: number): [number, number][] {
   const dth = (2 * Math.PI) / NTH;
   return Array.from({ length: NTH }, (_, k) => {
-    const th = k * dth;
-    const h = HSUP[k] + delta;
-    const hp = (HSUP[(k + 1) % NTH] - HSUP[(k - 1 + NTH) % NTH]) / (2 * dth);
-    return [h * Math.sin(th) + hp * Math.cos(th), h * Math.cos(th) - hp * Math.sin(th)] as [number, number];
+    const hh = (h[k] + delta) * scale;
+    const hp = ((h[(k + 1) % NTH] - h[(k - 1 + NTH) % NTH]) / (2 * dth)) * scale;
+    return [hh * TH_S[k] + hp * TH_C[k], hh * TH_C[k] - hp * TH_S[k]] as [number, number];
   });
 }
 
-/** 닫힌 곡선의 호길이 표. s=0 은 «앞»(z 최대) 지점, s>0 은 +x 쪽으로 돈다. */
-function arcOn(pts: [number, number][]) {
+/** 닫힌 곡선의 호길이 표. 원점은 «앞»(z 최대) — `rear`를 주면 «뒤»(z 최소)에서 잰다. */
+function arcOn(pts: [number, number][], rear = false) {
   const M = pts.length;
-  let front = 0;
-  for (let k = 1; k < M; k++) if (pts[k][1] > pts[front][1]) front = k;
-  const ord = Array.from({ length: M + 1 }, (_, k) => pts[(front + k) % M]);
+  let o = 0;
+  for (let k = 1; k < M; k++) if (rear ? pts[k][1] < pts[o][1] : pts[k][1] > pts[o][1]) o = k;
+  const ord = Array.from({ length: M + 1 }, (_, k) => pts[(o + k) % M]);
   const acc = new Float64Array(M + 1);
   for (let k = 1; k <= M; k++) acc[k] = acc[k - 1] + Math.hypot(ord[k][0] - ord[k - 1][0], ord[k][1] - ord[k - 1][1]);
   const total = acc[M];
   return {
     total,
-    at: (s: number): [number, number] => {
-      let a = s % total;
-      if (a < 0) a += total;
-      let k = 0;
-      while (k < M && acc[k + 1] < a) k++;
+    at: (sArc: number): [number, number] => {
+      let a2 = sArc % total;
+      if (a2 < 0) a2 += total;
+      // 이분 탐색 — 선형 탐색이면 배치 도출이 O(720)×수백만 회로 분 단위가 된다
+      let lo2 = 0, hi2 = M;
+      while (hi2 - lo2 > 1) { const md = (lo2 + hi2) >> 1; if (acc[md] <= a2) lo2 = md; else hi2 = md; }
+      const k = lo2;
       const seg = acc[k + 1] - acc[k];
-      const f = seg > 0 ? (a - acc[k]) / seg : 0;
+      const f = seg > 0 ? (a2 - acc[k]) / seg : 0;
       return [ord[k][0] + (ord[k + 1][0] - ord[k][0]) * f, ord[k][1] + (ord[k + 1][1] - ord[k][1]) * f];
     },
   };
 }
 
-/* 배치 적법성은 «옷이 실제로 놓이는 점»에서만 묻는다 — 옷이 없는 각도까지
- * 비우라고 요구하면(초판) 면이 몸과 무관하게 부푼다. */
+/** 2D 높이 py에서 «몸판»의 반폭 — 겨드랑이 아래는 품/2, 위는 암홀 곡선. */
+function panelHalfWidth(py: number): number {
+  if (py <= Y_ARM) return W / 2;
+  // armR(t) = (SW/2 + ARM_A cos(πt/2), Y_ARM + ARM_D t) ⟹ t = (py − Y_ARM)/ARM_D
+  const t = Math.min(1, (py - Y_ARM) / ARM_D);
+  return SW / 2 + ARM_A * Math.cos((t * Math.PI) / 2);
+}
+
+const NY = 61;
+const yOf = (k: number) => Y_HEM + ((Y_TOP - Y_HEM) * k) / (NY - 1);
+/** 슬랩 반폭 — 표본 간격의 절반. 손 상수 0. */
+const SLAB = (Y_TOP - Y_HEM) / (2 * (NY - 1));
+const HSUP_Y: Float64Array[] = Array.from({ length: NY }, (_, k) => supportAt(yOf(k), SLAB));
+const perimOf = (pts: [number, number][]) =>
+  pts.reduce((t, q, i) => t + Math.hypot(q[0] - pts[(i + 1) % pts.length][0], q[1] - pts[(i + 1) % pts.length][1]), 0);
+
+/** 높이별 배율 — 「몸을 δ만큼 비운다」와 「그 높이의 패널이 요구하는 둘레」 중 큰 쪽. */
+/** 옆선 «틈» G — 앞뒤판이 «닿아 버리면» 자기충돌 분리(2×두께)를 f=0부터 어긴다.
+ * 초기값은 분리 거리 그대로 두고, 초기 적법성이 실패하면 §2에서 «값으로» 키운다. */
+let GAP_SIDE = SEP;
+function scalesFor(delta: number): number[] {
+  return HSUP_Y.map((h, k) => {
+    const py = yOf(k) - (Y_TOP - L);          // 그 높이에 대응하는 2D 높이
+    const need = 4 * panelHalfWidth(Math.max(0, Math.min(L, py))) + 2 * GAP_SIDE;
+    const base = perimOf(boundaryOf(h, delta, 1));
+    return Math.max(1, need / base);
+  });
+}
+
+/* 배치 적법성은 «옷이 실제로 놓이는 점»에서만 묻는다. */
 const PROBE = (() => {
-  const B = build(0.025);
-  const grab = (p: Panel): Pt[] => {
+  const B = build(D_FIXED);
+  const grab = (pn: Panel): Pt[] => {
     const out: Pt[] = [];
-    for (let j = 0; j <= p.nv; j++)
-      for (let i = 0; i <= p.nu; i++) out.push([p.uv[(j * (p.nu + 1) + i) * 2], p.uv[(j * (p.nu + 1) + i) * 2 + 1]]);
+    for (let j = 0; j <= pn.nv; j++)
+      for (let i = 0; i <= pn.nu; i++) out.push([pn.uv[(j * (pn.nu + 1) + i) * 2], pn.uv[(j * (pn.nu + 1) + i) * 2 + 1]]);
     return out;
   };
   return { body: grab(B.front), sleeve: grab(B.slv[0]) };
 })();
 
-/** 부풀림 δ — 앞·뒤판의 놓인 정점이 전부 몸에서 SEP 이상 떨어지는 최소값. */
+/** 2D 높이 py → 높이 표 인덱스(선형 보간용) */
+const yIndex = (py: number) => {
+  const y = Y_TOP - (L - py);
+  const t = ((y - Y_HEM) / (Y_TOP - Y_HEM)) * (NY - 1);
+  return Math.max(0, Math.min(NY - 1, t));
+};
+
+let DELTA = 0;
+let SCALES: number[] = [];
+let ARCS_F: ReturnType<typeof arcOn>[] = [];
+let ARCS_B: ReturnType<typeof arcOn>[] = [];
+function rebuildSurface(delta: number): void {
+  DELTA = delta;
+  SCALES = scalesFor(delta);
+  const bs = HSUP_Y.map((h, k) => boundaryOf(h, delta, SCALES[k]));
+  ARCS_F = bs.map((pts) => arcOn(pts, false));
+  ARCS_B = bs.map((pts) => arcOn(pts, true));
+}
+/** 몸판 배치 — 높이에서 두 표본을 선형 보간한다(표본 간격 ${SLAB}m). */
+function bodyPoint(px: number, py: number, front: boolean): [number, number, number] {
+  const t = yIndex(py);
+  const k0 = Math.floor(t), k1 = Math.min(NY - 1, k0 + 1), f = t - k0;
+  const A = front ? ARCS_F : ARCS_B;
+  const p0 = A[k0].at(front ? px : -px), p1 = A[k1].at(front ? px : -px);
+  return [p0[0] + (p1[0] - p0[0]) * f, Y_TOP - (L - py), AXIS_Z + p0[1] + (p1[1] - p0[1]) * f];
+}
+
+/** δ — 몸판의 놓인 정점이 전부 몸에서 SEP 이상 떨어지는 최소값(이분법). */
 function fitDelta(): number {
   const probe = (delta: number) => {
-    const arc = arcOn(silhouette(delta));
+    rebuildSurface(delta);
     let min = Infinity;
-    for (const [px, py] of PROBE.body) {
-      const y = Y_TOP - (L - py);
-      const [xf, zf] = arc.at(px);      // 앞판
-      let rear = 0, bz = Infinity;
-      for (let k = 0; k <= 720; k++) { const sa = (arc.total * k) / 720; const z = arc.at(sa)[1]; if (z < bz) { bz = z; rear = sa; } }
-      const [xb, zb] = arc.at(rear - px); // 뒤판 — 원점이 «가장 뒤» 지점
-      min = Math.min(min, sampleSdf(bodyG, xf, y, AXIS_Z + zf), sampleSdf(bodyG, xb, y, AXIS_Z + zb));
-    }
+    for (const [px, py] of PROBE.body)
+      for (const fr of [true, false]) {
+        const q = bodyPoint(px, py, fr);
+        min = Math.min(min, sampleSdf(bodyG, q[0], q[1], q[2]));
+      }
     return min;
   };
   let lo = 0, hi = SEP;
   while (probe(hi) < SEP && hi < 0.30) hi *= 1.6;
-  for (let i = 0; i < 40; i++) {
+  for (let i = 0; i < 30; i++) {
     const m = (lo + hi) / 2;
     if (probe(m) < SEP) lo = m; else hi = m;
   }
+  rebuildSurface(hi);
   return hi;
 }
-const DELTA = fitDelta();
-const SILPTS = silhouette(DELTA);
-const SIL = arcOn(SILPTS);
-/** 배치면(수직 기둥)까지의 (x,z) 거리 — 소매가 몸판과 겹치지 않게 하는 데 쓴다. */
-function distToSurface(x: number, z: number): number {
+fitDelta();
+
+/** 배치면까지의 (x,z) 거리 — 소매가 몸판과 겹치지 않게 하는 데 쓴다(가장 가까운 높이 표본). */
+function distToSurface(x: number, y: number, z: number): number {
+  const t = Math.max(0, Math.min(NY - 1, ((y - Y_HEM) / (Y_TOP - Y_HEM)) * (NY - 1)));
+  const pts = boundaryOf(HSUP_Y[Math.round(t)], DELTA, SCALES[Math.round(t)]);
   let m = Infinity;
-  for (let k = 0; k < SILPTS.length; k++) {
-    const a = SILPTS[k], b = SILPTS[(k + 1) % SILPTS.length];
-    const ex = b[0] - a[0], ez = b[1] - a[1];
-    const t = Math.max(0, Math.min(1, ((x - a[0]) * ex + (z - a[1]) * ez) / (ex * ex + ez * ez || 1)));
-    m = Math.min(m, Math.hypot(x - (a[0] + ex * t), z - (a[1] + ez * t)));
+  for (let k = 0; k < pts.length; k++) {
+    const a2 = pts[k], b2 = pts[(k + 1) % pts.length];
+    const ex = b2[0] - a2[0], ez = b2[1] - a2[1];
+    const u = Math.max(0, Math.min(1, ((x - a2[0]) * ex + (z - a2[1]) * ez) / (ex * ex + ez * ez || 1)));
+    m = Math.min(m, Math.hypot(x - (a2[0] + ex * u), z - (a2[1] + ez * u)));
   }
   return m;
 }
-/** 뒤판의 호길이 원점 — 실루엣에서 «가장 뒤»(z 최소) 지점까지의 호길이. */
-const S_REAR = (() => {
-  let best = 0, bz = Infinity;
-  for (let k = 0; k <= 2000; k++) {
-    const sArc = (SIL.total * k) / 2000;
-    const z = SIL.at(sArc)[1];
-    if (z < bz) { bz = z; best = sArc; }
-  }
-  return best;
-})();
 
 function armProfile(x0: number, x1: number) {
   let y0 = Infinity, y1 = -Infinity, z0 = Infinity, z1 = -Infinity;
@@ -527,7 +585,7 @@ function fitSleeve(): { x0: number; R: number } {
       const x = x0 + (CAP_H - py), y = ARM.yc + R * Math.cos(ph), z = ARM.zc + R * Math.sin(ph);
       min = Math.min(min, sampleSdf(bodyG, x, y, z));
       // 몸판(수직 기둥)과도 SEP 이상 떨어져야 한다 — 옷–옷 분리 거리다
-      if (y >= Y_HEM && y <= Y_TOP) min = Math.min(min, distToSurface(x, z - AXIS_Z));
+      if (y >= Y_HEM && y <= Y_TOP) min = Math.min(min, distToSurface(x, y, z - AXIS_Z));
     }
     return min;
   };
@@ -545,19 +603,22 @@ function fitSleeve(): { x0: number; R: number } {
 }
 const SLV = fitSleeve();
 const SLV_X0 = SLV.x0, SLV_R = SLV.R;
+/** 배치 «서명» — 체크포인트가 다른 배치의 상태를 이어받지 못하게 한다(v3-21에서 실제로 발생). */
+const PLACE_SIG = [DELTA, GAP_SIDE, SLV_X0, SLV_R].map((v) => v.toFixed(6)).join('/');
 
 /** 2D 패널 좌표 → 3D 배치 위치. 흡착·앵커 없음 — «놓는 것»뿐이다. */
 function place(panel: Panel, i: number, j: number, out: Float64Array, o: number): void {
   const k = (j * (panel.nu + 1) + i) * 2;
   const px = panel.uv[k], py = panel.uv[k + 1];
   if (panel.name === 'front' || panel.name === 'back') {
-    const [x, dz] = SIL.at(panel.name === 'front' ? px : S_REAR - px);
-    out[o] = x;
-    out[o + 1] = Y_TOP - (L - py);
-    out[o + 2] = AXIS_Z + dz;
+    const q = bodyPoint(px, py, panel.name === 'front');
+    out[o] = q[0]; out[o + 1] = q[1]; out[o + 2] = q[2];
   } else {
     const sgn = panel.name === 'sleeveR' ? 1 : -1;
-    const ph = (sgn * px) / SLV_R;                    // 호길이 보존 · φ=0 은 팔 «위»
+    /* φ = 0 이 팔 «위», φ > 0 이 «앞»(+z). 좌우는 x «만» 거울로 뒤집는다 —
+     * 초판은 φ까지 뒤집어 왼쪽 소매의 «앞 절반이 뒤로» 갔다(암홀앞L 초기 틈 16.09cm ↔
+     * 앞R 9.80cm · f=100에서 왼쪽 암홀만 98.87mm로 안 닫히고 |v| 상위 20이 전부 거기였다). */
+    const ph = px / SLV_R;                            // 호길이 보존
     out[o] = sgn * (SLV_X0 + (CAP_H - py));
     out[o + 1] = ARM.yc + SLV_R * Math.cos(ph);
     out[o + 2] = ARM.zc + SLV_R * Math.sin(ph);
@@ -611,6 +672,21 @@ function assemble(d: number) {
 }
 
 type Scene = ReturnType<typeof assemble>;
+
+/* 옆 틈 G 도출 — 「비인접 삼각형 최소 거리 ≥ 2×두께」가 f=0에서 성립하는 «최소» G.
+ * G를 키우면 옆선 짝거리가 그만큼 벌어지므로 «가장 작은 것»을 고른다. 손 상수 0. */
+{
+  const need = SEP;                     // 문턱(SEP−TOL)이 아니라 SEP 자체로 여유를 둔다
+  let ok = false;
+  for (let i = 0; i < 8 && !ok; i++) {
+    fitDelta();
+    const sc0 = assemble(D_FIXED);
+    const m0 = minPairDistLite(sc0.s.pos, sc0.tris);
+    if (m0 >= need) { ok = true; break; }
+    GAP_SIDE *= 1.5;
+  }
+  if (!ok) throw new Error('옆 틈 G를 8회 안에 못 찾았다 — 갈래 D');
+}
 
 if (process.env.DIAG === '2') {
   for (const dm of [30, 25, 20, 16, 13, 11, 9, 8]) {
@@ -677,8 +753,14 @@ function substepsOf(sc: Scene) {
 if (run('2')) {
   console.log(`\n╔══ §2 배치 — 몸에서 «푼» 값. 손 상수 0 ══╗`);
   console.log(`   어깨선 높이 Y_TOP ${Y_TOP.toFixed(4)}m (몸 표면이 |x|=어깨/2 에 닿는 최고 y) · 밑단 ${Y_HEM.toFixed(4)}m`);
-  console.log(`   배치면 = 몸 실루엣(옷 높이대 볼록 껍질)을 δ만큼 부풀린 볼록 기둥 · 축 z ${(AXIS_Z * 100).toFixed(2)}cm`);
-  console.log(`   ⟹ δ = ${(DELTA * 1000).toFixed(2)}mm · 둘레 ${(SIL.total * 100).toFixed(2)}cm (패널 폭 ${(W * 100).toFixed(1)}cm × 2 = ${(2 * W * 100).toFixed(1)}cm) · 기둥면이라 «면내 변형 0»`);
+  console.log(`   배치면 = «높이별» 몸 단면 볼록 껍질 · 축 z ${(AXIS_Z * 100).toFixed(2)}cm · 높이 표본 ${NY}개(슬랩 ±${(SLAB * 1000).toFixed(1)}mm)`);
+  console.log(`   ⟹ δ = ${(DELTA * 1000).toFixed(2)}mm · 배율 = max(1, 그 높이의 «필요 둘레 4×반폭» / «몸 둘레»)`);
+  console.log(`   ${'2D y[cm]'.padStart(9)}${'세계 y[cm]'.padStart(11)}${'몸 둘레[cm]'.padStart(12)}${'필요 둘레'.padStart(11)}${'배율'.padStart(8)}${'실제 둘레'.padStart(11)}`);
+  for (const k of [0, 15, 30, 45, 52, 57, 60]) {
+    const py = yOf(k) - (Y_TOP - L);
+    const base = perimOf(boundaryOf(HSUP_Y[k], DELTA, 1));
+    console.log(`   ${(py * 100).toFixed(1).padStart(9)}${(yOf(k) * 100).toFixed(1).padStart(11)}${(base * 100).toFixed(2).padStart(12)}${(4 * panelHalfWidth(Math.max(0, Math.min(L, py))) * 100).toFixed(2).padStart(11)}${SCALES[k].toFixed(3).padStart(8)}${(base * SCALES[k] * 100).toFixed(2).padStart(11)}`);
+  }
   console.log(`   ⟹ 소매 관: x0 ${(SLV_X0 * 100).toFixed(1)}cm (어깨끝 ${(SW / 2 * 100).toFixed(1)}cm) · R ${(SLV_R * 1000).toFixed(1)}mm · 덮는 각 ${((2 * CAP_W / SLV_R) * 180 / Math.PI).toFixed(0)}° · 팔축 y ${ARM.yc.toFixed(4)} z ${ARM.zc.toFixed(4)}`);
   console.log(`      닫힌 관 하한 ${(CAP_W / Math.PI * 1000).toFixed(1)}mm — R이 그보다 크면 «겨드랑이 쪽이 열린 채» 놓인다(봉제가 닫는다)`);
 }
@@ -702,8 +784,6 @@ const WALL_FRAMES = 300;
 /** v3-08 §3 삼각화 품질 게이트 */
 const MIN_ANGLE_GATE = 25;
 
-/** v3-19 고정 해상도 [m] — 위 헤더의 등록 사유 참고. env는 진단용이다. */
-const D_FIXED = Number(process.env.D_MM ?? 11) / 1000;
 let D_CHOSEN = D_FIXED;
 let derivNote = 'v3-19 등록: ①느슨을 만족하는 최대 d (①엄격 미달 명시)';
 
@@ -925,6 +1005,11 @@ function bodyClearance(s: Solver) {
   return { minD, maxPen, penCnt, exactN, worst, worstPen };
 }
 
+/** G 도출 전용 «가벼운» 최소 거리 — 판정에는 쓰지 않는다(판정은 minPairDist). */
+function minPairDistLite(pos: Float64Array, tris: number[]): number {
+  return minPairDist(pos, tris, SEP * 2).min;
+}
+
 /** 비인접 삼각형 쌍의 최소 거리 — 균일 격자로 후보를 좁힌다(S3b는 O(T²)였다). */
 function minPairDist(pos: Float64Array, tris: number[], window: number) {
   const T = tris.length / 3;
@@ -1077,7 +1162,7 @@ if (run('3') && D_CHOSEN > 0) {
 
   console.log(`\n╔══ §3 봉제 — 이음선 = 정지 길이 2×두께(${SEP * 1000}mm)인 거리 제약 · 강성 = 멤브레인 ══╗`);
   console.log(`   메시 d=${(D_CHOSEN * 1000).toFixed(1)}mm · 정점 ${sc.n} · 삼각형 ${sc.tris.length / 3} · 제약 ${sc.cons.length}(이음선 ${sc.seamCons.length})`);
-  console.log(`   ${'이음선'.padEnd(10)}${'쌍'.padStart(6)}${'정지길이A[cm]'.padStart(14)}${'정지길이B[cm]'.padStart(14)}${'차[%]'.padStart(8)}${'초기 틈 평균[cm]'.padStart(17)}${'최대'.padStart(9)}`);
+  console.log(`   ${'이음선'.padEnd(10)}${'쌍'.padStart(5)}${'정지A[cm]'.padStart(11)}${'정지B[cm]'.padStart(11)}${'차[%]'.padStart(7)}${'초기 짝거리 중앙[cm]'.padStart(21)}${'p95'.padStart(8)}${'최대'.padStart(8)}${'중앙/2mm'.padStart(10)}`);
   let selfOk = true, pairTot = 0;
   for (const sm of sc.seams) {
     const la = sm.a.slice(1).reduce((t, v, k) => t + Math.hypot(sc.uv[v * 2] - sc.uv[sm.a[k] * 2], sc.uv[v * 2 + 1] - sc.uv[sm.a[k] * 2 + 1]), 0);
@@ -1086,7 +1171,9 @@ if (run('3') && D_CHOSEN > 0) {
     const gaps = sm.a.map((v, k) => seg3(pos0, v, sm.b[k]));
     pairTot += sm.a.length;
     if (sm.a.length !== sm.b.length || diff > 1) selfOk = false;
-    console.log(`   ${sm.name.padEnd(10)}${String(sm.a.length).padStart(6)}${(la * 100).toFixed(3).padStart(14)}${(lb * 100).toFixed(3).padStart(14)}${diff.toFixed(4).padStart(8)}${(gaps.reduce((a, b) => a + b) / gaps.length * 100).toFixed(2).padStart(17)}${(Math.max(...gaps) * 100).toFixed(2).padStart(9)}`);
+    const gs = [...gaps].sort((x, y2) => x - y2);
+    const gq = (t: number) => gs[Math.min(gs.length - 1, Math.floor(t * gs.length))];
+    console.log(`   ${sm.name.padEnd(10)}${String(sm.a.length).padStart(5)}${(la * 100).toFixed(3).padStart(11)}${(lb * 100).toFixed(3).padStart(11)}${diff.toFixed(4).padStart(7)}${(gq(0.5) * 100).toFixed(2).padStart(21)}${(gq(0.95) * 100).toFixed(2).padStart(8)}${(gs[gs.length - 1] * 100).toFixed(2).padStart(8)}${(gq(0.5) / SEP).toFixed(1).padStart(10)}`);
   }
   // 미대응 경계 — 경계 엣지 중 이음선에 들어가지 않은 정점
   const sewn = new Set<number>();
@@ -1143,7 +1230,7 @@ if (run('3') && D_CHOSEN > 0) {
   const CK_EVERY = 25;
   function saveCk(frame: number) {
     mkdirSync(dirname(CKPT), { recursive: true });
-    const hdr = Buffer.from(JSON.stringify({ frame, n: sc.n, d: D_CHOSEN, sub: st.sub }), 'utf8');
+    const hdr = Buffer.from(JSON.stringify({ frame, n: sc.n, d: D_CHOSEN, sub: st.sub, sig: PLACE_SIG }), 'utf8');
     const len = Buffer.alloc(4);
     len.writeUInt32LE(hdr.length, 0);
     writeFileSync(CKPT, Buffer.concat([len, hdr, Buffer.from(s.pos.buffer.slice(0)), Buffer.from(s.vel.buffer.slice(0))]));
@@ -1153,8 +1240,8 @@ if (run('3') && D_CHOSEN > 0) {
     const b = readFileSync(CKPT);
     const hl = b.readUInt32LE(0);
     const h = JSON.parse(b.subarray(4, 4 + hl).toString('utf8'));
-    if (h.n !== sc.n || Math.abs(h.d - D_CHOSEN) > 1e-12) {
-      console.log(`   [체크포인트] 장면 불일치(n ${h.n}≠${sc.n} 또는 d ${h.d}≠${D_CHOSEN}) ⟹ «무시»하고 처음부터`);
+    if (h.n !== sc.n || Math.abs(h.d - D_CHOSEN) > 1e-12 || h.sig !== PLACE_SIG) {
+      console.log(`   [체크포인트] 장면 불일치(n ${h.n}/${sc.n} · d ${h.d}/${D_CHOSEN} · 배치 ${h.sig}/${PLACE_SIG}) ⟹ «무시»하고 처음부터`);
       return 0;
     }
     const off = 4 + hl;
@@ -1386,6 +1473,22 @@ if (run('3') && D_CHOSEN > 0) {
       collision: { colliders: [{ kind: 'grid', g: bodyG }], thickness: THICK, mu: MU },
       selfCollision: { tris: sc.tris, thickness: THICK },
     };
+    /* ── §3 점진 봉제 — 「고정점은 그대로, 경로만 바꾼다」 ────────────────────
+     * rest를 «초기 짝거리»에서 시작해 N프레임에 걸쳐 2×두께로 줄인다.
+     * N 도출(손 상수 0): 봉제가 «중력보다 빠르게» 당기지 않게 한다 —
+     *   수축 속도 (d0−rest)/(N·dt) ≤ 중력이 한 프레임에 주는 속도 g·dt
+     *   ⟹ N ≥ (d0_max − SEP)/(g·dt²).  g·dt² = 9.81/3600 = 2.7250 mm/프레임
+     * 절대 조항: f ≥ N 에서 rest = 2×두께 «정확히». 평형(고정점)은 설계 그대로이고
+     * 흡착과 다르다 — 몸 쪽으로 당기지 않고, 끝 상태의 평형을 바꾸지 않는다. */
+    const rest0 = sc.seamCons.map((c) => seg3(pos0, c.i, c.j));
+    const d0max = Math.max(...rest0);
+    /* NORAMP=1 — §2(배치)와 §3(램프)의 «몫을 가르는» 대조군. 판정 아님 · 기본 off */
+    const RAMP_N = process.env.NORAMP === '1' ? 0 : Math.ceil((d0max - SEP) / (G * DT * DT));
+    console.log(`   §3 점진 봉제: N = ${RAMP_N}프레임 ⟸ (짝거리 최대 ${(d0max * 100).toFixed(2)}cm − ${SEP * 1000}mm) / (g·dt² = ${(G * DT * DT * 1000).toFixed(4)}mm/프레임)`);
+    const setRest = (f: number) => {
+      const t = RAMP_N <= 0 ? 1 : Math.min(1, f / RAMP_N);
+      for (let k = 0; k < sc.seamCons.length; k++) sc.seamCons[k].rest = rest0[k] + (SEP - rest0[k]) * t;
+    };
     const yArmWorld = Y_TOP - ARM_D;
     const contactCount = (lo: number) => {
       let c = 0;
@@ -1403,6 +1506,7 @@ if (run('3') && D_CHOSEN > 0) {
     console.log(`   ${'f'.padStart(5)}${'벽시계[s]'.padStart(10)}${'|v|max[mm/s]'.padStart(13)}${'어깨y[cm]'.padStart(11)}${'밑단y[cm]'.padStart(11)}${'목선/정지'.padStart(11)}${'시접틈[mm]'.padStart(12)}${'어깨접촉'.padStart(9)}`);
     let f = f0;
     for (; f < FRAMES; f++) {
+      setRest(f + 1);
       step(s, sc.cons, p);
       vmax = 0;
       for (let v = 0; v < sc.n; v++) {
@@ -1425,6 +1529,9 @@ if (run('3') && D_CHOSEN > 0) {
     }
     const wall = (performance.now() - t0) / 1000;
     const fEnd = f + (diverged ? 0 : 1);
+    // 절대 조항 확인 — 끝에서 rest가 «전부» 2×두께인가
+    const restBad = sc.seamCons.filter((c) => Math.abs(c.rest - SEP) > 1e-12).length;
+    console.log(`   §3 절대 조항: 마지막 rest ≠ ${SEP * 1000}mm 인 이음선 ${restBad} / ${sc.seamCons.length} ⟹ ${restBad === 0 ? 'PASS' : 'FAIL — 갈래 E'}`);
 
     /* ── §6 시험 7종 ─────────────────────────────────────────────────────── */
     console.log(`\n╔══ §6 시험 7종 — 문턱은 실행 «전»에 고정된 값 ══╗`);
