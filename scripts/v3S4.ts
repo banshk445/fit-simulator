@@ -71,9 +71,9 @@ const run = (k: string) => ONLY.length === 0 || ONLY.includes(k);
 const G = 9.81;
 const DT = 1 / 60;
 /** 멤브레인 강성 [N/m] — S3·S3b와 «같은 값» */
-const KMEM = 100;
+const KMEM = Number(process.env.MATK ?? 100);
 /** 시험용 원단 — ARCSim gray-interlock. S3·S3b·v3-16과 «같은 값» */
-const MAT = { rho: 0.187, B: 23.191698e-6 };
+const MAT = { rho: Number(process.env.MATRHO ?? 0.187), B: 23.191698e-6 };
 /** 옷 두께 [m] — S3·S3b·v3-13과 «같은 값». 옷–옷 분리 거리는 2× */
 const THICK = 1e-3;
 const SEP = 2 * THICK;
@@ -1382,6 +1382,57 @@ if (run('3') && D_CHOSEN > 0) {
    * 참고 |v|max 및 |v| 분포 — 판정에 쓰지 않고 «함께» 적는다
    * `SETTLE=1` · 대조군은 `NOBODY=1`(몸 충돌을 끄면 옷이 떨어진다 ⟹ 반드시 FAIL) */
   /* ── v3-23 §1 목선 신장의 «자리» — 재는 것이 전부다(처방 0) ─────────────── */
+  /* ── v3-24 §1 원소 변형률 — 시험이 재는 통계를 «국소»로 맞춘다 ──────────── */
+  if (process.env.STRAIN === '1') {
+    const fr = loadCk();
+    const lam: number[] = [];
+    let wmax = 0, wi = -1;
+    for (const c of sc.cons) {
+      if (c.kind !== 'inplane') continue;
+      const o0 = c.i0 * 3, o1 = c.i1 * 3, o2 = c.i2 * 3;
+      const e1 = [s.pos[o1] - s.pos[o0], s.pos[o1 + 1] - s.pos[o0 + 1], s.pos[o1 + 2] - s.pos[o0 + 2]];
+      const e2 = [s.pos[o2] - s.pos[o0], s.pos[o2 + 1] - s.pos[o0 + 1], s.pos[o2 + 2] - s.pos[o0 + 2]];
+      const xu = [c.a * e1[0] + c.b * e2[0], c.a * e1[1] + c.b * e2[1], c.a * e1[2] + c.b * e2[2]];
+      const xv = [c.c * e1[0] + c.d * e2[0], c.c * e1[1] + c.d * e2[1], c.c * e1[2] + c.d * e2[2]];
+      const C00 = xu[0] * xu[0] + xu[1] * xu[1] + xu[2] * xu[2];
+      const C11 = xv[0] * xv[0] + xv[1] * xv[1] + xv[2] * xv[2];
+      const C01 = xu[0] * xv[0] + xu[1] * xv[1] + xu[2] * xv[2];
+      // C = FᵀF 의 큰 고유값 ⟹ 주신장 λ = √λ_max
+      const tr = C00 + C11, det = Math.sqrt(Math.max(0, (C00 - C11) ** 2 + 4 * C01 * C01));
+      const l = Math.sqrt(Math.max(0, 0.5 * (tr + det)));
+      lam.push(l);
+      if (l > wmax) { wmax = l; wi = c.i0; }
+    }
+    const v = [...lam].sort((x, y2) => x - y2);
+    const q = (t: number) => v[Math.min(v.length - 1, Math.floor(t * v.length))];
+    /* Wang LUT 정의역: G00·G11 = −0.25 + i/30, i ∈ [0, 29] ⟹ G_max = 0.7167
+       C = 2G+I ⟹ λ_max = √(2·0.7167+1) = 1.5599.  그 밖은 clamp(=외삽 아님 · 상수 연장) */
+    const LUT_LAM = Math.sqrt(2 * (-0.25 + 29 / 30) + 1);
+    console.log(`\n╔══ §1 원소 주신장 λ (f=${fr} · 원소 ${lam.length}개 · 판정 아님) ══╗`);
+    console.log(`   중앙 ${q(0.5).toFixed(4)} · p95 ${q(0.95).toFixed(4)} · p99 ${q(0.99).toFixed(4)} · 최대 ${v[v.length - 1].toFixed(4)}`);
+    console.log(`   1.10 초과 원소 ${lam.filter((x) => x > 1.1).length} / ${lam.length}  ·  LUT 정의역 상한 ${LUT_LAM.toFixed(4)} 초과 ${lam.filter((x) => x > LUT_LAM).length} / ${lam.length}`);
+    console.log(`   최대 위치 ${wi >= 0 ? [0, 1, 2].map((c2) => (s.pos[wi * 3 + c2] * 100).toFixed(1)).join(', ') : '—'} cm`);
+    console.log(`   대조: v2 maxStrain 5.670(뒤판 목선 · 같은 «국소» 통계) · v3 목선 엣지 최대 1.2224`);
+    process.exit(0);
+  }
+
+  /* ── v3-24 §2 비용 산정 검증 — 원단 물성만 바꿔 3프레임(판정 아님) ───────── */
+  if (process.env.COST === '1') {
+    const fr = loadCk();
+    const st2 = substepsOf(sc);
+    const pc: SolverParams = {
+      dt: DT, substeps: st2.sub, gravity: G, damping: DAMP,
+      collision: { colliders: [{ kind: 'grid', g: bodyG }], thickness: THICK, mu: MU },
+      selfCollision: { tris: sc.tris, thickness: THICK },
+    };
+    const K = Number(process.env.COSTF ?? 3);
+    const t0 = performance.now();
+    for (let k = 0; k < K; k++) step(s, sc.cons, pc);
+    const ms = (performance.now() - t0) / K;
+    console.log(`\n[비용] f=${fr}+${K} · k=${KMEM} N/m · ρ=${MAT.rho} · sub ${st2.sub}(멤 ${st2.memb}/굽 ${st2.bend}) ⟹ ${(ms / 1000).toFixed(2)} s/f`);
+    process.exit(0);
+  }
+
   if (process.env.NECK === '1') {
     const fr = loadCk();
     const ringIx = [...neckF, ...neckB];
