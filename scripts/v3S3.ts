@@ -24,6 +24,20 @@ import {
   type Solver,
   type SolverParams,
 } from '../src/v3/solver.ts';
+import { deriveSpacing, gridFromFn, sampleSdf } from '../src/v3/bodySdf.ts';
+
+/* v3-13 §3-④ — `SDFPATH=1`이면 «같은 장면·같은 문턱»을 구운 격자 SDF로 재실행한다.
+ * 해석 충돌체를 격자로 바꾸는 것 «말고는» 아무것도 바꾸지 않는다 ⟹ 차이가 나면
+ * 그것은 «표현»이 물리를 바꾼 것이다. h·band는 몸과 «같은 도출»을 쓴다(§2-2). */
+const SDFPATH = process.env.SDFPATH === '1';
+const SPEC = deriveSpacing([1.78, 1.765, 0.282], 64 * 1024 * 1024, 1e-3);
+const SDF_BOX: [number, number, number] = [0.16, 0.16, 0.16];
+function asGrid(c: Collider): Collider {
+  if (!SDFPATH) return c;
+  const lo: [number, number, number] = [-SDF_BOX[0], -SDF_BOX[1], -SDF_BOX[2]];
+  const hi: [number, number, number] = [SDF_BOX[0], SDF_BOX[1], SDF_BOX[2]];
+  return { kind: 'grid', g: gridFromFn((x, y, z) => signedDist(c, x, y, z), lo, hi, SPEC.h, SPEC.band) };
+}
 
 const G = 9.81;
 const DT = 1 / 60;
@@ -120,6 +134,8 @@ function run(
 }
 
 function signedDist(c: Collider, x: number, y: number, z: number): number {
+  // 구운 격자(v3-13 ④) — 하네스도 같은 표현을 «독립»으로 읽는다
+  if (c.kind === 'grid') return sampleSdf(c.g, x, y, z);
   if (c.kind === 'plane')
     return (x - c.p[0]) * c.n[0] + (y - c.p[1]) * c.n[1] + (z - c.p[2]) * c.n[2];
   if (c.kind === 'sphere') return Math.hypot(x - c.c[0], y - c.c[1], z - c.c[2]) - c.r;
@@ -147,7 +163,7 @@ function penetration(s: Solver, cols: readonly Collider[], thick: number) {
 
 const P = (x: number, w = 8, d = 3) => x.toFixed(d).padStart(w);
 
-console.log(`[v3-10] S3 몸 충돌 — 단방향 · **흡착 0** · 해석 형상(평면·경사면·구·원기둥)`);
+console.log(SDFPATH ? `[v3-13 ④] S3 시험을 «구운 격자 SDF»로 재실행 — h=${(SPEC.h*1000).toFixed(3)}mm band=${(SPEC.band*1000).toFixed(3)}mm (관통·미끄러짐 판정은 «해석» 형상 기준)` : `[v3-10] S3 몸 충돌 — 단방향 · **흡착 0** · 해석 형상(평면·경사면·구·원기둥)`);
 console.log(
   `[설계] 부호=해석 SDF(닫힌 형식) · 두께=${THICK * 1000}mm · 마찰=쿨롱 위치기반 · μ 출처 «미확보»(원단 파일에 없다)`,
 );
@@ -170,7 +186,7 @@ for (const [name, col] of SHAPES) {
   const nu = 25;
   const { s, con, bends } = sheet(nu, nu, L, L, 0, R + 0.02);
   const sub = subFor(bends, s);
-  run(s, con, { colliders: [col], thickness: THICK, mu: 0.3 }, sub, 2.5, 6);
+  run(s, con, { colliders: [asGrid(col)], thickness: THICK, mu: 0.3 }, sub, 2.5, 6);
   let vmax = 0;
   for (let v = 0; v < s.n; v++)
     vmax = Math.max(vmax, Math.hypot(s.vel[v * 3], s.vel[v * 3 + 1], s.vel[v * 3 + 2]));
@@ -204,7 +220,7 @@ function slides(mu: number, thetaDeg: number): boolean {
   }
   const before = s.pos.slice();
   const sub = subFor(bends, s);
-  run(s, con, { colliders: [col], thickness: THICK, mu }, sub, 3, 2);
+  run(s, con, { colliders: [asGrid(col)], thickness: THICK, mu }, sub, 3, 2);
   let d = 0;
   for (let v = 0; v < s.n; v++) {
     const dy = s.pos[v * 3 + 1] - before[v * 3 + 1];

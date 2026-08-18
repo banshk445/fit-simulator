@@ -1,0 +1,561 @@
+/* v3-13 §1 — 원본 마네킹의 «수밀성»을 값으로 확인한다.
+ *
+ * 진입: `npm run v3:body`
+ *
+ * **데이터 읽기이지 코드 임포트가 아니다.** v3는 v2 코드를 임포트하지 않는다(설계 R4-3).
+ * 이 파일은 `public/models/mannequin.glb`를 **glTF 2.0 바이너리 규격대로 직접 파싱**한다 —
+ * `src/lib/meshCollision.ts`(`excludeArms`·`splitFrontBack`)를 부르지 않는다. 그 둘은
+ * 구멍을 «내는» 쪽이고, 이 판이 재려는 것은 그것을 «거치기 전»의 원본이다.
+ *
+ * v3-10 §1-2는 「원본 마네킹은 수밀(열린 엣지 0)」로 적었으나 그 근거가 CLAUDE.md
+ * 인용이다. **직접 잰다.**
+ *
+ * 계기 정의역(함정 13 — 채택 시점에 식부터 재도출):
+ *   열린 엣지     = 삼각형 «1개»에만 속한 무향 엣지 수
+ *   비다양체 엣지 = 삼각형 «3개 이상»에 속한 무향 엣지 수
+ *   와인딩 불일치 = 삼각형 2개가 공유하는 엣지를 «같은 방향»으로 도는 쌍의 수
+ *                  (수밀·정상 배향이면 반대 방향이어야 한다 ⟹ 뒤집힌 면의 지표)
+ *   연결 성분     = 삼각형을 엣지 공유로 이은 연결 성분 수
+ *
+ * **용접이 정의역을 가른다.** glTF는 UV·법선 이음매에서 «같은 위치의 정점»을 쪼개
+ * 저장한다. 인덱스만 보면 그 이음매가 전부 「열린 엣지」로 세어진다 — 기하는 닫혀
+ * 있는데 계기가 열렸다고 답하는 전형적인 정의역 어긋남이다. 그래서 **원시 인덱스
+ * 기준과 위치 용접 기준을 «둘 다»** 낸다.
+ */
+import { readFileSync } from 'node:fs';
+import { bakeSdf, deriveSpacing, sampleSdf, type GridSdf } from '../src/v3/bodySdf.ts';
+
+const GLB = process.env.GLB ?? 'public/models/mannequin.glb';
+
+type Prim = { name: string; pos: Float32Array; idx: Uint32Array };
+
+/** glTF 2.0 바이너리를 규격대로 읽는다(압축 확장이 있으면 «불가»로 멈춘다). */
+function readGlb(path: string): { prims: Prim[]; required: string[] } {
+  const b = readFileSync(path);
+  if (b.readUInt32LE(0) !== 0x46546c67) throw new Error('glTF 매직이 아니다');
+  const jsonLen = b.readUInt32LE(12);
+  const json = JSON.parse(b.subarray(20, 20 + jsonLen).toString('utf8'));
+  let off = 20 + jsonLen;
+  let bin: Buffer | undefined;
+  while (off + 8 <= b.length) {
+    const len = b.readUInt32LE(off);
+    const type = b.readUInt32LE(off + 4);
+    if (type === 0x004e4942) bin = b.subarray(off + 8, off + 8 + len);
+    off += 8 + len + ((4 - ((8 + len) % 4)) % 4);
+  }
+  if (!bin) throw new Error('BIN 청크가 없다');
+  const required: string[] = json.extensionsRequired ?? [];
+  const compress = required.filter((e) => /draco|meshopt|quantiz/i.test(e));
+  if (compress.length) throw new Error(`압축 확장 미지원: ${compress.join(',')}`);
+
+  const CT: Record<number, { n: number; get: (dv: DataView, o: number) => number }> = {
+    5120: { n: 1, get: (d, o) => d.getInt8(o) },
+    5121: { n: 1, get: (d, o) => d.getUint8(o) },
+    5122: { n: 2, get: (d, o) => d.getInt16(o, true) },
+    5123: { n: 2, get: (d, o) => d.getUint16(o, true) },
+    5125: { n: 4, get: (d, o) => d.getUint32(o, true) },
+    5126: { n: 4, get: (d, o) => d.getFloat32(o, true) },
+  };
+  const NCOMP: Record<string, number> = { SCALAR: 1, VEC2: 2, VEC3: 3, VEC4: 4 };
+  const dv = new DataView(bin.buffer, bin.byteOffset, bin.byteLength);
+
+  const readAccessor = (ai: number): Float64Array => {
+    const a = json.accessors[ai];
+    const ct = CT[a.componentType];
+    const nc = NCOMP[a.type];
+    const out = new Float64Array(a.count * nc);
+    if (a.bufferView === undefined) return out; // 규격상 전부 0
+    const bv = json.bufferViews[a.bufferView];
+    const base = (bv.byteOffset ?? 0) + (a.byteOffset ?? 0);
+    const stride = bv.byteStride ?? ct.n * nc;
+    for (let i = 0; i < a.count; i++)
+      for (let c = 0; c < nc; c++) out[i * nc + c] = ct.get(dv, base + i * stride + c * ct.n);
+    return out;
+  };
+
+  const prims: Prim[] = [];
+  for (const [mi, m] of (
+    json.meshes as { name?: string; primitives: Record<string, unknown>[] }[]
+  ).entries())
+    for (const [pi, p] of m.primitives.entries()) {
+      if (((p.mode as number) ?? 4) !== 4) continue; // 삼각형만
+      const pos = Float32Array.from(
+        readAccessor((p.attributes as Record<string, number>).POSITION),
+      );
+      const idx =
+        p.indices !== undefined
+          ? Uint32Array.from(readAccessor(p.indices as number))
+          : Uint32Array.from({ length: pos.length / 3 }, (_, i) => i);
+      prims.push({ name: `${m.name ?? `mesh${mi}`}#${pi}`, pos, idx });
+    }
+  return { prims, required };
+}
+
+/** 위치 용접 — 같은 좌표의 정점을 하나로 본다. tol=0이면 «비트 동일». */
+function weldMap(pos: Float32Array, tol: number): Int32Array {
+  const n = pos.length / 3;
+  const map = new Int32Array(n);
+  const seen = new Map<string, number>();
+  const q = (v: number) => (tol > 0 ? Math.round(v / tol) : v);
+  for (let i = 0; i < n; i++) {
+    const k = `${q(pos[i * 3])},${q(pos[i * 3 + 1])},${q(pos[i * 3 + 2])}`;
+    const hit = seen.get(k);
+    if (hit === undefined) {
+      seen.set(k, i);
+      map[i] = i;
+    } else map[i] = hit;
+  }
+  return map;
+}
+
+const EKEY = (a: number, b: number) => (a < b ? a * 4194304 + b : b * 4194304 + a);
+
+function makeFind(n: number) {
+  const parent = new Int32Array(n);
+  for (let i = 0; i < n; i++) parent[i] = i;
+  const find = (x: number): number => {
+    while (parent[x] !== x) x = parent[x] = parent[parent[x]];
+    return x;
+  };
+  return {
+    find,
+    uni: (a: number, b: number) => {
+      const ra = find(a);
+      const rb = find(b);
+      if (ra !== rb) parent[ra] = rb;
+    },
+  };
+}
+
+type Topo = {
+  verts: number;
+  tris: number;
+  openEdges: number;
+  nonManifold: number;
+  windingClash: number;
+  components: number;
+  degenerate: number;
+  edges: number;
+};
+
+function topology(pos: Float32Array, idx: Uint32Array, map: Int32Array): Topo {
+  const tris = idx.length / 3;
+  const use = new Map<number, number>();
+  const dir = new Map<number, number>();
+  let degenerate = 0;
+  const uf = makeFind(pos.length / 3);
+  const vseen = new Set<number>();
+  for (let t = 0; t < tris; t++) {
+    const v = [map[idx[t * 3]], map[idx[t * 3 + 1]], map[idx[t * 3 + 2]]];
+    for (const x of v) vseen.add(x);
+    uf.uni(v[0], v[1]);
+    uf.uni(v[1], v[2]);
+    if (v[0] === v[1] || v[1] === v[2] || v[2] === v[0]) {
+      degenerate++;
+      continue;
+    }
+    for (let e = 0; e < 3; e++) {
+      const a = v[e];
+      const b = v[(e + 1) % 3];
+      const k = EKEY(a, b);
+      use.set(k, (use.get(k) ?? 0) + 1);
+      dir.set(k, (dir.get(k) ?? 0) + (a < b ? 1 : -1));
+    }
+  }
+  let openEdges = 0;
+  let nonManifold = 0;
+  let windingClash = 0;
+  for (const [k, c] of use) {
+    if (c === 1) openEdges++;
+    else if (c > 2) nonManifold++;
+    else if (dir.get(k) !== 0) windingClash++; // c===2 인데 같은 방향 ⟹ 배향 불일치
+  }
+  const roots = new Set<number>();
+  for (const v of vseen) roots.add(uf.find(v));
+  return {
+    verts: vseen.size,
+    tris,
+    openEdges,
+    nonManifold,
+    windingClash,
+    components: roots.size,
+    degenerate,
+    edges: use.size,
+  };
+}
+
+/** 엣지 길이 분위 — §2-2가 격자 간격을 «도출»할 때 쓰는 측정 입력.
+ * SDF는 메시가 «표현하지 못하는» 세부를 표현할 수 없으므로 엣지 길이가 상한이다. */
+function edgeStats(pos: Float32Array, idx: Uint32Array, map: Int32Array) {
+  const seen = new Set<number>();
+  const len: number[] = [];
+  for (let t = 0; t < idx.length / 3; t++) {
+    const v = [map[idx[t * 3]], map[idx[t * 3 + 1]], map[idx[t * 3 + 2]]];
+    for (let e = 0; e < 3; e++) {
+      const a = v[e];
+      const b = v[(e + 1) % 3];
+      if (a === b) continue;
+      const k = EKEY(a, b);
+      if (seen.has(k)) continue;
+      seen.add(k);
+      len.push(
+        Math.hypot(
+          pos[a * 3] - pos[b * 3],
+          pos[a * 3 + 1] - pos[b * 3 + 1],
+          pos[a * 3 + 2] - pos[b * 3 + 2],
+        ),
+      );
+    }
+  }
+  len.sort((x, y) => x - y);
+  const q = (f: number) => len[Math.min(len.length - 1, Math.floor(f * len.length))];
+  return { n: len.length, p05: q(0.05), p50: q(0.5), p95: q(0.95), min: len[0], max: len[len.length - 1] };
+}
+
+/** 성분별 크기 — 어느 성분이 «몸»인지 가르기 위해 삼각형 수·bbox·열린 엣지를 낸다. */
+function componentBreakdown(pos: Float32Array, idx: Uint32Array, map: Int32Array) {
+  const uf = makeFind(pos.length / 3);
+  for (let t = 0; t < idx.length / 3; t++) {
+    uf.uni(map[idx[t * 3]], map[idx[t * 3 + 1]]);
+    uf.uni(map[idx[t * 3 + 1]], map[idx[t * 3 + 2]]);
+  }
+  const acc = new Map<number, { tris: number; lo: number[]; hi: number[]; open: number }>();
+  const use = new Map<number, number>();
+  const rootOf = new Map<number, number>();
+  for (let t = 0; t < idx.length / 3; t++) {
+    const v = [map[idx[t * 3]], map[idx[t * 3 + 1]], map[idx[t * 3 + 2]]];
+    const r = uf.find(v[0]);
+    let a = acc.get(r);
+    if (!a) {
+      a = {
+        tris: 0,
+        lo: [Infinity, Infinity, Infinity],
+        hi: [-Infinity, -Infinity, -Infinity],
+        open: 0,
+      };
+      acc.set(r, a);
+    }
+    a.tris++;
+    for (const vi of v)
+      for (let k = 0; k < 3; k++) {
+        a.lo[k] = Math.min(a.lo[k], pos[vi * 3 + k]);
+        a.hi[k] = Math.max(a.hi[k], pos[vi * 3 + k]);
+      }
+    if (v[0] === v[1] || v[1] === v[2] || v[2] === v[0]) continue;
+    for (let e = 0; e < 3; e++) {
+      const k = EKEY(v[e], v[(e + 1) % 3]);
+      use.set(k, (use.get(k) ?? 0) + 1);
+      rootOf.set(k, r);
+    }
+  }
+  for (const [k, c] of use) if (c === 1) acc.get(rootOf.get(k)!)!.open++;
+  return [...acc.values()].sort((x, y) => y.tris - x.tris);
+}
+
+const P = (x: number, d = 3) => x.toFixed(d);
+
+console.log(`[v3-13] §1 원본 마네킹 수밀성 — «직접» 잰다 (v3-10 §1-2는 인용이었다)`);
+console.log(`[대상] ${GLB}  ·  v2 코드 임포트 0 (glTF 2.0 규격대로 데이터만 읽는다)`);
+
+const { prims, required } = readGlb(GLB);
+console.log(
+  `[컨테이너] extensionsRequired=${JSON.stringify(required)} · 삼각형 프리미티브 ${prims.length}개`,
+);
+
+for (const p of prims) {
+  console.log(`\n── ${p.name} · 정점 ${p.pos.length / 3} · 삼각형 ${p.idx.length / 3}`);
+  const ident = Int32Array.from({ length: p.pos.length / 3 }, (_, i) => i);
+  const rows: [string, Topo][] = [
+    ['원시 인덱스', topology(p.pos, p.idx, ident)],
+    ['위치 용접(비트 동일)', topology(p.pos, p.idx, weldMap(p.pos, 0))],
+    ['위치 용접(1µm)', topology(p.pos, p.idx, weldMap(p.pos, 1e-6))],
+  ];
+  console.log(
+    `   ${'기준'.padEnd(22)}${'정점'.padStart(9)}${'삼각형'.padStart(9)}${'열린엣지'.padStart(10)}${'비다양체'.padStart(10)}${'와인딩불일치'.padStart(14)}${'연결성분'.padStart(10)}${'퇴화삼각'.padStart(10)}`,
+  );
+  for (const [name, t] of rows)
+    console.log(
+      `   ${name.padEnd(22)}${String(t.verts).padStart(9)}${String(t.tris).padStart(9)}${String(t.openEdges).padStart(10)}` +
+        `${String(t.nonManifold).padStart(10)}${String(t.windingClash).padStart(14)}${String(t.components).padStart(10)}${String(t.degenerate).padStart(10)}`,
+    );
+
+  // 오일러 지표 — 닫힌 «구» 위상이면 χ = V − E + F = 2, 종수 g = (2−χ)/2 = 0.
+  // 열린 엣지 0과 «독립»인 확인이다(손잡이·터널이 있으면 열린 엣지 0이어도 χ < 2).
+  const w = rows[1][1];
+  const chi = w.verts - w.edges + w.tris;
+  console.log(
+    `   오일러 지표: V ${w.verts} − E ${w.edges} + F ${w.tris} = χ ${chi}  ⟹  종수 g = ${(2 - chi) / 2}` +
+      `  (닫힌 구 위상이면 χ=2 · g=0)`,
+  );
+  const es = edgeStats(p.pos, p.idx, weldMap(p.pos, 0));
+  console.log(
+    `   엣지 길이[mm]: 최소 ${P(es.min * 1000, 2)} · p05 ${P(es.p05 * 1000, 2)} · 중앙 ${P(es.p50 * 1000, 2)} · p95 ${P(es.p95 * 1000, 2)} · 최대 ${P(es.max * 1000, 2)}  (엣지 ${es.n}개)`,
+  );
+
+  const comps = componentBreakdown(p.pos, p.idx, weldMap(p.pos, 0));
+  console.log(`   성분별(위치 용접 기준 · 삼각형 많은 순 · 상위 12):`);
+  console.log(
+    `   ${'#'.padStart(4)}${'삼각형'.padStart(9)}${'열린엣지'.padStart(10)}   ${'bbox x[m]'.padEnd(18)}${'bbox y[m]'.padEnd(18)}${'bbox z[m]'.padEnd(18)}`,
+  );
+  for (const [i, c] of comps.slice(0, 12).entries())
+    console.log(
+      `   ${String(i).padStart(4)}${String(c.tris).padStart(9)}${String(c.open).padStart(10)}   ` +
+        `${`${P(c.lo[0])}~${P(c.hi[0])}`.padEnd(18)}${`${P(c.lo[1])}~${P(c.hi[1])}`.padEnd(18)}${`${P(c.lo[2])}~${P(c.hi[2])}`.padEnd(18)}`,
+    );
+  if (comps.length > 12) console.log(`   … 그 외 ${comps.length - 12}개 성분`);
+}
+
+
+/* ══ §2 격자 도출 · §3-② 자기검사 · §3-③ 부호 교차검증 · §3-⑤ 비용 ══════ */
+
+/** 옷 두께 [m] — S3·S3b와 «같은 값» */
+const THICK = 1e-3;
+/** 메모리 예산 — 이미 상주하는 GLB 자산(38.6 MB)보다 큰 SDF는 정당화되지 않는다.
+ * 그 위의 2의 거듭제곱 = 64 MB를 상한으로 둔다(손 상수가 아니라 «측정된 자산»에 앵커). */
+const BUDGET = 64 * 1024 * 1024;
+/** ②의 문턱 — 격자 간격의 X%. **실행 «전»에 고정한다.**
+ * 사유: 주 오차항은 삼선형 보간의 곡률항 h²/(4R)이고, h에 대한 «비»로 쓰면 h/(4R)다.
+ * 시험 반지름 R≥50mm에서 h=3.75mm면 1.88%. 삼각화 새기타(sagitta)와 띠 가장자리
+ * 효과에 2.6배 여유를 두어 5%로 잡는다. 결과를 보고 고치지 않는다. */
+const X_PCT = 5;
+
+const lcg = (seed: number) => () => ((seed = (seed * 1103515245 + 12345) & 0x7fffffff) / 0x7fffffff);
+
+/** UV 구 — **수밀**. 극은 «한 점»으로 둔다 — 고리로 두면 퇴화 삼각형이 생겨
+ * 용접 후에도 열린 엣지가 남는다(초판 실측: 열린 160 · χ=161 ⟹ 패리티가 보장되지 않는다). */
+function sphereMesh(R: number, seg: number) {
+  const pos: number[] = [];
+  const idx: number[] = [];
+  const rings = Math.max(2, Math.round(seg / 2));
+  pos.push(0, R, 0); // 북극 = 정점 0
+  for (let j = 1; j < rings; j++) {
+    const th = (j / rings) * Math.PI;
+    for (let i = 0; i < seg; i++) {
+      const ph = (i / seg) * 2 * Math.PI;
+      pos.push(R * Math.sin(th) * Math.cos(ph), R * Math.cos(th), R * Math.sin(th) * Math.sin(ph));
+    }
+  }
+  const south = pos.length / 3;
+  pos.push(0, -R, 0);
+  const ring = (j: number, i: number) => 1 + (j - 1) * seg + (((i % seg) + seg) % seg);
+  for (let i = 0; i < seg; i++) idx.push(0, ring(1, i + 1), ring(1, i));
+  for (let j = 1; j < rings - 1; j++)
+    for (let i = 0; i < seg; i++)
+      idx.push(ring(j, i), ring(j, i + 1), ring(j + 1, i + 1), ring(j, i), ring(j + 1, i + 1), ring(j + 1, i));
+  for (let i = 0; i < seg; i++) idx.push(south, ring(rings - 1, i), ring(rings - 1, i + 1));
+  return { pos: Float32Array.from(pos), idx: Uint32Array.from(idx) };
+}
+
+/** 뚜껑 있는 원기둥(축 = y) — **수밀 · 배향 일치**.
+ * 초판은 뚜껑 두 개가 «안쪽»으로 감겨 와인딩 불일치 256이 잡혔다. */
+function cylMesh(R: number, halfLen: number, seg: number) {
+  const pos: number[] = [];
+  const idx: number[] = [];
+  for (const y of [-halfLen, halfLen])
+    for (let i = 0; i < seg; i++) {
+      const ph = (i / seg) * 2 * Math.PI;
+      pos.push(R * Math.cos(ph), y, R * Math.sin(ph));
+    }
+  const cBot = pos.length / 3; pos.push(0, -halfLen, 0);
+  const cTop = pos.length / 3; pos.push(0, halfLen, 0);
+  const bo = (i: number) => ((i % seg) + seg) % seg;
+  const to = (i: number) => seg + bo(i);
+  for (let i = 0; i < seg; i++) {
+    idx.push(bo(i), to(i), to(i + 1), bo(i), to(i + 1), bo(i + 1)); // 옆면(바깥 = 지름 +)
+    idx.push(cBot, bo(i), bo(i + 1)); // 아래 뚜껑(바깥 = −y)
+    idx.push(cTop, to(i + 1), to(i)); // 위 뚜껑(바깥 = +y)
+  }
+  return { pos: Float32Array.from(pos), idx: Uint32Array.from(idx) };
+}
+
+const sphereSdf = (R: number) => (x: number, y: number, z: number) => Math.hypot(x, y, z) - R;
+/** 뚜껑 있는 원기둥의 해석 SDF(축 = y) */
+const cylSdf = (R: number, hl: number) => (x: number, y: number, z: number) => {
+  const dr = Math.hypot(x, z) - R;
+  const dy = Math.abs(y) - hl;
+  return Math.hypot(Math.max(dr, 0), Math.max(dy, 0)) + Math.min(Math.max(dr, dy), 0);
+};
+
+const prim0 = prims[0];
+const weld = weldMap(prim0.pos, 0);
+// 용접된 정점만 남긴 배열로 다시 만든다(패리티·거리 계산은 위치만 보므로 인덱스만 사상)
+const bodyIdx = Uint32Array.from(prim0.idx, (v) => weld[v]);
+const bext: [number, number, number] = [1.78, 1.765, 0.282];
+
+console.log(`\n══ §2 격자 도출 (손 상수 0) ══`);
+const spec = deriveSpacing(bext, BUDGET, THICK);
+console.log(
+  `   예산 ${(BUDGET / 1024 ** 2).toFixed(0)} MB (상주 GLB ${(38630440 / 1024 ** 2).toFixed(1)} MB 위의 2의 거듭제곱) · 두께 ${THICK * 1000}mm · bbox ${bext.map((v) => (v * 1000).toFixed(0)).join('×')}mm`,
+);
+console.log(
+  `   ⟹ h = ${(spec.h * 1000).toFixed(3)} mm · band = ${(spec.band * 1000).toFixed(3)} mm · 복셀 ${spec.voxels.toExponential(3)} · ${(spec.bytes / 1024 ** 2).toFixed(1)} MB`,
+);
+console.log(
+  `   h/두께 = ${(spec.h / THICK).toFixed(2)}배.  h ≤ 두께(1mm)는 ${((0.88596 / 1e-9) * 4 / 1024 ** 3).toFixed(2)} GB로 «원리적으로 불가능» ⟹ 오차를 정량화한다`,
+);
+console.log(
+  `   보간 오차 h²/(4R): R=40mm ${((spec.h ** 2 / (4 * 0.04)) * 1000).toFixed(3)}mm (두께의 ${((spec.h ** 2 / (4 * 0.04)) / THICK * 100).toFixed(1)}%) · R=20mm ${((spec.h ** 2 / (4 * 0.02)) * 1000).toFixed(3)}mm`,
+);
+
+console.log(`\n══ §3-② SDF 자기검사 — 해석 형상을 «같은 파이프라인»으로 굽는다 ══`);
+console.log(`   [문턱] 오차 ≤ 격자 간격의 ${X_PCT}% = ${(spec.h * X_PCT / 100 * 1000).toFixed(3)} mm  (실행 «전» 고정)`);
+console.log(
+  `   ${'형상'.padEnd(22)}${'삼각형'.padStart(8)}${'표본'.padStart(8)}${'평균오차[mm]'.padStart(14)}${'p99[mm]'.padStart(11)}${'최대[mm]'.padStart(11)}${'최대/h'.padStart(9)}${'판정'.padStart(7)}`,
+);
+let ok2 = true;
+// S3의 해석 충돌체는 **평면 · 구 · «무한» 원기둥**이다(`Collider` 정의 — 뚜껑이 없다).
+// 그래서 원기둥은 «뚜껑에서 먼» 대역만 판정하고 «무한» 원기둥 SDF와 대조한다.
+// 뚜껑 모서리는 S3의 정의역에 원래 없고, 사람 몸에도 그런 예리한 볼록 모서리가 없다.
+// 그 대역은 아래에서 «참고»로 따로 찍는다(크레이스에서 삼선형은 O(h²)가 아니라 O(h)).
+const CYL_HL = 0.1;
+const cases: [
+  string,
+  { pos: Float32Array; idx: Uint32Array },
+  (x: number, y: number, z: number) => number,
+  ((x: number, y: number, z: number) => boolean) | null,
+][] = [
+  ['구 R=50mm', sphereMesh(0.05, 160), sphereSdf(0.05), null],
+  [
+    '원기둥 R=40mm(무한 대역)',
+    cylMesh(0.04, CYL_HL, 128),
+    (x, _y, z) => Math.hypot(x, z) - 0.04,
+    (_x, y) => Math.abs(y) < CYL_HL - 0.02,
+  ],
+  ['원기둥 뚜껑 모서리(참고·게이트 밖)', cylMesh(0.04, CYL_HL, 128), cylSdf(0.04, CYL_HL), null],
+];
+for (const [name, mesh, exact, dom] of cases) {
+  const gate = !name.includes('참고');
+  const g = bakeSdf(mesh.pos, mesh.idx, spec.h, spec.band);
+  const rnd = lcg(12345);
+  let n = 0, sum = 0, max = 0;
+  const errs: number[] = [];
+  for (let s = 0; s < 200000 && n < 20000; s++) {
+    const x = g.ox + rnd() * (g.nx - 1) * g.h;
+    const y = g.oy + rnd() * (g.ny - 1) * g.h;
+    const z = g.oz + rnd() * (g.nz - 1) * g.h;
+    if (dom && !dom(x, y, z)) continue; // 정의역 밖(뚜껑 대역)
+    const e = exact(x, y, z);
+    if (Math.abs(e) > g.band - g.h) continue; // 띠 «안»에서만 판정한다(밖은 잘려 있다)
+    const got = sampleSdf(g, x, y, z);
+    const err = Math.abs(got - e);
+    errs.push(err); sum += err; if (err > max) max = err; n++;
+  }
+  errs.sort((a, b) => a - b);
+  const p99 = errs[Math.floor(errs.length * 0.99)] ?? 0;
+  // 시험 형상 자체가 «수밀»인지 먼저 본다 — 패리티는 수밀에서만 정확하다.
+  // 그리고 오차가 «부호 뒤집힘»인지 «크기 오차»인지 가른다: 부호가 뒤집히면
+  // 오차 = 2|d| 라 겉보기 최대값이 커진다(구현 결함), 크레이스 평활은 그렇지 않다.
+  {
+    const ident = Int32Array.from({ length: mesh.pos.length / 3 }, (_, i) => i);
+    const tw = topology(mesh.pos, mesh.idx, weldMap(mesh.pos, 0));
+    const tr = topology(mesh.pos, mesh.idx, ident);
+    const chi = tw.verts - tw.edges + tw.tris;
+    const rnd2 = lcg(12345);
+    let flip = 0, flipMax = 0, sameMax = 0, m = 0;
+    for (let s2 = 0; s2 < 200000 && m < 20000; s2++) {
+      const x = g.ox + rnd2() * (g.nx - 1) * g.h;
+      const y = g.oy + rnd2() * (g.ny - 1) * g.h;
+      const z = g.oz + rnd2() * (g.nz - 1) * g.h;
+      if (dom && !dom(x, y, z)) continue;
+      const e = exact(x, y, z);
+      if (Math.abs(e) > g.band - g.h) continue;
+      const got = sampleSdf(g, x, y, z);
+      const err = Math.abs(got - e);
+      if (got < 0 !== e < 0) { flip++; flipMax = Math.max(flipMax, err); }
+      else sameMax = Math.max(sameMax, err);
+      m++;
+    }
+    console.log(
+      `      [진단] 시험메시 수밀: 열린 ${tw.openEdges} · 비다양체 ${tw.nonManifold} · 와인딩 ${tw.windingClash} · 성분 ${tw.components} · χ ${chi}` +
+        `  (원시 인덱스 열린 ${tr.openEdges})`,
+    );
+    console.log(
+      `      [진단] 부호 뒤집힘 ${flip}/${m} (${(flip / m * 100).toFixed(3)}%) · 뒤집힘 최대오차 ${(flipMax * 1000).toFixed(4)}mm · «부호 같은» 표본 최대오차 ${(sameMax * 1000).toFixed(4)}mm = ${(sameMax / spec.h * 100).toFixed(2)}% of h`,
+    );
+  }
+  const pass = max <= (spec.h * X_PCT) / 100;
+  if (gate) ok2 &&= pass;
+  console.log(
+    `   ${name.padEnd(22)}${String(mesh.idx.length / 3).padStart(8)}${String(n).padStart(8)}` +
+      `${(sum / n * 1000).toFixed(4).padStart(14)}${(p99 * 1000).toFixed(4).padStart(11)}${(max * 1000).toFixed(4).padStart(11)}` +
+      `${((max / spec.h) * 100).toFixed(2).padStart(8)}%${(gate ? (pass ? 'PASS' : 'FAIL') : '참고').padStart(7)}`,
+  );
+}
+console.log(`   ⟹ ② ${ok2 ? 'PASS (도구를 믿을 수 있다)' : 'FAIL — 갈래 G · ③④를 판정하지 않는다'}`);
+
+console.log(`\n══ §3-⑤ 몸 SDF 굽기 — 비용 ══`);
+const t0 = performance.now();
+const bodyG: GridSdf = bakeSdf(prim0.pos, bodyIdx, spec.h, spec.band);
+const bakeMs = performance.now() - t0;
+let inside = 0;
+for (let i = 0; i < bodyG.data.length; i++) if (bodyG.data[i] < 0) inside++;
+console.log(
+  `   격자 ${bodyG.nx}×${bodyG.ny}×${bodyG.nz} = ${(bodyG.nx * bodyG.ny * bodyG.nz).toExponential(3)} 복셀 · ${(bodyG.data.byteLength / 1024 ** 2).toFixed(1)} MB`,
+);
+console.log(
+  `   굽기 ${bakeMs.toFixed(0)} ms · 안쪽 복셀 ${inside} (${(inside / bodyG.data.length * 100).toFixed(2)}%) · 삼각형 ${bodyIdx.length / 3}`,
+);
+const rq = lcg(777);
+const NQ = 2e6;
+const t1 = performance.now();
+let acc = 0;
+for (let i = 0; i < NQ; i++)
+  acc += sampleSdf(bodyG, bodyG.ox + rq() * (bodyG.nx - 1) * bodyG.h, bodyG.oy + rq() * (bodyG.ny - 1) * bodyG.h, bodyG.oz + rq() * (bodyG.nz - 1) * bodyG.h);
+const qMs = performance.now() - t1;
+console.log(`   질의 ${NQ.toExponential(0)}회 ${qMs.toFixed(0)} ms = ${(qMs * 1e6 / NQ).toFixed(1)} ns/질의  (acc=${acc.toFixed(3)} · 최적화 제거 방지)`);
+
+console.log(`\n══ §3-③ 부호 일관성 — 독립 방법(임의 방향 레이 패리티)과 교차검증 ══`);
+console.log(`   기준: v1 Stage 1a가 «최근접 면 법선» 계열에서 등재한 부호 모순 2.95%`);
+{
+  const P0 = prim0.pos;
+  // 독립 구현: 임의 방향 광선 3개의 «다수결» — 격자도, x축도, 버킷도 쓰지 않는다
+  const insideByRay = (x: number, y: number, z: number, rnd: () => number) => {
+    let vote = 0;
+    for (let r = 0; r < 3; r++) {
+      let dx = rnd() * 2 - 1, dy = rnd() * 2 - 1, dz = rnd() * 2 - 1;
+      const l = Math.hypot(dx, dy, dz) || 1;
+      dx /= l; dy /= l; dz /= l;
+      let cnt = 0;
+      for (let t = 0; t < bodyIdx.length; t += 3) {
+        const a = bodyIdx[t] * 3, b = bodyIdx[t + 1] * 3, c = bodyIdx[t + 2] * 3;
+        const e1x = P0[b] - P0[a], e1y = P0[b + 1] - P0[a + 1], e1z = P0[b + 2] - P0[a + 2];
+        const e2x = P0[c] - P0[a], e2y = P0[c + 1] - P0[a + 1], e2z = P0[c + 2] - P0[a + 2];
+        const px = dy * e2z - dz * e2y, py = dz * e2x - dx * e2z, pz = dx * e2y - dy * e2x;
+        const det = e1x * px + e1y * py + e1z * pz;
+        if (Math.abs(det) < 1e-16) continue;
+        const inv = 1 / det;
+        const tx = x - P0[a], ty = y - P0[a + 1], tz = z - P0[a + 2];
+        const u = (tx * px + ty * py + tz * pz) * inv;
+        if (u < 0 || u > 1) continue;
+        const qx = ty * e1z - tz * e1y, qy = tz * e1x - tx * e1z, qz = tx * e1y - ty * e1x;
+        const v = (dx * qx + dy * qy + dz * qz) * inv;
+        if (v < 0 || u + v > 1) continue;
+        if ((e2x * qx + e2y * qy + e2z * qz) * inv > 0) cnt++;
+      }
+      if (cnt & 1) vote++;
+    }
+    return vote >= 2;
+  };
+  const rs = lcg(2024);
+  const N = Number(process.env.SIGN_N ?? 3000);
+  let checked = 0, mismatch = 0, nearSurf = 0, nearMismatch = 0;
+  const ts = performance.now();
+  for (let s = 0; s < N; s++) {
+    const x = bodyG.ox + rs() * (bodyG.nx - 1) * bodyG.h;
+    const y = bodyG.oy + rs() * (bodyG.ny - 1) * bodyG.h;
+    const z = bodyG.oz + rs() * (bodyG.nz - 1) * bodyG.h;
+    const d = sampleSdf(bodyG, x, y, z);
+    const truth = insideByRay(x, y, z, rs);
+    checked++;
+    const near = Math.abs(d) < bodyG.h; // 표면 «한 칸» 안 — 부호가 원래 모호한 대역
+    if (near) nearSurf++;
+    if (d < 0 !== truth) { mismatch++; if (near) nearMismatch++; }
+  }
+  console.log(
+    `   표본 ${checked} · 불일치 ${mismatch} (${(mismatch / checked * 100).toFixed(3)}%) · 그중 표면 ±h 대역 ${nearMismatch} · 대역 표본 ${nearSurf} · ${((performance.now() - ts) / 1000).toFixed(1)}s`,
+  );
+  const far = mismatch - nearMismatch;
+  console.log(
+    `   표면 ±h를 «뺀» 불일치 = ${far} (${(far / Math.max(1, checked - nearSurf) * 100).toFixed(3)}%)  ← v1 2.95%와 대조할 값`,
+  );
+}

@@ -7,6 +7,7 @@
  * 서브스텝당 반복 1회, λ는 서브스텝마다 0으로 초기화한다.
  */
 import { stiffnessAt } from './wangStretch.ts';
+import { sampleSdf, type GridSdf } from './bodySdf.ts';
 
 export type Solver = {
   /** 정점 위치 (3n) */
@@ -107,7 +108,9 @@ export type Collider =
       c: readonly [number, number, number];
       a: readonly [number, number, number];
       r: number;
-    };
+    }
+  /** 구운 복셀 SDF (v3-13 #25). 격자 «밖»은 자유 공간으로 본다 — 외삽 0 · 흡착 0. */
+  | { kind: 'grid'; g: GridSdf };
 
 export type CollisionParams = {
   colliders: readonly Collider[];
@@ -121,6 +124,27 @@ export type CollisionParams = {
 
 /** 부호 있는 거리와 «바깥» 방향 법선. d > 0 이면 자유 공간. */
 function sdf(c: Collider, x: number, y: number, z: number, out: Float64Array): number {
+  if (c.kind === 'grid') {
+    // 삼선형 보간 + 중심차분 법선. 격자 밖이면 sampleSdf가 band(자유 공간)를 준다
+    // ⟹ d ≥ 0이라 해소가 «아무 일도 안 한다»(흡착 아님 · 절대 조항 유지).
+    const g = c.g;
+    const d = sampleSdf(g, x, y, z);
+    const e = g.h;
+    const gx = sampleSdf(g, x + e, y, z) - sampleSdf(g, x - e, y, z);
+    const gy = sampleSdf(g, x, y + e, z) - sampleSdf(g, x, y - e, z);
+    const gz = sampleSdf(g, x, y, z + e) - sampleSdf(g, x, y, z - e);
+    const l = Math.hypot(gx, gy, gz);
+    if (l < 1e-20) {
+      out[0] = 0;
+      out[1] = 1;
+      out[2] = 0;
+    } else {
+      out[0] = gx / l;
+      out[1] = gy / l;
+      out[2] = gz / l;
+    }
+    return d;
+  }
   if (c.kind === 'plane') {
     out[0] = c.n[0];
     out[1] = c.n[1];
