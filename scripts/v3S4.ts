@@ -1230,10 +1230,14 @@ if (run('3') && D_CHOSEN > 0) {
   const CK_EVERY = 25;
   function saveCk(frame: number) {
     mkdirSync(dirname(CKPT), { recursive: true });
+    // CKKEEP=1 이면 프레임 번호를 붙여 «보존»한다 — v3-19의 f=175를 남기지 않아
+    // v3-22 §2 안전장치의 대조 상태를 잃었다(재생성 비용 약 1.7시간).
     const hdr = Buffer.from(JSON.stringify({ frame, n: sc.n, d: D_CHOSEN, sub: st.sub, sig: PLACE_SIG }), 'utf8');
     const len = Buffer.alloc(4);
     len.writeUInt32LE(hdr.length, 0);
-    writeFileSync(CKPT, Buffer.concat([len, hdr, Buffer.from(s.pos.buffer.slice(0)), Buffer.from(s.vel.buffer.slice(0))]));
+    const blob = Buffer.concat([len, hdr, Buffer.from(s.pos.buffer.slice(0)), Buffer.from(s.vel.buffer.slice(0))]);
+    writeFileSync(CKPT, blob);
+    if (process.env.CKKEEP === '1') writeFileSync(CKPT.replace(/\.bin$/, `.f${frame}.bin`), blob);
   }
   function loadCk(): number {
     if (!existsSync(CKPT)) return 0;
@@ -1330,6 +1334,50 @@ if (run('3') && D_CHOSEN > 0) {
     const r = vReport(label);
     console.log(`   f=${fr}+${K} · ${((performance.now() - t0) / K / 1000).toFixed(2)} s/f`);
     if (process.env.TOPV === '1') topVerts(r.v, 20);
+    process.exit(0);
+  }
+
+  /* ── v3-22 §1 정착 채널 — 정의는 «측정 전»에 커밋됐다(1be41fd) ─────────────
+   * 주  창 N=10프레임의 정점 «순변위» 최대 ≤ 0.1mm   (N = 1/damping · θ = S3b ② 재수렴 폭)
+   * 부  목선 링/정지 ≤ 1e-4 · 밑단 평균 y ≤ 0.1mm · 시접 틈 중앙 ≤ 0.1mm
+   * 참고 |v|max 및 |v| 분포 — 판정에 쓰지 않고 «함께» 적는다
+   * `SETTLE=1` · 대조군은 `NOBODY=1`(몸 충돌을 끄면 옷이 떨어진다 ⟹ 반드시 FAIL) */
+  if (process.env.SETTLE === '1') {
+    const N_WIN = Math.round(1 / (DAMP * DT));
+    const TH_POS = 1e-4;
+    const fr = loadCk();
+    const noBody = process.env.NOBODY === '1';
+    const hemIx2 = Array.from({ length: sc.nuB + 1 }, (_, i) => at(front, i, 0)).concat(
+      Array.from({ length: sc.nuB + 1 }, (_, i) => at(back, i, 0)));
+    const seamMed = (pp: Float64Array) => {
+      const g: number[] = [];
+      for (const sm of sc.seams) for (let k = 0; k < sm.a.length; k++) g.push(seg3(pp, sm.a[k], sm.b[k]));
+      g.sort((x, y2) => x - y2);
+      return g[Math.floor(g.length / 2)];
+    };
+    const before = Float64Array.from(s.pos);
+    const o0 = { ring: ring(s.pos) / ringRest, hem: meanY(hemIx2, s.pos), seam: seamMed(s.pos) };
+    const pw: SolverParams = {
+      dt: DT, substeps: st.sub, gravity: G, damping: DAMP,
+      ...(noBody ? {} : { collision: { colliders: [{ kind: 'grid', g: bodyG }], thickness: THICK, mu: MU } }),
+      selfCollision: { tris: sc.tris, thickness: THICK },
+    };
+    for (let k = 0; k < N_WIN; k++) step(s, sc.cons, pw);
+    const net: number[] = [];
+    for (let v = 0; v < sc.n; v++)
+      net.push(Math.hypot(s.pos[v * 3] - before[v * 3], s.pos[v * 3 + 1] - before[v * 3 + 1], s.pos[v * 3 + 2] - before[v * 3 + 2]));
+    const srt = [...net].sort((x, y2) => x - y2);
+    const q = (t: number) => srt[Math.min(srt.length - 1, Math.floor(t * srt.length))];
+    const o1 = { ring: ring(s.pos) / ringRest, hem: meanY(hemIx2, s.pos), seam: seamMed(s.pos) };
+    const vv = vList().sort((x, y2) => x - y2);
+    const main = srt[srt.length - 1] <= TH_POS;
+    const dRing = Math.abs(o1.ring - o0.ring), dHem = Math.abs(o1.hem - o0.hem), dSeam = Math.abs(o1.seam - o0.seam);
+    const subOk = dRing <= 1e-4 && dHem <= TH_POS && dSeam <= TH_POS;
+    console.log(`\n╔══ §1 정착 채널 (f=${fr} · 창 N=${N_WIN}프레임${noBody ? ' · 대조군 NOBODY' : ''}) ══╗`);
+    console.log(`   주  순변위[mm] 중앙 ${(q(0.5) * 1000).toFixed(5)} · p95 ${(q(0.95) * 1000).toFixed(5)} · 최대 ${(srt[srt.length - 1] * 1000).toFixed(5)} ≤ ${TH_POS * 1000} ⟹ ${main ? 'PASS' : 'FAIL'}`);
+    console.log(`   부  목선 Δ ${dRing.toExponential(3)} ≤ 1e-4 ${dRing <= 1e-4 ? '✓' : '✗'} · 밑단 Δ ${(dHem * 1000).toFixed(5)}mm ${dHem <= TH_POS ? '✓' : '✗'} · 시접 Δ ${(dSeam * 1000).toFixed(5)}mm ${dSeam <= TH_POS ? '✓' : '✗'} ⟹ ${subOk ? 'PASS' : 'FAIL'}`);
+    console.log(`   참고 |v|[mm/s] 중앙 ${(vv[Math.floor(sc.n / 2)] * 1000).toFixed(3)} · p95 ${(vv[Math.floor(sc.n * 0.95)] * 1000).toFixed(3)} · 최대 ${(vv[sc.n - 1] * 1000).toFixed(2)} · 6.0 초과 ${vv.filter((x) => x > V_SETTLE).length}/${sc.n}`);
+    console.log(`   ⟹ 정착 «${main && subOk ? 'PASS' : 'FAIL'}»  (주 AND 부)`);
     process.exit(0);
   }
 
