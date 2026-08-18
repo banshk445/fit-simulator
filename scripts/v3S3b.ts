@@ -615,7 +615,9 @@ if (doRun('5')) {
   let same = a.s.pos.length === b.s.pos.length;
   for (let i = 0; same && i < a.s.pos.length; i++) same = a.s.pos[i] === b.s.pos[i];
   console.log(
-    `   selfStats 8칸 전부 0 = ${zero}  ·  두 번 실행 위치 비트 동일 = ${same}  ⟹ ${zero && same ? 'PASS' : 'FAIL'}`,
+    // 칸 수는 «배열에서» 뜬다 — 손으로 적으면 계기 이름과 정의역이 어긋난다(함정 13).
+    // 실제로 8로 적혀 있었고 배열은 7칸이었다(판정 자체는 배열 전량을 봤으므로 무영향).
+    `   selfStats ${selfStats.length}칸 전부 0 = ${zero}  ·  두 번 실행 위치 비트 동일 = ${same}  ⟹ ${zero && same ? 'PASS' : 'FAIL'}`,
   );
   console.log(`   selfStats = [${Array.from(selfStats).join(', ')}]`);
   if (!(zero && same)) process.exitCode = 1;
