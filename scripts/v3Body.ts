@@ -24,6 +24,11 @@
  */
 import { readFileSync } from 'node:fs';
 import { bakeSdf, deriveSpacing, sampleSdf, type GridSdf } from '../src/v3/bodySdf.ts';
+import {
+  makeSolver, makeInplane, makeBend, assignMassFromMesh,
+  substepsForBending, substepsForCloth, step,
+  type Constraint, type SolverParams,
+} from '../src/v3/solver.ts';
 
 const GLB = process.env.GLB ?? 'public/models/mannequin.glb';
 
@@ -558,4 +563,436 @@ console.log(`   기준: v1 Stage 1a가 «최근접 면 법선» 계열에서 등
   console.log(
     `   표면 ±h를 «뺀» 불일치 = ${far} (${(far / Math.max(1, checked - nearSurf) * 100).toFixed(3)}%)  ← v1 2.95%와 대조할 값`,
   );
+}
+
+/* ══════════════════════════════════════════════════════════════════════════
+ * v3-14 — §1 문턱 재도출 · §2 실제 몸 정량화 · §3 재판정
+ * ══════════════════════════════════════════════════════════════════════════ */
+
+/* ── §1 문턱 재도출 — 유도에서 나온다. v3-13 실측을 «보지 않고» 정한다 ────────
+ *
+ * 유도(1차원): [0,h]에서 f의 선형 보간 L은
+ *     L(t) − f(th) = (f''·h²/2)·t(1−t),   t = 0..1
+ * 이고 t=½에서 최대 **f''·h²/8**이다. f''>0(볼록)이면 보간이 «과대평가»한다.
+ * 삼선형은 축 3개의 1차 오차 합이므로 셀 위상이 최악(t_k=½)일 때
+ *     d̃ − d = (h²/8)·Σ_k ∂²d/∂x_k² = (h²/8)·∇²d.
+ * 표면에서 ∇²d = κ₁ + κ₂ 이므로
+ *
+ *     **P_pred = (h²/8)·(κ₁+κ₂)**      구 h²/(4R) · 원기둥 h²/(8R) · 평면 0
+ *
+ * 천 정점은 d̃ = thickness 인 자리에 앉는다. 거기서 «참» 거리는 d = d̃ − (d̃−d)
+ * 이므로 **관통 = 보간 오차 그 자체**다. P_pred는 이 표현의 «원리적 하한»이고,
+ * 1µm 문턱은 해석 SDF(오차 0)에서 나온 값이라 이 표현에 요구할 수 없는 정확도였다.
+ *
+ * **문턱은 고정 상수가 아니라 예측값의 함수다**: 관통 ≤ P_pred × (1 + MARGIN).
+ * MARGIN 근거: 버린 다음 항이 O(h³·∇³d)이고 P_pred 대비 상대 크기가 **O(h·κ) = h/R**.
+ * h=3.951mm에서 h/R ≤ 0.20 이려면 **R ≥ 19.8mm** ⟹ MARGIN = 0.25 · 유효 범위 R ≥ 20mm.
+ *
+ * **일치 조건**(「작다」가 아니라 「설명된다」): 실측 / P_pred ∈ [0.5, 1.25].
+ * 상한은 문턱과 같다. 하한 0.5의 근거: 접촉 정점이 수백 개면 셀 위상 t_k가 조밀히
+ * 표집되므로 최댓값이 최악 위상값의 절반에는 도달해야 한다 — 훨씬 작으면 곡률 기전이
+ * 지배적이지 않다는 뜻이고 「설명된다」를 주장할 근거가 없다(작다고 통과시키지 않는다).
+ * 평면은 P_pred = 0이라 비가 정의되지 않는다 ⟹ **관통 = 0을 «정확히» 요구**한다.
+ */
+const ONLY14 = (process.env.ONLY ?? '').split(',').filter(Boolean);
+const run14 = (k: string) => ONLY14.length === 0 || ONLY14.includes(k);
+const MARGIN = 0.25;
+const MATCH_LO = 0.5;
+const MATCH_HI = 1.25;
+const R_VALID = 0.02;
+
+/** 격자에서 잰 예측 관통 = (1/8)·Σ_k [d(x+h e_k) − 2d(x) + d(x−h e_k)].
+ * h²∇²d/8 을 «격자 스케일 2차 차분»으로 그대로 쓴다 — 곡률을 따로 추정하지 않는다
+ * (보간 오차를 만드는 것이 바로 그 스케일의 2차 차분이므로 근사가 아니라 정의다). */
+function predPen(g: GridSdf, x: number, y: number, z: number): number {
+  const c = sampleSdf(g, x, y, z);
+  return (
+    (sampleSdf(g, x + g.h, y, z) + sampleSdf(g, x - g.h, y, z) +
+      sampleSdf(g, x, y + g.h, z) + sampleSdf(g, x, y - g.h, z) +
+      sampleSdf(g, x, y, z + g.h) + sampleSdf(g, x, y, z - g.h) - 6 * c) / 8
+  );
+}
+
+/** 점–삼각형 제곱 거리(하네스 사본 — 솔버 모듈과 «독립») */
+function pointTriSq2(
+  px: number, py: number, pz: number,
+  ax: number, ay: number, az: number,
+  bx: number, by: number, bz: number,
+  cx: number, cy: number, cz: number,
+): number {
+  const abx = bx - ax, aby = by - ay, abz = bz - az;
+  const acx = cx - ax, acy = cy - ay, acz = cz - az;
+  const apx = px - ax, apy = py - ay, apz = pz - az;
+  const d1 = abx * apx + aby * apy + abz * apz;
+  const d2 = acx * apx + acy * apy + acz * apz;
+  let qx: number, qy: number, qz: number;
+  if (d1 <= 0 && d2 <= 0) { qx = ax; qy = ay; qz = az; }
+  else {
+    const d3 = abx * (px - bx) + aby * (py - by) + abz * (pz - bz);
+    const d4 = acx * (px - bx) + acy * (py - by) + acz * (pz - bz);
+    if (d3 >= 0 && d4 <= d3) { qx = bx; qy = by; qz = bz; }
+    else {
+      const vc = d1 * d4 - d3 * d2;
+      if (vc <= 0 && d1 >= 0 && d3 <= 0) {
+        const v = d1 / (d1 - d3);
+        qx = ax + v * abx; qy = ay + v * aby; qz = az + v * abz;
+      } else {
+        const d5 = abx * (px - cx) + aby * (py - cy) + abz * (pz - cz);
+        const d6 = acx * (px - cx) + acy * (py - cy) + acz * (pz - cz);
+        if (d6 >= 0 && d5 <= d6) { qx = cx; qy = cy; qz = cz; }
+        else {
+          const vb = d5 * d2 - d1 * d6;
+          if (vb <= 0 && d2 >= 0 && d6 <= 0) {
+            const w = d2 / (d2 - d6);
+            qx = ax + w * acx; qy = ay + w * acy; qz = az + w * acz;
+          } else {
+            const va = d3 * d6 - d5 * d4;
+            if (va <= 0 && d4 - d3 >= 0 && d5 - d6 >= 0) {
+              const w = (d4 - d3) / (d4 - d3 + (d5 - d6));
+              qx = bx + w * (cx - bx); qy = by + w * (cy - by); qz = bz + w * (cz - bz);
+            } else {
+              const den = 1 / (va + vb + vc);
+              const v = vb * den, w = vc * den;
+              qx = ax + abx * v + acx * w; qy = ay + aby * v + acy * w; qz = az + abz * v + acz * w;
+            }
+          }
+        }
+      }
+    }
+  }
+  const ddx = px - qx, ddy = py - qy, ddz = pz - qz;
+  return ddx * ddx + ddy * ddy + ddz * ddz;
+}
+
+/** 브루트포스 «정확» 무부호 거리 (전 삼각형). 격자와 공유 코드 0. */
+function exactDist(pos: Float32Array, idx: Uint32Array, x: number, y: number, z: number): number {
+  let best = Infinity;
+  for (let t = 0; t < idx.length; t += 3) {
+    const a = idx[t] * 3, b = idx[t + 1] * 3, c = idx[t + 2] * 3;
+    const d2 = pointTriSq2(x, y, z,
+      pos[a], pos[a + 1], pos[a + 2], pos[b], pos[b + 1], pos[b + 2], pos[c], pos[c + 1], pos[c + 2]);
+    if (d2 < best) best = d2;
+  }
+  return Math.sqrt(best);
+}
+
+/** 브루트포스 «정확» 부호 — 임의 방향 광선 3개 다수결(격자·x축·버킷 미사용). */
+function exactInside(
+  pos: Float32Array, idx: Uint32Array, x: number, y: number, z: number, rnd: () => number,
+): boolean {
+  let vote = 0;
+  for (let r = 0; r < 3; r++) {
+    let dx = rnd() * 2 - 1, dy = rnd() * 2 - 1, dz = rnd() * 2 - 1;
+    const l = Math.hypot(dx, dy, dz) || 1;
+    dx /= l; dy /= l; dz /= l;
+    let cnt = 0;
+    for (let t = 0; t < idx.length; t += 3) {
+      const a = idx[t] * 3, b = idx[t + 1] * 3, c = idx[t + 2] * 3;
+      const e1x = pos[b] - pos[a], e1y = pos[b + 1] - pos[a + 1], e1z = pos[b + 2] - pos[a + 2];
+      const e2x = pos[c] - pos[a], e2y = pos[c + 1] - pos[a + 1], e2z = pos[c + 2] - pos[a + 2];
+      const px = dy * e2z - dz * e2y, py = dz * e2x - dx * e2z, pz = dx * e2y - dy * e2x;
+      const det = e1x * px + e1y * py + e1z * pz;
+      if (Math.abs(det) < 1e-16) continue;
+      const inv = 1 / det;
+      const tx = x - pos[a], ty = y - pos[a + 1], tz = z - pos[a + 2];
+      const u = (tx * px + ty * py + tz * pz) * inv;
+      if (u < 0 || u > 1) continue;
+      const qx = ty * e1z - tz * e1y, qy = tz * e1x - tx * e1z, qz = tx * e1y - ty * e1x;
+      const v = (dx * qx + dy * qy + dz * qz) * inv;
+      if (v < 0 || u + v > 1) continue;
+      if ((e2x * qx + e2y * qy + e2z * qz) * inv > 0) cnt++;
+    }
+    if (cnt & 1) vote++;
+  }
+  return vote >= 2;
+}
+
+console.log(`\n╔══ v3-14 §1 문턱 재도출 (유도에서 · v3-13 실측을 «보지 않고» 고정) ══╗`);
+console.log(`   P_pred = (h²/8)·∇²d = (h²/8)·(κ₁+κ₂)   [구 h²/4R · 원기둥 h²/8R · 평면 0]`);
+console.log(`   유도: 1D 선형보간 오차 (f''h²/2)·t(1−t) → t=½에서 f''h²/8 ⟹ 삼선형은 축 3개 합`);
+console.log(`   천은 d̃ = 두께 인 자리에 앉으므로 **관통 = 보간 오차 그 자체**다`);
+console.log(`   [문턱]     관통 ≤ P_pred × (1 + ${MARGIN})   — 고정 상수 아님`);
+console.log(`   [여유근거] 버린 다음 항이 P_pred 대비 O(h·κ)=h/R. h=${(spec.h * 1000).toFixed(3)}mm에서 h/R ≤ 0.20 ⟺ R ≥ ${((spec.h / 0.2) * 1000).toFixed(1)}mm`);
+console.log(`   [유효범위] R ≥ ${R_VALID * 1000}mm (더 뾰족한 특징은 §2-③ 소관)`);
+console.log(`   [일치조건] 실측 / P_pred ∈ [${MATCH_LO}, ${MATCH_HI}] — 「작다」가 아니라 「설명된다」`);
+console.log(`   [평면]     P_pred = 0 ⟹ 비가 정의되지 않는다 ⟹ 관통 = 0 을 «정확히» 요구`);
+
+/* ── §2 실제 몸에서의 정량화 ─────────────────────────────────────────────── */
+const rndG = lcg(4242);
+const NV = prim0.pos.length / 3;
+
+/** 부위 분류 — **T포즈에서는 팔이 수평이라 «높이»만으로는 몸통과 팔이 섞인다.**
+ * 실측이 그것을 드러냈다: 높이만으로 가른 「가슴·등」의 최소 R_eff가 4.5mm였는데
+ * 그것은 가슴이 아니라 «손가락»이다(팔이 어깨 높이로 수평으로 뻗어 있다).
+ * ⟹ 높이 × |x| 로 «두 축» 모두 가른다. 계기 정의역을 대상에 맞춘다. */
+const TORSO_X = 0.2;
+const SLEEVE_X = 0.35;
+function region(x: number, y: number): string {
+  const f = (y - 0.004) / (1.769 - 0.004);
+  const ax = Math.abs(x);
+  // 높이가 낮으면 |x|가 커도 «다리»다 — T포즈에서 두 다리가 벌어져 있어
+  // |x| 조건만으로는 발목이 「상완」으로 들어온다(실측: 상완 최악이 y=0.007이었다).
+  if (f < 0.5) return '다리·발';
+  if (ax > SLEEVE_X) return '전완·손';
+  if (ax > TORSO_X) return '상완';
+  if (f >= 0.88) return '머리·목';
+  if (f >= 0.8) return '어깨';
+  if (f >= 0.7) return '가슴·등';
+  if (f >= 0.6) return '허리·배';
+  if (f >= 0.5) return '엉덩이';
+  return '다리·발';
+}
+/** 티셔츠(반팔) 접촉 대역 — 세로 엉덩이~목, 가로 소매 끝까지.
+ * **정의를 먼저 적고 표는 부위별로 전량 낸다**(전략 세션이 다시 자를 수 있게). */
+const inShirt = (x: number, y: number) => {
+  const f = (y - 0.004) / (1.769 - 0.004);
+  return Math.abs(x) <= SLEEVE_X && f >= 0.55 && f <= 0.92;
+};
+
+if (run14('2a')) {
+  console.log(`\n╔══ §2-① 접촉 대역 곡률 분포 (격자에서 직접) ══╗`);
+  console.log(`   P_pred = (h²/8)·∇²d 를 메시 정점마다 격자 2차 차분으로 잰다 · R_eff = h²/(4·P_pred)`);
+  console.log(`   **부위는 높이 × |x| 로 가른다** — T포즈는 팔이 수평이라 높이만으로는 섞인다`);
+  const groups = new Map<string, number[]>();
+  for (let i = 0; i < NV; i++) {
+    const x = prim0.pos[i * 3], y = prim0.pos[i * 3 + 1], z = prim0.pos[i * 3 + 2];
+    const p = predPen(bodyG, x, y, z);
+    if (!(p > 0)) continue;
+    const r = region(x, y);
+    let a = groups.get(r);
+    if (!a) groups.set(r, (a = []));
+    a.push(p);
+  }
+  console.log(
+    `   ${'부위'.padEnd(12)}${'정점'.padStart(7)}${'P_pred 중앙[mm]'.padStart(16)}${'p95[mm]'.padStart(10)}${'최대[mm]'.padStart(10)}${'최소 R_eff[mm]'.padStart(15)}`,
+  );
+  for (const nm of ['머리·목', '어깨', '가슴·등', '상완', '허리·배', '엉덩이', '전완·손', '다리·발']) {
+    const v = groups.get(nm);
+    if (!v || !v.length) continue;
+    v.sort((a, b) => a - b);
+    const mx = v[v.length - 1];
+    console.log(
+      `   ${nm.padEnd(12)}${String(v.length).padStart(7)}${(v[Math.floor(v.length * 0.5)] * 1000).toFixed(4).padStart(16)}` +
+        `${(v[Math.floor(v.length * 0.95)] * 1000).toFixed(4).padStart(10)}${(mx * 1000).toFixed(4).padStart(10)}${((spec.h ** 2 / (4 * mx)) * 1000).toFixed(1).padStart(15)}`,
+    );
+  }
+  const sh: number[] = [];
+  for (let i = 0; i < NV; i++) {
+    const x = prim0.pos[i * 3], y = prim0.pos[i * 3 + 1];
+    if (!inShirt(x, y)) continue;
+    const p = predPen(bodyG, x, y, prim0.pos[i * 3 + 2]);
+    if (p > 0) sh.push(p);
+  }
+  sh.sort((a, b) => a - b);
+  const q = (f: number) => sh[Math.floor(sh.length * f)];
+  console.log(
+    `   ⟹ **티셔츠 대역**(|x| ≤ ${SLEEVE_X * 1000}mm · 0.55~0.92 H · ${sh.length}정점):` +
+      ` P_pred 중앙 ${(q(0.5) * 1000).toFixed(4)} · p95 ${(q(0.95) * 1000).toFixed(4)} · 최대 ${(sh[sh.length - 1] * 1000).toFixed(4)} mm` +
+      ` · 최소 R_eff ${((spec.h ** 2 / (4 * sh[sh.length - 1])) * 1000).toFixed(1)}mm`,
+  );
+}
+
+if (run14('2b')) {
+  console.log(`\n╔══ §2-② 오목 크레비스 검사 — «표적» 표본(균일 표본이 놓쳤을 수 있다) ══╗`);
+  console.log(`   메시 정점에서 무작위 방향으로 U(0, 2h) 떨어진 점을 뽑는다 ⟹ 표면 근방을`);
+  console.log(`   «빠짐없이» 덮는다(크레비스는 정점 밀도가 높아 오히려 더 촘촘히 표집된다)`);
+  console.log(`   **판정 기준**: 「메움」 = 참은 «밖»인데 격자가 «안»이라 하고, 그 «참 거리»가`);
+  console.log(`   보간 오차 규모를 넘는 경우. 표면에 붙은 점(참 거리 ~0)의 부호 불일치는`);
+  console.log(`   크레비스가 아니라 «표면 위 부호 모호»다 — 둘을 섞으면 판정이 무의미해진다.`);
+  const N = Number(process.env.CREV_N ?? 2500);
+  const bins = [0.25, 0.5, 1, 2];
+  const binTot = new Array(bins.length).fill(0);
+  const binBad = new Array(bins.length).fill(0);
+  let signBad = 0, maxMagErr = 0;
+  const filled: { x: number; y: number; z: number; ed: number; grid: number }[] = [];
+  const t0 = performance.now();
+  for (let s2 = 0; s2 < N; s2++) {
+    const vi = Math.floor(rndG() * NV);
+    let dx = rndG() * 2 - 1, dy = rndG() * 2 - 1, dz = rndG() * 2 - 1;
+    const l = Math.hypot(dx, dy, dz) || 1;
+    const r = rndG() * 2 * spec.h;
+    const x = prim0.pos[vi * 3] + (dx / l) * r;
+    const y = prim0.pos[vi * 3 + 1] + (dy / l) * r;
+    const z = prim0.pos[vi * 3 + 2] + (dz / l) * r;
+    const eD = exactDist(prim0.pos, bodyIdx, x, y, z);
+    const eIn = exactInside(prim0.pos, bodyIdx, x, y, z, rndG);
+    const gD = sampleSdf(bodyG, x, y, z);
+    const bi = bins.findIndex((b) => eD <= b * spec.h);
+    if (bi >= 0) binTot[bi]++;
+    const bad = gD < 0 !== (eIn ? -eD : eD) < 0;
+    if (bad) {
+      signBad++;
+      if (bi >= 0) binBad[bi]++;
+      if (!eIn && gD < 0) filled.push({ x, y, z, ed: eD, grid: gD });
+    }
+    const magErr = Math.abs(Math.abs(gD) - eD);
+    if (eD < bodyG.band - bodyG.h && magErr > maxMagErr) maxMagErr = magErr;
+  }
+  console.log(
+    `   표본 ${N} · 부호 불일치 ${signBad} (${((signBad / N) * 100).toFixed(3)}%) · 띠 안 크기오차 최대 ${(maxMagErr * 1000).toFixed(4)}mm · ${((performance.now() - t0) / 1000).toFixed(1)}s`,
+  );
+  console.log(`   부호 불일치를 «참 거리»로 가르면 (표면에서 멀수록 실제 결함):`);
+  let prev = 0;
+  for (let b = 0; b < bins.length; b++) {
+    console.log(
+      `      참거리 ${(prev * spec.h * 1000).toFixed(2)}~${(bins[b] * spec.h * 1000).toFixed(2)}mm : ${String(binBad[b]).padStart(4)} / ${String(binTot[b]).padStart(4)}  (${binTot[b] ? ((binBad[b] / binTot[b]) * 100).toFixed(2) : '—'}%)`,
+    );
+    prev = bins[b];
+  }
+  filled.sort((a, b) => b.ed - a.ed);
+  const worstEd = filled.length ? filled[0].ed : 0;
+  console.log(
+    `   「참=밖 · 격자=안」 ${filled.length}건 · **참 거리 최대 ${(worstEd * 1000).toFixed(4)}mm** (h/2 = ${((spec.h / 2) * 1000).toFixed(3)}mm)`,
+  );
+  for (const f of filled.slice(0, 5))
+    console.log(
+      `      x ${f.x.toFixed(4)} y ${f.y.toFixed(4)} z ${f.z.toFixed(4)} · 참 거리 ${(f.ed * 1000).toFixed(4)}mm · 격자 ${(f.grid * 1000).toFixed(4)}mm`,
+    );
+  const genuine = worstEd > spec.h / 2;
+  console.log(
+    `   ⟹ ${genuine ? `**메워진 크레비스 있음** — 참 거리 ${(worstEd * 1000).toFixed(3)}mm > h/2 ⟹ 갈래 C` : `**메워진 크레비스 0건.** 「참=밖·격자=안」의 참 거리가 전부 h/2 미만이라 크레비스 메움이 아니라 «표면 위 부호 모호»다`}`,
+  );
+  console.log(`   ⟹ 이 몸에서 격자가 못 담은 «틈»의 하한: 관측된 최소 특징이 h=${(spec.h * 1000).toFixed(3)}mm보다 좁은 자리가 위 목록이다`);
+}
+
+if (run14('2c')) {
+  console.log(`\n╔══ §2-③ 뾰족 볼록 특징 (R_eff < ${R_VALID * 1000}mm = 문턱 유효 범위 밖) ══╗`);
+  const per = new Map<string, { n: number; worst: number; wx: number; wy: number }>();
+  let cnt = 0;
+  let inShirtCnt = 0;
+  let shirtWorst = { p: 0, x: 0, y: 0 };
+  for (let i = 0; i < NV; i++) {
+    const x = prim0.pos[i * 3], y = prim0.pos[i * 3 + 1], z = prim0.pos[i * 3 + 2];
+    const p = predPen(bodyG, x, y, z);
+    if (!(p > 0)) continue;
+    if (spec.h ** 2 / (4 * p) >= R_VALID) continue;
+    cnt++;
+    const r = region(x, y);
+    let a = per.get(r);
+    if (!a) per.set(r, (a = { n: 0, worst: 0, wx: 0, wy: 0 }));
+    a.n++;
+    if (p > a.worst) { a.worst = p; a.wx = x; a.wy = y; }
+    if (inShirt(x, y)) {
+      inShirtCnt++;
+      if (p > shirtWorst.p) shirtWorst = { p, x, y };
+    }
+  }
+  console.log(`   R_eff < ${R_VALID * 1000}mm 정점 ${cnt} / ${NV} (${((cnt / NV) * 100).toFixed(2)}%) — 부위별:`);
+  console.log(`   ${'부위'.padEnd(12)}${'정점'.padStart(7)}${'최악 P_pred[mm]'.padStart(16)}${'R_eff[mm]'.padStart(11)}   위치(x, y)`);
+  for (const [nm, a] of [...per.entries()].sort((u, v) => v[1].n - u[1].n))
+    console.log(
+      `   ${nm.padEnd(12)}${String(a.n).padStart(7)}${(a.worst * 1000).toFixed(4).padStart(16)}` +
+        `${((spec.h ** 2 / (4 * a.worst)) * 1000).toFixed(1).padStart(11)}   ${a.wx.toFixed(3)}, ${a.wy.toFixed(3)}`,
+    );
+  console.log(
+    `   ⟹ **티셔츠 대역 안의 뾰족 정점 ${inShirtCnt}개**` +
+      (inShirtCnt
+        ? ` · 최악 P_pred ${(shirtWorst.p * 1000).toFixed(4)}mm (R_eff ${((spec.h ** 2 / (4 * shirtWorst.p)) * 1000).toFixed(1)}mm) @ x ${shirtWorst.x.toFixed(3)} y ${shirtWorst.y.toFixed(3)}`
+        : ''),
+  );
+  console.log(`   ⟹ 티셔츠 대역 안에 뾰족 정점이 있으면 **갈래 F 성립**(정지 아님 · 한계 등재)`);
+}
+
+/* ── §3-2 실제 몸 SDF 위에 천을 떨어뜨린다 ──────────────────────────────────
+ *
+ * **장면 정의를 «먼저» 적는다**(계기 규범): 반팔 티셔츠 접촉 대역인 «어깨»에 140mm
+ * 정사각 천을 수평으로 띄워 떨어뜨린다. 어깨는 §2-①에서 P_pred 최대 0.4720mm ·
+ * 최소 R_eff 8.3mm으로 **티셔츠 대역에서 가장 굽은 축**에 속한다 — 가장 불리한 자리를 고른다.
+ * 머리(|x| ≲ 0.09)를 피하려고 x를 0.10~0.24로 잡는다.
+ * **초기 적법성**(정확한 메시 거리 > 두께)을 실행 «전»에 값으로 확인한다.
+ */
+if (run14('3')) {
+  console.log(`\n╔══ §3-2 실제 몸 SDF 낙하 — 어깨(티셔츠 대역) ══╗`);
+  const NU2 = Number(process.env.CLOTH_NU ?? 15);
+  // **어깨 «위»에 얹는 판은 미끄러져 떨어졌다**(접촉 정점 0 · |v| 1765mm/s) — 어깨는
+  // 경사면이고 μ=0.3의 임계각(16.7°)보다 가파르다. 그래서 «상완에 걸친다»: 수평으로
+  // 뻗은 상완(반지름 ~40mm · T포즈에서 x축)에 천을 가로질러 덮으면 양쪽으로 늘어져
+  // 미끄러져 나갈 수 없다. 상완은 반팔 소매의 접촉 대역이고, 원기둥형이라 S3 ①의
+  // 원기둥 시험을 «실제 몸»에서 그대로 반복하는 셈이다.
+  // 팔의 «실제» 위치를 메시에서 확인하고 맞췄다: x 0.30~0.40 구간에서 상완은
+  // y 1.373~1.457 · z −0.087~0.012 (반지름 ≈45mm · 중심 y≈1.415 z≈−0.038).
+  // 초판은 z 중심을 +0.02로 잡아 «팔 옆»으로 흘러내렸다(접촉 0 · |v| 1635mm/s).
+  const CL = { x0: 0.3, x1: 0.4, z0: -0.158, z1: 0.082, y0: 1.52 };
+  const du = (CL.x1 - CL.x0) / (NU2 - 1);
+  const dv2 = (CL.z1 - CL.z0) / (NU2 - 1);
+  const n = NU2 * NU2;
+  const uv = new Float64Array(n * 2);
+  const tris: number[] = [];
+  for (let j = 0; j < NU2; j++)
+    for (let i = 0; i < NU2; i++) {
+      const v = j * NU2 + i;
+      uv[v * 2] = i * du;
+      uv[v * 2 + 1] = j * dv2;
+    }
+  for (let j = 0; j < NU2 - 1; j++)
+    for (let i = 0; i < NU2 - 1; i++) {
+      const a = j * NU2 + i;
+      tris.push(a, a + 1, a + NU2, a + 1, a + NU2 + 1, a + NU2);
+    }
+  const sv = makeSolver(n);
+  for (let v = 0; v < n; v++) {
+    sv.pos[v * 3] = CL.x0 + uv[v * 2];
+    sv.pos[v * 3 + 1] = CL.y0;
+    sv.pos[v * 3 + 2] = CL.z0 + uv[v * 2 + 1];
+  }
+  // 초기 적법성 — 정확한 메시 거리가 두께보다 커야 한다
+  let initMin = Infinity;
+  for (let v = 0; v < n; v++)
+    initMin = Math.min(initMin, exactDist(prim0.pos, bodyIdx, sv.pos[v * 3], sv.pos[v * 3 + 1], sv.pos[v * 3 + 2]));
+  console.log(
+    `   장면: ${NU2}×${NU2} 천 ${((CL.x1 - CL.x0) * 1000).toFixed(0)}×${((CL.z1 - CL.z0) * 1000).toFixed(0)}mm @ x ${CL.x0}~${CL.x1} · y ${CL.y0} · z ${CL.z0}~${CL.z1}`,
+  );
+  console.log(
+    `   [초기] 정확한 메시 거리 최소 ${(initMin * 1000).toFixed(2)}mm (두께 ${THICK * 1000}mm) ⟹ ${initMin > THICK ? '적법' : '위법 — 장면 무효'}`,
+  );
+  if (initMin <= THICK) {
+    console.log(`   ⟹ §3-2 판정 불가 — 초기 상태가 몸과 겹친다`);
+  } else {
+    const MATG = { rho: 0.187, B: 23.191698e-6 };
+    assignMassFromMesh(sv, tris, uv, MATG.rho, new Set());
+    const bends = makeBend(tris, uv, MATG.B);
+    const con: Constraint[] = [...makeInplane(tris, uv, 100, 100, 100), ...bends];
+    const sub = Math.max(
+      substepsForCloth(1 / 60, 100, MATG.rho, Math.min(du, dv2), 0.95),
+      substepsForBending(1 / 60, sv, bends, 0.95),
+    );
+    const secs = Number(process.env.CLOTH_T ?? 2);
+    const t0 = performance.now();
+    const p: SolverParams = {
+      dt: 1 / 60, substeps: sub, gravity: 9.81, damping: 6,
+      collision: { colliders: [{ kind: 'grid', g: bodyG }], thickness: THICK, mu: 0.3 },
+    };
+    for (let f = 0; f < Math.round(secs / (1 / 60)); f++) step(sv, con, p);
+    const ms = performance.now() - t0;
+    // 관통은 «정확한 메시»로 잰다(격자로 재면 자기 자신을 재는 것이다)
+    const rr = lcg(99);
+    let pen = 0, penCnt = 0, predMax = 0, vmax = 0, contact = 0;
+    for (let v = 0; v < n; v++) {
+      const x = sv.pos[v * 3], y = sv.pos[v * 3 + 1], z = sv.pos[v * 3 + 2];
+      vmax = Math.max(vmax, Math.hypot(sv.vel[v * 3], sv.vel[v * 3 + 1], sv.vel[v * 3 + 2]));
+      const eD = exactDist(prim0.pos, bodyIdx, x, y, z);
+      const inside = exactInside(prim0.pos, bodyIdx, x, y, z, rr);
+      const signed = inside ? -eD : eD;
+      const pn = THICK - signed;
+      if (signed < 2 * THICK) {
+        contact++;
+        predMax = Math.max(predMax, predPen(bodyG, x, y, z));
+      }
+      if (pn > 1e-6) { penCnt++; pen = Math.max(pen, pn); }
+    }
+    const thr = predMax * (1 + MARGIN);
+    const ratio = predMax > 0 ? pen / predMax : Infinity;
+    console.log(
+      `   정점 ${n} · sub ${sub} · T ${secs}s · ${ms.toFixed(0)}ms · |v|max ${(vmax * 1000).toFixed(2)}mm/s · 접촉 정점 ${contact}`,
+    );
+    console.log(
+      `   관통 정점 ${penCnt} · 최대 관통 ${(pen * 1000).toFixed(4)}mm · P_pred(접촉점 최대) ${(predMax * 1000).toFixed(4)}mm`,
+    );
+    const okThr = pen <= thr;
+    const okMatch = ratio >= MATCH_LO && ratio <= MATCH_HI;
+    console.log(
+      `   문턱 ${(thr * 1000).toFixed(4)}mm ⟹ ${okThr ? 'PASS' : 'FAIL'} · 실측/예측 = ${ratio.toFixed(3)} ∈ [${MATCH_LO}, ${MATCH_HI}] ⟹ ${okMatch ? 'PASS(설명된다)' : 'FAIL(설명되지 않는다)'}`,
+    );
+    console.log(`   ⟹ §3-2 ${okThr && okMatch ? 'PASS' : 'FAIL'}`);
+  }
 }
