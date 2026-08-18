@@ -9,3 +9,4 @@ public/dress-state.json
 # 옵시디언 로컬 캐시(작업공간·플러그인 상태) — 노트 본문만 버전 관리한다
 .obsidian/
 .obsidian-log/.obsidian/
+.v3cache/

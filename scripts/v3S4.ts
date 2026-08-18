@@ -18,6 +18,35 @@
  *   ⑥ 몸 관통       최대 관통 / P_pred_ext ∈ [0.5, 1.25]  (v3-16 §5 등록 구간)
  *   ⑦ 자기교차      비인접 쌍 최소 거리 ≥ 2×두께 − 0.1mm (S3b ② 문턱 그대로) · 발산 0
  *
+ * ── v3-19 추가 등록 (§5 착장 · 실행 «전»에 고정) ─────────────────────────
+ * **해상도 d = 11.0 mm 고정.** ①느슨(ℓ/2 = 11.65mm)을 만족하는 «가장 큰» 값이다.
+ * 설계 R3이 「2~3×」로 적었으므로 2×는 범위 안이고, **①엄격(ℓ/3 = 7.77mm)은 미달**이다
+ * — 미달을 명시해 등재한다. **결과를 보고 d를 바꾸지 않는다.**
+ * 95초 예산(§0-④)은 «제품» 용도의 값이고 이 판은 «물리 검증» 1회 오프라인 실행이다
+ * (전략 세션 판정 — 층위 분리 · 문턱 완화가 아니다). **제품 예산 95초는 그대로 유효**하고
+ * **S4 통과가 제품 가능성을 뜻하지 않는다.**
+ *
+ *   정착   `|v|max ≤ 6.0 mm/s` 가 **3프레임 연속**. 도출: S3b ②가 등록한 허용오차
+ *          0.1mm(한 서브스텝 재수렴 폭)를 «프레임 이동»으로 환산 = 0.1mm ÷ (1/60 s).
+ *          그 속도면 한 프레임의 이동이 접촉/분리 판정을 바꾸지 못한다.
+ *          참고 채널로 10배 엄격한 0.6mm/s 도달 프레임도 함께 찍는다.
+ *   상한   600프레임. v2가 같은 옷을 정착시킨 실측이 DONE f=369(P34 회귀)이므로
+ *          그 1.6배. 상한에 걸리면 «미정착»으로 적고 갈래 F로 간다(추정 0).
+ *   체크    25프레임마다 상태 저장. 8.5s/f 실측이므로 손실 상한 ≈ 3.5분.
+ *          형식: uint32 헤더길이 + JSON 헤더 + Float64 pos(3n) + Float64 vel(3n).
+ *
+ * ① 걸린다   (a) 어깨 이음선 평균 y 낙하 ≤ 5cm  (v3-18 등록분 그대로 · v2 2b는 59.6cm)
+ *            (b) 어깨 대역(y ≥ 겨드랑이 높이) 접촉 정점 > 0
+ *            (c) 정착 문턱 도달
+ *            (d) 목선 링 원주 / 정지 ≤ 1.10   (설계 §4 S4 ② 원문)
+ * ② 관통     실측 최대 관통 / P_pred_ext(그 점) ∈ [0.5, 1.25]  (v3-16 §1 통계 그대로:
+ *            근방 = h 이내 · 축약 = 최대 · c = 0.283 · f(θ)=min(1,θ/(π/2)))
+ * ③ 자기관통 삼각형–삼각형 «교차» 0 (S3b 판정기 정의 그대로 · 인접 쌍 제외)
+ * ④ 시접     봉합 쌍 간극 − 2×두께 의 중앙·p95·최대를 산출. §3 자기검사와 대조
+ * ⑤ 보조 0   invMass=0 정점 0 · 앵커 0 · 핀 0 · 원주 상한 0 · 흡착 항 0
+ * ⑥ 비용     총 벽시계 · 프레임당 · 단계별 비중
+ * ⑦ 화면     front · sideXplus · back — **CC 판정 0**
+ *
  * 진단 전용 스위치(판정에 쓰지 않는다):
  *   `DIAG=1` 패널별 최소각 위치 + 비인접 최소 거리 쌍의 소속 패널
  *   `DIAG=2` 해상도 8종에서 최소각·종횡비 — #33(최소각이 d의 함수가 «아니다»)의 근거
@@ -29,7 +58,9 @@ import {
   substepsForBending, substepsForCloth, step, selfStats, collisionStats,
   type Constraint, type DistanceConstraint, type SolverParams, type Solver,
 } from '../src/v3/solver.ts';
-import { readFileSync } from 'node:fs';
+import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs';
+import { dirname } from 'node:path';
+import { render, writePng, VIEWS, type Mesh } from './v3Render.ts';
 
 const GLB = process.env.GLB ?? 'public/models/mannequin.glb';
 const META = process.env.META ?? 'scripts/fixtures/pattern-meta.json';
@@ -54,6 +85,8 @@ const DAMP = 6;
 const SDF_BUDGET = 64 * 1024 * 1024;
 /** S3b ② 허용오차 — 한 서브스텝의 재수렴 폭. v3-12 등록분 그대로 */
 const TOL_SELF = 1e-4;
+/** 정착 문턱 [m/s] — S3b ② 허용오차(0.1mm)를 «프레임 이동»으로 환산. 헤더 참고 */
+const V_SETTLE = TOL_SELF / DT;
 
 /* ══ §1 패턴 제도 — 치수는 메타를 «데이터»로 읽는다 ═══════════════════════ */
 
@@ -669,10 +702,10 @@ const WALL_FRAMES = 300;
 /** v3-08 §3 삼각화 품질 게이트 */
 const MIN_ANGLE_GATE = 25;
 
-let D_CHOSEN = Number(process.env.D_MM ?? 0) / 1000;
-let derivNote = 'env D_MM';
-/** §0이 갈래 G면 착장을 «실행하지 않는다»(사전 등록 정지 조건) */
-let ABORT_DRESS = false;
+/** v3-19 고정 해상도 [m] — 위 헤더의 등록 사유 참고. env는 진단용이다. */
+const D_FIXED = Number(process.env.D_MM ?? 11) / 1000;
+let D_CHOSEN = D_FIXED;
+let derivNote = 'v3-19 등록: ①느슨을 만족하는 최대 d (①엄격 미달 명시)';
 
 if (run('0')) {
   console.log(`\n╔══ §0 해상도 도출 (#32) — 비용에서 «도출». 손 상수 0 ══╗`);
@@ -764,22 +797,22 @@ if (run('0')) {
   console.log(`      대조: v2 제품 메시 최소각 24.7~25.6° · 종횡비max 2.19~2.38 (v3-08 §3)`);
   console.log(`\n   ① 엄격(ℓ/3)+③④ 만족하는 가장 고운 d: ${strictPick ? `${(strictPick.d * 1000).toFixed(1)}mm` : '«없다»'}`);
   console.log(`   ① 느슨(ℓ/2)+③④ 만족하는 가장 고운 d: ${pick ? `${(pick * 1000).toFixed(1)}mm` : '«없다» ⟹ 갈래 G'}`);
-  if (!D_CHOSEN) { D_CHOSEN = strictPick ? strictPick.d : pick; derivNote = strictPick ? '①엄격+③+④' : '①느슨+③+④(엄격은 예산 초과)'; }
-  if (!D_CHOSEN) {
+  if (!pick && !strictPick) {
     // 도출 실패 — 사전 등록대로 «갈래 G». 얼마나 모자란지를 값으로 남긴다.
     const dLoose = rows.filter((r) => r.d <= D_WAVE_LOOSE).sort((a, b) => b.d - a.d)[0];
     const dBudget = rows.filter((r) => (predMs(r.d) * WALL_FRAMES) / 1000 <= WALL_BUDGET_S).sort((a, b) => a.d - b.d)[0];
     const need = (predMs(dLoose.d) * WALL_FRAMES) / 1000;
     console.log(`\n   ⟹ ①(느슨)과 ④를 «동시에» 만족하는 d가 «없다» — 사전 등록대로 «갈래 G».`);
-    console.log(`      ④만 보면 가장 고운 d = ${(dBudget.d * 1000).toFixed(1)}mm(${((predMs(dBudget.d) * WALL_FRAMES) / 1000).toFixed(1)}초) · ①만 보면 가장 거친 d = ${(dLoose.d * 1000).toFixed(1)}mm(${need.toFixed(0)}초)`);
+    // dBudget은 «없을 수 있다»(후보 전체가 예산을 넘는 경우) — 그때도 멈추지 않고 그 사실을 적는다
+    console.log(`      ④만 보면 가장 고운 d = ${dBudget ? `${(dBudget.d * 1000).toFixed(1)}mm(${((predMs(dBudget.d) * WALL_FRAMES) / 1000).toFixed(1)}초)` : '«후보 전량 초과»'} · ①만 보면 가장 거친 d = ${(dLoose.d * 1000).toFixed(1)}mm(${need.toFixed(0)}초)`);
     console.log(`      ⟹ 필요한 비용 절감 = ${(need / WALL_BUDGET_S).toFixed(1)}배. 예산을 설계가 「밖」이라 적은 3~4분(240초)까지 늘려도 ${(need / 240).toFixed(1)}배 부족하다.`);
     console.log(`      ⟹ 충돌(몸+자기)을 «공짜»로 만들어도 제약 투영만으로 ${(need * 0.129).toFixed(0)}초 — 여전히 예산 밖이다(분해 실측 13%).`);
     console.log(`      ⟹ v2 자기 간격 13.4mm에서도 ${((predMs(0.0134) * WALL_FRAMES) / 1000).toFixed(0)}초 = v2 실측 25~34초의 «약 ${((predMs(0.0134) * WALL_FRAMES) / 1000 / 30).toFixed(0)}배». 설계 §2-5 표(반복수 동일 가정)가 «깨진다».`);
     // 착장은 «실행하지 않는다». 배치·봉제 자기검사는 d에 의존하지 않는 조항이므로
     // ①③이 고르는 «가장 고운 적법 해상도»에서 값으로 남긴다(비용이 고른 값이 아니다).
-    D_CHOSEN = dLoose.d;
-    derivNote = '갈래 G — 착장 미실행. 배치·봉제 검사만 ①(느슨)의 최고 해상도에서';
-    ABORT_DRESS = true;
+    console.log(`      ⟹ v3-18이 낸 갈래 G는 «그대로 유효»하다. v3-19는 전략 세션 판정에 따라`);
+    console.log(`         ④(95초)를 «제품 예산»으로 두고 «물리 검증» 1회 오프라인 실행으로 층위를 분리한다`);
+    console.log(`         — 문턱 완화가 아니다. 제품 예산 95초는 유효하고 S4 통과가 제품 가능성을 뜻하지 않는다.`);
   }
   console.log(`   ⟹ 채택 d = ${D_CHOSEN ? (D_CHOSEN * 1000).toFixed(1) + 'mm' : '없음'}  (근거 ${derivNote})`);
   // 외삽 검증 — 설계 §2-5가 스스로 경고한 「선형 외삽이다」를 «실측»으로 닫는다.
@@ -877,7 +910,7 @@ function exactBodyDist(x: number, y: number, z: number): number {
 }
 /** 옷 정점 전체의 «몸 부호 있는 거리» 최소/관통 — 격자로 거르고 정확 거리로 판정 */
 function bodyClearance(s: Solver) {
-  let minD = Infinity, maxPen = 0, penCnt = 0, exactN = 0, worst = -1;
+  let minD = Infinity, maxPen = 0, penCnt = 0, exactN = 0, worst = -1, worstPen = -1;
   for (let v = 0; v < s.n; v++) {
     const x = s.pos[v * 3], y = s.pos[v * 3 + 1], z = s.pos[v * 3 + 2];
     const g = sampleSdf(bodyG, x, y, z);
@@ -887,9 +920,9 @@ function bodyClearance(s: Solver) {
     const signed = g < 0 ? -e : e;
     if (signed < minD) { minD = signed; worst = v; }
     const pen = THICK - signed;
-    if (pen > 1e-9) { penCnt++; if (pen > maxPen) maxPen = pen; }
+    if (pen > 1e-9) { penCnt++; if (pen > maxPen) { maxPen = pen; worstPen = v; } }
   }
-  return { minD, maxPen, penCnt, exactN, worst };
+  return { minD, maxPen, penCnt, exactN, worst, worstPen };
 }
 
 /** 비인접 삼각형 쌍의 최소 거리 — 균일 격자로 후보를 좁힌다(S3b는 O(T²)였다). */
@@ -915,7 +948,7 @@ function minPairDist(pos: Float64Array, tris: number[], window: number) {
       let arr = grid.get(kk); if (!arr) grid.set(kk, (arr = [])); arr.push(t);
     }
   }
-  let min = Infinity, viol = 0, near = 0;
+  let min = Infinity, viol = 0, near = 0, hits = 0;
   const worst = [-1, -1];
   const seen = new Set<number>();
   for (const arr of grid.values())
@@ -937,9 +970,99 @@ function minPairDist(pos: Float64Array, tris: number[], window: number) {
       }
       if (d < window) near++;
       if (d < SEP - TOL_SELF) viol++;
+      // 교차하는 두 삼각형은 AABB 간극이 ≤ 0 이므로 «반드시» 이 후보 집합 안에 있다
+      if (triTriHit(pos, A, Bt)) hits++;
       if (d < min) { min = d; worst[0] = i; worst[1] = j; }
     }
-  return { min, viol, near, worst };
+  return { min, viol, near, hits, worst };
+}
+
+/* ── v3-16 관통 모형의 θ 항 (하네스 사본 · v3Body.ts와 «독립») ───────────── */
+const EKEY4 = (a: number, b: number) => (a < b ? a * 4194304 + b : b * 4194304 + a);
+/** 몸 메시의 엣지별 이면각 결손 — v3-15 §1이 등록한 정의 그대로 */
+function edgeDihedrals(pos: Float32Array, idx: Uint32Array) {
+  const w = weldMap(pos, 0);
+  const em = new Map<number, number[]>();
+  for (let t = 0; t < idx.length / 3; t++)
+    for (let k = 0; k < 3; k++) {
+      const a = w[idx[t * 3 + k]], b = w[idx[t * 3 + ((k + 1) % 3)]];
+      if (a === b) continue;
+      const key = EKEY4(a, b);
+      let ar = em.get(key); if (!ar) em.set(key, (ar = [])); ar.push(t);
+    }
+  const N = (t: number) => {
+    const a = idx[t * 3] * 3, b = idx[t * 3 + 1] * 3, c = idx[t * 3 + 2] * 3;
+    const ux = pos[b] - pos[a], uy = pos[b + 1] - pos[a + 1], uz = pos[b + 2] - pos[a + 2];
+    const vx = pos[c] - pos[a], vy = pos[c + 1] - pos[a + 1], vz = pos[c + 2] - pos[a + 2];
+    const nx = uy * vz - uz * vy, ny = uz * vx - ux * vz, nz = ux * vy - uy * vx;
+    const Ln = Math.hypot(nx, ny, nz) || 1;
+    return [nx / Ln, ny / Ln, nz / Ln];
+  };
+  const out: { ax: number; ay: number; az: number; bx: number; by: number; bz: number; th: number }[] = [];
+  for (const [key, ar] of em) {
+    if (ar.length !== 2) continue;
+    const n1 = N(ar[0]), n2 = N(ar[1]);
+    const th = Math.acos(Math.max(-1, Math.min(1, n1[0] * n2[0] + n1[1] * n2[1] + n1[2] * n2[2])));
+    const b = key % 4194304, a = (key - b) / 4194304;
+    out.push({ ax: pos[a * 3], ay: pos[a * 3 + 1], az: pos[a * 3 + 2], bx: pos[b * 3], by: pos[b * 3 + 1], bz: pos[b * 3 + 2], th });
+  }
+  return out;
+}
+type Dihedrals = ReturnType<typeof edgeDihedrals>;
+/** 점에서 h 이내 엣지의 «최대» 이면각 결손 — v3-16 §1이 확정한 축약 */
+function thetaAt(ed: Dihedrals, x: number, y: number, z: number, h: number): number {
+  let best = 0;
+  const h2 = h * h;
+  for (const e of ed) {
+    if (e.th <= best) continue;
+    const ex = e.bx - e.ax, ey = e.by - e.ay, ez = e.bz - e.az;
+    const ll = ex * ex + ey * ey + ez * ez;
+    let t = ll > 0 ? ((x - e.ax) * ex + (y - e.ay) * ey + (z - e.az) * ez) / ll : 0;
+    t = t < 0 ? 0 : t > 1 ? 1 : t;
+    const dx = e.ax + t * ex - x, dy = e.ay + t * ey - y, dz = e.az + t * ez - z;
+    if (dx * dx + dy * dy + dz * dz <= h2) best = e.th;
+  }
+  return best;
+}
+/** 격자에서 잰 «매끈한» 예측 관통 = (1/8)·Σ 2차 중심차분 (v3-14 §1) */
+function predSmooth(g: GridSdf, x: number, y: number, z: number): number {
+  const c = sampleSdf(g, x, y, z);
+  return (
+    (sampleSdf(g, x + g.h, y, z) + sampleSdf(g, x - g.h, y, z) +
+      sampleSdf(g, x, y + g.h, z) + sampleSdf(g, x, y - g.h, z) +
+      sampleSdf(g, x, y, z + g.h) + sampleSdf(g, x, y, z - g.h) - 6 * c) / 8
+  );
+}
+/** P_pred_ext = P_smooth + c·f(θ)·h — v3-15 §1 등록 · c·f·통계 전부 그대로 */
+const CREASE_C = 0.283;
+const predExt = (g: GridSdf, ed: Dihedrals, x: number, y: number, z: number) =>
+  predSmooth(g, x, y, z) + CREASE_C * Math.min(1, thetaAt(ed, x, y, z, g.h) / (Math.PI / 2)) * g.h;
+
+/* ── 삼각형–삼각형 «교차» 판정기 (S3b 정의 그대로 · 하네스 사본) ─────────── */
+function segTriHit(p: Float64Array, s0: number, s1: number, t0: number, t1: number, t2: number): boolean {
+  const dx = p[s1] - p[s0], dy = p[s1 + 1] - p[s0 + 1], dz = p[s1 + 2] - p[s0 + 2];
+  const e1x = p[t1] - p[t0], e1y = p[t1 + 1] - p[t0 + 1], e1z = p[t1 + 2] - p[t0 + 2];
+  const e2x = p[t2] - p[t0], e2y = p[t2 + 1] - p[t0 + 1], e2z = p[t2 + 2] - p[t0 + 2];
+  const px = dy * e2z - dz * e2y, py = dz * e2x - dx * e2z, pz = dx * e2y - dy * e2x;
+  const det = e1x * px + e1y * py + e1z * pz;
+  if (Math.abs(det) < 1e-20) return false;
+  const inv = 1 / det;
+  const tx = p[s0] - p[t0], ty = p[s0 + 1] - p[t0 + 1], tz = p[s0 + 2] - p[t0 + 2];
+  const u = (tx * px + ty * py + tz * pz) * inv;
+  if (u <= 0 || u >= 1) return false;
+  const qx = ty * e1z - tz * e1y, qy = tz * e1x - tx * e1z, qz = tx * e1y - ty * e1x;
+  const v = (dx * qx + dy * qy + dz * qz) * inv;
+  if (v <= 0 || u + v >= 1) return false;
+  const tt = (e2x * qx + e2y * qy + e2z * qz) * inv;
+  return tt > 0 && tt < 1;
+}
+function triTriHit(p: Float64Array, a: number[], b: number[]): boolean {
+  const A = [a[0] * 3, a[1] * 3, a[2] * 3], B = [b[0] * 3, b[1] * 3, b[2] * 3];
+  for (let k = 0; k < 3; k++) {
+    if (segTriHit(p, A[k], A[(k + 1) % 3], B[0], B[1], B[2])) return true;
+    if (segTriHit(p, B[k], B[(k + 1) % 3], A[0], A[1], A[2])) return true;
+  }
+  return false;
 }
 
 const seg3 = (p: Float64Array, a: number, b: number) => Math.hypot(p[a * 3] - p[b * 3], p[a * 3 + 1] - p[b * 3 + 1], p[a * 3 + 2] - p[b * 3 + 2]);
@@ -1012,61 +1135,286 @@ if (run('3') && D_CHOSEN > 0) {
     return { mean: sum / n, max: mx };
   };
 
-  if (ABORT_DRESS) {
-    console.log(`\n   ⟹ §0이 «갈래 G»다 — §5 착장을 «실행하지 않는다». 갈래 A~K에 답하지 «않는다»`);
-    console.log(`      (시험 ③④⑥⑦은 착장 결과를 요구한다 ⟹ 산출 불가. 추정치로 채우지 않는다.)`);
-  } else if (gate1 && gate2) {
+  /* ── 체크포인트 — 85분 실행이 죽어도 잃지 않는다 ────────────────────────
+   * 25프레임마다 저장(8.5s/f 실측 ⟹ 손실 상한 ≈ 3.5분). 형식은 헤더 길이(uint32 LE) +
+   * JSON 헤더 + Float64 pos(3n) + Float64 vel(3n). 헤더의 (n, d)가 다르면 «무시»한다 —
+   * 다른 장면의 상태를 이어받는 것이 가장 나쁜 실패다. */
+  const CKPT = process.env.CKPT ?? '.v3cache/s4-checkpoint.bin';
+  const CK_EVERY = 25;
+  function saveCk(frame: number) {
+    mkdirSync(dirname(CKPT), { recursive: true });
+    const hdr = Buffer.from(JSON.stringify({ frame, n: sc.n, d: D_CHOSEN, sub: st.sub }), 'utf8');
+    const len = Buffer.alloc(4);
+    len.writeUInt32LE(hdr.length, 0);
+    writeFileSync(CKPT, Buffer.concat([len, hdr, Buffer.from(s.pos.buffer.slice(0)), Buffer.from(s.vel.buffer.slice(0))]));
+  }
+  function loadCk(): number {
+    if (!existsSync(CKPT)) return 0;
+    const b = readFileSync(CKPT);
+    const hl = b.readUInt32LE(0);
+    const h = JSON.parse(b.subarray(4, 4 + hl).toString('utf8'));
+    if (h.n !== sc.n || Math.abs(h.d - D_CHOSEN) > 1e-12) {
+      console.log(`   [체크포인트] 장면 불일치(n ${h.n}≠${sc.n} 또는 d ${h.d}≠${D_CHOSEN}) ⟹ «무시»하고 처음부터`);
+      return 0;
+    }
+    const off = 4 + hl;
+    const nb = sc.n * 3 * 8;
+    s.pos.set(new Float64Array(b.buffer.slice(b.byteOffset + off, b.byteOffset + off + nb)));
+    s.vel.set(new Float64Array(b.buffer.slice(b.byteOffset + off + nb, b.byteOffset + off + 2 * nb)));
+    console.log(`   [체크포인트] f=${h.frame} 에서 «재개»`);
+    return h.frame;
+  }
+
+  /* ── v3-19b 진단 계기 (전부 «판정 아님» · 기본 off · 처방 0) ─────────────
+   * `ANALYZE=1`  체크포인트 상태를 읽어 |v| 분포 · 패널별 · 이음선별로 낸다
+   * `PROBE=<끌 것들>` 체크포인트에서 이어 PROBEF 프레임만 돌리되 층을 «하나씩 끈다».
+   *   끌 것: none | self | body | seam | bend | inplane | all (쉼표 결합 가능)
+   *   끄면 물리가 틀려지지만 «어느 층이 |v| 를 만드는가»를 가르는 것이 목적이다.
+   * `FINAL=1`  체크포인트 상태로 §6 참고 산출 + §7 캡처만 한다(스텝 0)
+   * 계기 규범(함정 18)대로 |v| 는 «분포»로 낸다 — 정착 «문턱»은 등록값 그대로다. */
+  const vList = () => Array.from({ length: sc.n }, (_, i) => Math.hypot(s.vel[i * 3], s.vel[i * 3 + 1], s.vel[i * 3 + 2]));
+  const ownerOf = (vi: number) => sc.panels.find((pn) => vi >= pn.base && vi < pn.base + (pn.nu + 1) * (pn.nv + 1))?.name ?? '?';
+  /** 정점이 «어느 이음선»에 걸려 있는가(없으면 빈 문자열) */
+  const seamOf = (() => {
+    const m = new Map<number, string>();
+    for (const sm of sc.seams) { for (const v of sm.a) m.set(v, sm.name); for (const v of sm.b) m.set(v, sm.name); }
+    return (vi: number) => m.get(vi) ?? '';
+  })();
+  function vReport(tag: string) {
+    const v = vList();
+    const srt = [...v].sort((x, y2) => x - y2);
+    const qq = (t: number) => srt[Math.min(srt.length - 1, Math.floor(t * srt.length))];
+    console.log(`   ${tag.padEnd(26)}중앙 ${(qq(0.5) * 1000).toFixed(1).padStart(9)} · p95 ${(qq(0.95) * 1000).toFixed(1).padStart(9)} · 최대 ${(srt[srt.length - 1] * 1000).toFixed(1).padStart(10)} · 문턱초과 ${String(v.filter((q2) => q2 > V_SETTLE).length).padStart(5)}/${sc.n}`);
+    return { v, med: qq(0.5), max: srt[srt.length - 1] };
+  }
+  function topVerts(v: number[], k: number) {
+    const ix = v.map((_, i) => i).sort((x, y2) => v[y2] - v[x]).slice(0, k);
+    console.log(`   |v| 상위 ${k} — 위치[cm] · 패널 · 이음선`);
+    for (const i of ix)
+      console.log(`     ${(v[i] * 1000).toFixed(0).padStart(8)} mm/s  (${[0, 1, 2].map((c) => (s.pos[i * 3 + c] * 100).toFixed(1).padStart(7)).join(',')})  ${ownerOf(i).padEnd(8)} ${seamOf(i)}`);
+    const byPanel = new Map<string, number>(), bySeam = new Map<string, number>();
+    for (const i of ix) {
+      byPanel.set(ownerOf(i), (byPanel.get(ownerOf(i)) ?? 0) + 1);
+      const sn = seamOf(i) || '(비이음선)';
+      bySeam.set(sn, (bySeam.get(sn) ?? 0) + 1);
+    }
+    console.log(`     ⟹ 패널 분포 ${[...byPanel].map(([k2, c]) => `${k2} ${c}`).join(' · ')}`);
+    console.log(`     ⟹ 이음선 분포 ${[...bySeam].map(([k2, c]) => `${k2} ${c}`).join(' · ')}`);
+  }
+
+  if (process.env.ANALYZE === '1') {
+    const fr = loadCk();
+    console.log(`\n╔══ 체크포인트 진단 (f=${fr} · 판정 아님) ══╗`);
+    const r = vReport('|v| [mm/s] 전체');
+    console.log(`   0.6mm/s 초과 ${r.v.filter((q2) => q2 > V_SETTLE / 10).length} / ${sc.n}`);
+    for (const pn of sc.panels) {
+      const N = (pn.nu + 1) * (pn.nv + 1);
+      let sy = 0, mx = 0, over = 0;
+      for (let i = pn.base; i < pn.base + N; i++) { sy += s.pos[i * 3 + 1]; mx = Math.max(mx, r.v[i]); if (r.v[i] > V_SETTLE) over++; }
+      console.log(`   ${pn.name.padEnd(8)} 평균 y ${((sy / N) * 100).toFixed(2)}cm · |v|max ${(mx * 1000).toFixed(1)}mm/s · 문턱 초과 ${over}/${N}`);
+    }
+    for (const sm of sc.seams) {
+      const g = sm.a.map((a2, k) => seg3(s.pos, a2, sm.b[k])).sort((x, y2) => x - y2);
+      console.log(`   ${sm.name.padEnd(8)} 간극 중앙 ${(g[Math.floor(g.length / 2)] * 1000).toFixed(2)} · 최대 ${(g[g.length - 1] * 1000).toFixed(2)} mm`);
+    }
+    topVerts(r.v, 20);
+    // §3 대조 — 서브스텝 산정은 «어느 시점의 상태»인가
+    const subB0 = substepsForBending(DT, s, sc.bends, 0.95);
+    console.log(`   서브스텝 재산정 @f=${fr}: 굽힘 ${subB0} (배치 시점 ${st.bend} · 멤브레인 ${st.memb} · 실행값 ${st.sub})`);
+    process.exit(0);
+  }
+
+  if (process.env.PROBE) {
+    const off = new Set(process.env.PROBE.split(',').map((x) => x.trim()));
+    const all = off.has('all');
+    const K = Number(process.env.PROBEF ?? 5);
+    const fr = loadCk();
+    const cons = sc.cons.filter((c) =>
+      c.kind === 'dist' ? !(all || off.has('seam')) :
+      c.kind === 'bend' ? !(all || off.has('bend')) : !(all || off.has('inplane')));
+    const pp: SolverParams = {
+      dt: DT, substeps: st.sub, gravity: G, damping: DAMP,
+      ...(all || off.has('body') ? {} : { collision: { colliders: [{ kind: 'grid', g: bodyG }], thickness: THICK, mu: MU } }),
+      ...(all || off.has('self') ? {} : { selfCollision: { tris: sc.tris, thickness: THICK } }),
+    };
+    const t0 = performance.now();
+    for (let k = 0; k < K; k++) step(s, cons, pp);
+    const label = `PROBE=${process.env.PROBE} (제약 ${cons.length}/${sc.cons.length})`;
+    const r = vReport(label);
+    console.log(`   f=${fr}+${K} · ${((performance.now() - t0) / K / 1000).toFixed(2)} s/f`);
+    if (process.env.TOPV === '1') topVerts(r.v, 20);
+    process.exit(0);
+  }
+
+  if (process.env.FINAL === '1') {
+    const fr = loadCk();
+    console.log(`\n╔══ §2 참고 산출 (f=${fr} 상태 · 갈래 F ⟹ «판정 아님») ══╗`);
+    const y0 = meanY(shoulderIx, pos0), y1 = meanY(shoulderIx, s.pos);
+    const hemIx = Array.from({ length: sc.nuB + 1 }, (_, i) => at(front, i, 0)).concat(
+      Array.from({ length: sc.nuB + 1 }, (_, i) => at(back, i, 0)));
+    const r1 = ring(s.pos) / ringRest;
+    const bc1 = bodyClearance(s);
+    const mp1 = minPairDist(s.pos, sc.tris, SEP * 3);
+    const ed = edgeDihedrals(prim0.pos, bodyIdx);
+    let pexAtWorst = 0, pexMax = 0, thWorst = 0;
+    for (let v = 0; v < sc.n; v++) {
+      const x = s.pos[v * 3], y = s.pos[v * 3 + 1], z = s.pos[v * 3 + 2];
+      if (sampleSdf(bodyG, x, y, z) > SEP) continue;
+      const pe = predExt(bodyG, ed, x, y, z);
+      if (pe > pexMax) pexMax = pe;
+      if (v === bc1.worstPen) { pexAtWorst = pe; thWorst = thetaAt(ed, x, y, z, bodyG.h); }
+    }
+    const ratio = pexAtWorst > 0 ? bc1.maxPen / pexAtWorst : NaN;
+    const gaps: number[] = [];
+    for (const sm of sc.seams) for (let k = 0; k < sm.a.length; k++) gaps.push(seg3(s.pos, sm.a[k], sm.b[k]));
+    gaps.sort((x, y2) => x - y2);
+    const qg = (t: number) => gaps[Math.min(gaps.length - 1, Math.floor(t * gaps.length))];
+    let shContact = 0;
+    const yArmWorld = Y_TOP - ARM_D;
+    for (let v = 0; v < sc.n; v++)
+      if (s.pos[v * 3 + 1] >= yArmWorld && sampleSdf(bodyG, s.pos[v * 3], s.pos[v * 3 + 1], s.pos[v * 3 + 2]) <= SEP) shContact++;
+    console.log(`   ② 몸 관통  최대 ${(bc1.maxPen * 1000).toFixed(4)}mm / P_ext(그 점) ${(pexAtWorst * 1000).toFixed(4)}mm = ${ratio.toFixed(3)} (등록 구간 [0.5,1.25]) · θ ${((thWorst * 180) / Math.PI).toFixed(2)}° · 관통 정점 ${bc1.penCnt} · P_ext 최대 ${(pexMax * 1000).toFixed(4)}mm`);
+    console.log(`   ③ 자기관통 삼각형–삼각형 교차 ${mp1.hits} · 비인접 최소 거리 ${(mp1.min * 1000).toFixed(3)}mm · 문턱 위반 쌍 ${mp1.viol}`);
+    console.log(`   ④ 시접 간극 중앙 ${(qg(0.5) * 1000).toFixed(2)} · p95 ${(qg(0.95) * 1000).toFixed(2)} · 최대 ${(gaps[gaps.length - 1] * 1000).toFixed(2)}mm (정지 ${SEP * 1000}mm · 쌍 ${gaps.length})`);
+    console.log(`   ⑤ 보조 0   invMass=0 정점 ${pinned} · 앵커 0 · 핀 0 · 원주 상한 0 · 흡착 항 0`);
+    console.log(`   부수      어깨 ${(y0 * 100).toFixed(2)}→${(y1 * 100).toFixed(2)}cm · 밑단 ${(meanY(hemIx, pos0) * 100).toFixed(2)}→${(meanY(hemIx, s.pos) * 100).toFixed(2)}cm · 목선/정지 ${r1.toFixed(4)} · 어깨 대역 접촉 ${shContact}`);
+    const OUT = process.env.CAPDIR ?? 'docs/captures/v3-19-첫착장';
+    mkdirSync(OUT, { recursive: true });
+    const clothPos = Float64Array.from(s.pos);
+    const colors: [number, number, number][] = [[40, 90, 200], [200, 70, 60], [60, 160, 90], [60, 160, 90]];
+    const meshes: Mesh[] = [{ pos: prim0.pos, idx: bodyIdx, color: [190, 185, 178] }];
+    for (const [pi, pn] of sc.panels.entries()) meshes.push({ pos: clothPos, idx: Uint32Array.from(pn.tris), color: colors[pi] });
+    const lo: [number, number, number] = [Infinity, Infinity, Infinity], hi: [number, number, number] = [-Infinity, -Infinity, -Infinity];
+    for (let v = 0; v < sc.n; v++) for (let k = 0; k < 3; k++) { lo[k] = Math.min(lo[k], s.pos[v * 3 + k]); hi[k] = Math.max(hi[k], s.pos[v * 3 + k]); }
+    for (let k = 0; k < 3; k++) { lo[k] -= 0.10; hi[k] += 0.10; }
+    hi[1] = Math.max(hi[1], Y_TOP + 0.12);
+    for (const view of VIEWS) writePng(`${OUT}/${view.name}.png`, 760, 1000, render(meshes, view, { lo, hi }, 760, 1000));
+    console.log(`   ⑦ 캡처 3장 → ${OUT}/{front,sideXplus,back}.png (정사영 · 난수 0 · CC 판정 0)`);
+    process.exit(0);
+  }
+
+  if (gate1 && gate2) {
     console.log(`\n╔══ §5 착장 실행 — 앵커 0 · 핀 0 · 흡착 0 · 원주 상한 0 ══╗`);
+    console.log(`   d=${(D_CHOSEN * 1000).toFixed(1)}mm · 서브스텝 ${st.sub}(산정 그대로) · 상한 ${FRAMES}프레임 · 정착 |v|max ≤ ${(V_SETTLE * 1000).toFixed(1)}mm/s ×3연속`);
     const p: SolverParams = {
       dt: DT, substeps: st.sub, gravity: G, damping: DAMP,
       collision: { colliders: [{ kind: 'grid', g: bodyG }], thickness: THICK, mu: MU },
       selfCollision: { tris: sc.tris, thickness: THICK },
     };
-    console.log(`   ${'f'.padStart(5)}${'벽시계[s]'.padStart(10)}${'어깨평균y[cm]'.padStart(14)}${'목선링/정지'.padStart(12)}${'이음선틈평균[mm]'.padStart(17)}${'최대변위[mm]'.padStart(13)}${'|v|max[mm/s]'.padStart(13)}`);
+    const yArmWorld = Y_TOP - ARM_D;
+    const contactCount = (lo: number) => {
+      let c = 0;
+      for (let v = 0; v < sc.n; v++)
+        if (s.pos[v * 3 + 1] >= lo && sampleSdf(bodyG, s.pos[v * 3], s.pos[v * 3 + 1], s.pos[v * 3 + 2]) <= SEP) c++;
+      return c;
+    };
+    const hemIx = Array.from({ length: sc.nuB + 1 }, (_, i) => at(front, i, 0)).concat(
+      Array.from({ length: sc.nuB + 1 }, (_, i) => at(back, i, 0)));
+
+    let f0 = loadCk();
     const t0 = performance.now();
-    let prev = Float64Array.from(s.pos);
-    let diverged = false;
-    for (let f = 1; f <= FRAMES; f++) {
+    let diverged = false, settledAt = 0, softAt = 0, run3 = 0;
+    let vmax = Infinity;
+    console.log(`   ${'f'.padStart(5)}${'벽시계[s]'.padStart(10)}${'|v|max[mm/s]'.padStart(13)}${'어깨y[cm]'.padStart(11)}${'밑단y[cm]'.padStart(11)}${'목선/정지'.padStart(11)}${'시접틈[mm]'.padStart(12)}${'어깨접촉'.padStart(9)}`);
+    let f = f0;
+    for (; f < FRAMES; f++) {
       step(s, sc.cons, p);
-      if (f % 50 === 0 || f === FRAMES) {
-        let dmax = 0, vmax = 0;
-        for (let v = 0; v < sc.n; v++) {
-          dmax = Math.max(dmax, Math.hypot(s.pos[v * 3] - prev[v * 3], s.pos[v * 3 + 1] - prev[v * 3 + 1], s.pos[v * 3 + 2] - prev[v * 3 + 2]));
-          vmax = Math.max(vmax, Math.hypot(s.vel[v * 3], s.vel[v * 3 + 1], s.vel[v * 3 + 2]));
-        }
-        for (let v = 0; v < sc.n * 3; v++) if (!Number.isFinite(s.pos[v])) diverged = true;
+      vmax = 0;
+      for (let v = 0; v < sc.n; v++) {
+        const q = Math.hypot(s.vel[v * 3], s.vel[v * 3 + 1], s.vel[v * 3 + 2]);
+        if (q > vmax) vmax = q;
+      }
+      if (!Number.isFinite(vmax)) { diverged = true; break; }
+      if (vmax <= V_SETTLE) { run3++; if (run3 >= 3 && !settledAt) settledAt = f + 1; } else run3 = 0;
+      if (vmax <= V_SETTLE / 10 && !softAt) softAt = f + 1;
+      if ((f + 1) % CK_EVERY === 0 || settledAt || f + 1 === FRAMES) {
+        saveCk(f + 1);
         const g = seamGap(s.pos);
         console.log(
-          `   ${String(f).padStart(5)}${((performance.now() - t0) / 1000).toFixed(1).padStart(10)}${(meanY(shoulderIx, s.pos) * 100).toFixed(2).padStart(14)}` +
-            `${(ring(s.pos) / ringRest).toFixed(4).padStart(12)}${(g.mean * 1000).toFixed(2).padStart(17)}${(dmax * 1000 / 50).toFixed(4).padStart(13)}${(vmax * 1000).toFixed(1).padStart(13)}${diverged ? '  ← 발산' : ''}`,
+          `   ${String(f + 1).padStart(5)}${((performance.now() - t0) / 1000).toFixed(1).padStart(10)}${(vmax * 1000).toFixed(2).padStart(13)}` +
+            `${(meanY(shoulderIx, s.pos) * 100).toFixed(2).padStart(11)}${(meanY(hemIx, s.pos) * 100).toFixed(2).padStart(11)}` +
+            `${(ring(s.pos) / ringRest).toFixed(4).padStart(11)}${(g.mean * 1000).toFixed(2).padStart(12)}${String(contactCount(yArmWorld)).padStart(9)}`,
         );
-        if (diverged) break;
-        prev = Float64Array.from(s.pos);
       }
+      if (settledAt) break;
     }
     const wall = (performance.now() - t0) / 1000;
+    const fEnd = f + (diverged ? 0 : 1);
 
+    /* ── §6 시험 7종 ─────────────────────────────────────────────────────── */
     console.log(`\n╔══ §6 시험 7종 — 문턱은 실행 «전»에 고정된 값 ══╗`);
     const y0 = meanY(shoulderIx, pos0), y1 = meanY(shoulderIx, s.pos);
+    const h0 = meanY(hemIx, pos0), h1 = meanY(hemIx, s.pos);
     const r1 = ring(s.pos) / ringRest;
+    const shContact = contactCount(yArmWorld);
     const bc1 = bodyClearance(s);
     const mp1 = minPairDist(s.pos, sc.tris, SEP * 3);
-    const g1 = seamGap(s.pos);
-    const PEN_MAX = 4.675e-4;   // v3-16 §3 이 몸에서 등재한 P_ext 최대 [m]
+
+    // ② — v3-16 §1 통계 그대로: 접촉점마다 P_ext, 최대 관통이 «난 그 점»의 값과 대조
+    const ed = edgeDihedrals(prim0.pos, bodyIdx);
+    let pexAtWorst = 0, pexMax = 0, thWorst = 0;
+    const pexAll: number[] = [];
+    for (let v = 0; v < sc.n; v++) {
+      const x = s.pos[v * 3], y = s.pos[v * 3 + 1], z = s.pos[v * 3 + 2];
+      if (sampleSdf(bodyG, x, y, z) > SEP) continue;
+      const pe = predExt(bodyG, ed, x, y, z);
+      pexAll.push(pe);
+      if (pe > pexMax) pexMax = pe;
+      if (v === bc1.worstPen) { pexAtWorst = pe; thWorst = thetaAt(ed, x, y, z, bodyG.h); }
+    }
+    pexAll.sort((a2, b2) => a2 - b2);
+    const ratio = pexAtWorst > 0 ? bc1.maxPen / pexAtWorst : NaN;
+
+    // ④ — 봉합 쌍 «간극» 분포
+    const gaps: number[] = [];
+    for (const sm of sc.seams) for (let k = 0; k < sm.a.length; k++) gaps.push(seg3(s.pos, sm.a[k], sm.b[k]));
+    gaps.sort((a2, b2) => a2 - b2);
+    const q = (arr: number[], t: number) => (arr.length ? arr[Math.min(arr.length - 1, Math.floor(t * arr.length))] : NaN);
+
     const T: [string, string, boolean][] = [
-      ['① 초기 적법성', `몸거리 ${(bc0.minD * 1000).toFixed(3)}mm > ${THICK * 1000} · 비인접 ${(mp0.min * 1000).toFixed(3)}mm ≥ ${(SEP - TOL_SELF) * 1000}`, gate1],
-      ['② 봉제 자기검사', `대응 1:1 · 길이차 ≤1% · 미봉제 경계 ${free}=${freeExpect} · 불일치 ${mismatch}`, gate2],
-      ['③ 어깨 유지', `${(y0 * 100).toFixed(2)} → ${(y1 * 100).toFixed(2)}cm · 낙하 ${((y0 - y1) * 100).toFixed(2)}cm ≤ 5cm`, y0 - y1 <= 0.05],
-      ['④ 목선 원주', `${r1.toFixed(4)} ≤ 1.10 (정지 ${(ringRest * 100).toFixed(2)}cm → ${(ring(s.pos) * 100).toFixed(2)}cm)`, r1 <= 1.1],
-      ['⑤ 보조 장치 0', `invMass=0 정점 ${pinned} · 앵커 0 · 원주 상한 0 · 흡착 항 0(단방향 해소만)`, pinned === 0],
-      ['⑥ 몸 관통', `최대 ${(bc1.maxPen * 1000).toFixed(4)}mm ≤ ${(PEN_MAX * 1000).toFixed(4)}mm (v3-16 §3 등재 P_ext 최대) · 관통 정점 ${bc1.penCnt}`, bc1.maxPen <= PEN_MAX],
-      ['⑦ 자기교차·발산', `비인접 최소 ${(mp1.min * 1000).toFixed(3)}mm ≥ ${(SEP - TOL_SELF) * 1000}mm · 위반 ${mp1.viol} · 발산 ${diverged ? '있음' : '0'}`, mp1.min >= SEP - TOL_SELF && !diverged],
+      ['① 걸린다', `어깨 ${(y0 * 100).toFixed(2)}→${(y1 * 100).toFixed(2)}cm 낙하 ${((y0 - y1) * 100).toFixed(2)}≤5 · 어깨접촉 ${shContact}>0 · 정착 ${settledAt ? `f=${settledAt}` : '«미도달»'} · 목선 ${r1.toFixed(4)}≤1.10`,
+        y0 - y1 <= 0.05 && shContact > 0 && settledAt > 0 && r1 <= 1.1],
+      ['② 몸 관통', `최대 ${(bc1.maxPen * 1000).toFixed(4)}mm / P_ext(그 점) ${(pexAtWorst * 1000).toFixed(4)}mm = ${ratio.toFixed(3)} ∈ [0.5,1.25] · θ ${((thWorst * 180) / Math.PI).toFixed(2)}° · 관통 정점 ${bc1.penCnt} · P_ext 최대 ${(pexMax * 1000).toFixed(4)}mm`,
+        ratio >= 0.5 && ratio <= 1.25],
+      ['③ 자기관통', `삼각형–삼각형 교차 ${mp1.hits} (비인접 쌍 · S3b 판정기 정의) · 비인접 최소거리 ${(mp1.min * 1000).toFixed(3)}mm`, mp1.hits === 0],
+      ['④ 시접 간극', `중앙 ${(q(gaps, 0.5) * 1000).toFixed(2)} · p95 ${(q(gaps, 0.95) * 1000).toFixed(2)} · 최대 ${(gaps[gaps.length - 1] * 1000).toFixed(2)}mm (정지 ${SEP * 1000}mm · 쌍 ${gaps.length})`, true],
+      ['⑤ 보조 장치 0', `invMass=0 정점 ${pinned} · 앵커 0 · 핀 0 · 원주 상한 0 · 흡착 항 0(단방향 해소만)`, pinned === 0],
+      ['⑥ 비용', `${wall.toFixed(1)}초 / ${fEnd - f0}프레임 = ${((wall * 1000) / Math.max(1, fEnd - f0)).toFixed(0)} ms/f · 자기충돌 ${((selfStats[6] / Math.max(1, wall * 1000)) * 100).toFixed(0)}% · 몸 충돌 ${((collisionStats[3] / Math.max(1, wall * 1000)) * 100).toFixed(0)}%`, true],
+      ['⑦ 화면', `front · sideXplus · back — CC 판정 0`, true],
     ];
-    for (const [nm, detail, ok] of T) console.log(`   ${ok ? 'PASS' : 'FAIL'}  ${nm.padEnd(16)} ${detail}`);
-    console.log(`   부수: 이음선 틈 평균 ${(g1.mean * 1000).toFixed(2)}mm · 최대 ${(g1.max * 1000).toFixed(2)}mm · 벽시계 ${wall.toFixed(1)}초/${FRAMES}프레임 (300프레임 환산 ${(wall * 300 / FRAMES).toFixed(1)}초 · 예산 ${WALL_BUDGET_S}초)`);
-    const nPass = T.filter((x) => x[2]).length;
-    console.log(`\n╔══ §7 판정 ══╗`);
-    console.log(`   시험 ${nPass}/7 통과.`);
+    for (const [nm, detail, ok] of T) console.log(`   ${ok ? 'PASS' : 'FAIL'}  ${nm.padEnd(12)} ${detail}`);
+    console.log(`   부수: 밑단 ${(h0 * 100).toFixed(2)}→${(h1 * 100).toFixed(2)}cm · 발산 ${diverged ? '있음' : '0'} · |v|max 최종 ${(vmax * 1000).toFixed(2)}mm/s · 0.6mm/s 도달 ${softAt || '미도달'}`);
+
+    /* ── §7 화면 ─────────────────────────────────────────────────────────── */
+    const OUT = process.env.CAPDIR ?? 'docs/captures/v3-19-첫착장';
+    mkdirSync(OUT, { recursive: true });
+    const clothPos = Float64Array.from(s.pos);
+    const colors: [number, number, number][] = [[40, 90, 200], [200, 70, 60], [60, 160, 90], [60, 160, 90]];
+    const meshes: Mesh[] = [{ pos: prim0.pos, idx: bodyIdx, color: [190, 185, 178] }];
+    for (const [pi, pn] of sc.panels.entries()) meshes.push({ pos: clothPos, idx: Uint32Array.from(pn.tris), color: colors[pi] });
+    let lo: [number, number, number] = [Infinity, Infinity, Infinity], hi: [number, number, number] = [-Infinity, -Infinity, -Infinity];
+    for (let v = 0; v < sc.n; v++)
+      for (let k = 0; k < 3; k++) { lo[k] = Math.min(lo[k], s.pos[v * 3 + k]); hi[k] = Math.max(hi[k], s.pos[v * 3 + k]); }
+    for (let k = 0; k < 3; k++) { lo[k] -= 0.10; hi[k] += 0.10; }
+    hi[1] = Math.max(hi[1], Y_TOP + 0.12);
+    for (const view of VIEWS) {
+      const px = render(meshes, view, { lo, hi }, 760, 1000);
+      writePng(`${OUT}/${view.name}.png`, 760, 1000, px);
+    }
+    console.log(`   캡처 3장 → ${OUT}/{front,sideXplus,back}.png  (정사영 · z버퍼 · 난수 0 · CC 판정 0)`);
+
+    /* ── §8 갈래 ─────────────────────────────────────────────────────────── */
+    console.log(`\n╔══ §8 갈래 ══╗`);
+    const ok1 = T[0][2], ok2 = T[1][2], ok3 = T[2][2];
+    const branches: string[] = [];
+    if (diverged) branches.push('H(발산 — 실행이 죽었다)');
+    if (!settledAt && !diverged) branches.push(`F(정착 미도달 — 상한 ${FRAMES}프레임 · ②③④⑦은 «참고 산출»이고 판정 아님)`);
+    if (!ok1 && settledAt) branches.push('B(흘러내린다 — 흡착으로 돌아가지 않는다)');
+    if (!ok2) branches.push('C(② 관통이 일치 구간 밖 — #29 재개)');
+    if (!ok3) branches.push('D(③ 자기관통 — S3b가 이 규모에서 부족하다)');
+    if (ok1 && ok2 && ok3 && settledAt) branches.push('A(①~⑥ 통과 · ⑦ 캡처 — 화면 판정을 전략 세션에 넘긴다)');
+    if (!branches.length) branches.push('K(판정 불가 — 상태를 원문으로)');
+    console.log(`   ⟹ ${branches.join(' · ')}`);
   } else {
     console.log(`\n   ⟹ ①② 중 실패가 있어 §5 착장을 «실행하지 않는다» — 갈래 H(초기 적법성 위반)`);
   }
