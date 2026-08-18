@@ -1050,6 +1050,36 @@ if (run14('3')) {
     console.log(
       `   [v3-15] 접촉점 국소 이면각 결손 중앙 ${((thMedB * 180) / Math.PI).toFixed(2)}° (표본 ${thetas.length}) ⟹ P_crease ${(pCre * 1000).toFixed(4)}mm · P_pred_ext ${(predExt * 1000).toFixed(4)}mm`,
     );
+    // v3-16 §1 통계 — 점별 P_ext 의 최댓값 (매끈한 항과 «같은» 통계로 맞춘다)
+    {
+      const edB = edgeDihedrals(prim0.pos, bodyIdx);
+      let pMax = 0, thAtWorst = 0, worstPen = 0;
+      const pts: number[] = [];
+      const rr2 = lcg(77);
+      for (let v = 0; v < n; v++) {
+        const x = sv.pos[v * 3], y = sv.pos[v * 3 + 1], z = sv.pos[v * 3 + 2];
+        const eD = exactDist(prim0.pos, bodyIdx, x, y, z);
+        const signed = exactInside(prim0.pos, bodyIdx, x, y, z, rr2) ? -eD : eD;
+        if (signed >= 2 * THICK) continue;
+        const th_i = thetaAt(edB, x, y, z, spec.h);
+        const pe = predPen(bodyG, x, y, z) + CREASE_C * creaseF(th_i) * spec.h;
+        pts.push(pe);
+        if (pe > pMax) pMax = pe;
+        if (THICK - signed > worstPen) { worstPen = THICK - signed; thAtWorst = th_i; }
+      }
+      pts.sort((a, b2) => a - b2);
+      const pq = (f: number) => pts[Math.floor(pts.length * f)] ?? 0;
+      const rp = pMax > 0 ? pen / pMax : Infinity;
+      console.log(
+        `   [v3-16] 점별 P_ext[mm] 중앙 ${(pq(0.5) * 1000).toFixed(4)} · p95 ${(pq(0.95) * 1000).toFixed(4)} · 최대 ${(pMax * 1000).toFixed(4)} (표본 ${pts.length})`,
+      );
+      console.log(
+        `   [v3-16] 최대 관통이 난 점의 θ_i = ${((thAtWorst * 180) / Math.PI).toFixed(2)}° · 문턱 ${(pMax * (1 + MARGIN) * 1000).toFixed(4)}mm ⟹ ${pen <= pMax * (1 + MARGIN) ? 'PASS' : 'FAIL'}`,
+      );
+      console.log(
+        `   [v3-16] 실측/P_ext = ${rp.toFixed(3)} ∈ [${MATCH_LO}, ${MATCH_HI}] ⟹ ${rp >= MATCH_LO && rp <= MATCH_HI ? 'PASS(설명된다)' : 'FAIL'}  ⟹ **§3 ${pen <= pMax * (1 + MARGIN) && rp >= MATCH_LO && rp <= MATCH_HI ? 'PASS' : 'FAIL'}**`,
+      );
+    }
     const thrE = predExt * (1 + MARGIN);
     const ratE = predExt > 0 ? pen / predExt : Infinity;
     console.log(
@@ -1101,6 +1131,7 @@ if (run14('4')) {
   );
   const MATG = { rho: 0.187, B: 23.191698e-6 };
   const rows: { e: number; ratS: number; ratE: number; th: number }[] = [];
+  const ratPt: number[] = [];
   for (const te of targets) {
     const seg = Math.max(8, Math.round((2 * Math.PI * R) / te));
     const m = sphereMesh(R, seg);
@@ -1156,13 +1187,18 @@ if (run14('4')) {
     for (let f = 0; f < 120; f++) step(s3, con3, pp);
     const rr = lcg(31);
     let pen = 0;
+    const edD = edgeDihedrals(m.pos, m.idx);
+    let pExtPt = 0; // v3-16 §1 통계: 점별 P_ext 의 최댓값
     for (let v = 0; v < n3; v++) {
       const x = s3.pos[v * 3], y = s3.pos[v * 3 + 1], z = s3.pos[v * 3 + 2];
       const eD = exactDist(m.pos, m.idx, x, y, z);
       const signed = exactInside(m.pos, m.idx, x, y, z, rr) ? -eD : eD;
       pen = Math.max(pen, THICK - signed);
+      if (signed < 2 * THICK)
+        pExtPt = Math.max(pExtPt, predPen(g, x, y, z) + CREASE_C * creaseF(thetaAt(edD, x, y, z, spec.h)) * spec.h);
     }
     const pExt = P_smooth + CREASE_C * creaseF(thMed) * spec.h;
+    ratPt.push(pExtPt > 0 ? pen / pExtPt : Infinity);
     rows.push({ e: es.p50, ratS: pen / P_smooth, ratE: pen / pExt, th: thMed });
     console.log(
       `   ${(te * 1000).toFixed(0).padStart(9)}${(es.p50 * 1000).toFixed(2).padStart(13)}${String(m.idx.length / 3).padStart(8)}` +
@@ -1176,4 +1212,65 @@ if (run14('4')) {
     `   ⟹ 비가 엣지 길이와 함께 ${grow ? '**커진다**(크레이스가 지배 기전)' : '**커지지 않는다**(크레이스 가설 반증 · 갈래 C)'}` +
       ` · e=2mm에서 /P_smooth = ${rows[0].ratS.toFixed(3)} (대조군 0.982)`,
   );
+  console.log(
+    `\n   [v3-16 §2 안전장치] 새 «점별 최대» 통계로 재계산한 실측/P_ext: ` +
+      ratPt.map((r, i) => `e=${(targets[i] * 1000).toFixed(0)}mm ${r.toFixed(3)}`).join(' · '),
+  );
+  const mono = ratPt.every((r, i) => i === 0 || r >= ratPt[i - 1] * 0.7);
+  console.log(
+    `   구 계열 보존: e=2mm가 대조군 0.982 근방인가 ${Math.abs(ratPt[0] - 0.982) < 0.35 ? 'YES' : 'NO'} · ` +
+      `전 대역이 일치 구간 [${MATCH_LO}, ${MATCH_HI}] 안인가 ${ratPt.every((r) => r >= MATCH_LO && r <= MATCH_HI) ? 'YES' : 'NO'} · 단조성 유지 ${mono ? 'YES' : 'NO'}`,
+  );
+}
+
+
+/* ══ v3-16 §1 — θ의 «통계»를 구조에서 도출해 등록한다 ═══════════════════════
+ * 문턱이 비교하는 것은 «최대 관통»이고 매끈한 항 P_smooth는 이미 «점별 → 최대»다.
+ * 크레이스 항만 «전역 중앙»이어서 두 항의 통계가 어긋나 있었다 ⟹ 점별로 맞춘다.
+ *   근방: 점에서 h 이내의 메시 엣지 — 삼선형 스텐실이 한 변 h이므로 그 안의
+ *        기울기 불연속만 재구성에 관여한다.
+ *   축약: **최대**. 여러 크레이스가 겹쳐도 셀의 선형 재구성 편차는 h/4로 «포화»하므로
+ *        합이 아니라 «가장 가파른 하나»가 지배한다.
+ * c·f·문턱·일치 구간은 v3-15 등록분을 «그대로» 쓴다. */
+function edgeDihedrals(pos: Float32Array, idx: Uint32Array) {
+  const w = weldMap(pos, 0);
+  const em = new Map<number, number[]>();
+  for (let t = 0; t < idx.length / 3; t++)
+    for (let k = 0; k < 3; k++) {
+      const a = w[idx[t * 3 + k]], b = w[idx[t * 3 + ((k + 1) % 3)]];
+      if (a === b) continue;
+      const key = EKEY(a, b);
+      let ar = em.get(key); if (!ar) em.set(key, (ar = [])); ar.push(t);
+    }
+  const N = (t: number) => {
+    const a = idx[t * 3] * 3, b = idx[t * 3 + 1] * 3, c = idx[t * 3 + 2] * 3;
+    const ux = pos[b] - pos[a], uy = pos[b + 1] - pos[a + 1], uz = pos[b + 2] - pos[a + 2];
+    const vx = pos[c] - pos[a], vy = pos[c + 1] - pos[a + 1], vz = pos[c + 2] - pos[a + 2];
+    const nx = uy * vz - uz * vy, ny = uz * vx - ux * vz, nz = ux * vy - uy * vx;
+    const L = Math.hypot(nx, ny, nz) || 1; return [nx / L, ny / L, nz / L];
+  };
+  const out: { ax: number; ay: number; az: number; bx: number; by: number; bz: number; th: number }[] = [];
+  for (const [key, ar] of em) {
+    if (ar.length !== 2) continue;
+    const n1 = N(ar[0]), n2 = N(ar[1]);
+    const th = Math.acos(Math.max(-1, Math.min(1, n1[0] * n2[0] + n1[1] * n2[1] + n1[2] * n2[2])));
+    const b = key % 4194304, a = (key - b) / 4194304;
+    out.push({ ax: pos[a * 3], ay: pos[a * 3 + 1], az: pos[a * 3 + 2], bx: pos[b * 3], by: pos[b * 3 + 1], bz: pos[b * 3 + 2], th });
+  }
+  return out;
+}
+/** 점에서 h 이내 엣지의 «최대» 이면각 결손 */
+function thetaAt(ed: ReturnType<typeof edgeDihedrals>, x: number, y: number, z: number, h: number) {
+  let best = 0;
+  const h2 = h * h;
+  for (const e of ed) {
+    if (e.th <= best) continue;
+    const ex = e.bx - e.ax, ey = e.by - e.ay, ez = e.bz - e.az;
+    const ll = ex * ex + ey * ey + ez * ez;
+    let t = ll > 0 ? ((x - e.ax) * ex + (y - e.ay) * ey + (z - e.az) * ez) / ll : 0;
+    t = t < 0 ? 0 : t > 1 ? 1 : t;
+    const dx = e.ax + t * ex - x, dy = e.ay + t * ey - y, dz = e.az + t * ez - z;
+    if (dx * dx + dy * dy + dz * dz <= h2) best = e.th;
+  }
+  return best;
 }
