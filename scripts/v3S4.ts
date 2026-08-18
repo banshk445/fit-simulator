@@ -968,6 +968,45 @@ const BGRID = (() => {
   }
   return { cs, g, key };
 })();
+/** 몸 위의 «최근접 점» — 격자 후보 안에서 삼각형별 최근접점을 직접 고른다.
+ * v3-23 §1-② 「목선 링을 몸에 정사영한 둘레」에 쓴다. */
+function nearestBodyPoint(x: number, y: number, z: number): [number, number, number] {
+  const { cs, g, key } = BGRID;
+  const ci = Math.floor(x / cs), cj = Math.floor(y / cs), ck = Math.floor(z / cs);
+  let best = Infinity;
+  const out: [number, number, number] = [x, y, z];
+  for (let r = 1; r <= 12; r++) {
+    for (let i = ci - r; i <= ci + r; i++) for (let j = cj - r; j <= cj + r; j++) for (let k = ck - r; k <= ck + r; k++) {
+      if (r > 1 && Math.abs(i - ci) < r && Math.abs(j - cj) < r && Math.abs(k - ck) < r) continue;
+      const arr = g.get(key(i, j, k));
+      if (!arr) continue;
+      for (const t of arr) {
+        const a = bodyIdx[t] * 3, b = bodyIdx[t + 1] * 3, c = bodyIdx[t + 2] * 3;
+        // 삼각형 위 최근접점을 «질량 좌표»로 직접 구한다(가장자리 포함)
+        const ax = prim0.pos[a], ay = prim0.pos[a + 1], az = prim0.pos[a + 2];
+        const abx = prim0.pos[b] - ax, aby = prim0.pos[b + 1] - ay, abz = prim0.pos[b + 2] - az;
+        const acx = prim0.pos[c] - ax, acy = prim0.pos[c + 1] - ay, acz = prim0.pos[c + 2] - az;
+        const d00 = abx * abx + aby * aby + abz * abz;
+        const d01 = abx * acx + aby * acy + abz * acz;
+        const d11 = acx * acx + acy * acy + acz * acz;
+        const den = d00 * d11 - d01 * d01;
+        const apx = x - ax, apy = y - ay, apz = z - az;
+        const d20 = apx * abx + apy * aby + apz * abz;
+        const d21 = apx * acx + apy * acy + apz * acz;
+        let u = 0, v = 0;
+        if (Math.abs(den) > 1e-24) { u = (d11 * d20 - d01 * d21) / den; v = (d00 * d21 - d01 * d20) / den; }
+        if (u < 0) u = 0; if (v < 0) v = 0;
+        if (u + v > 1) { const sSum = u + v; u /= sSum; v /= sSum; }
+        const qx = ax + abx * u + acx * v, qy = ay + aby * u + acy * v, qz = az + abz * u + acz * v;
+        const dd = (x - qx) ** 2 + (y - qy) ** 2 + (z - qz) ** 2;
+        if (dd < best) { best = dd; out[0] = qx; out[1] = qy; out[2] = qz; }
+      }
+    }
+    if (best < (r * cs) ** 2) break;
+  }
+  return out;
+}
+
 function exactBodyDist(x: number, y: number, z: number): number {
   const { cs, g, key } = BGRID;
   const ci = Math.floor(x / cs), cj = Math.floor(y / cs), ck = Math.floor(z / cs);
@@ -1342,6 +1381,59 @@ if (run('3') && D_CHOSEN > 0) {
    * 부  목선 링/정지 ≤ 1e-4 · 밑단 평균 y ≤ 0.1mm · 시접 틈 중앙 ≤ 0.1mm
    * 참고 |v|max 및 |v| 분포 — 판정에 쓰지 않고 «함께» 적는다
    * `SETTLE=1` · 대조군은 `NOBODY=1`(몸 충돌을 끄면 옷이 떨어진다 ⟹ 반드시 FAIL) */
+  /* ── v3-23 §1 목선 신장의 «자리» — 재는 것이 전부다(처방 0) ─────────────── */
+  if (process.env.NECK === '1') {
+    const fr = loadCk();
+    const ringIx = [...neckF, ...neckB];
+    const dd = (a: number[]) => {
+      const v = [...a].sort((x, y2) => x - y2);
+      const q = (t: number) => v[Math.min(v.length - 1, Math.floor(t * v.length))];
+      return { min: v[0], med: q(0.5), p95: q(0.95), max: v[v.length - 1] };
+    };
+    console.log(`\n╔══ §1 목선 신장의 자리 (f=${fr} · 판정 아님 · 처방 0) ══╗`);
+    // ① 높이 분포
+    const hy = ringIx.map((v) => s.pos[v * 3 + 1]);
+    const h1 = dd(hy);
+    console.log(`   ① 목선 정점 높이[cm]  중앙 ${(h1.med * 100).toFixed(2)} · 최소 ${(h1.min * 100).toFixed(2)} · 최대 ${(h1.max * 100).toFixed(2)} · 정점 ${ringIx.length}`);
+    console.log(`      대조: 어깨선 Y_TOP ${(Y_TOP * 100).toFixed(2)}cm · 밑단 ${(Y_HEM * 100).toFixed(2)}cm`);
+    // ④ 몸까지의 거리(정확)
+    const dist4 = ringIx.map((v) => exactBodyDist(s.pos[v * 3], s.pos[v * 3 + 1], s.pos[v * 3 + 2]));
+    const d4 = dd(dist4);
+    const touch = dist4.filter((x) => x <= SEP).length;
+    console.log(`   ④ 몸까지 거리[mm]     중앙 ${(d4.med * 1000).toFixed(2)} · 최소 ${(d4.min * 1000).toFixed(2)} · p95 ${(d4.p95 * 1000).toFixed(2)} · 최대 ${(d4.max * 1000).toFixed(2)}`);
+    console.log(`      2×두께(2mm) 이내 = «닿아 있다» 로 세면 ${touch} / ${ringIx.length} 정점`);
+    // ② 몸에 정사영한 링 둘레 (앞·뒤를 «하나의 닫힌 고리»로 잇는다)
+    const loop = [...neckF, ...[...neckB].reverse()];
+    let proj = 0, cur3 = 0;
+    const pr = loop.map((v) => nearestBodyPoint(s.pos[v * 3], s.pos[v * 3 + 1], s.pos[v * 3 + 2]));
+    for (let k = 0; k < loop.length; k++) {
+      const a = pr[k], b = pr[(k + 1) % loop.length];
+      proj += Math.hypot(a[0] - b[0], a[1] - b[1], a[2] - b[2]);
+      const p1 = loop[k] * 3, p2 = loop[(k + 1) % loop.length] * 3;
+      cur3 += Math.hypot(s.pos[p1] - s.pos[p2], s.pos[p1 + 1] - s.pos[p2 + 1], s.pos[p1 + 2] - s.pos[p2 + 2]);
+    }
+    console.log(`   ② 몸에 «정사영»한 목선 둘레 ${(proj * 100).toFixed(2)}cm  ↔  목선 정지 ${(ringRest * 100).toFixed(2)}cm  ⟹ 비 ${(proj / ringRest).toFixed(4)}`);
+    console.log(`      (평면 절단이 아니라 «링을 몸 표면에 정사영»한 둘레다 — 링이 기울어 있으므로)`);
+    console.log(`      참고: 링 3D 둘레(닫힌 고리) ${(cur3 * 100).toFixed(2)}cm · 판정에 쓰는 비 ${(ring(s.pos) / ringRest).toFixed(4)}`);
+    // ③ 국소 변형률
+    const loc: number[] = [];
+    let wi = 0, wv = 1;
+    for (const arr of [neckF, neckB])
+      for (let k = 0; k + 1 < arr.length; k++) {
+        const a = arr[k], b = arr[k + 1];
+        const rest = Math.hypot(sc.uv[a * 2] - sc.uv[b * 2], sc.uv[a * 2 + 1] - sc.uv[b * 2 + 1]);
+        const now = seg3(s.pos, a, b);
+        const r2 = now / rest;
+        loc.push(r2);
+        if (r2 > wv) { wv = r2; wi = a; }
+      }
+    const l3 = dd(loc);
+    console.log(`   ③ 국소 변형률(엣지별 현재/정지) 중앙 ${l3.med.toFixed(4)} · p95 ${l3.p95.toFixed(4)} · 최대 ${l3.max.toFixed(4)} · 엣지 ${loc.length}`);
+    console.log(`      1.10 초과 엣지 ${loc.filter((x) => x > 1.1).length} / ${loc.length} · 최대 위치 ${[0, 1, 2].map((c) => (s.pos[wi * 3 + c] * 100).toFixed(1)).join(', ')} cm`);
+    console.log(`      ⟹ 「균일하게 늘었나 한 곳이 늘었나」: 중앙 ${l3.med.toFixed(4)} vs 최대 ${l3.max.toFixed(4)}`);
+    process.exit(0);
+  }
+
   if (process.env.SETTLE === '1') {
     const N_WIN = Math.round(1 / (DAMP * DT));
     const TH_POS = 1e-4;
