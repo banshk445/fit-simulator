@@ -596,6 +596,9 @@ console.log(`   기준: v1 Stage 1a가 «최근접 면 법선» 계열에서 등
  */
 const ONLY14 = (process.env.ONLY ?? '').split(',').filter(Boolean);
 const run14 = (k: string) => ONLY14.length === 0 || ONLY14.includes(k);
+/* v3-15 §1 — 크레이스 항(형태·계수는 §2 실측 «전»에 고정 · 유도는 §1 블록 주석) */
+const CREASE_C = 0.283;
+const creaseF = (th: number) => Math.min(1, th / (Math.PI / 2));
 const MARGIN = 0.25;
 const MATCH_LO = 0.5;
 const MATCH_HI = 1.25;
@@ -980,6 +983,79 @@ if (run14('3')) {
       }
       if (pn > 1e-6) { penCnt++; pen = Math.max(pen, pn); }
     }
+    // v3-15 §3 — 접촉점의 «국소 이면각 결손»을 메시에서 뽑아 확장 문턱을 만든다.
+    // 문턱·일치 구간은 v3-14 §1에 «이미 등록된» 값을 그대로 쓴다(§2를 보고 고치지 않는다).
+    const eMap = new Map<number, number[]>();
+    const wB = weldMap(prim0.pos, 0);
+    for (let t = 0; t < bodyIdx.length / 3; t++)
+      for (let k = 0; k < 3; k++) {
+        const a = wB[bodyIdx[t * 3 + k]], b2 = wB[bodyIdx[t * 3 + ((k + 1) % 3)]];
+        if (a === b2) continue;
+        const key = EKEY(a, b2);
+        let ar = eMap.get(key);
+        if (!ar) eMap.set(key, (ar = []));
+        ar.push(t);
+      }
+    const triN = (t: number) => {
+      const a = bodyIdx[t * 3] * 3, b2 = bodyIdx[t * 3 + 1] * 3, c2 = bodyIdx[t * 3 + 2] * 3;
+      const ux = prim0.pos[b2] - prim0.pos[a], uy = prim0.pos[b2 + 1] - prim0.pos[a + 1], uz = prim0.pos[b2 + 2] - prim0.pos[a + 2];
+      const vx = prim0.pos[c2] - prim0.pos[a], vy = prim0.pos[c2 + 1] - prim0.pos[a + 1], vz = prim0.pos[c2 + 2] - prim0.pos[a + 2];
+      const nx = uy * vz - uz * vy, ny = uz * vx - ux * vz, nz = ux * vy - uy * vx;
+      const L2 = Math.hypot(nx, ny, nz) || 1;
+      return [nx / L2, ny / L2, nz / L2];
+    };
+    const triTheta = (t: number) => {
+      const out: number[] = [];
+      for (let k = 0; k < 3; k++) {
+        const a = wB[bodyIdx[t * 3 + k]], b2 = wB[bodyIdx[t * 3 + ((k + 1) % 3)]];
+        const ar = eMap.get(EKEY(a, b2));
+        if (!ar || ar.length !== 2) continue;
+        const o = ar[0] === t ? ar[1] : ar[0];
+        const n1 = triN(t), n2 = triN(o);
+        out.push(Math.acos(Math.max(-1, Math.min(1, n1[0] * n2[0] + n1[1] * n2[1] + n1[2] * n2[2]))));
+      }
+      out.sort((x, y2) => x - y2);
+      return [out[Math.floor(out.length / 2)] ?? 0, out[out.length - 1] ?? 0] as [number, number];
+    };
+    const thetas: number[] = [];
+    const thetasMax: number[] = [];
+    for (let v = 0; v < n; v++) {
+      const x = sv.pos[v * 3], y = sv.pos[v * 3 + 1], z = sv.pos[v * 3 + 2];
+      let bestT = -1, bestD = Infinity;
+      for (let t = 0; t < bodyIdx.length / 3; t++) {
+        const a = bodyIdx[t * 3] * 3, b2 = bodyIdx[t * 3 + 1] * 3, c2 = bodyIdx[t * 3 + 2] * 3;
+        const d2 = pointTriSq2(x, y, z, prim0.pos[a], prim0.pos[a + 1], prim0.pos[a + 2],
+          prim0.pos[b2], prim0.pos[b2 + 1], prim0.pos[b2 + 2], prim0.pos[c2], prim0.pos[c2 + 1], prim0.pos[c2 + 2]);
+        if (d2 < bestD) { bestD = d2; bestT = t; }
+      }
+      if (bestT >= 0 && Math.sqrt(bestD) < 2 * THICK) { const tt = triTheta(bestT); thetas.push(tt[0]); thetasMax.push(tt[1]); }
+    }
+    thetas.sort((a, b2) => a - b2);
+    const thMedB = thetas[Math.floor(thetas.length / 2)] ?? 0;
+    thetasMax.sort((a, b2) => a - b2);
+    const qq = (arr: number[], f: number) => arr[Math.floor(arr.length * f)] ?? 0;
+    console.log(
+      `   [v3-15] 접촉점 θ 분포[°] — 삼각형 3엣지 «중앙»: 중앙 ${((thMedB * 180) / Math.PI).toFixed(2)} · p95 ${((qq(thetas, 0.95) * 180) / Math.PI).toFixed(2)} · 최대 ${((qq(thetas, 0.999) * 180) / Math.PI).toFixed(2)}` +
+        `  /  «최대»: 중앙 ${((qq(thetasMax, 0.5) * 180) / Math.PI).toFixed(2)} · p95 ${((qq(thetasMax, 0.95) * 180) / Math.PI).toFixed(2)} · 최대 ${((qq(thetasMax, 0.999) * 180) / Math.PI).toFixed(2)}`,
+    );
+    {
+      const alt = CREASE_C * creaseF(qq(thetasMax, 0.5)) * spec.h + predMax;
+      console.log(
+        `   [v3-15·감도] θ 통계를 «삼각형 최대»로 잡으면 P_ext ${(alt * 1000).toFixed(4)}mm · 실측/P_ext ${(pen / alt).toFixed(3)}` +
+          `  ← **이 통계는 사전 등록되지 않았다.** 주 판정은 등록·구현된 «중앙»으로 낸다`,
+      );
+    }
+    const pCre = CREASE_C * creaseF(thMedB) * spec.h;
+    const predExt = predMax + pCre;
+    console.log(
+      `   [v3-15] 접촉점 국소 이면각 결손 중앙 ${((thMedB * 180) / Math.PI).toFixed(2)}° (표본 ${thetas.length}) ⟹ P_crease ${(pCre * 1000).toFixed(4)}mm · P_pred_ext ${(predExt * 1000).toFixed(4)}mm`,
+    );
+    const thrE = predExt * (1 + MARGIN);
+    const ratE = predExt > 0 ? pen / predExt : Infinity;
+    console.log(
+      `   [v3-15] 확장 문턱 ${(thrE * 1000).toFixed(4)}mm ⟹ ${pen <= thrE ? 'PASS' : 'FAIL'} · 실측/P_ext = ${ratE.toFixed(3)} ∈ [${MATCH_LO}, ${MATCH_HI}] ⟹ ${ratE >= MATCH_LO && ratE <= MATCH_HI ? 'PASS(설명된다)' : 'FAIL'}`,
+    );
+    console.log(`   [v3-15] ⟹ §3 ${pen <= thrE && ratE >= MATCH_LO && ratE <= MATCH_HI ? 'PASS' : 'FAIL'}  (문턱·구간은 v3-14 §1 등록값 그대로)`);
     const thr = predMax * (1 + MARGIN);
     const ratio = predMax > 0 ? pen / predMax : Infinity;
     console.log(
@@ -995,4 +1071,109 @@ if (run14('3')) {
     );
     console.log(`   ⟹ §3-2 ${okThr && okMatch ? 'PASS' : 'FAIL'}`);
   }
+}
+
+/* ══ v3-15 §1 크레이스 항 «형태 등록» + §2 면분할 대조 + §3 몸 재판정 ══════
+ *
+ * 유도: 볼록 크레이스의 «부채꼴»(결손각 θ) 안에서 참 거리는 모서리까지 반경 r이고
+ * ∇²r = 1/r 이다. 삼선형 오차 (h²/8)·∇²d 는 r ~ h/2 에서 ≈ h/4 로 «포화»하며 θ와
+ * 무관하다. 다만 반경 r에서 부채꼴 폭이 r·θ 이므로 θ가 작으면 셀의 «일부»만 부채꼴에
+ * 들어가고 오차가 그 분율만큼 준다 ⟹ **θ에 선형 · 1 rad 부근 포화**.
+ *   P_crease = c·f(θ)·h,  f(θ) = min(1, θ/(π/2)),  c = 0.283   (v3-13 뚜껑 90° 실측)
+ *   P_pred_ext = P_smooth + P_crease
+ * **e ≳ h에서 유효** — e < h면 크레이스가 셀 밑으로 들어가 평균화된다(§2의 대조점).
+ * **§2 결과를 보고 고치지 않는다.** */
+
+if (run14('4')) {
+  console.log(`\n╔══ v3-15 §1 크레이스 항 등록 (실측 «전») ══╗`);
+  console.log(`   P_pred_ext = P_smooth + ${CREASE_C}·min(1, θ/(π/2))·h   [θ = 이면각 결손]`);
+  console.log(`   유도: 부채꼴 안 ∇²r=1/r ⟹ r~h/2에서 h/4 포화 · 부채꼴 폭 r·θ ⟹ θ에 선형`);
+  console.log(`   c는 v3-13 뚜껑 원기둥 90° 실측(28.30% of h)에서. e ≳ h에서 유효`);
+
+  console.log(`\n╔══ §2 면분할 대조 — 같은 구(R=50mm) · 엣지 길이«만» 바꾼다 ══╗`);
+  const R = 0.05;
+  const targets = [0.002, 0.006, 0.012, 0.02];
+  const P_smooth = spec.h ** 2 / (4 * R);
+  console.log(`   P_smooth = h²/(4R) = ${(P_smooth * 1000).toFixed(4)}mm · h = ${(spec.h * 1000).toFixed(3)}mm`);
+  console.log(`   대조군(면분할 0 · 해석 함수로 채운 격자) = v3-13 §3-④ 실측/예측 **0.982**`);
+  console.log(
+    `   ${'목표e[mm]'.padStart(9)}${'실제중앙e[mm]'.padStart(13)}${'삼각형'.padStart(8)}${'θ중앙[°]'.padStart(9)}${'수밀'.padStart(6)}${'관통[mm]'.padStart(10)}${'/P_smooth'.padStart(10)}${'/P_ext'.padStart(9)}`,
+  );
+  const MATG = { rho: 0.187, B: 23.191698e-6 };
+  const rows: { e: number; ratS: number; ratE: number; th: number }[] = [];
+  for (const te of targets) {
+    const seg = Math.max(8, Math.round((2 * Math.PI * R) / te));
+    const m = sphereMesh(R, seg);
+    const w = weldMap(m.pos, 0);
+    const topo = topology(m.pos, m.idx, w);
+    const chi = topo.verts - topo.edges + topo.tris;
+    const ok = topo.openEdges === 0 && topo.nonManifold === 0 && topo.windingClash === 0 && chi === 2;
+    const es = edgeStats(m.pos, m.idx, w);
+    // 이면각 결손 — 인접 두 면 법선 사이 각
+    const nrm = (t: number) => {
+      const a = m.idx[t * 3] * 3, b = m.idx[t * 3 + 1] * 3, c = m.idx[t * 3 + 2] * 3;
+      const ux = m.pos[b] - m.pos[a], uy = m.pos[b + 1] - m.pos[a + 1], uz = m.pos[b + 2] - m.pos[a + 2];
+      const vx = m.pos[c] - m.pos[a], vy = m.pos[c + 1] - m.pos[a + 1], vz = m.pos[c + 2] - m.pos[a + 2];
+      const nx = uy * vz - uz * vy, ny = uz * vx - ux * vz, nz = ux * vy - uy * vx;
+      const l = Math.hypot(nx, ny, nz) || 1;
+      return [nx / l, ny / l, nz / l];
+    };
+    const emap = new Map<number, number[]>();
+    for (let t = 0; t < m.idx.length / 3; t++)
+      for (let k = 0; k < 3; k++) {
+        const a = w[m.idx[t * 3 + k]], b = w[m.idx[t * 3 + ((k + 1) % 3)]];
+        if (a === b) continue;
+        const key = EKEY(a, b);
+        let ar = emap.get(key);
+        if (!ar) emap.set(key, (ar = []));
+        ar.push(t);
+      }
+    const ths: number[] = [];
+    for (const ar of emap.values()) {
+      if (ar.length !== 2) continue;
+      const n1 = nrm(ar[0]), n2 = nrm(ar[1]);
+      ths.push(Math.acos(Math.max(-1, Math.min(1, n1[0] * n2[0] + n1[1] * n2[1] + n1[2] * n2[2]))));
+    }
+    ths.sort((a, b) => a - b);
+    const thMed = ths[Math.floor(ths.length / 2)] ?? 0;
+    const g = bakeSdf(m.pos, m.idx, spec.h, spec.band);
+    // 낙하 장면 — 네 경우에 «같은» 장면
+    const NU3 = 15, L3 = 0.08;
+    const du3 = L3 / (NU3 - 1), n3 = NU3 * NU3;
+    const uv3 = new Float64Array(n3 * 2);
+    const tri3: number[] = [];
+    for (let j = 0; j < NU3; j++) for (let i = 0; i < NU3; i++) { const v = j * NU3 + i; uv3[v * 2] = i * du3; uv3[v * 2 + 1] = j * du3; }
+    for (let j = 0; j < NU3 - 1; j++) for (let i = 0; i < NU3 - 1; i++) { const a = j * NU3 + i; tri3.push(a, a + 1, a + NU3, a + 1, a + NU3 + 1, a + NU3); }
+    const s3 = makeSolver(n3);
+    for (let v = 0; v < n3; v++) { s3.pos[v * 3] = uv3[v * 2] - L3 / 2; s3.pos[v * 3 + 1] = R + 0.02; s3.pos[v * 3 + 2] = uv3[v * 2 + 1] - L3 / 2; }
+    let initMin = Infinity;
+    for (let v = 0; v < n3; v++) initMin = Math.min(initMin, exactDist(m.pos, m.idx, s3.pos[v * 3], s3.pos[v * 3 + 1], s3.pos[v * 3 + 2]));
+    assignMassFromMesh(s3, tri3, uv3, MATG.rho, new Set());
+    const bd3 = makeBend(tri3, uv3, MATG.B);
+    const con3: Constraint[] = [...makeInplane(tri3, uv3, 100, 100, 100), ...bd3];
+    const sub3 = Math.max(substepsForCloth(1 / 60, 100, MATG.rho, du3, 0.95), substepsForBending(1 / 60, s3, bd3, 0.95));
+    const pp: SolverParams = { dt: 1 / 60, substeps: sub3, gravity: 9.81, damping: 6, collision: { colliders: [{ kind: 'grid', g }], thickness: THICK, mu: 0.3 } };
+    for (let f = 0; f < 120; f++) step(s3, con3, pp);
+    const rr = lcg(31);
+    let pen = 0;
+    for (let v = 0; v < n3; v++) {
+      const x = s3.pos[v * 3], y = s3.pos[v * 3 + 1], z = s3.pos[v * 3 + 2];
+      const eD = exactDist(m.pos, m.idx, x, y, z);
+      const signed = exactInside(m.pos, m.idx, x, y, z, rr) ? -eD : eD;
+      pen = Math.max(pen, THICK - signed);
+    }
+    const pExt = P_smooth + CREASE_C * creaseF(thMed) * spec.h;
+    rows.push({ e: es.p50, ratS: pen / P_smooth, ratE: pen / pExt, th: thMed });
+    console.log(
+      `   ${(te * 1000).toFixed(0).padStart(9)}${(es.p50 * 1000).toFixed(2).padStart(13)}${String(m.idx.length / 3).padStart(8)}` +
+        `${((thMed * 180) / Math.PI).toFixed(2).padStart(9)}${(ok ? 'OK' : `χ${chi}`).padStart(6)}${(pen * 1000).toFixed(4).padStart(10)}` +
+        `${(pen / P_smooth).toFixed(3).padStart(10)}${(pen / pExt).toFixed(3).padStart(9)}` +
+        (initMin > THICK ? '' : '  [초기 위법]'),
+    );
+  }
+  const grow = rows[rows.length - 1].ratS > rows[0].ratS;
+  console.log(
+    `   ⟹ 비가 엣지 길이와 함께 ${grow ? '**커진다**(크레이스가 지배 기전)' : '**커지지 않는다**(크레이스 가설 반증 · 갈래 C)'}` +
+      ` · e=2mm에서 /P_smooth = ${rows[0].ratS.toFixed(3)} (대조군 0.982)`,
+  );
 }
