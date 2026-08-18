@@ -263,6 +263,9 @@ export type SelfCollisionParams = {
   tris: ArrayLike<number>;
   /** 옷 두께 [m]. 두 층의 «분리 거리»는 2×thickness */
   thickness: number;
+  /** 한 서브스텝 «안»에서 해소를 몇 번 반복할지. 기본 1 ⟹ 기존 경로 비트 동일.
+   * v3-20 §3이 「반복하면 잔여 침투가 주는가(부족)인가 안 주는가(순환)인가」를 묻는다. */
+  iterations?: number;
 };
 
 /** 직전 `step` 호출의 자기충돌 계기.
@@ -1004,6 +1007,42 @@ function projectBend(s: Solver, c: BendConstraint, h2: number): void {
 }
 
 /** 한 프레임 = substeps개 서브스텝. 서브스텝당 제약 투영 1회. */
+/** 층별 «실제로 옮긴 거리» 진단 (v3-20). **기본 off ⟹ 기존 경로 비트 동일** —
+ * `on`이 false면 아래 코드는 한 줄도 돌지 않는다(제약당 불리언 검사 1회뿐).
+ * 값은 «마지막 서브스텝»의 것이다: |v| 가 그 서브스텝에서 만들어지므로 짝이 맞는다. */
+export const stepDiag = {
+  on: false,
+  /** 정점별 변위 [m] — 제약 투영 / 자기충돌 / 몸 충돌 */
+  dxCon: new Float64Array(0),
+  dxSelf: new Float64Array(0),
+  dxBody: new Float64Array(0),
+  /** 제약 «종류별» 보정 총량 [m] (정점 변위의 합) */
+  sumInplane: 0,
+  sumBend: 0,
+  sumDist: 0,
+  /** 마지막 서브스텝의 h [s] */
+  h: 0,
+};
+let dgA = new Float64Array(0);
+let dgB = new Float64Array(0);
+function dgEnsure(n: number): void {
+  if (dgA.length >= n * 3) return;
+  dgA = new Float64Array(n * 3);
+  dgB = new Float64Array(n * 3);
+  stepDiag.dxCon = new Float64Array(n);
+  stepDiag.dxSelf = new Float64Array(n);
+  stepDiag.dxBody = new Float64Array(n);
+}
+const dgVerts = (c: Constraint): number[] =>
+  c.kind === 'dist' ? [c.i, c.j] : c.kind === 'bend' ? [c.p0, c.p1, c.p2, c.p3] : [c.i0, c.i1, c.i2];
+function dgSnap(s: Solver, dst: Float64Array): void {
+  dst.set(s.pos.subarray(0, s.n * 3));
+}
+function dgFill(s: Solver, from: Float64Array, out: Float64Array): void {
+  for (let v = 0; v < s.n; v++)
+    out[v] = Math.hypot(s.pos[v * 3] - from[v * 3], s.pos[v * 3 + 1] - from[v * 3 + 1], s.pos[v * 3 + 2] - from[v * 3 + 2]);
+}
+
 export function step(s: Solver, cs: Constraint[], p: SolverParams): void {
   const h = p.dt / p.substeps;
   const h2 = h * h;
@@ -1036,21 +1075,59 @@ export function step(s: Solver, cs: Constraint[], p: SolverParams): void {
       } else c.lambda = 0;
     }
     const iters = p.iterations ?? 1;
+    if (stepDiag.on) {
+      dgEnsure(s.n);
+      dgSnap(s, dgA);
+      stepDiag.sumInplane = 0;
+      stepDiag.sumBend = 0;
+      stepDiag.sumDist = 0;
+      stepDiag.h = h;
+    }
     for (let it = 0; it < iters; it++)
       for (const c of cs) {
+        if (!stepDiag.on) {
+          if (c.kind === 'dist') projectDistance(s, c, h2);
+          else if (c.kind === 'bend') projectBend(s, c, h2);
+          else projectInplane(s, c, h2);
+          continue;
+        }
+        const vs = dgVerts(c);
+        for (let k = 0; k < vs.length; k++) {
+          dgB[k * 3] = s.pos[vs[k] * 3];
+          dgB[k * 3 + 1] = s.pos[vs[k] * 3 + 1];
+          dgB[k * 3 + 2] = s.pos[vs[k] * 3 + 2];
+        }
         if (c.kind === 'dist') projectDistance(s, c, h2);
         else if (c.kind === 'bend') projectBend(s, c, h2);
         else projectInplane(s, c, h2);
+        let acc = 0;
+        for (let k = 0; k < vs.length; k++)
+          acc += Math.hypot(s.pos[vs[k] * 3] - dgB[k * 3], s.pos[vs[k] * 3 + 1] - dgB[k * 3 + 1], s.pos[vs[k] * 3 + 2] - dgB[k * 3 + 2]);
+        if (c.kind === 'dist') stepDiag.sumDist += acc;
+        else if (c.kind === 'bend') stepDiag.sumBend += acc;
+        else stepDiag.sumInplane += acc;
       }
+    if (stepDiag.on) {
+      dgFill(s, dgA, stepDiag.dxCon);
+      dgSnap(s, dgA);
+    }
     // 자기충돌 — 제약 투영 «뒤», 몸 충돌 «앞». 몸 관통이 더 단단한 조건이므로
     // 마지막에 두어 자기충돌이 몸 안으로 밀어 넣은 것을 그 자리에서 되돌린다.
-    if (p.selfCollision) resolveSelfCollisions(s, p.selfCollision);
+    if (p.selfCollision) {
+      const si = p.selfCollision.iterations ?? 1;
+      for (let q = 0; q < si; q++) resolveSelfCollisions(s, p.selfCollision);
+    }
+    if (stepDiag.on) {
+      dgFill(s, dgA, stepDiag.dxSelf);
+      dgSnap(s, dgA);
+    }
     // 몸 충돌 — 제약 투영 «뒤», 속도 갱신 «앞». 단방향 · 흡착 0.
     if (p.collision && sub % (p.collision.every ?? 1) === 0) {
       const t0 = performance.now();
       resolveCollisions(s, p.collision);
       collisionStats[3] += performance.now() - t0;
     }
+    if (stepDiag.on) dgFill(s, dgA, stepDiag.dxBody);
     // 속도 갱신
     for (let v = 0; v < s.n; v++) {
       if (s.invMass[v] === 0) continue;

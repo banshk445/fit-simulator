@@ -55,7 +55,7 @@ import { bakeSdf, deriveSpacing, sampleSdf, type GridSdf } from '../src/v3/bodyS
 import { readGlb, weldMap } from './v3Glb.ts';
 import {
   makeSolver, makeInplane, makeBend, assignMassFromMesh,
-  substepsForBending, substepsForCloth, step, selfStats, collisionStats,
+  substepsForBending, substepsForCloth, step, selfStats, collisionStats, stepDiag,
   type Constraint, type DistanceConstraint, type SolverParams, type Solver,
 } from '../src/v3/solver.ts';
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs';
@@ -1275,6 +1275,7 @@ if (run('3') && D_CHOSEN > 0) {
       if (s.pos[v * 3 + 1] >= yArmWorld && sampleSdf(bodyG, s.pos[v * 3], s.pos[v * 3 + 1], s.pos[v * 3 + 2]) <= SEP) shContact++;
     console.log(`   ② 몸 관통  최대 ${(bc1.maxPen * 1000).toFixed(4)}mm / P_ext(그 점) ${(pexAtWorst * 1000).toFixed(4)}mm = ${ratio.toFixed(3)} (등록 구간 [0.5,1.25]) · θ ${((thWorst * 180) / Math.PI).toFixed(2)}° · 관통 정점 ${bc1.penCnt} · P_ext 최대 ${(pexMax * 1000).toFixed(4)}mm`);
     console.log(`   ③ 자기관통 삼각형–삼각형 교차 ${mp1.hits} · 비인접 최소 거리 ${(mp1.min * 1000).toFixed(3)}mm · 문턱 위반 쌍 ${mp1.viol}`);
+    console.log(`      접촉 밀도: 근접 쌍 ${mp1.near} · 정점당 ${(mp1.near / sc.n).toFixed(4)}  (v3-20 §4 규모 대조용)`);
     console.log(`   ④ 시접 간극 중앙 ${(qg(0.5) * 1000).toFixed(2)} · p95 ${(qg(0.95) * 1000).toFixed(2)} · 최대 ${(gaps[gaps.length - 1] * 1000).toFixed(2)}mm (정지 ${SEP * 1000}mm · 쌍 ${gaps.length})`);
     console.log(`   ⑤ 보조 0   invMass=0 정점 ${pinned} · 앵커 0 · 핀 0 · 원주 상한 0 · 흡착 항 0`);
     console.log(`   부수      어깨 ${(y0 * 100).toFixed(2)}→${(y1 * 100).toFixed(2)}cm · 밑단 ${(meanY(hemIx, pos0) * 100).toFixed(2)}→${(meanY(hemIx, s.pos) * 100).toFixed(2)}cm · 목선/정지 ${r1.toFixed(4)} · 어깨 대역 접촉 ${shContact}`);
@@ -1290,6 +1291,90 @@ if (run('3') && D_CHOSEN > 0) {
     hi[1] = Math.max(hi[1], Y_TOP + 0.12);
     for (const view of VIEWS) writePng(`${OUT}/${view.name}.png`, 760, 1000, render(meshes, view, { lo, hi }, 760, 1000));
     console.log(`   ⑦ 캡처 3장 → ${OUT}/{front,sideXplus,back}.png (정사영 · 난수 0 · CC 판정 0)`);
+    process.exit(0);
+  }
+
+  /* ── v3-20 진단 (#37) — «처방 0 · 구현 0». 전부 env gate 뒤 ───────────────
+   * `DIAGDX=1`  §1 층별 «실제로 옮긴 거리» Δx 를 재고 Δx/h 를 |v| 와 짝지어 본다
+   * `SUBSCAN=1` §2 서브스텝만 바꿔 |v| · Δx_self · 잔여 침투의 스케일링을 잰다
+   * `SELFIT=1`  §3 한 서브스텝 «안»에서 자기충돌 해소를 반복하면 침투가 주는가 */
+  const dist = (a: ArrayLike<number>, n: number) => {
+    const v = Array.from({ length: n }, (_, i) => a[i]).sort((x, y2) => x - y2);
+    const q = (t: number) => v[Math.min(n - 1, Math.floor(t * n))];
+    return { med: q(0.5), p95: q(0.95), max: v[n - 1] };
+  };
+  const mm = (x: number) => (x * 1000).toFixed(3).padStart(10);
+  const ms = (x: number) => (x * 1000).toFixed(1).padStart(10);
+
+  if (process.env.DIAGDX === '1') {
+    const fr = loadCk();
+    const K = Number(process.env.DIAGF ?? 2);
+    const p1: SolverParams = {
+      dt: DT, substeps: st.sub, gravity: G, damping: DAMP,
+      collision: { colliders: [{ kind: 'grid', g: bodyG }], thickness: THICK, mu: MU },
+      selfCollision: { tris: sc.tris, thickness: THICK },
+    };
+    stepDiag.on = true;
+    for (let k = 0; k < K; k++) step(s, sc.cons, p1);
+    stepDiag.on = false;
+    const h = stepDiag.h;
+    const dSelf = dist(stepDiag.dxSelf, sc.n), dCon = dist(stepDiag.dxCon, sc.n), dBody = dist(stepDiag.dxBody, sc.n);
+    const vv = dist(vList(), sc.n);
+    console.log(`\n╔══ §1 층별 «실제로 옮긴 거리» (f=${fr}+${K} · 마지막 서브스텝 · h=${(h * 1e6).toFixed(2)}µs) ══╗`);
+    console.log(`   ${'층'.padEnd(14)}${'Δx 중앙[mm]'.padStart(12)}${'p95'.padStart(10)}${'최대'.padStart(10)}   ${'Δx/h 중앙[mm/s]'.padStart(16)}${'p95'.padStart(11)}${'최대'.padStart(11)}`);
+    for (const [nm, d] of [['자기충돌', dSelf], ['제약 투영', dCon], ['몸 충돌', dBody]] as const)
+      console.log(`   ${nm.padEnd(14)}${mm(d.med)}${mm(d.p95)}${mm(d.max)}   ${ms(d.med / h)}${ms(d.p95 / h)}${ms(d.max / h)}`);
+    console.log(`   ${'|v| 실측'.padEnd(14)}${''.padStart(32)}   ${ms(vv.med)}${ms(vv.p95)}${ms(vv.max)}`);
+    console.log(`   ⟹ Δx_self/h ÷ |v| = 중앙 ${(dSelf.med / h / vv.med).toFixed(3)} · p95 ${(dSelf.p95 / h / vv.p95).toFixed(3)} · 최대 ${(dSelf.max / h / vv.max).toFixed(3)}`);
+    console.log(`   ⟹ Δx_con/h ÷ |v| = 중앙 ${(dCon.med / h / vv.med).toFixed(3)} · Δx_body/h ÷ |v| = 중앙 ${(dBody.med / h / vv.med).toFixed(3)}`);
+    console.log(`   제약 «종류별» 보정 총량(마지막 서브스텝 · 정점 변위 합): 신장 ${(stepDiag.sumInplane * 1000).toFixed(1)}mm · 굽힘 ${(stepDiag.sumBend * 1000).toFixed(1)}mm · 봉제 ${(stepDiag.sumDist * 1000).toFixed(1)}mm`);
+    console.log(`   대조: 서브스텝당 분리 목표 2×두께 = ${SEP * 1000}mm · 격자 간격 ${(D_CHOSEN * 1000).toFixed(1)}mm`);
+    process.exit(0);
+  }
+
+  if (process.env.SUBSCAN === '1') {
+    const K = Number(process.env.DIAGF ?? 2);
+    console.log(`\n╔══ §2 서브스텝 스케일링 (체크포인트에서 ${K}프레임씩 · 예측: |v| ∝ 서브스텝 · Δx_self 둔감) ══╗`);
+    console.log(`   ${'sub'.padStart(5)}${'h[µs]'.padStart(9)}${'|v|중앙'.padStart(11)}${'|v|최대'.padStart(11)}${'Δx_self중앙'.padStart(12)}${'Δx_self최대'.padStart(12)}${'교차'.padStart(9)}${'분리위반'.padStart(10)}${'s/f'.padStart(8)}`);
+    for (const sub of [246, 123, 62, 31, 16]) {
+      loadCk();
+      const pp: SolverParams = {
+        dt: DT, substeps: sub, gravity: G, damping: DAMP,
+        collision: { colliders: [{ kind: 'grid', g: bodyG }], thickness: THICK, mu: MU },
+        selfCollision: { tris: sc.tris, thickness: THICK },
+      };
+      stepDiag.on = true;
+      const t0 = performance.now();
+      for (let k = 0; k < K; k++) step(s, sc.cons, pp);
+      const sec = (performance.now() - t0) / K / 1000;
+      stepDiag.on = false;
+      const dS = dist(stepDiag.dxSelf, sc.n), vv = dist(vList(), sc.n);
+      const mp = minPairDist(s.pos, sc.tris, SEP * 3);
+      console.log(`   ${String(sub).padStart(5)}${(stepDiag.h * 1e6).toFixed(1).padStart(9)}${(vv.med * 1000).toFixed(0).padStart(11)}${(vv.max * 1000).toFixed(0).padStart(11)}${(dS.med * 1000).toFixed(4).padStart(12)}${(dS.max * 1000).toFixed(3).padStart(12)}${String(mp.hits).padStart(9)}${String(mp.viol).padStart(10)}${sec.toFixed(2).padStart(8)}`);
+    }
+    process.exit(0);
+  }
+
+  if (process.env.SELFIT === '1') {
+    const K = Number(process.env.DIAGF ?? 2);
+    console.log(`\n╔══ §3 한 서브스텝 «안»의 반복 (줄면 «반복 부족» · 안 줄면 «순환») ══╗`);
+    console.log(`   ${'반복'.padStart(5)}${'|v|중앙'.padStart(11)}${'Δx_self중앙'.padStart(12)}${'Δx_self최대'.padStart(12)}${'교차'.padStart(9)}${'분리위반'.padStart(10)}${'최소거리[mm]'.padStart(13)}${'s/f'.padStart(8)}`);
+    for (const it of [1, 2, 4, 8]) {
+      loadCk();
+      const pp: SolverParams = {
+        dt: DT, substeps: st.sub, gravity: G, damping: DAMP,
+        collision: { colliders: [{ kind: 'grid', g: bodyG }], thickness: THICK, mu: MU },
+        selfCollision: { tris: sc.tris, thickness: THICK, iterations: it },
+      };
+      stepDiag.on = true;
+      const t0 = performance.now();
+      for (let k = 0; k < K; k++) step(s, sc.cons, pp);
+      const sec = (performance.now() - t0) / K / 1000;
+      stepDiag.on = false;
+      const dS = dist(stepDiag.dxSelf, sc.n), vv = dist(vList(), sc.n);
+      const mp = minPairDist(s.pos, sc.tris, SEP * 3);
+      console.log(`   ${String(it).padStart(5)}${(vv.med * 1000).toFixed(0).padStart(11)}${(dS.med * 1000).toFixed(4).padStart(12)}${(dS.max * 1000).toFixed(3).padStart(12)}${String(mp.hits).padStart(9)}${String(mp.viol).padStart(10)}${(mp.min * 1000).toFixed(4).padStart(13)}${sec.toFixed(2).padStart(8)}`);
+    }
     process.exit(0);
   }
 

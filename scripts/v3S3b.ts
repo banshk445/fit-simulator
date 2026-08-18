@@ -22,6 +22,7 @@ import {
   collisionStats,
   selfStats,
   step,
+  stepDiag,
   type BendConstraint,
   type Collider,
   type Constraint,
@@ -499,6 +500,42 @@ if (doRun('G')) {
     );
   }
   console.log(`   ⟹ G ${okG ? 'PASS (판정기 신뢰 가능)' : 'FAIL — 갈래 G · ①을 판정하지 않는다'}`);
+}
+
+/* ── v3-20 §4 규모 의존 진단 (DIAGDX=1 · 판정 아님 · 기본 off) ─────────────
+ * S4(정점 7190)에서 자기충돌이 «에너지원»이 됐다(v3-19 갈래 A). 여기서 같은 계기를
+ * S3b 장면(정점 수백)에 그대로 돌려 «규모»인지 «서브스텝»인지 가른다. 처방 0. */
+if (process.env.DIAGDX === '1') {
+  const NUD = Number(process.env.NU ?? 7);
+  const TD = Number(process.env.T ?? 1.5);
+  const c = accordion(NUD);
+  const selfP = { tris: c.g.tris, thickness: THICK };
+  const BODYD = { colliders: floorCollider(), thickness: THICK, mu: 0.3 };
+  const pD: SolverParams = { dt: DT, substeps: c.sub, gravity: G, damping: 6, collision: BODYD, selfCollision: selfP };
+  const frames = Math.round(TD / DT);
+  for (let f = 0; f < frames - 1; f++) step(c.s, c.con, pD);
+  stepDiag.on = true;
+  step(c.s, c.con, pD);
+  stepDiag.on = false;
+  const h = stepDiag.h;
+  const dd = (a: ArrayLike<number>) => {
+    const v = Array.from({ length: c.s.n }, (_, i) => a[i]).sort((x, y) => x - y);
+    const q = (t: number) => v[Math.min(v.length - 1, Math.floor(t * v.length))];
+    return { med: q(0.5), p95: q(0.95), max: v[v.length - 1] };
+  };
+  const vArr = Array.from({ length: c.s.n }, (_, i) => Math.hypot(c.s.vel[i * 3], c.s.vel[i * 3 + 1], c.s.vel[i * 3 + 2]));
+  const dS = dd(stepDiag.dxSelf), dC = dd(stepDiag.dxCon), dV = dd(vArr);
+  const mp = minPairDist(c.s.pos, c.g.tris, 2 * SEP);
+  const x = selfIntersections(c.s, c.g.tris);
+  console.log(`\n╔══ v3-20 §4 규모 의존 — S3b 장면에 S4와 «같은 계기» ══╗`);
+  console.log(`   정점 ${c.s.n} · 삼각형 ${c.g.tris.length / 3} · sub ${c.sub} · h ${(h * 1e6).toFixed(2)}µs · T=${TD}s`);
+  console.log(`   Δx_self [mm]  중앙 ${(dS.med * 1000).toFixed(4)} · p95 ${(dS.p95 * 1000).toFixed(4)} · 최대 ${(dS.max * 1000).toFixed(4)}`);
+  console.log(`   Δx_con  [mm]  중앙 ${(dC.med * 1000).toFixed(4)} · p95 ${(dC.p95 * 1000).toFixed(4)} · 최대 ${(dC.max * 1000).toFixed(4)}`);
+  console.log(`   |v|   [mm/s]  중앙 ${(dV.med * 1000).toFixed(2)} · p95 ${(dV.p95 * 1000).toFixed(2)} · 최대 ${(dV.max * 1000).toFixed(2)}`);
+  console.log(`   Δx_self/h ÷ |v| = 중앙 ${(dS.med / h / dV.med).toFixed(3)} · 최대 ${(dS.max / h / dV.max).toFixed(3)}`);
+  console.log(`   접촉 밀도: 근접 쌍 ${mp.near} · 교차 ${x} · 분리 위반 ${mp.viol} · 최소 거리 ${(mp.min * 1000).toFixed(4)}mm`);
+  console.log(`   정점당 근접 쌍 ${(mp.near / c.s.n).toFixed(4)}  (S4 대조는 회차 노트 §4)`);
+  process.exit(0);
 }
 
 /* ── ① 자기관통 0 ──────────────────────────────────────────────────────── */
