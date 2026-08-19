@@ -1383,6 +1383,146 @@ if (run('3') && D_CHOSEN > 0) {
    * `SETTLE=1` · 대조군은 `NOBODY=1`(몸 충돌을 끄면 옷이 떨어진다 ⟹ 반드시 FAIL) */
   /* ── v3-23 §1 목선 신장의 «자리» — 재는 것이 전부다(처방 0) ─────────────── */
   /* ── v3-24 §1 원소 변형률 — 시험이 재는 통계를 «국소»로 맞춘다 ──────────── */
+  /* ── v3-26 S5 — 원단 1종 실행 + 관측량 4종. 정의는 §0(커밋)에 «실행 전» 등재 ──
+   * `S5=1 S5TAG=<이름> MATK/MATRHO/MATB [SUBMUL=2]` · 조기 종료 = v3-22 형상 불변 채널 */
+  if (process.env.S5 === '1') {
+    const TAG = process.env.S5TAG ?? 'fabric';
+    const SUBMUL = Number(process.env.SUBMUL ?? 1);
+    const stS = substepsOf(sc);
+    const SUB = stS.sub * SUBMUL;
+    const N_WIN = Math.round(1 / (DAMP * DT));
+    const TH_POS = 1e-4;
+    const hemIx = Array.from({ length: sc.nuB + 1 }, (_, i) => at(front, i, 0)).concat(
+      Array.from({ length: sc.nuB + 1 }, (_, i) => at(back, i, 0)));
+    /* 밑단 «닫힌 고리» — 앞판 밑단(좌→우) + 뒤판 밑단(우→좌). 옆선에서 이어진다 */
+    const hemLoop = [
+      ...Array.from({ length: sc.nuB + 1 }, (_, i) => at(front, i, 0)),
+      ...Array.from({ length: sc.nuB + 1 }, (_, i) => at(back, sc.nuB - i, 0)),
+    ];
+    const seamMed = (pp: Float64Array) => {
+      const g: number[] = [];
+      for (const sm of sc.seams) for (let k = 0; k < sm.a.length; k++) g.push(seg3(pp, sm.a[k], sm.b[k]));
+      g.sort((x, y2) => x - y2);
+      return g[Math.floor(g.length / 2)];
+    };
+    /* O1 밑단 둘레 · O2 주름 파장 (§0-2 정의 그대로) */
+    function hemObs() {
+      const pts: [number, number, number][] = hemLoop.map((v) => [s.pos[v * 3], s.pos[v * 3 + 1], s.pos[v * 3 + 2]]);
+      const M = pts.length;
+      const acc = [0];
+      for (let k = 1; k <= M; k++) {
+        const a = pts[k - 1], b = pts[k % M];
+        acc.push(acc[k - 1] + Math.hypot(a[0] - b[0], a[1] - b[1], a[2] - b[2]));
+      }
+      const total = acc[M];
+      const NS2 = 256;
+      const r: number[] = [];
+      for (let i = 0; i < NS2; i++) {
+        const t = (total * i) / NS2;
+        let k = 0;
+        while (k < M && acc[k + 1] < t) k++;
+        const seg = acc[k + 1] - acc[k];
+        const f2 = seg > 0 ? (t - acc[k]) / seg : 0;
+        const a = pts[k], b = pts[(k + 1) % M];
+        const x = a[0] + (b[0] - a[0]) * f2, z = a[2] + (b[2] - a[2]) * f2;
+        r.push(Math.hypot(x, z - AXIS_Z));
+      }
+      const W2 = Math.max(2, Math.round(NS2 / 8));
+      let cross = 0;
+      let prev = 0;
+      for (let i = 0; i < NS2; i++) {
+        let sm2 = 0;
+        for (let j = -W2; j <= W2; j++) sm2 += r[(i + j + NS2 * 4) % NS2];
+        const res = r[i] - sm2 / (2 * W2 + 1);
+        if (i > 0 && res * prev < 0) cross++;
+        prev = res;
+      }
+      return { girth: total, lambda: cross >= 2 ? total / (cross / 2) : NaN, cross };
+    }
+    const bodyObs = () => {
+      const d: number[] = [];
+      for (let v = 0; v < sc.n; v++) d.push(sampleSdf(bodyG, s.pos[v * 3], s.pos[v * 3 + 1], s.pos[v * 3 + 2]));
+      d.sort((x, y2) => x - y2);
+      return { med: d[Math.floor(sc.n / 2)], touch: (d.filter((x) => x <= SEP).length / sc.n) * 100 };
+    };
+
+    const rest0 = sc.seamCons.map((c) => seg3(pos0, c.i, c.j));
+    const RAMP_N = Math.ceil((Math.max(...rest0) - SEP) / (G * DT * DT));
+    const setRest = (f: number) => {
+      const t = Math.min(1, f / RAMP_N);
+      for (let k = 0; k < sc.seamCons.length; k++) sc.seamCons[k].rest = rest0[k] + (SEP - rest0[k]) * t;
+    };
+    const p5: SolverParams = {
+      dt: DT, substeps: SUB, gravity: G, damping: DAMP,
+      collision: { colliders: [{ kind: 'grid', g: bodyG }], thickness: THICK, mu: MU },
+      selfCollision: { tris: sc.tris, thickness: THICK },
+    };
+    console.log(`\n╔══ S5 [${TAG}] k=${KMEM} ρ=${MAT.rho} B=${MAT.B.toExponential(3)} · sub ${SUB}(멤 ${stS.memb}/굽 ${stS.bend}${SUBMUL > 1 ? ` ×${SUBMUL}` : ''}) · 램프 ${RAMP_N} · 상한 ${FRAMES} ══╗`);
+    let f0 = loadCk();
+    let ref = Float64Array.from(s.pos);
+    let refO = { ring: ring(s.pos) / ringRest, hem: meanY(hemIx, s.pos), seam: seamMed(s.pos) };
+    let settledAt = 0, diverged = false;
+    const t0 = performance.now();
+    let f = f0;
+    for (; f < FRAMES; f++) {
+      setRest(f + 1);
+      step(s, sc.cons, p5);
+      if (!Number.isFinite(s.pos[0])) { diverged = true; break; }
+      if ((f + 1) % 25 === 0) saveCk(f + 1);
+      if ((f + 1) % N_WIN === 0) {
+        let net = 0;
+        for (let v = 0; v < sc.n; v++)
+          net = Math.max(net, Math.hypot(s.pos[v * 3] - ref[v * 3], s.pos[v * 3 + 1] - ref[v * 3 + 1], s.pos[v * 3 + 2] - ref[v * 3 + 2]));
+        const o1 = { ring: ring(s.pos) / ringRest, hem: meanY(hemIx, s.pos), seam: seamMed(s.pos) };
+        const ok = net <= TH_POS && Math.abs(o1.ring - refO.ring) <= 1e-4 &&
+          Math.abs(o1.hem - refO.hem) <= TH_POS && Math.abs(o1.seam - refO.seam) <= TH_POS;
+        if (f + 1 > RAMP_N && ok) { settledAt = f + 1; break; }
+        if ((f + 1) % 50 === 0)
+          console.log(`   f=${String(f + 1).padStart(4)} ${((performance.now() - t0) / 1000).toFixed(0).padStart(6)}s · 창 순변위 ${(net * 1000).toFixed(4)}mm · 밑단y ${(o1.hem * 100).toFixed(2)}cm · 목선 ${o1.ring.toFixed(4)}`);
+        ref = Float64Array.from(s.pos);
+        refO = o1;
+      }
+    }
+    const wall = (performance.now() - t0) / 1000;
+    const H = hemObs(), Bo = bodyObs();
+    const bc = bodyClearance(s);
+    const mp = minPairDist(s.pos, sc.tris, SEP * 3);
+    const ed = edgeDihedrals(prim0.pos, bodyIdx);
+    let pex = 0;
+    if (bc.worstPen >= 0) pex = predExt(bodyG, ed, s.pos[bc.worstPen * 3], s.pos[bc.worstPen * 3 + 1], s.pos[bc.worstPen * 3 + 2]);
+    let lamMax = 0;
+    for (const c of sc.cons) {
+      if (c.kind !== 'inplane') continue;
+      const o0 = c.i0 * 3, o1b = c.i1 * 3, o2 = c.i2 * 3;
+      const e1 = [s.pos[o1b] - s.pos[o0], s.pos[o1b + 1] - s.pos[o0 + 1], s.pos[o1b + 2] - s.pos[o0 + 2]];
+      const e2 = [s.pos[o2] - s.pos[o0], s.pos[o2 + 1] - s.pos[o0 + 1], s.pos[o2 + 2] - s.pos[o0 + 2]];
+      const xu = [c.a * e1[0] + c.b * e2[0], c.a * e1[1] + c.b * e2[1], c.a * e1[2] + c.b * e2[2]];
+      const xv = [c.c * e1[0] + c.d * e2[0], c.c * e1[1] + c.d * e2[1], c.c * e1[2] + c.d * e2[2]];
+      const C00 = xu[0] ** 2 + xu[1] ** 2 + xu[2] ** 2, C11 = xv[0] ** 2 + xv[1] ** 2 + xv[2] ** 2;
+      const C01 = xu[0] * xv[0] + xu[1] * xv[1] + xu[2] * xv[2];
+      const tr = C00 + C11, dt2 = Math.sqrt(Math.max(0, (C00 - C11) ** 2 + 4 * C01 * C01));
+      lamMax = Math.max(lamMax, Math.sqrt(Math.max(0, 0.5 * (tr + dt2))));
+    }
+    const gaps: number[] = [];
+    for (const sm of sc.seams) for (let k = 0; k < sm.a.length; k++) gaps.push(seg3(s.pos, sm.a[k], sm.b[k]));
+    gaps.sort((x, y2) => x - y2);
+    console.log(`   [S5:${TAG}] 정착 ${settledAt || '미도달'} · 프레임 ${f + 1} · ${wall.toFixed(0)}초 · ${(wall / Math.max(1, f + 1 - f0)).toFixed(2)} s/f · 발산 ${diverged ? '있음' : '0'}`);
+    console.log(`   [O:${TAG}] O1 밑단둘레 ${(H.girth * 100).toFixed(2)}cm · O2 파장 ${(H.lambda * 100).toFixed(2)}cm(영교차 ${H.cross}) · O3 간극중앙 ${(Bo.med * 1000).toFixed(3)}mm · O4 접촉 ${Bo.touch.toFixed(2)}%`);
+    console.log(`   [S4:${TAG}] 관통 ${(bc.maxPen * 1000).toFixed(4)}mm/P_ext ${(pex * 1000).toFixed(4)} = ${(bc.maxPen / (pex || 1)).toFixed(3)} · 교차 ${mp.hits} · 시접중앙 ${(gaps[Math.floor(gaps.length / 2)] * 1000).toFixed(2)}mm · 목선 ${(ring(s.pos) / ringRest).toFixed(4)} · λmax ${lamMax.toFixed(4)} · 고정정점 ${pinned}`);
+    const OUT = process.env.CAPDIR ?? `docs/captures/v3-26-S5/${TAG}`;
+    mkdirSync(OUT, { recursive: true });
+    const clothPos = Float64Array.from(s.pos);
+    const colors: [number, number, number][] = [[40, 90, 200], [200, 70, 60], [60, 160, 90], [60, 160, 90]];
+    const meshes: Mesh[] = [{ pos: prim0.pos, idx: bodyIdx, color: [190, 185, 178] }];
+    for (const [pi, pn] of sc.panels.entries()) meshes.push({ pos: clothPos, idx: Uint32Array.from(pn.tris), color: colors[pi] });
+    // 카메라를 4종에서 «같게» 두려고 bbox를 몸 기준으로 고정한다
+    const lo: [number, number, number] = [-0.45, Y_HEM - 0.15, AXIS_Z - 0.35];
+    const hi: [number, number, number] = [0.45, Y_TOP + 0.12, AXIS_Z + 0.35];
+    for (const view of VIEWS) writePng(`${OUT}/${view.name}.png`, 760, 1000, render(meshes, view, { lo, hi }, 760, 1000));
+    console.log(`   [캡처:${TAG}] ${OUT}/{front,sideXplus,back}.png · CC 판정 0`);
+    process.exit(0);
+  }
+
   if (process.env.STRAIN === '1') {
     const fr = loadCk();
     const lam: number[] = [];
