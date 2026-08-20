@@ -1715,6 +1715,14 @@ if (run('3') && D_CHOSEN > 0) {
     console.log(`   [S5:${TAG}] 정착 ${settledAt || '미도달'} · 프레임 ${f + 1} · ${wall.toFixed(0)}초 · ${(wall / Math.max(1, f + 1 - f0)).toFixed(2)} s/f · 발산 ${diverged ? '있음' : '0'}`);
     console.log(`   [O:${TAG}] O1 밑단둘레 ${(H.girth * 100).toFixed(2)}cm · O2 파장 ${(H.lambda * 100).toFixed(2)}cm(영교차 ${H.cross}) · O3 간극중앙 ${(Bo.med * 1000).toFixed(3)}mm · O4 접촉 ${Bo.touch.toFixed(2)}%`);
     console.log(`   [S4:${TAG}] 관통 ${(bc.maxPen * 1000).toFixed(4)}mm/P_ext ${(pex * 1000).toFixed(4)} = ${(bc.maxPen / (pex || 1)).toFixed(3)} · 교차 ${mp.hits} · 시접중앙 ${(gaps[Math.floor(gaps.length / 2)] * 1000).toFixed(2)}mm · 목선 ${(ring(s.pos) / ringRest).toFixed(4)} · λmax ${lamMax.toFixed(4)} · 고정정점 ${pinned}`);
+    /* v3-33 §1 — 최대 관통«점»의 자리. 「해상도를 내리면 같은 자리인가」를 값으로 가른다. */
+    if (bc.worstPen >= 0) {
+      const wo = bc.worstPen * 3;
+      const wx = s.pos[wo], wy = s.pos[wo + 1], wz = s.pos[wo + 2];
+      const nb = nearestBodyPoint(wx, wy, wz);
+      const own = sc.panels.find((pn) => bc.worstPen >= pn.base && bc.worstPen < pn.base + (pn.nu + 1) * (pn.nv + 1))?.name ?? '?';
+      console.log(`   [PENPT:${TAG}] 정점 ${bc.worstPen}(${own}) 옷 (${(wx * 100).toFixed(2)}, ${(wy * 100).toFixed(2)}, ${(wz * 100).toFixed(2)})cm · 몸 최근접 (${(nb[0] * 100).toFixed(2)}, ${(nb[1] * 100).toFixed(2)}, ${(nb[2] * 100).toFixed(2)})cm · θ ${((thetaAt(ed, wx, wy, wz, bodyG.h) * 180) / Math.PI).toFixed(2)}° · 관통정점수 ${bc.penCnt}`);
+    }
     const OUT = process.env.CAPDIR ?? `docs/captures/v3-26-S5/${TAG}`;
     mkdirSync(OUT, { recursive: true });
     const clothPos = Float64Array.from(s.pos);
