@@ -63,7 +63,6 @@ import { dirname } from 'node:path';
 import { render, writePng, VIEWS, type Mesh } from './v3Render.ts';
 
 const GLB = process.env.GLB ?? 'public/models/mannequin.glb';
-const META = process.env.META ?? 'scripts/fixtures/pattern-meta.json';
 const ONLY = (process.env.ONLY ?? '').split(',').filter(Boolean);
 const run = (k: string) => ONLY.length === 0 || ONLY.includes(k);
 
@@ -92,24 +91,171 @@ const V_SETTLE = TOL_SELF / DT;
 
 /* ══ §1 패턴 제도 — 치수는 메타를 «데이터»로 읽는다 ═══════════════════════ */
 
-type Meta = {
-  patternHash: string;
-  garmentDims: { lengthM: number; widthM: number; shoulderWidthM: number; sleeveLengthM: number; sleeveWidthM: number };
-  dims: { neckHalfWidthCm: number; armholeGirthCm: number; capHeightCm: number; necklineGirthCm: number };
-  seamCounts: Record<string, number>;
-  panelCounts: number[];
-  triangles: number;
-};
-const meta: Meta = JSON.parse(readFileSync(META, 'utf8'));
-const MD = meta.garmentDims;
-const L = MD.lengthM;              // 총장
-const W = MD.widthM;               // 품(평면 패널 폭)
-const SW = MD.shoulderWidthM;      // 어깨 너비
-const SLEN = MD.sleeveLengthM;     // 소매 길이
-const NECK_A = meta.dims.neckHalfWidthCm / 100;    // 목선 반폭
-const ARM_G = meta.dims.armholeGirthCm / 100;      // 암홀 둘레(앞+뒤)
-const CAP_H = meta.dims.capHeightCm / 100;         // 소매산 높이
-const NECK_G = meta.dims.necklineGirthCm / 100;    // 목선 둘레(앞+뒤)
+/* ══ 몸 — GLB를 «데이터»로 읽고 SDF를 굽는다(v3-13과 같은 절차) ═══════════ */
+const { prims } = readGlb(GLB);
+const prim0 = prims[0];
+const weld = weldMap(prim0.pos, 0);
+const bodyIdx = Uint32Array.from(prim0.idx, (v) => weld[v]);
+const BEXT: [number, number, number] = [1.78, 1.765, 0.282];
+const sdfSpec = deriveSpacing(BEXT, SDF_BUDGET, THICK);
+const bodyG: GridSdf = bakeSdf(prim0.pos, bodyIdx, sdfSpec.h, sdfSpec.band);
+
+
+/* ══ §1-A 옷 치수 — «UI 입력». v3-31부터 파일을 읽지 «않는다» ════════════
+ * #56: 파생 치수 4종을 `pattern-meta.json`(v2 제도의 산출물)에서 읽던 것을 끊는다.
+ * 그 파일은 «옛 치수의 파생값»이라 치수를 바꾸면 제품에서 성립하지 않는다.
+ * 여기 남는 것은 사용자가 고르는 값(총장·품·어깨·소매길이)과, 몸에서 «잴 수 없는»
+ * 옷 사양 1종(암홀 둘레 — §1-C가 왜 잴 수 없는지 값으로 낸다)뿐이다.
+ * 기본값은 v3-18~30이 돌린 fixture의 값 그대로다(회차 간 대조를 끊지 않기 위함). */
+const num = (k: string, d: number) => (process.env[k] === undefined ? d : Number(process.env[k]));
+const L = num('GL', 0.70);                     // 총장 [m]
+const W = num('GW', 0.55);                     // 품(평면 패널 폭) [m]
+const SW = num('GSW', 0.449995105850059);      // 어깨 너비 [m]
+const SLEN = num('GSLEN', 0.22);               // 소매 길이 [m]
+/** 암홀 둘레(앞+뒤) [m] — **몸에서 도출되지 않는다**(§1-C 갈래 D). 옷 사양 입력이다. */
+const ARM_G = num('GARMG', 0.4439);
+/** v2 제도의 값 — «대조표»에만 쓴다. 읽지 않고 여기 적는다(파일 의존 0). */
+const V2REF = { neckHalfWidthCm: 8.12, armholeGirthCm: 44.39, capHeightCm: 12.31, necklineGirthCm: 48.27,
+                sleeveWidthCm: 18.0, seam: { shoulder: 38, side: 62, armhole: 124, sleeveUnder: 16 } };
+
+/* ══ §1-B 몸 링 계기 — 평면 «정확» 단면 + 볼록 껍질 지지함수 ═════════════
+ * v2는 `bodyGeodesic`/`bodyMeasure`의 측지 링과 능선 폴리라인을 쓴다. v3는 그 자료
+ * 구조를 «갖고 있지 않고 만들지도 않는다» — 가진 것(삼각형 메시 · SDF · 볼록 껍질
+ * 지지함수)으로 «같은 기하 문제»를 푼다. v2 코드 임포트 0(R4-3). */
+const RTH = 720;
+const RS = new Float64Array(RTH), RC = new Float64Array(RTH);
+for (let k = 0; k < RTH; k++) { const t = (k / RTH) * 2 * Math.PI; RS[k] = Math.sin(t); RC[k] = Math.cos(t); }
+
+/** 평면 n·(x,y) = c 와 메시의 «정확한» 교선점. 면내 좌표 (z, n⊥·(x,y)) 로 낸다. */
+function planeSection(nx: number, ny: number, c: number): [number, number][] {
+  const out: [number, number][] = [];
+  const f = (i: number) => nx * prim0.pos[i * 3] + ny * prim0.pos[i * 3 + 1] - c;
+  for (let t = 0; t < bodyIdx.length; t += 3) {
+    const v = [bodyIdx[t], bodyIdx[t + 1], bodyIdx[t + 2]];
+    for (let e = 0; e < 3; e++) {
+      const p = v[e], q = v[(e + 1) % 3];
+      const fp = f(p), fq = f(q);
+      if ((fp > 0) === (fq > 0)) continue;
+      const u = fp / (fp - fq);
+      const X = prim0.pos[p * 3] + u * (prim0.pos[q * 3] - prim0.pos[p * 3]);
+      const Y = prim0.pos[p * 3 + 1] + u * (prim0.pos[q * 3 + 1] - prim0.pos[p * 3 + 1]);
+      const Z = prim0.pos[p * 3 + 2] + u * (prim0.pos[q * 3 + 2] - prim0.pos[p * 3 + 2]);
+      out.push([Z, -nx * Y + ny * X]);
+    }
+  }
+  return out;
+}
+/** 단면점의 볼록 껍질을 δ 부풀린 링. 볼록체를 δ 부풀리면 둘레가 «정확히» 2πδ 는다. */
+function ringOf(pts: [number, number][], delta: number) {
+  if (pts.length < 3) return { girth: NaN, umax: NaN, vmax: NaN, n: pts.length };
+  const h = new Float64Array(RTH).fill(-Infinity);
+  for (const [u, v] of pts) for (let k = 0; k < RTH; k++) { const q = u * RS[k] + v * RC[k]; if (q > h[k]) h[k] = q; }
+  const dth = (2 * Math.PI) / RTH;
+  let s = 0, um = 0, vm = 0, px = 0, pz = 0;
+  const pt = (k: number) => {
+    const hh = h[k] + delta, hp = (h[(k + 1) % RTH] - h[(k - 1 + RTH) % RTH]) / (2 * dth);
+    return [hh * RS[k] + hp * RC[k], hh * RC[k] - hp * RS[k]] as [number, number];
+  };
+  const first = pt(0); px = first[0]; pz = first[1];
+  for (let k = 1; k <= RTH; k++) {
+    const [a, b] = pt(k % RTH);
+    s += Math.hypot(a - px, b - pz); px = a; pz = b;
+    um = Math.max(um, Math.abs(a)); vm = Math.max(vm, Math.abs(b));
+  }
+  return { girth: s, umax: um, vmax: vm, n: pts.length };
+}
+/** 높이 y 근방 표면 «면적» 중 |n_y| ≤ 1/√2 인 비율. 1/√2 = 45° = 벽과 지붕의
+ * «정확한 반»이다 — 고른 수가 아니라 분할점이다. */
+function wallFrac(y: number, half: number): number {
+  let aw = 0, at = 0;
+  for (let t = 0; t < bodyIdx.length; t += 3) {
+    const a = bodyIdx[t] * 3, b = bodyIdx[t + 1] * 3, c = bodyIdx[t + 2] * 3;
+    if (Math.abs((prim0.pos[a + 1] + prim0.pos[b + 1] + prim0.pos[c + 1]) / 3 - y) > half) continue;
+    const ux = prim0.pos[b] - prim0.pos[a], uy = prim0.pos[b + 1] - prim0.pos[a + 1], uz = prim0.pos[b + 2] - prim0.pos[a + 2];
+    const vx = prim0.pos[c] - prim0.pos[a], vy = prim0.pos[c + 1] - prim0.pos[a + 1], vz = prim0.pos[c + 2] - prim0.pos[a + 2];
+    const nx = uy * vz - uz * vy, ny = uz * vx - ux * vz, nz = ux * vy - uy * vx;
+    const len = Math.hypot(nx, ny, nz);
+    if (!len) continue;
+    at += len / 2;
+    if (Math.abs(ny) / len <= Math.SQRT1_2) aw += len / 2;
+  }
+  return at ? aw / at : NaN;
+}
+
+/* ── 어깨끝 높이 — 몸 표면이 |x| = 어깨/2 에 «닿는» 가장 높은 y ─────────── */
+function shoulderTopY(): number {
+  let best = -Infinity;
+  for (let v = 0; v < prim0.pos.length / 3; v++) {
+    const px = Math.abs(prim0.pos[v * 3]);
+    if (px >= SW / 2 - sdfSpec.h && px <= SW / 2 + sdfSpec.h) best = Math.max(best, prim0.pos[v * 3 + 1]);
+  }
+  if (!Number.isFinite(best)) throw new Error('어깨끝 높이를 못 찾는다 — 갈래 D');
+  return best;
+}
+const Y_TOP = shoulderTopY();
+
+/* ── §1-C 파생 치수 도출 — 「옷의 구멍 = 몸의 링을 두께(SEP)만큼 부풀린 것」 ──
+ * 여유(ease)를 새로 «고르지 않는다». 부풀림은 v3가 이미 등재한 유일한 간극
+ * 척도인 SEP = 2×두께(옷–옷 분리 거리 · 배치의 몸 간극)를 그대로 쓴다. */
+
+/** 목 밑동 높이 — 목 단면 둘레가 «최소»인 높이에서 아래로 내려가며 벽 비율이
+ * 1/2 아래로 처음 떨어지는 높이. 목(벽) ↔ 어깨(지붕)의 전이면이다.
+ * 표본 간격 = SDF 복셀 h(몸 표현의 해상도). 손 상수 0. */
+function neckBaseY(): number {
+  const h = sdfSpec.h;
+  let yTopBody = -Infinity;
+  for (let v = 0; v < prim0.pos.length / 3; v++) yTopBody = Math.max(yTopBody, prim0.pos[v * 3 + 1]);
+  const g = (y: number) => ringOf(planeSection(0, 1, y), 0).girth;
+  // 어깨끝에서 «위로» 올라가며 «첫» 국소 최소 — 목이다. (머리 꼭대기가 전역 최소라
+  // 전역 탐색은 정수리를 집는다. 목은 어깨와 턱 사이의 국소 최소다.)
+  let yMin = NaN;
+  for (let y = Y_TOP + 2 * h; y <= yTopBody - 2 * h; y += h) {
+    const c = g(y);
+    if (Number.isFinite(c) && c < g(y - h) && c < g(y + h)) { yMin = y; break; }
+  }
+  if (!Number.isFinite(yMin)) throw new Error('목 단면 국소 최소 둘레를 못 찾는다 — 갈래 D');
+  // 그 높이에서 «아래»로 내려가며 벽 비율이 1/2 을 가르는 높이 = 목 밑동
+  let prevY = yMin, prevW = wallFrac(yMin, h);
+  for (let y = yMin - h; y >= Y_TOP; y -= h) {
+    const w = wallFrac(y, h);
+    if (Number.isFinite(w) && w < 0.5) {
+      const t = prevW > w ? (prevW - 0.5) / (prevW - w) : 0;   // 선형 보간
+      return prevY + t * (y - prevY);
+    }
+    prevY = y; prevW = w;
+  }
+  throw new Error('목 밑동(벽/지붕 전이)을 못 찾는다 — 갈래 D');
+}
+const Y_NECK = neckBaseY();
+const NECK_RING = ringOf(planeSection(0, 1, Y_NECK), SEP);
+/** 목선 반폭 [m] — 목 밑동 링의 x 반폭 */
+const NECK_A = NECK_RING.vmax;
+/** 목선 둘레(앞+뒤) [m] — 목 밑동 링의 둘레 */
+const NECK_G = NECK_RING.girth;
+
+/** 팔 단면 — |x| = x0 평면에서 «최고 성분»만(다리·받침 제외). 성분 분리 간격은
+ * SDF 대역폭(몸 표현의 두께 척도). */
+function armRingAt(x0: number) {
+  const pts = planeSection(1, 0, x0).map(([z, t]) => [z, -t] as [number, number]);   // (z, y)
+  if (pts.length < 3) return { girth: NaN, umax: NaN, vmax: NaN, n: pts.length };
+  const ys = pts.map((p) => p[1]).sort((a, b) => a - b);
+  let lo = ys[ys.length - 1];
+  for (let i = ys.length - 2; i >= 0; i--) { if (lo - ys[i] > sdfSpec.band) break; lo = ys[i]; }
+  return ringOf(pts.filter((p) => p[1] >= lo - 1e-12), SEP);
+}
+/** 소매 통둘레 [m] — 소매가 덮는 x 대역에서 팔 단면의 «최대». 소매는 가장 굵은
+ * 곳을 지나야 하므로 최대다(평균·중앙이 아니다). */
+const CAP_TUBE = (() => {
+  let m = 0, at = NaN;
+  for (let x = SW / 2; x <= SW / 2 + SLEN + 1e-12; x += sdfSpec.h) {
+    const g = armRingAt(x).girth;
+    if (Number.isFinite(g) && g > m) { m = g; at = x; }
+  }
+  if (!(m > 0)) throw new Error('소매 대역 팔 단면을 못 찾는다 — 갈래 D');
+  return { girth: m, at };
+})();
+/** 소매산 반폭 [m] = 소매 통둘레의 절반 */
+const CAP_W = CAP_TUBE.girth / 2;
 
 type Pt = [number, number];
 type Curve = (t: number) => Pt;
@@ -152,7 +298,12 @@ const famArm = (a: number, b: number): Curve => (t) => [a * Math.cos((t * Math.P
 const famCap = (a: number, b: number): Curve => (t) => [a * (1 - t), (b / 2) * (1 - Math.cos(Math.PI * t))];
 
 const ARM_D = solveB(ARM_G / 2, (b) => arcLen(famArm(ARM_A, b)), 1e-4, 2);
-const CAP_W = solveB(ARM_G / 2, (a) => arcLen(famCap(a, CAP_H)), 1e-4, 2);
+/** 소매산 높이 [m] — 소매 통둘레(몸에서 잰 값)와 암홀 길이가 «둘 다» 맞는 높이.
+ * 실수해의 조건은 암홀 반쪽 ≥ 소매산 반폭이다(곡선 길이 ≥ 밑변). 안 되면 정지한다. */
+if (!(ARM_G / 2 >= CAP_W)) {
+  throw new Error(`소매산 실수해 없음 — 암홀 반쪽 ${(ARM_G / 2 * 100).toFixed(2)}cm < 소매산 반폭 ${(CAP_W * 100).toFixed(2)}cm — 갈래 D`);
+}
+const CAP_H = solveB(ARM_G / 2, (b) => arcLen(famCap(CAP_W, b)), 0, 2);
 /** 목선 반쪽: (a,0) → (0,b) 를 «양 끝 수평»으로. 어깨선과 C¹로 이어지므로
  * 위 경계에 «모서리가 없다» — 초판은 여기서 90° 모서리가 나서 Coons 칸이 9°까지
  * 기울었다(칸의 문제가 아니라 «제도»의 문제였다). */
@@ -206,28 +357,29 @@ const LEN_NECK = arcLen(neckF);
 const LEN_CAP = arcLen(capF);
 
 if (run('1')) {
-  console.log(`\n╔══ §1 패턴 제도 — 치수는 «데이터», 기하는 v3가 제도 ══╗`);
-  console.log(`   메타 ${META}  patternHash ${meta.patternHash} (v2 코드 임포트 0)`);
-  console.log(`   읽은 값: 총장 ${L}m · 품 ${W}m · 어깨 ${SW.toFixed(4)}m · 소매 ${SLEN}m`);
-  console.log(`            목선반폭 ${(NECK_A * 100).toFixed(2)}cm · 암홀둘레 ${(ARM_G * 100).toFixed(2)}cm · 소매산 ${(CAP_H * 100).toFixed(2)}cm · 목선둘레 ${(NECK_G * 100).toFixed(2)}cm`);
+  console.log(`\n╔══ §1 패턴 제도 — 치수는 «UI 입력» · 파생 4종은 v3가 «몸에서» 도출 ══╗`);
+  console.log(`   ${GLB} · 정점 ${prim0.pos.length / 3} · 삼각형 ${bodyIdx.length / 3} · pattern-meta.json 읽기 «0»`);
+  console.log(`   옷 치수(입력): 총장 ${L}m · 품 ${W}m · 어깨 ${SW.toFixed(4)}m · 소매 ${SLEN}m · 암홀둘레 ${(ARM_G * 100).toFixed(2)}cm(§1-C 갈래 D)`);
+  console.log(`   ── 몸에서 «잰» 링 (평면 정확 단면 + 볼록 껍질 + SEP ${(SEP * 1000).toFixed(1)}mm) ──`);
+  console.log(`   어깨끝 높이 Y_TOP  = ${Y_TOP.toFixed(4)} m`);
+  console.log(`   목 밑동 높이 Y_NECK = ${Y_NECK.toFixed(4)} m  ⟸ 벽비율(|n_y|≤1/√2) 이 1/2 을 가르는 높이`);
+  console.log(`   목 밑동 링         둘레 ${(NECK_RING.girth * 100).toFixed(2)}cm · x반폭 ${(NECK_RING.umax * 100).toFixed(2)}cm · 교선점 ${NECK_RING.n}`);
+  console.log(`   소매 대역 팔 최대   둘레 ${(CAP_TUBE.girth * 100).toFixed(2)}cm @ x=${(CAP_TUBE.at * 100).toFixed(1)}cm`);
+  console.log(`   ── 파생 치수 4종 · v2(pattern-meta.json) 대조 ──`);
+  const row = (nm: string, v3: number, v2: number) =>
+    console.log(`   ${nm.padEnd(12)} v3 ${v3.toFixed(2).padStart(7)}cm   v2 ${v2.toFixed(2).padStart(7)}cm   차 ${(v3 - v2).toFixed(2).padStart(7)}cm (${(((v3 - v2) / v2) * 100).toFixed(1).padStart(6)}%)`);
+  row('목선 반폭', NECK_A * 100, V2REF.neckHalfWidthCm);
+  row('목선 둘레', NECK_G * 100, V2REF.necklineGirthCm);
+  row('암홀 둘레', ARM_G * 100, V2REF.armholeGirthCm);
+  row('소매산 높이', CAP_H * 100, V2REF.capHeightCm);
   console.log(`   ── 도출(이분법 · 손 상수 0) ──`);
   console.log(`   암홀 깊이 D      = ${(ARM_D * 100).toFixed(3)} cm   ⟸ 암홀 곡선족(a=${(ARM_A * 100).toFixed(2)}cm, b=D) 길이 = 암홀둘레/2`);
-  console.log(`   소매산 반폭 w_c  = ${(CAP_W * 100).toFixed(3)} cm   ⟸ 소매산 곡선족(a=w_c, b=소매산높이) 반쪽 길이 = 암홀둘레/2`);
+  console.log(`   소매산 높이 h_c  = ${(CAP_H * 100).toFixed(3)} cm   ⟸ 소매산 곡선족(a=소매통/2, b=h_c) 반쪽 길이 = 암홀둘레/2`);
   console.log(`   목선 처짐 b_n    = ${(NECK_B * 100).toFixed(3)} cm   ⟸ 목선 곡선족(a=목선반폭, b) 반쪽 길이 = 목선둘레/4 (앞뒤 «같게»)`);
   console.log(`   ⟹ 겨드랑이 높이 ${(Y_ARM * 100).toFixed(2)}cm · 어깨선 ${(SH_LEN * 100).toFixed(2)}cm · 소매밑 ${(SLEEVE_UNDER * 100).toFixed(2)}cm`);
-  console.log(`   봉제 길이 대조: 암홀 1개 ${(LEN_ARM * 100).toFixed(3)}cm × 2 = ${(2 * LEN_ARM * 100).toFixed(3)}cm ↔ 소매산 전체 ${(LEN_CAP * 100).toFixed(3)}cm  (차 ${(Math.abs(2 * LEN_ARM - LEN_CAP) * 1e4).toFixed(4)}mm) · 목선 ${(LEN_NECK * 100).toFixed(3)}cm × 2 = ${(2 * LEN_NECK * 100).toFixed(2)}cm ↔ 메타 ${(NECK_G * 100).toFixed(2)}cm`);
-  console.log(`   소매 통둘레(2·w_c) ${(2 * CAP_W * 100).toFixed(2)}cm ↔ 메타 sleeveWidthM ${(MD.sleeveWidthM * 100).toFixed(1)}cm — «맞지 않는다»`);
-  console.log(`     ⟹ sleeveWidthM은 이 제도에 쓰지 «않는다». 쓰면 소매산–암홀 길이 일치가 깨진다(봉제 자기검사 ② 실패).`);
+  console.log(`   봉제 길이 대조: 암홀 1개 ${(LEN_ARM * 100).toFixed(3)}cm × 2 = ${(2 * LEN_ARM * 100).toFixed(3)}cm ↔ 소매산 전체 ${(LEN_CAP * 100).toFixed(3)}cm  (차 ${(Math.abs(2 * LEN_ARM - LEN_CAP) * 1e4).toFixed(4)}mm) · 목선 ${(LEN_NECK * 100).toFixed(3)}cm × 2 = ${(2 * LEN_NECK * 100).toFixed(2)}cm ↔ 도출 ${(NECK_G * 100).toFixed(2)}cm`);
+  console.log(`   소매 통둘레(2·w_c) ${(2 * CAP_W * 100).toFixed(2)}cm ↔ 몸 팔 최대단면+SEP ${(CAP_TUBE.girth * 100).toFixed(2)}cm — «같다»(도출의 정의)`);
 }
-
-/* ══ 몸 — GLB를 «데이터»로 읽고 SDF를 굽는다(v3-13과 같은 절차) ═══════════ */
-const { prims } = readGlb(GLB);
-const prim0 = prims[0];
-const weld = weldMap(prim0.pos, 0);
-const bodyIdx = Uint32Array.from(prim0.idx, (v) => weld[v]);
-const BEXT: [number, number, number] = [1.78, 1.765, 0.282];
-const sdfSpec = deriveSpacing(BEXT, SDF_BUDGET, THICK);
-const bodyG: GridSdf = bakeSdf(prim0.pos, bodyIdx, sdfSpec.h, sdfSpec.band);
 
 /** 몸 표면의 «단면» 실측 — 높이 y에서 |x| ≤ xLim 인 정점의 x·z 범위. */
 function slice(y: number, dy: number, xLim: number) {
@@ -241,16 +393,6 @@ function slice(y: number, dy: number, xLim: number) {
     cnt++;
   }
   return { xMax, zMin, zMax, zc: (zMin + zMax) / 2, cnt };
-}
-
-/** 어깨끝 높이 — 몸 표면이 |x| = SW/2 에 «닿는» 가장 높은 y. 손 상수 0. */
-function shoulderTopY(): number {
-  let best = -Infinity;
-  for (let v = 0; v < prim0.pos.length / 3; v++) {
-    const px = Math.abs(prim0.pos[v * 3]);
-    if (px >= SW / 2 - 0.005 && px <= SW / 2 + 0.005) best = Math.max(best, prim0.pos[v * 3 + 1]);
-  }
-  return best;
 }
 
 /** 팔 축 — x 대역에서 |x|>armX 인 정점의 (y,z) 중심과 반경 */
@@ -367,7 +509,6 @@ function build(d: number) {
 }
 
 /* ── 배치: 몸에서 «도출»한 면 위에 얹는다 ────────────────────────────────── */
-const Y_TOP = shoulderTopY();          // 어깨선을 얹을 높이 — 몸에서 잰 값
 const Y_HEM = Y_TOP - L;
 
 /* ── 배치면: 몸의 «실루엣»을 감싸는 볼록 기둥 ──────────────────────────────
@@ -1234,7 +1375,7 @@ if (run('3') && D_CHOSEN > 0) {
   const freeExpect = freeSet.size;
   const mismatch = [...bnd].filter((v) => (sewn.has(v) ? freeSet.has(v) : !freeSet.has(v))).length;
   console.log(`   ② 자기검사: 대응 1:1 ${selfOk ? 'PASS' : 'FAIL'} · 쌍 총 ${pairTot} · 미봉제 경계 정점 ${free} (밑단+목선+소매밑단 집합 ${freeExpect} · 불일치 ${mismatch}) ⟹ ${free === freeExpect && mismatch === 0 ? 'PASS' : 'FAIL'}`);
-  console.log(`   메타 대조(v2 해상도): shoulder ${meta.seamCounts.shoulder} · side ${meta.seamCounts.side} · armhole ${meta.seamCounts.armhole} · sleeveUnder ${meta.seamCounts.sleeveUnder} — 해상도가 달라 수는 다르다(길이가 정본)`);
+  console.log(`   메타 대조(v2 해상도): shoulder ${V2REF.seam.shoulder} · side ${V2REF.seam.side} · armhole ${V2REF.seam.armhole} · sleeveUnder ${V2REF.seam.sleeveUnder} — 해상도가 달라 수는 다르다(길이가 정본)`);
   const gate2 = selfOk && free === freeExpect && mismatch === 0;
 
   console.log(`\n╔══ §4 초기 적법성 ══╗`);
