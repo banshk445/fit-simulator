@@ -1389,7 +1389,9 @@ if (run('3') && D_CHOSEN > 0) {
     const TAG = process.env.S5TAG ?? 'fabric';
     const SUBMUL = Number(process.env.SUBMUL ?? 1);
     const stS = substepsOf(sc);
-    const SUB = stS.sub * SUBMUL;
+    /** v3-27 §1 — 축을 «따로» 움직인다. 기본은 산정값 그대로(비트 동일) */
+    const SUB = Number(process.env.SUBSTEPS ?? stS.sub * SUBMUL);
+    const SELF_EVERY = Number(process.env.SELFEVERY ?? 1);
     const N_WIN = Math.round(1 / (DAMP * DT));
     const TH_POS = 1e-4;
     const hemIx = Array.from({ length: sc.nuB + 1 }, (_, i) => at(front, i, 0)).concat(
@@ -1455,9 +1457,9 @@ if (run('3') && D_CHOSEN > 0) {
     const p5: SolverParams = {
       dt: DT, substeps: SUB, gravity: G, damping: DAMP,
       collision: { colliders: [{ kind: 'grid', g: bodyG }], thickness: THICK, mu: MU },
-      selfCollision: { tris: sc.tris, thickness: THICK },
+      selfCollision: { tris: sc.tris, thickness: THICK, every: SELF_EVERY },
     };
-    console.log(`\n╔══ S5 [${TAG}] k=${KMEM} ρ=${MAT.rho} B=${MAT.B.toExponential(3)} · sub ${SUB}(멤 ${stS.memb}/굽 ${stS.bend}${SUBMUL > 1 ? ` ×${SUBMUL}` : ''}) · 램프 ${RAMP_N} · 상한 ${FRAMES} ══╗`);
+    console.log(`\n╔══ S5 [${TAG}] k=${KMEM} ρ=${MAT.rho} B=${MAT.B.toExponential(3)} · sub ${SUB}(산정 ${stS.sub} 멤 ${stS.memb}/굽 ${stS.bend}) · 자기충돌 주기 ${SELF_EVERY} · d ${(D_CHOSEN * 1000).toFixed(1)}mm · 램프 ${RAMP_N} · 상한 ${FRAMES} ══╗`);
     let f0 = loadCk();
     let ref = Float64Array.from(s.pos);
     let refO = { ring: ring(s.pos) / ringRest, hem: meanY(hemIx, s.pos), seam: seamMed(s.pos) };

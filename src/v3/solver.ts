@@ -266,6 +266,9 @@ export type SelfCollisionParams = {
   /** 한 서브스텝 «안»에서 해소를 몇 번 반복할지. 기본 1 ⟹ 기존 경로 비트 동일.
    * v3-20 §3이 「반복하면 잔여 침투가 주는가(부족)인가 안 주는가(순환)인가」를 묻는다. */
   iterations?: number;
+  /** 해소 «주기»(서브스텝). 기본 1 = 매 서브스텝 ⟹ 기존 경로 비트 동일.
+   * v3-27 §1-2가 「주기를 늘리면 비용이 얼마나 주는가」를 잰다. 몸 충돌의 `every`와 같은 형태. */
+  every?: number;
 };
 
 /** 직전 `step` 호출의 자기충돌 계기.
@@ -1113,7 +1116,7 @@ export function step(s: Solver, cs: Constraint[], p: SolverParams): void {
     }
     // 자기충돌 — 제약 투영 «뒤», 몸 충돌 «앞». 몸 관통이 더 단단한 조건이므로
     // 마지막에 두어 자기충돌이 몸 안으로 밀어 넣은 것을 그 자리에서 되돌린다.
-    if (p.selfCollision) {
+    if (p.selfCollision && sub % (p.selfCollision.every ?? 1) === 0) {
       const si = p.selfCollision.iterations ?? 1;
       for (let q = 0; q < si; q++) resolveSelfCollisions(s, p.selfCollision);
     }
