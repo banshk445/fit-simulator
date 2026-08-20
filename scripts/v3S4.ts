@@ -1390,7 +1390,9 @@ if (run('3') && D_CHOSEN > 0) {
     const SUBMUL = Number(process.env.SUBMUL ?? 1);
     const stS = substepsOf(sc);
     /** v3-27 §1 — 축을 «따로» 움직인다. 기본은 산정값 그대로(비트 동일) */
-    const SUB = Number(process.env.SUBSTEPS ?? stS.sub * SUBMUL);
+    /** SUBDIV — 서브스텝을 «산정의 1/N»로. 해상도가 바뀌면 산정도 바뀌므로 조합에는 비율이 맞다 */
+    const SUBDIV = Number(process.env.SUBDIV ?? 1);
+    const SUB = Number(process.env.SUBSTEPS ?? Math.max(1, Math.round((stS.sub * SUBMUL) / SUBDIV)));
     const SELF_EVERY = Number(process.env.SELFEVERY ?? 1);
     const N_WIN = Math.round(1 / (DAMP * DT));
     const TH_POS = 1e-4;
@@ -1461,6 +1463,8 @@ if (run('3') && D_CHOSEN > 0) {
     };
     console.log(`\n╔══ S5 [${TAG}] k=${KMEM} ρ=${MAT.rho} B=${MAT.B.toExponential(3)} · sub ${SUB}(산정 ${stS.sub} 멤 ${stS.memb}/굽 ${stS.bend}) · 자기충돌 주기 ${SELF_EVERY} · d ${(D_CHOSEN * 1000).toFixed(1)}mm · 램프 ${RAMP_N} · 상한 ${FRAMES} ══╗`);
     let f0 = loadCk();
+    selfStats.fill(0);
+    collisionStats.fill(0);
     let ref = Float64Array.from(s.pos);
     let refO = { ring: ring(s.pos) / ringRest, hem: meanY(hemIx, s.pos), seam: seamMed(s.pos) };
     let settledAt = 0, diverged = false;
@@ -1508,6 +1512,10 @@ if (run('3') && D_CHOSEN > 0) {
     const gaps: number[] = [];
     for (const sm of sc.seams) for (let k = 0; k < sm.a.length; k++) gaps.push(seg3(s.pos, sm.a[k], sm.b[k]));
     gaps.sort((x, y2) => x - y2);
+    {
+      const nf = Math.max(1, f + 1 - f0);
+      console.log(`   [자기충돌:${TAG}] 근접쌍/프레임 ${(selfStats[0] / nf).toFixed(0)} · 해소/프레임 ${(selfStats[1] / nf).toFixed(0)} · 최대침투 ${(selfStats[2] * 1000).toFixed(4)}mm · 광역 ${(selfStats[3] / nf).toFixed(1)}ms 협역 ${(selfStats[4] / nf).toFixed(1)}ms 해소 ${(selfStats[5] / nf).toFixed(1)}ms /프레임`);
+    }
     console.log(`   [S5:${TAG}] 정착 ${settledAt || '미도달'} · 프레임 ${f + 1} · ${wall.toFixed(0)}초 · ${(wall / Math.max(1, f + 1 - f0)).toFixed(2)} s/f · 발산 ${diverged ? '있음' : '0'}`);
     console.log(`   [O:${TAG}] O1 밑단둘레 ${(H.girth * 100).toFixed(2)}cm · O2 파장 ${(H.lambda * 100).toFixed(2)}cm(영교차 ${H.cross}) · O3 간극중앙 ${(Bo.med * 1000).toFixed(3)}mm · O4 접촉 ${Bo.touch.toFixed(2)}%`);
     console.log(`   [S4:${TAG}] 관통 ${(bc.maxPen * 1000).toFixed(4)}mm/P_ext ${(pex * 1000).toFixed(4)} = ${(bc.maxPen / (pex || 1)).toFixed(3)} · 교차 ${mp.hits} · 시접중앙 ${(gaps[Math.floor(gaps.length / 2)] * 1000).toFixed(2)}mm · 목선 ${(ring(s.pos) / ringRest).toFixed(4)} · λmax ${lamMax.toFixed(4)} · 고정정점 ${pinned}`);
