@@ -177,22 +177,49 @@ function ringOf(pts: [number, number][], delta: number) {
   }
   return { girth: s, umax: um, vmax: vm, n: pts.length };
 }
-/** 높이 y 근방 표면 «면적» 중 |n_y| ≤ 1/√2 인 비율. 1/√2 = 45° = 벽과 지붕의
- * «정확한 반»이다 — 고른 수가 아니라 분할점이다. */
-function wallFrac(y: number, half: number): number {
-  let aw = 0, at = 0;
+/** 높이 y «그 자리»의 벽 비율 — 대역 없이 «면적 밀도»로 가중한다.
+ * v3-31은 두께 2h(≈7.9mm) «대역의 면적»으로 쟀다. 대역이 곧 분해능 하한이라
+ * 근찾기를 아무리 정밀하게 해도 그 아래로 못 내려간다(#59).
+ *
+ * **가중을 «교선 길이»로 하면 안 된다** — 수평에 가까운 면(지붕)은 수평면과 거의
+ * 나란해서 교선이 거의 안 생기고, 그러면 지붕이 통째로 빠져 벽 비율이 위로 편향된다
+ * (실측: 그렇게 재면 Y_NECK이 1.4904m로 11.5mm 내려가 어깨 한복판을 집는다).
+ *
+ * 옳은 가중은 «단위 높이당 면적»이다. 면 위에서 높이가 dy 오를 때 진행 거리는
+ * dl = dy / |n_h| (n_h = 법선의 수평 성분 크기 · 수직 벽은 |n_h|=1, 수평 지붕은 0).
+ * ⟹ dA = ds · dy / |n_h| ⟹ 가중치 = 교선길이 / |n_h| = seg·|n| / √(n_x²+n_z²).
+ * 대역→0 극한에서 v3-31의 «대역 면적»과 같은 양이고, 대역은 사라진다.
+ * 문턱은 그대로 |n_y| ≤ 1/√2(45°)다 — **기준은 손대지 않는다.** */
+function wallFracAt(y: number): number {
+  let lw = 0, lt = 0;
+  const P = prim0.pos;
   for (let t = 0; t < bodyIdx.length; t += 3) {
-    const a = bodyIdx[t] * 3, b = bodyIdx[t + 1] * 3, c = bodyIdx[t + 2] * 3;
-    if (Math.abs((prim0.pos[a + 1] + prim0.pos[b + 1] + prim0.pos[c + 1]) / 3 - y) > half) continue;
-    const ux = prim0.pos[b] - prim0.pos[a], uy = prim0.pos[b + 1] - prim0.pos[a + 1], uz = prim0.pos[b + 2] - prim0.pos[a + 2];
-    const vx = prim0.pos[c] - prim0.pos[a], vy = prim0.pos[c + 1] - prim0.pos[a + 1], vz = prim0.pos[c + 2] - prim0.pos[a + 2];
+    const i0 = bodyIdx[t] * 3, i1 = bodyIdx[t + 1] * 3, i2 = bodyIdx[t + 2] * 3;
+    const d0 = P[i0 + 1] - y, d1 = P[i1 + 1] - y, d2 = P[i2 + 1] - y;
+    if ((d0 > 0 && d1 > 0 && d2 > 0) || (d0 < 0 && d1 < 0 && d2 < 0)) continue;
+    // 평면을 가르는 두 엣지에서 교점을 잡는다(삼각형 ∩ 평면 = 선분)
+    const pts: number[][] = [];
+    const edge = (ia: number, ib: number, da: number, db: number) => {
+      if ((da > 0) === (db > 0)) return;
+      const u = da / (da - db);
+      pts.push([P[ia] + u * (P[ib] - P[ia]), P[ia + 2] + u * (P[ib + 2] - P[ia + 2])]);
+    };
+    edge(i0, i1, d0, d1); edge(i1, i2, d1, d2); edge(i2, i0, d2, d0);
+    if (pts.length < 2) continue;
+    const seg = Math.hypot(pts[0][0] - pts[1][0], pts[0][1] - pts[1][1]);
+    if (!(seg > 0)) continue;
+    const ux = P[i1] - P[i0], uy = P[i1 + 1] - P[i0 + 1], uz = P[i1 + 2] - P[i0 + 2];
+    const vx = P[i2] - P[i0], vy = P[i2 + 1] - P[i0 + 1], vz = P[i2 + 2] - P[i0 + 2];
     const nx = uy * vz - uz * vy, ny = uz * vx - ux * vz, nz = ux * vy - uy * vx;
     const len = Math.hypot(nx, ny, nz);
     if (!len) continue;
-    at += len / 2;
-    if (Math.abs(ny) / len <= Math.SQRT1_2) aw += len / 2;
+    const nh = Math.hypot(nx, nz);
+    if (!(nh > 0)) continue;                 // 완전 수평면 — 이 평면과 만나지 않는다
+    const wgt = (seg * len) / nh;            // 단위 높이당 면적
+    lt += wgt;
+    if (Math.abs(ny) / len <= Math.SQRT1_2) lw += wgt;
   }
-  return at ? aw / at : NaN;
+  return lt ? lw / lt : NaN;
 }
 
 /* ── 어깨끝 높이 — 몸 표면이 |x| = 어깨/2 에 «닿는» 가장 높은 y ─────────── */
@@ -211,9 +238,11 @@ const Y_TOP = shoulderTopY();
  * 여유(ease)를 새로 «고르지 않는다». 부풀림은 v3가 이미 등재한 유일한 간극
  * 척도인 SEP = 2×두께(옷–옷 분리 거리 · 배치의 몸 간극)를 그대로 쓴다. */
 
-/** 목 밑동 높이 — 목 단면 둘레가 «최소»인 높이에서 아래로 내려가며 벽 비율이
- * 1/2 아래로 처음 떨어지는 높이. 목(벽) ↔ 어깨(지붕)의 전이면이다.
- * 표본 간격 = SDF 복셀 h(몸 표현의 해상도). 손 상수 0. */
+/** 목 밑동 높이 — 기준은 v3-31 그대로(벽 비율이 1/2 을 가르는 높이). **바뀐 것은
+ * 근을 찾는 정밀도뿐이다**: 복셀 간격 표본 + 선형 보간 → «구간 포착 후 이분법».
+ * 수렴 문턱 = `TOL_SELF` 0.1mm — v3-12가 등재한 「한 서브스텝 재수렴 폭」이고,
+ * v3가 «두 기하를 같다고 보는» 길이다. 새 상수 0. */
+const neckDiag = { iters: 0, bracket: 0, dPdy: 0, precMm: 0 };
 function neckBaseY(): number {
   const h = sdfSpec.h;
   let yTopBody = -Infinity;
@@ -227,17 +256,29 @@ function neckBaseY(): number {
     if (Number.isFinite(c) && c < g(y - h) && c < g(y + h)) { yMin = y; break; }
   }
   if (!Number.isFinite(yMin)) throw new Error('목 단면 국소 최소 둘레를 못 찾는다 — 갈래 D');
-  // 그 높이에서 «아래»로 내려가며 벽 비율이 1/2 을 가르는 높이 = 목 밑동
-  let prevY = yMin, prevW = wallFrac(yMin, h);
+  // ① 구간 포착 — 아래로 내려가며 1/2 을 «처음» 가르는 한 칸을 잡는다
+  let hi = yMin, hiW = wallFracAt(yMin), lo = NaN;
   for (let y = yMin - h; y >= Y_TOP; y -= h) {
-    const w = wallFrac(y, h);
-    if (Number.isFinite(w) && w < 0.5) {
-      const t = prevW > w ? (prevW - 0.5) / (prevW - w) : 0;   // 선형 보간
-      return prevY + t * (y - prevY);
-    }
-    prevY = y; prevW = w;
+    const w = wallFracAt(y);
+    if (!Number.isFinite(w)) continue;
+    if (w < 0.5) { lo = y; break; }
+    hi = y; hiW = w;
   }
-  throw new Error('목 밑동(벽/지붕 전이)을 못 찾는다 — 갈래 D');
+  if (!Number.isFinite(lo)) throw new Error('목 밑동(벽/지붕 전이)을 못 찾는다 — 갈래 D');
+  if (!(hiW >= 0.5)) throw new Error('목 밑동 구간 포착 실패 — 위쪽 끝이 이미 1/2 아래다 — 갈래 D');
+  neckDiag.bracket = hi - lo;
+  // ② 이분법 — 대역이 없으므로 «칸» 아래로 내려간다
+  let it = 0;
+  for (; it < 200 && hi - lo > TOL_SELF; it++) {
+    const m = (lo + hi) / 2, w = wallFracAt(m);
+    if (Number.isFinite(w) && w < 0.5) lo = m; else hi = m;
+  }
+  neckDiag.iters = it;
+  const y0 = (lo + hi) / 2;
+  // 둘레 정밀도 = |dP/dy| × 문턱. 근찾기가 얼마나 «값»으로 정밀한지 값으로 낸다.
+  neckDiag.dPdy = (g(y0 + TOL_SELF) - g(y0 - TOL_SELF)) / (2 * TOL_SELF);
+  neckDiag.precMm = Math.abs(neckDiag.dPdy) * TOL_SELF * 1000;
+  return y0;
 }
 const Y_NECK = neckBaseY();
 const NECK_RING = ringOf(planeSection(0, 1, Y_NECK), SEP);
@@ -376,7 +417,8 @@ if (run('1')) {
   console.log(`   ── 몸에서 «잰» 링 (평면 정확 단면 + 볼록 껍질 + SEP ${(SEP * 1000).toFixed(1)}mm) ──`);
   console.log(`   어깨끝 높이 Y_TOP  = ${Y_TOP.toFixed(4)} m`);
   console.log(`   목 밑동 높이 Y_NECK = ${Y_NECK.toFixed(4)} m  ⟸ 벽비율(|n_y|≤1/√2) 이 1/2 을 가르는 높이`);
-  console.log(`   목 밑동 링         둘레 ${(NECK_RING.girth * 100).toFixed(2)}cm · x반폭 ${(NECK_RING.umax * 100).toFixed(2)}cm · 교선점 ${NECK_RING.n}`);
+  console.log(`   목 밑동 링         둘레 ${(NECK_RING.girth * 100).toFixed(2)}cm · x반폭 ${(NECK_RING.vmax * 100).toFixed(2)}cm · 교선점 ${NECK_RING.n}`);
+  console.log(`   목 밑동 근찾기     이분법 ${neckDiag.iters}회 · 문턱 TOL_SELF ${(TOL_SELF * 1000).toFixed(1)}mm · 포착 칸 ${(neckDiag.bracket * 1000).toFixed(2)}mm · dP/dy ${(neckDiag.dPdy / 10).toFixed(2)}cm/mm ⟹ 둘레 정밀도 ${neckDiag.precMm.toFixed(2)}mm`);
   console.log(`   소매 대역 팔 최대   둘레 ${(CAP_TUBE.girth * 100).toFixed(2)}cm @ x=${(CAP_TUBE.at * 100).toFixed(1)}cm`);
   console.log(`   ── 파생 치수 4종 · v2(pattern-meta.json) 대조 ──`);
   const row = (nm: string, v3: number, v2: number) =>
