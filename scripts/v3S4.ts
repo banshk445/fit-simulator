@@ -1533,6 +1533,32 @@ if (run('3') && D_CHOSEN > 0) {
     process.exit(0);
   }
 
+  /* ── v3-28 §2 관통 비 재판정 — v3-16 등록 정의(분모 = 점별 P_ext의 «최댓값») ──
+   * `PEN=1` · 체크포인트 상태에서 «스텝 0»으로 두 통계를 나란히 낸다(판정은 등록 정의). */
+  if (process.env.PEN === '1') {
+    const fr = loadCk();
+    const ed = edgeDihedrals(prim0.pos, bodyIdx);
+    const bc = bodyClearance(s);
+    let pexMax = 0, pexAtWorst = 0;
+    const pex: number[] = [];
+    for (let v = 0; v < sc.n; v++) {
+      const x = s.pos[v * 3], y = s.pos[v * 3 + 1], z = s.pos[v * 3 + 2];
+      if (sampleSdf(bodyG, x, y, z) > SEP) continue;
+      const pe = predExt(bodyG, ed, x, y, z);
+      pex.push(pe);
+      if (pe > pexMax) pexMax = pe;
+      if (v === bc.worstPen) pexAtWorst = pe;
+    }
+    pex.sort((a, b) => a - b);
+    const rReg = pexMax > 0 ? bc.maxPen / pexMax : NaN;
+    const rOld = pexAtWorst > 0 ? bc.maxPen / pexAtWorst : NaN;
+    const ok = rReg >= 0.5 && rReg <= 1.25;
+    console.log(`   [PEN:${process.env.S5TAG ?? ''}] f=${fr} · 최대관통 ${(bc.maxPen * 1000).toFixed(4)}mm · 관통정점 ${bc.penCnt} · 접촉 ${pex.length}`);
+    console.log(`        점별 P_ext[mm] 중앙 ${(pex.length ? pex[Math.floor(pex.length / 2)] * 1000 : 0).toFixed(4)} · p95 ${(pex.length ? pex[Math.floor(pex.length * 0.95)] * 1000 : 0).toFixed(4)} · **최대 ${(pexMax * 1000).toFixed(4)}**`);
+    console.log(`        **등록 정의 비 = ${rReg.toFixed(3)}** ⟹ ${ok ? 'PASS' : 'FAIL'}   (잘못 쓴 것: 최대점 P_ext ${(pexAtWorst * 1000).toFixed(4)} ⟹ ${rOld.toFixed(3)})`);
+    process.exit(0);
+  }
+
   if (process.env.STRAIN === '1') {
     const fr = loadCk();
     const lam: number[] = [];
