@@ -96,7 +96,16 @@ const { prims } = readGlb(GLB);
 const prim0 = prims[0];
 const weld = weldMap(prim0.pos, 0);
 const bodyIdx = Uint32Array.from(prim0.idx, (v) => weld[v]);
-const BEXT: [number, number, number] = [1.78, 1.765, 0.282];
+/* ── §4 몸 치수 축 — 몸 메시를 축별로 «비례»한다(v3에는 체형 슬라이더가 없다).
+ * 기본 1/1/1 이면 비트 동일. z(앞뒤 두께)를 키우면 가슴·목 링이 함께 커져야 한다. */
+const BS: [number, number, number] = [
+  Number(process.env.BSX ?? 1), Number(process.env.BSY ?? 1), Number(process.env.BSZ ?? 1)];
+if (BS[0] !== 1 || BS[1] !== 1 || BS[2] !== 1) {
+  for (let v = 0; v < prim0.pos.length; v += 3) {
+    prim0.pos[v] *= BS[0]; prim0.pos[v + 1] *= BS[1]; prim0.pos[v + 2] *= BS[2];
+  }
+}
+const BEXT: [number, number, number] = [1.78 * BS[0], 1.765 * BS[1], 0.282 * BS[2]];
 const sdfSpec = deriveSpacing(BEXT, SDF_BUDGET, THICK);
 const bodyG: GridSdf = bakeSdf(prim0.pos, bodyIdx, sdfSpec.h, sdfSpec.band);
 
@@ -108,6 +117,10 @@ const bodyG: GridSdf = bakeSdf(prim0.pos, bodyIdx, sdfSpec.h, sdfSpec.band);
  * 옷 사양 1종(암홀 둘레 — §1-C가 왜 잴 수 없는지 값으로 낸다)뿐이다.
  * 기본값은 v3-18~30이 돌린 fixture의 값 그대로다(회차 간 대조를 끊지 않기 위함). */
 const num = (k: string, d: number) => (process.env[k] === undefined ? d : Number(process.env[k]));
+/** **대조 전용**(기본 off). `V2DIMS=1` 이면 파생 4종을 v2 값으로 «고정»한다 —
+ * §0 ㉠ 이 요구하는 「같은 하네스·같은 원단·같은 해상도에서 치수만 다른」 기준선을
+ * 뜨기 위한 스위치다. 판정 대상이 아니라 «비교 대상»을 만드는 장치다. */
+const V2DIMS = process.env.V2DIMS === '1';
 const L = num('GL', 0.70);                     // 총장 [m]
 const W = num('GW', 0.55);                     // 품(평면 패널 폭) [m]
 const SW = num('GSW', 0.449995105850059);      // 어깨 너비 [m]
@@ -229,9 +242,9 @@ function neckBaseY(): number {
 const Y_NECK = neckBaseY();
 const NECK_RING = ringOf(planeSection(0, 1, Y_NECK), SEP);
 /** 목선 반폭 [m] — 목 밑동 링의 x 반폭 */
-const NECK_A = NECK_RING.vmax;
+const NECK_A = V2DIMS ? V2REF.neckHalfWidthCm / 100 : NECK_RING.vmax;
 /** 목선 둘레(앞+뒤) [m] — 목 밑동 링의 둘레 */
-const NECK_G = NECK_RING.girth;
+const NECK_G = V2DIMS ? V2REF.necklineGirthCm / 100 : NECK_RING.girth;
 
 /** 팔 단면 — |x| = x0 평면에서 «최고 성분»만(다리·받침 제외). 성분 분리 간격은
  * SDF 대역폭(몸 표현의 두께 척도). */
@@ -255,7 +268,7 @@ const CAP_TUBE = (() => {
   return { girth: m, at };
 })();
 /** 소매산 반폭 [m] = 소매 통둘레의 절반 */
-const CAP_W = CAP_TUBE.girth / 2;
+const CAP_W = CAP_TUBE.girth / 2;   // 소매산 반폭 — CAP_H 도출의 입력
 
 type Pt = [number, number];
 type Curve = (t: number) => Pt;
@@ -303,7 +316,7 @@ const ARM_D = solveB(ARM_G / 2, (b) => arcLen(famArm(ARM_A, b)), 1e-4, 2);
 if (!(ARM_G / 2 >= CAP_W)) {
   throw new Error(`소매산 실수해 없음 — 암홀 반쪽 ${(ARM_G / 2 * 100).toFixed(2)}cm < 소매산 반폭 ${(CAP_W * 100).toFixed(2)}cm — 갈래 D`);
 }
-const CAP_H = solveB(ARM_G / 2, (b) => arcLen(famCap(CAP_W, b)), 0, 2);
+const CAP_H = V2DIMS ? V2REF.capHeightCm / 100 : solveB(ARM_G / 2, (b) => arcLen(famCap(CAP_W, b)), 0, 2);
 /** 목선 반쪽: (a,0) → (0,b) 를 «양 끝 수평»으로. 어깨선과 C¹로 이어지므로
  * 위 경계에 «모서리가 없다» — 초판은 여기서 90° 모서리가 나서 Coons 칸이 9°까지
  * 기울었다(칸의 문제가 아니라 «제도»의 문제였다). */
