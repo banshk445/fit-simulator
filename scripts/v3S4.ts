@@ -1537,6 +1537,18 @@ if (run('3') && D_CHOSEN > 0) {
    * `PEN=1` · 체크포인트 상태에서 «스텝 0»으로 두 통계를 나란히 낸다(판정은 등록 정의). */
   if (process.env.PEN === '1') {
     const fr = loadCk();
+    /* PENF>0 이면 «먼저» 그만큼 돌린다 — 안전장치 ㉢(몸 충돌을 끈 합성 대조)용.
+     * NOBODY=1 이면 몸 충돌을 뺀다. 둘 다 기본 off라 판정 경로는 그대로다. */
+    const PF = Number(process.env.PENF ?? 0);
+    if (PF > 0) {
+      const stp = substepsOf(sc);
+      const pp: SolverParams = {
+        dt: DT, substeps: stp.sub, gravity: G, damping: DAMP,
+        ...(process.env.NOBODY === '1' ? {} : { collision: { colliders: [{ kind: 'grid', g: bodyG }], thickness: THICK, mu: MU } }),
+        selfCollision: { tris: sc.tris, thickness: THICK },
+      };
+      for (let k = 0; k < PF; k++) step(s, sc.cons, pp);
+    }
     const ed = edgeDihedrals(prim0.pos, bodyIdx);
     const bc = bodyClearance(s);
     let pexMax = 0, pexAtWorst = 0;
