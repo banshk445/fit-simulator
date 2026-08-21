@@ -14,6 +14,7 @@
 import { prepare, runFrames, stateBlob, DEFAULT_GARMENT, type Prepared } from '../v3/dressRun.ts';
 import { minPairDistLite } from '../v3/instruments.ts';
 import { FABRICS } from '../v3/consts.ts';
+import { runS4Gate, N_WIN } from '../v3/s4Gate.ts';
 
 /** 워커 전역 — 타입 정의가 Window로 잡혀 있어 최소 형태로 좁힌다(동작 변경 0) */
 const ctx = self as unknown as {
@@ -60,11 +61,20 @@ ctx.onmessage = async (e: MessageEvent) => {
       },
       prepMs: performance.now() - t0,
     });
+    /* 정착 창의 «시작 상태» — 마지막 N_WIN 프레임 전 상태를 붙잡아 둔다(v3-22 채널). */
+    let before: Float64Array | undefined;
     const r = runFrames(
       P, m.frames,
-      (p) => ctx.postMessage({ kind: 'progress', ...p, elapsedMs: performance.now() - t0 }),
+      (p) => {
+        if (p.frame === m.frames - N_WIN) before = Float64Array.from(P.sc.s.pos);
+        ctx.postMessage({ kind: 'progress', ...p, elapsedMs: performance.now() - t0 });
+      },
       () => cancelled,
     );
+    if (m.frames >= N_WIN && !before) before = undefined;
+    /* v3-37 §3 — **브라우저용 S4 게이트**. 문턱은 Node 게이트와 같은 값이다(새 문턱 0). */
+    const s4 = runS4Gate(P, before);
+    ctx.postMessage({ kind: 's4', s4 });
     const blob = stateBlob(P, r.frame, P.S.PLACE_SIG);
     const pos = Float32Array.from(P.sc.s.pos);
     const idx = Uint32Array.from(P.sc.tris);

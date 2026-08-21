@@ -102,7 +102,12 @@ export function prepare(inp: RunInput) {
     sc.s.pos.set(new Float64Array(inp.injectState.slice(4 + hl, 4 + hl + nb)));
     sc.s.vel.set(new Float64Array(inp.injectState.slice(4 + hl + nb, 4 + hl + 2 * nb)));
   }
-  return { S, sc, bodyG, sdfSpec, d, SUB, sub: st, RAMP_N, setRest, params, prim0, bodyIdx };
+  /* 목선 링 — 하네스 §3 블록의 «그 줄»이다(v3S4: neckF/neckB/ringRest). 로직 변경 0. */
+  const neckF = Array.from({ length: sc.N_nk + 1 }, (_, k) => S.at(sc.front, sc.N_sh + k, sc.nvB));
+  const neckB = Array.from({ length: sc.N_nk + 1 }, (_, k) => S.at(sc.back, sc.N_sh + k, sc.nvB));
+  const ringRest = 2 * S.LEN_NECK;
+  return { S, sc, bodyG, sdfSpec, d, SUB, sub: st, RAMP_N, setRest, params, prim0, bodyIdx,
+           neckF, neckB, ringRest };
 }
 
 export type Prepared = ReturnType<typeof prepare>;

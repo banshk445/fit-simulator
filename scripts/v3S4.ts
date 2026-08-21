@@ -53,12 +53,12 @@
  */
 import { bakeSdf, deriveSpacing, sampleSdf, type GridSdf } from '../src/v3/bodySdf.ts';
 import { createScene } from '../src/v3/garmentScene.ts';
-import { minPairDist, minPairDistLite, ptTriSq } from '../src/v3/instruments.ts';
+import { minPairDist, minPairDistLite, makeBodyDistance } from '../src/v3/instruments.ts';
 import { G, DT, THICK, SEP, MU, DAMP, TOL_SELF, SDF_BUDGET } from '../src/v3/consts.ts';
 import { readGlb, weldMap } from './v3Glb.ts';
 import {
   substepsForBending, step, selfStats, collisionStats, stepDiag,
-  type SolverParams, type Solver,
+  type SolverParams,
 } from '../src/v3/solver.ts';
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
@@ -385,102 +385,10 @@ if (run('0')) {
 }
 
 
-/** 몸까지의 «정확» 무부호 거리 — 격자 근방 후보만 정밀 계산한다.
- * 사전 거르기는 격자 SDF가 하되 «판정»은 정확 거리가 한다(SDF 오차 ≤ h의 5%,
- * 거르기 문턱 10h = ${} 로 두 자릿수 여유). */
-const CELL = sdfSpec.h * 10;
-/** 몸 삼각형의 균일 격자 — «정확» 거리 계산의 후보만 좁힌다(값은 브루트포스와 같다). */
-const BGRID = (() => {
-  const cs = 0.05;
-  const g = new Map<number, number[]>();
-  const key = (a: number, b: number, c: number) => ((a + 2048) * 4096 + (b + 2048)) * 4096 + (c + 2048);
-  for (let t = 0; t < bodyIdx.length; t += 3) {
-    const o = [bodyIdx[t] * 3, bodyIdx[t + 1] * 3, bodyIdx[t + 2] * 3];
-    const lo = [0, 1, 2].map((k) => Math.floor(Math.min(prim0.pos[o[0] + k], prim0.pos[o[1] + k], prim0.pos[o[2] + k]) / cs));
-    const hi = [0, 1, 2].map((k) => Math.floor(Math.max(prim0.pos[o[0] + k], prim0.pos[o[1] + k], prim0.pos[o[2] + k]) / cs));
-    for (let i = lo[0]; i <= hi[0]; i++) for (let j = lo[1]; j <= hi[1]; j++) for (let k = lo[2]; k <= hi[2]; k++) {
-      const kk = key(i, j, k);
-      let arr = g.get(kk); if (!arr) g.set(kk, (arr = [])); arr.push(t);
-    }
-  }
-  return { cs, g, key };
-})();
-/** 몸 위의 «최근접 점» — 격자 후보 안에서 삼각형별 최근접점을 직접 고른다.
- * v3-23 §1-② 「목선 링을 몸에 정사영한 둘레」에 쓴다. */
-function nearestBodyPoint(x: number, y: number, z: number): [number, number, number] {
-  const { cs, g, key } = BGRID;
-  const ci = Math.floor(x / cs), cj = Math.floor(y / cs), ck = Math.floor(z / cs);
-  let best = Infinity;
-  const out: [number, number, number] = [x, y, z];
-  for (let r = 1; r <= 12; r++) {
-    for (let i = ci - r; i <= ci + r; i++) for (let j = cj - r; j <= cj + r; j++) for (let k = ck - r; k <= ck + r; k++) {
-      if (r > 1 && Math.abs(i - ci) < r && Math.abs(j - cj) < r && Math.abs(k - ck) < r) continue;
-      const arr = g.get(key(i, j, k));
-      if (!arr) continue;
-      for (const t of arr) {
-        const a = bodyIdx[t] * 3, b = bodyIdx[t + 1] * 3, c = bodyIdx[t + 2] * 3;
-        // 삼각형 위 최근접점을 «질량 좌표»로 직접 구한다(가장자리 포함)
-        const ax = prim0.pos[a], ay = prim0.pos[a + 1], az = prim0.pos[a + 2];
-        const abx = prim0.pos[b] - ax, aby = prim0.pos[b + 1] - ay, abz = prim0.pos[b + 2] - az;
-        const acx = prim0.pos[c] - ax, acy = prim0.pos[c + 1] - ay, acz = prim0.pos[c + 2] - az;
-        const d00 = abx * abx + aby * aby + abz * abz;
-        const d01 = abx * acx + aby * acy + abz * acz;
-        const d11 = acx * acx + acy * acy + acz * acz;
-        const den = d00 * d11 - d01 * d01;
-        const apx = x - ax, apy = y - ay, apz = z - az;
-        const d20 = apx * abx + apy * aby + apz * abz;
-        const d21 = apx * acx + apy * acy + apz * acz;
-        let u = 0, v = 0;
-        if (Math.abs(den) > 1e-24) { u = (d11 * d20 - d01 * d21) / den; v = (d00 * d21 - d01 * d20) / den; }
-        if (u < 0) u = 0; if (v < 0) v = 0;
-        if (u + v > 1) { const sSum = u + v; u /= sSum; v /= sSum; }
-        const qx = ax + abx * u + acx * v, qy = ay + aby * u + acy * v, qz = az + abz * u + acz * v;
-        const dd = (x - qx) ** 2 + (y - qy) ** 2 + (z - qz) ** 2;
-        if (dd < best) { best = dd; out[0] = qx; out[1] = qy; out[2] = qz; }
-      }
-    }
-    if (best < (r * cs) ** 2) break;
-  }
-  return out;
-}
-
-function exactBodyDist(x: number, y: number, z: number): number {
-  const { cs, g, key } = BGRID;
-  const ci = Math.floor(x / cs), cj = Math.floor(y / cs), ck = Math.floor(z / cs);
-  let best = Infinity;
-  for (let r = 1; r <= 12; r++) {
-    for (let i = ci - r; i <= ci + r; i++) for (let j = cj - r; j <= cj + r; j++) for (let k = ck - r; k <= ck + r; k++) {
-      if (r > 1 && Math.abs(i - ci) < r && Math.abs(j - cj) < r && Math.abs(k - ck) < r) continue;
-      const arr = g.get(key(i, j, k));
-      if (!arr) continue;
-      for (const t of arr) {
-        const a = bodyIdx[t] * 3, b = bodyIdx[t + 1] * 3, c = bodyIdx[t + 2] * 3;
-        const d2 = ptTriSq(x, y, z, prim0.pos[a], prim0.pos[a + 1], prim0.pos[a + 2], prim0.pos[b], prim0.pos[b + 1], prim0.pos[b + 2], prim0.pos[c], prim0.pos[c + 1], prim0.pos[c + 2]);
-        if (d2 < best) best = d2;
-      }
-    }
-    // 반경 r 셀 안에 «확실히» 최근접이 있으면 종료
-    if (best < ((r - 0) * cs) ** 2) break;
-  }
-  return Math.sqrt(best);
-}
-/** 옷 정점 전체의 «몸 부호 있는 거리» 최소/관통 — 격자로 거르고 정확 거리로 판정 */
-function bodyClearance(s: Solver) {
-  let minD = Infinity, maxPen = 0, penCnt = 0, exactN = 0, worst = -1, worstPen = -1;
-  for (let v = 0; v < s.n; v++) {
-    const x = s.pos[v * 3], y = s.pos[v * 3 + 1], z = s.pos[v * 3 + 2];
-    const g = sampleSdf(bodyG, x, y, z);
-    if (g > CELL) { if (g < minD) minD = g; continue; }
-    exactN++;
-    const e = exactBodyDist(x, y, z);
-    const signed = g < 0 ? -e : e;
-    if (signed < minD) { minD = signed; worst = v; }
-    const pen = THICK - signed;
-    if (pen > 1e-9) { penCnt++; if (pen > maxPen) { maxPen = pen; worstPen = v; } }
-  }
-  return { minD, maxPen, penCnt, exactN, worst, worstPen };
-}
-
+/* 몸 거리 계기는 `src/v3/instruments.ts` 로 옮겼다(v3-37 §3) — 브라우저 게이트와 «같은» 정의를 쓴다. */
+const { nearestBodyPoint, exactBodyDist, bodyClearance, CELL } =
+  makeBodyDistance({ pos: prim0.pos, idx: bodyIdx, bodyG, h: sdfSpec.h, thick: THICK });
+void exactBodyDist; void CELL;
 /* ── v3-16 관통 모형의 θ 항 (하네스 사본 · v3Body.ts와 «독립») ───────────── */
 const EKEY4 = (a: number, b: number) => (a < b ? a * 4194304 + b : b * 4194304 + a);
 /** 몸 메시의 엣지별 이면각 결손 — v3-15 §1이 등록한 정의 그대로 */
