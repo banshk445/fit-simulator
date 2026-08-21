@@ -44,6 +44,10 @@ export type RunInput = {
   /** 서브스텝 강제(진단용). 없으면 «산정» */
   substeps?: number;
   minPairDistLite: SceneConfig['minPairDistLite'];
+  /** v3-36 §2 — **진단 전용**. 조립이 만든 f=0 정점을 «주입한 값»으로 갈아끼운다.
+   * 층 분리(조립 ↔ 물리)를 가르기 위한 것이고 물리 로직은 한 줄도 안 바뀐다.
+   * 형식은 `stateBlob` 과 같다(헤더 + pos + vel). 정점 수가 다르면 «정지»한다. */
+  injectState?: ArrayBuffer;
 };
 
 export const DEFAULT_GARMENT = { L: 0.7, W: 0.55, SW: 0.449995105850059, SLEN: 0.22, ARM_G: 0.4439 };
@@ -89,6 +93,15 @@ export function prepare(inp: RunInput) {
     collision: { colliders: [{ kind: 'grid', g: bodyG }], thickness: THICK, mu: V3CONST.MU },
     selfCollision: { tris: sc.tris, thickness: THICK, every: 1 },
   };
+  if (inp.injectState) {
+    const dv = new DataView(inp.injectState);
+    const hl = dv.getUint32(0, true);
+    const hdr = JSON.parse(new TextDecoder().decode(new Uint8Array(inp.injectState, 4, hl)));
+    if (hdr.n !== sc.n) throw new Error(`주입 상태의 정점 수가 다르다 (${hdr.n} ≠ ${sc.n})`);
+    const nb = sc.n * 3 * 8;
+    sc.s.pos.set(new Float64Array(inp.injectState.slice(4 + hl, 4 + hl + nb)));
+    sc.s.vel.set(new Float64Array(inp.injectState.slice(4 + hl + nb, 4 + hl + 2 * nb)));
+  }
   return { S, sc, bodyG, sdfSpec, d, SUB, sub: st, RAMP_N, setRest, params, prim0, bodyIdx };
 }
 

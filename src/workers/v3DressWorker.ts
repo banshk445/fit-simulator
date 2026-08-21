@@ -26,6 +26,7 @@ let cancelled = false;
 type StartMsg = {
   kind: 'start'; glbUrl: string; fabric: string; d: number; frames: number;
   garment?: typeof DEFAULT_GARMENT; bodyScale?: [number, number, number];
+  injectStateUrl?: string;   // v3-36 §2 진단 — 주입할 상태 blob 의 URL
 };
 
 ctx.onmessage = async (e: MessageEvent) => {
@@ -40,9 +41,15 @@ ctx.onmessage = async (e: MessageEvent) => {
     if (!res.ok) throw new Error(`GLB 응답 ${res.status} — ${m.glbUrl}`);
     const glb = await res.arrayBuffer();
     const t0 = performance.now();
+    let injectState: ArrayBuffer | undefined;
+    if (m.injectStateUrl) {
+      const ir = await fetch(m.injectStateUrl);
+      if (!ir.ok) throw new Error(`주입 상태 응답 ${ir.status} — ${m.injectStateUrl}`);
+      injectState = await ir.arrayBuffer();
+    }
     const P: Prepared = prepare({
       glb, fabric, d: m.d, garment: m.garment ?? DEFAULT_GARMENT,
-      bodyScale: m.bodyScale, minPairDistLite,
+      bodyScale: m.bodyScale, minPairDistLite, injectState,
     });
     ctx.postMessage({
       kind: 'ready', n: P.sc.n, tris: P.sc.tris.length / 3, sub: P.SUB, rampN: P.RAMP_N,
