@@ -10,9 +10,9 @@ import { render as rasterize, VIEWS, type Mesh } from "../v3/raster.ts";
 const FABRICS = ["gray", "denim", "sweat", "swim"] as const;
 /** v3-41 §2 — C-브라우저 정착 상태(v3-38 산출). **표시 전용 · 물리 0프레임**. */
 const SETTLED = [
-  { label: "gray d9 (정착 220)", fab: "gray", d: 9, url: "/v3diag/settled-gray-d9.bin" },
-  { label: "swim d10 (정착 180)", fab: "swim", d: 10, url: "/v3diag/settled-swim-d10.bin" },
-  { label: "sweat d9 (정착 190)", fab: "sweat", d: 9, url: "/v3diag/settled-sweat-d9.bin" },
+  { label: "gray d9 (정착 220)", fab: "gray", d: 9, frame: 220, url: "/v3diag/settled-gray-d9.bin" },
+  { label: "swim d10 (정착 180)", fab: "swim", d: 10, frame: 180, url: "/v3diag/settled-swim-d10.bin" },
+  { label: "sweat d9 (정착 190)", fab: "sweat", d: 9, frame: 190, url: "/v3diag/settled-sweat-d9.bin" },
 ] as const;
 
 type Phase = "idle" | "prep" | "run" | "done" | "error" | "cancelled";
@@ -38,6 +38,7 @@ export function V3Panel() {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const [viewIx, setViewIx] = useState(0);
   const [shaHex, setShaHex] = useState<string>("");
+  const [capFrame, setCapFrame] = useState<number | null>(null);
   const [uxLog, setUxLog] = useState<string[]>([]);
 
   useEffect(() => () => workerRef.current?.terminate(), []);
@@ -101,7 +102,7 @@ export function V3Panel() {
     const S = SETTLED[settledIx];
     workerRef.current?.terminate();
     setReady(null); setProg(null); setMsg(""); blobRef.current = null; sceneRef.current = null;
-    setPhase("prep"); setFabric(S.fab); setDMm(S.d);
+    setPhase("prep"); setFabric(S.fab); setDMm(S.d); setCapFrame(null);
     const w = new Worker(new URL("../workers/v3DressWorker.ts", import.meta.url), { type: "module" });
     workerRef.current = w;
     w.onmessage = async (e) => {
@@ -111,10 +112,13 @@ export function V3Panel() {
       if (m.kind !== "done") return;
       blobRef.current = m.blob;
       sceneRef.current = { pos: m.pos, idx: m.idx, bodyPos: m.bodyPos, bodyIdx: m.bodyIdx };
-      const h = await crypto.subtle.digest("SHA-256", m.blob.slice().buffer);
+      /* 파일명·표시에 쓰는 sha 는 «상태 페이로드»(헤더 제외)다 — 헤더의 frame 은 재발행으로 바뀐다 */
+      const dv = new DataView(m.blob.slice().buffer);
+      const hl = dv.getUint32(0, true);
+      const h = await crypto.subtle.digest("SHA-256", m.blob.slice(4 + hl).buffer);
       const hex = [...new Uint8Array(h)].map((b) => b.toString(16).padStart(2, "0")).join("");
-      setShaHex(hex);
-      setPhase("done"); setMsg(`정착 상태 표시 — 프레임 ${m.frame} · 물리 0프레임`);
+      setShaHex(hex); setCapFrame(S.frame);
+      setPhase("done"); setMsg(`정착 상태 표시 — 정착 프레임 ${S.frame} · 물리 0프레임 · 상태 페이로드 sha`);
       console.log(`[v3] settled sha256=${hex}`);
     };
     w.postMessage({
@@ -172,13 +176,13 @@ export function V3Panel() {
         const url = URL.createObjectURL(b);
         const a = document.createElement("a");
         a.href = url;
-        a.download = `v3-41-${fabric}-d${Math.round(dMm)}-f${prog?.frame ?? frames}-${shaHex.slice(0, 8)}-${v.name}.png`;
+        a.download = `v3-41-${fabric}-d${Math.round(dMm)}-f${capFrame ?? prog?.frame ?? frames}-${shaHex.slice(0, 8)}-${v.name}.png`;
         document.body.appendChild(a); a.click(); a.remove();
         URL.revokeObjectURL(url);
       }, "image/png");
     });
     setTimeout(() => draw(viewIx), 50);
-  }, [draw, fabric, frames, prog, shaHex, viewIx, dMm]);
+  }, [draw, fabric, frames, prog, shaHex, viewIx, dMm, capFrame]);
 
   const pct = prog ? Math.round((prog.frame / prog.frames) * 100) : 0;
 
