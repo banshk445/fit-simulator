@@ -1,6 +1,7 @@
 import { Controls } from "./components/Controls";
 import { FitCanvas } from "./components/FitCanvas";
 import { DressButton } from "./components/DressButton";
+import { V3PanelGate } from "./components/V3Panel";
 
 function App() {
   return (
@@ -11,6 +12,7 @@ function App() {
       <div className="w-[70%] relative">
         <FitCanvas />
         <DressButton />
+        <V3PanelGate />
       </div>
     </div>
   );
