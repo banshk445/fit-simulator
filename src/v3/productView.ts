@@ -91,10 +91,9 @@ export function renderProduct(
   c.body.geometry.dispose(); c.body.geometry = geom(body.pos, body.idx);
   c.cloth.geometry.dispose(); c.cloth.geometry = geom(cloth.pos, cloth.idx);
 
-  const bb = new Box3().setFromBufferAttribute(c.body.geometry.getAttribute('position') as BufferAttribute);
+  const bb: Box3 = new Box3().setFromBufferAttribute(c.body.geometry.getAttribute('position') as BufferAttribute);
   bb.union(new Box3().setFromBufferAttribute(c.cloth.geometry.getAttribute('position') as BufferAttribute));
   const mid = bb.getCenter(new Vector3());
-  const rad = bb.getSize(new Vector3()).length() / 2;
 
   c.r.setPixelRatio(dpr);
   c.r.setSize(cssW, cssH, false);
@@ -102,7 +101,23 @@ export function renderProduct(
   /* 세로가 좁으면 세로 화각이 구속한다 — 두 축 중 빡빡한 쪽으로 맞춘다 */
   const vFov = (DISPLAY.fovDeg * Math.PI) / 180;
   const hFov = 2 * Math.atan(Math.tan(vFov / 2) * c.cam.aspect);
-  const dist = (rad * DISPLAY.fitMargin) / Math.sin(Math.min(vFov, hFov) / 2);
+  /* bbox 대각으로 맞추면 T 포즈 팔 스팬(±89cm)이 거리를 지배해 인물이 작아진다.
+   * 화면 축(u = 시선×up · v = up)에 «투영»한 반폭으로 맞추고, 깊이 반폭만 거리에 더한다. */
+  const dv = view.dir;
+  const ux = dv[2], uz = -dv[0];                       // up=(0,1,0) 과의 외적
+  const ul = Math.hypot(ux, uz) || 1;
+  const U = [ux / ul, 0, uz / ul];
+  let hu = 0, hv = 0, hd = 0;
+  for (let k = 0; k < 8; k++) {
+    const px = (k & 1 ? bb.max.x : bb.min.x) - mid.x;
+    const py = (k & 2 ? bb.max.y : bb.min.y) - mid.y;
+    const pz = (k & 4 ? bb.max.z : bb.min.z) - mid.z;
+    hu = Math.max(hu, Math.abs(px * U[0] + pz * U[2]));
+    hv = Math.max(hv, Math.abs(py));
+    hd = Math.max(hd, Math.abs(px * dv[0] + py * dv[1] + pz * dv[2]));
+  }
+  const dist = DISPLAY.fitMargin *
+    Math.max(hu / Math.tan(hFov / 2), hv / Math.tan(vFov / 2)) + hd;
   c.cam.position.set(mid.x - view.dir[0] * dist, mid.y - view.dir[1] * dist, mid.z - view.dir[2] * dist);
   c.cam.lookAt(mid);
   c.cam.updateProjectionMatrix();

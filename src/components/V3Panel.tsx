@@ -185,12 +185,16 @@ export function V3Panel() {
   useEffect(() => { if (sceneRef.current) draw(viewIx); }, [viewIx, draw, phase]);
 
   /* v3-43 §2 — 제품 씬. **상태 배열을 읽기만 한다**(productView 가 사본으로 지오메트리를 만든다). */
-  const drawProd = useCallback((vi: number) => {
+  const drawProd = useCallback((vi: number, scale?: number) => {
     const S = sceneRef.current, cv = pCanvasRef.current;
     if (!S || !cv) return;
+    /* 화면은 devicePixelRatio, **캡처는 CAP_SCALE 배**로 그린다. 이 기계의 dPR 은 1 이라
+     * 그대로 두면 캡처가 진단 래스터와 같은 300×420 이 되어 «제품급»이 성립하지 않는다.
+     * 표시 층 파라미터이고 물리·문턱 채널이 아니다. */
     renderProduct(cv, { pos: S.bodyPos, idx: S.bodyIdx }, { pos: S.pos, idx: S.idx },
-                  PRODUCT_VIEWS[vi], 300, 420);
+                  PRODUCT_VIEWS[vi], 300, 420, scale);
   }, []);
+  const CAP_SCALE = 3;
   useEffect(() => { if (mode === "prod" && sceneRef.current) drawProd(pViewIx); }, [pViewIx, drawProd, phase, mode]);
 
   const nameOf = useCallback((v: string) =>
@@ -206,23 +210,27 @@ export function V3Panel() {
   }, []);
 
   /** 제품 캡처 3장 — front-p · side-p · back-p */
-  const captureProd = useCallback(() => {
+  const captureProd = useCallback(async () => {
     const cv = pCanvasRef.current;
     if (!cv || !sceneRef.current) return;
-    PRODUCT_VIEWS.forEach((v, i) => {
-      drawProd(i);
-      cv.toBlob((b) => dl(b, nameOf(v.name)), "image/png");
-    });
-    setTimeout(() => drawProd(pViewIx), 50);
+    /* **순차**로 돈다. `toBlob` 이 비동기라 forEach 로 돌리면 콜백이 뜰 때쯤
+     * 캔버스가 이미 «다음 뷰»로 덮여 있고, 연속 다운로드도 막힌다(1차 실패 관측: 3장 중 1장). */
+    for (let i = 0; i < PRODUCT_VIEWS.length; i++) {
+      drawProd(i, CAP_SCALE);
+      const b = await new Promise<Blob | null>((r) => cv.toBlob(r, "image/png"));
+      dl(b, nameOf(PRODUCT_VIEWS[i].name));
+      await new Promise((r) => setTimeout(r, 700));
+    }
+    drawProd(pViewIx);
   }, [drawProd, dl, nameOf, pViewIx]);
 
   /** 대조 1장 — 왼쪽 제품 side-p · 오른쪽 «같은 상태»의 진단 래스터 sideXplus.
    *  **판정 자료가 아니라 편의**다(v3-43 §0-4). */
-  const captureCompare = useCallback(() => {
+  const captureCompare = useCallback(async () => {
     const S = sceneRef.current, cv = pCanvasRef.current;
     if (!S || !cv) return;
     const si = VIEWS.findIndex((v) => v.name === "sideXplus");
-    drawProd(PRODUCT_VIEWS.findIndex((v) => v.name === "side-p"));
+    drawProd(PRODUCT_VIEWS.findIndex((v) => v.name === "side-p"), CAP_SCALE);
     const H = cv.height, Wp = cv.width, Wd = Math.round((300 / 420) * H);
     const out = document.createElement("canvas");
     out.width = Wp + Wd; out.height = H;
@@ -254,8 +262,9 @@ export function V3Panel() {
     g.fillStyle = "#111"; g.font = `${Math.round(H / 30)}px sans-serif`;
     g.fillText("제품 표시 side-p", 8, H - 8);
     g.fillText("진단 래스터 sideXplus", Wp + 8, H - 8);
-    out.toBlob((b) => dl(b, nameOf("compare-side")), "image/png");
-    setTimeout(() => drawProd(pViewIx), 50);
+    const cb = await new Promise<Blob | null>((r) => out.toBlob(r, "image/png"));
+    dl(cb, nameOf("compare-side"));
+    drawProd(pViewIx);
   }, [drawProd, dl, nameOf, pViewIx]);
 
 
