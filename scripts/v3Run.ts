@@ -33,7 +33,7 @@ console.log(`╔══ v3Run [${FAB}] d ${(D * 1000).toFixed(1)}mm · 정점 ${P
 console.log(`   파생 치수: 목선반폭 ${(P.S.NECK_A * 100).toFixed(2)}cm · 목선둘레 ${(P.S.NECK_G * 100).toFixed(2)}cm · 소매산 ${(P.S.CAP_H * 100).toFixed(2)}cm · 암홀깊이 ${(P.S.ARM_D * 100).toFixed(3)}cm`);
 console.log(`   배치: δ ${(P.S.DELTA * 1000).toFixed(2)}mm · 소매 x0 ${(P.S.SLV_X0 * 100).toFixed(1)}cm · R ${(P.S.SLV_R * 1000).toFixed(1)}mm · 서명 ${P.S.PLACE_SIG}`);
 
-const r = runFrames(P, FRAMES, (p) => {
+const r = await runFrames(P, FRAMES, (p) => {
   if (p.frame % 25 === 0)
     console.log(`   f=${String(p.frame).padStart(4)} ${((performance.now() - t0) / 1000).toFixed(0).padStart(6)}s · 창 순변위 ${p.netMm.toFixed(4)}mm`);
 });

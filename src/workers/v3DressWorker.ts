@@ -64,7 +64,7 @@ ctx.onmessage = async (e: MessageEvent) => {
     });
     /* 정착 창의 «시작 상태» — 마지막 N_WIN 프레임 전 상태를 붙잡아 둔다(v3-22 채널). */
     let before: Float64Array | undefined;
-    const r = runFrames(
+    const r = await runFrames(
       P, m.frames,
       (p) => {
         if (p.frame === m.frames - N_WIN) before = Float64Array.from(P.sc.s.pos);

@@ -135,7 +135,7 @@ export const N_WIN = Math.round(1 / (V3CONST.DAMP * V3CONST.DT));
  * `shouldStop` 이 true 를 내면 그 자리에서 멈춘다(취소).
  * 반환은 «마지막 프레임 번호»와 발산 여부뿐 — 판정은 바깥이 한다.
  */
-export function runFrames(
+export async function runFrames(
   P: Prepared,
   frames: number,
   onProgress?: (p: Progress) => void,
@@ -143,7 +143,7 @@ export function runFrames(
   /** 이어받는 프레임 번호 — 주입한 상태를 «잇는» 실행에서 램프가 되감기지 않게 한다.
    * 0 이면 처음부터다(기본). 램프 식은 그대로이고 «인자»만 는다(로직 변경 0). */
   startFrame = 0,
-): { frame: number; diverged: boolean; stopped: boolean } {
+): Promise<{ frame: number; diverged: boolean; stopped: boolean }> {
   const { sc, setRest, params } = P;
   let ref = Float64Array.from(sc.s.pos);
   let f = 0;
@@ -156,8 +156,13 @@ export function runFrames(
       for (let v = 0; v < sc.n; v++)
         net = Math.max(net, Math.hypot(
           sc.s.pos[v * 3] - ref[v * 3], sc.s.pos[v * 3 + 1] - ref[v * 3 + 1], sc.s.pos[v * 3 + 2] - ref[v * 3 + 2]));
-      onProgress?.({ frame: f + 1, frames, netMm: net * 1000 });
+      /* v3-41 ㉠② — 창 경계마다 «한 번 양보»한다. 워커가 프레임 루프를 동기로 돌면
+       * 메시지 큐가 드레인되지 않아 **취소가 도달하지 못한다**(v3-41 이 실측으로 확인).
+       * 양보 뒤에 정지 검사를 «먼저» 하므로, 취소 후 진행 통지는 **0건**이다.
+       * 물리 스텝 수·순서는 한 톨도 바뀌지 않는다. */
+      await new Promise((r) => setTimeout(r, 0));
       if (shouldStop?.()) return { frame: f + 1, diverged: false, stopped: true };
+      onProgress?.({ frame: f + 1, frames, netMm: net * 1000 });
       ref = Float64Array.from(sc.s.pos);
     }
   }
