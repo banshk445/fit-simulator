@@ -6,6 +6,7 @@
  */
 import { useCallback, useEffect, useRef, useState } from "react";
 import { render as rasterize, VIEWS, type Mesh } from "../v3/raster.ts";
+import { renderProduct, PRODUCT_VIEWS } from "../v3/productView.ts";
 
 const FABRICS = ["gray", "denim", "sweat", "swim"] as const;
 /** v3-41 §2 — C-브라우저 정착 상태(v3-38 산출). **표시 전용 · 물리 0프레임**. */
@@ -39,11 +40,28 @@ export function V3Panel() {
   const [viewIx, setViewIx] = useState(0);
   const [shaHex, setShaHex] = useState<string>("");
   const [capFrame, setCapFrame] = useState<number | null>(null);
+  /* v3-43 §2 — 제품급 표시 층. 진단 래스터와 «별도»이고 그것을 대체하지 않는다. */
+  const pCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  const [pViewIx, setPViewIx] = useState(1);        // 기본 side-p (불합격 지목 구도)
+  const [mode, setMode] = useState<"diag" | "prod">("prod");
   const [uxLog, setUxLog] = useState<string[]>([]);
 
   useEffect(() => () => workerRef.current?.terminate(), []);
   /* v3-41 ㉠ — 진행 로그를 «계기 채널»로 노출한다(판정 자동화용 · 물리 무관) */
   useEffect(() => { (window as unknown as Record<string, unknown>).__v3ux = uxLog; }, [uxLog]);
+  /* v3-43 §3 — «무변조» 확인 채널. 표시 전후로 불러 sha 를 대조한다.
+   * payload = 주입 blob 의 헤더 제외분 · pos = 화면이 실제로 읽는 옷 정점 배열. */
+  useEffect(() => {
+    const sha = async (b: ArrayBuffer) =>
+      [...new Uint8Array(await crypto.subtle.digest("SHA-256", b))]
+        .map((x) => x.toString(16).padStart(2, "0")).join("");
+    (window as unknown as Record<string, unknown>).__v3state = async () => {
+      const blob = blobRef.current, S = sceneRef.current;
+      if (!blob || !S) return null;
+      const hl = new DataView(blob.slice().buffer).getUint32(0, true);
+      return { payload: await sha(blob.slice(4 + hl).buffer), pos: await sha(S.pos.slice().buffer) };
+    };
+  }, []);
 
   const start = useCallback(() => {
     workerRef.current?.terminate();
@@ -166,6 +184,81 @@ export function V3Panel() {
 
   useEffect(() => { if (sceneRef.current) draw(viewIx); }, [viewIx, draw, phase]);
 
+  /* v3-43 §2 — 제품 씬. **상태 배열을 읽기만 한다**(productView 가 사본으로 지오메트리를 만든다). */
+  const drawProd = useCallback((vi: number) => {
+    const S = sceneRef.current, cv = pCanvasRef.current;
+    if (!S || !cv) return;
+    renderProduct(cv, { pos: S.bodyPos, idx: S.bodyIdx }, { pos: S.pos, idx: S.idx },
+                  PRODUCT_VIEWS[vi], 300, 420);
+  }, []);
+  useEffect(() => { if (mode === "prod" && sceneRef.current) drawProd(pViewIx); }, [pViewIx, drawProd, phase, mode]);
+
+  const nameOf = useCallback((v: string) =>
+    `v3-43-${fabric}-d${Math.round(dMm)}-f${capFrame ?? prog?.frame ?? frames}-${shaHex.slice(0, 8)}-${v}.png`,
+    [fabric, dMm, capFrame, prog, frames, shaHex]);
+  const dl = useCallback((b: Blob | null, name: string) => {
+    if (!b) return;
+    const url = URL.createObjectURL(b);
+    const a = document.createElement("a");
+    a.href = url; a.download = name;
+    document.body.appendChild(a); a.click(); a.remove();
+    URL.revokeObjectURL(url);
+  }, []);
+
+  /** 제품 캡처 3장 — front-p · side-p · back-p */
+  const captureProd = useCallback(() => {
+    const cv = pCanvasRef.current;
+    if (!cv || !sceneRef.current) return;
+    PRODUCT_VIEWS.forEach((v, i) => {
+      drawProd(i);
+      cv.toBlob((b) => dl(b, nameOf(v.name)), "image/png");
+    });
+    setTimeout(() => drawProd(pViewIx), 50);
+  }, [drawProd, dl, nameOf, pViewIx]);
+
+  /** 대조 1장 — 왼쪽 제품 side-p · 오른쪽 «같은 상태»의 진단 래스터 sideXplus.
+   *  **판정 자료가 아니라 편의**다(v3-43 §0-4). */
+  const captureCompare = useCallback(() => {
+    const S = sceneRef.current, cv = pCanvasRef.current;
+    if (!S || !cv) return;
+    const si = VIEWS.findIndex((v) => v.name === "sideXplus");
+    drawProd(PRODUCT_VIEWS.findIndex((v) => v.name === "side-p"));
+    const H = cv.height, Wp = cv.width, Wd = Math.round((300 / 420) * H);
+    const out = document.createElement("canvas");
+    out.width = Wp + Wd; out.height = H;
+    const g = out.getContext("2d");
+    if (!g) return;
+    g.fillStyle = "#fff"; g.fillRect(0, 0, out.width, out.height);
+    g.drawImage(cv, 0, 0);
+    /* 진단 래스터를 «같은 상태»로 다시 낸다 — 등재 프리셋·등재 해상도 그대로 확대만 한다 */
+    const lo: [number, number, number] = [Infinity, Infinity, Infinity];
+    const hi: [number, number, number] = [-Infinity, -Infinity, -Infinity];
+    for (const A of [S.bodyPos, S.pos])
+      for (let i = 0; i < A.length; i += 3)
+        for (let c = 0; c < 3; c++) { lo[c] = Math.min(lo[c], A[i + c]); hi[c] = Math.max(hi[c], A[i + c]); }
+    const rgb = rasterize([{ pos: S.bodyPos, idx: S.bodyIdx, color: [190, 185, 178] },
+                           { pos: S.pos, idx: S.idx, color: [40, 90, 200] }],
+                          VIEWS[si], { lo, hi }, 300, 420);
+    const tmp = document.createElement("canvas");
+    tmp.width = 300; tmp.height = 420;
+    const tg = tmp.getContext("2d");
+    if (!tg) return;
+    const img = tg.createImageData(300, 420);
+    for (let i = 0, j = 0; i < 300 * 420; i++, j += 3) {
+      img.data[i * 4] = rgb[j]; img.data[i * 4 + 1] = rgb[j + 1];
+      img.data[i * 4 + 2] = rgb[j + 2]; img.data[i * 4 + 3] = 255;
+    }
+    tg.putImageData(img, 0, 0);
+    g.imageSmoothingEnabled = false;
+    g.drawImage(tmp, Wp, 0, Wd, H);
+    g.fillStyle = "#111"; g.font = `${Math.round(H / 30)}px sans-serif`;
+    g.fillText("제품 표시 side-p", 8, H - 8);
+    g.fillText("진단 래스터 sideXplus", Wp + 8, H - 8);
+    out.toBlob((b) => dl(b, nameOf("compare-side")), "image/png");
+    setTimeout(() => drawProd(pViewIx), 50);
+  }, [drawProd, dl, nameOf, pViewIx]);
+
+
   const capture = useCallback(() => {
     const cv = canvasRef.current, S = sceneRef.current;
     if (!cv || !S) return;
@@ -245,8 +338,32 @@ export function V3Panel() {
       )}
       {msg && <div className={phase === "error" ? "text-red-700" : "text-gray-800"}>{msg}</div>}
 
+      {/* v3-43 §2 — 제품급 표시 층(기본) ↔ v3-41 진단 래스터(등재 3뷰 프리셋 · 무변경) */}
+      <div className="mt-2 flex gap-1 text-xs">
+        <button onClick={() => setMode("prod")}
+                className={`rounded border px-1.5 py-0.5 ${mode === "prod" ? "bg-black text-white" : ""}`}>제품 표시</button>
+        <button onClick={() => setMode("diag")}
+                className={`rounded border px-1.5 py-0.5 ${mode === "diag" ? "bg-black text-white" : ""}`}>진단 래스터</button>
+      </div>
+
+      <div className={mode === "prod" ? "mt-2" : "hidden"}>
+        <div className="mb-1 flex flex-wrap items-center gap-1 text-xs">
+          {PRODUCT_VIEWS.map((v, i) => (
+            <button key={v.name} onClick={() => setPViewIx(i)}
+                    className={`rounded border px-1.5 py-0.5 ${i === pViewIx ? "bg-black text-white" : ""}`}>
+              {v.name}
+            </button>
+          ))}
+          <button className="rounded border px-1.5 py-0.5 disabled:opacity-40"
+                  onClick={captureProd} disabled={!sceneRef.current}>캡처 3장</button>
+          <button className="rounded border px-1.5 py-0.5 disabled:opacity-40"
+                  onClick={captureCompare} disabled={!sceneRef.current}>대조 1장</button>
+        </div>
+        <canvas ref={pCanvasRef} className="w-full rounded border" style={{ aspectRatio: "300 / 420" }} />
+      </div>
+
       {/* v3-41 §2 — 읽기 전용 표시. 등재 3뷰 프리셋. */}
-      <div className="mt-2">
+      <div className={mode === "diag" ? "mt-2" : "hidden"}>
         <div className="mb-1 flex items-center gap-2 text-xs">
           {VIEWS.map((v, i) => (
             <button key={v.name} onClick={() => setViewIx(i)}
