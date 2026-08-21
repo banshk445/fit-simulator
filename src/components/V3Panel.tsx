@@ -8,6 +8,12 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { render as rasterize, VIEWS, type Mesh } from "../v3/raster.ts";
 
 const FABRICS = ["gray", "denim", "sweat", "swim"] as const;
+/** v3-41 §2 — C-브라우저 정착 상태(v3-38 산출). **표시 전용 · 물리 0프레임**. */
+const SETTLED = [
+  { label: "gray d9 (정착 220)", fab: "gray", d: 9, url: "/v3diag/settled-gray-d9.bin" },
+  { label: "swim d10 (정착 180)", fab: "swim", d: 10, url: "/v3diag/settled-swim-d10.bin" },
+  { label: "sweat d9 (정착 190)", fab: "sweat", d: 9, url: "/v3diag/settled-sweat-d9.bin" },
+] as const;
 
 type Phase = "idle" | "prep" | "run" | "done" | "error" | "cancelled";
 
@@ -88,6 +94,34 @@ export function V3Panel() {
   }, [fabric, frames, hidden, dMm]);
 
   const cancel = useCallback(() => workerRef.current?.postMessage({ kind: "cancel" }), []);
+
+  /** v3-41 §2 — 정착 상태를 «주입»해 표시만 한다(프레임 0 · 물리 0). */
+  const [settledIx, setSettledIx] = useState(0);
+  const showSettled = useCallback(() => {
+    const S = SETTLED[settledIx];
+    workerRef.current?.terminate();
+    setReady(null); setProg(null); setMsg(""); blobRef.current = null; sceneRef.current = null;
+    setPhase("prep"); setFabric(S.fab); setDMm(S.d);
+    const w = new Worker(new URL("../workers/v3DressWorker.ts", import.meta.url), { type: "module" });
+    workerRef.current = w;
+    w.onmessage = async (e) => {
+      const m = e.data;
+      if (m.kind === "ready") { setReady(m); return; }
+      if (m.kind === "error") { setPhase("error"); setMsg(m.message); return; }
+      if (m.kind !== "done") return;
+      blobRef.current = m.blob;
+      sceneRef.current = { pos: m.pos, idx: m.idx, bodyPos: m.bodyPos, bodyIdx: m.bodyIdx };
+      const h = await crypto.subtle.digest("SHA-256", m.blob.slice().buffer);
+      const hex = [...new Uint8Array(h)].map((b) => b.toString(16).padStart(2, "0")).join("");
+      setShaHex(hex);
+      setPhase("done"); setMsg(`정착 상태 표시 — 프레임 ${m.frame} · 물리 0프레임`);
+      console.log(`[v3] settled sha256=${hex}`);
+    };
+    w.postMessage({
+      kind: "start", glbUrl: `${import.meta.env.BASE_URL}models/mannequin.glb`,
+      fabric: S.fab, d: S.d / 1000, frames: 0, injectStateUrl: S.url,
+    });
+  }, [settledIx]);
 
   const save = useCallback(() => {
     const b = blobRef.current;
@@ -174,6 +208,15 @@ export function V3Panel() {
                 onClick={cancel} disabled={phase !== "run"}>취소</button>
         <button className="rounded border px-2 py-1 disabled:opacity-40"
                 onClick={save} disabled={!blobRef.current}>상태 저장</button>
+      </div>
+      <div className="mb-2 flex items-center gap-2 text-xs">
+        <select className="rounded border px-1 py-0.5" value={settledIx}
+                onChange={(e) => setSettledIx(Number(e.target.value))}
+                disabled={phase === "prep" || phase === "run"}>
+          {SETTLED.map((s2, i) => <option key={s2.url} value={i}>{s2.label}</option>)}
+        </select>
+        <button className="rounded bg-slate-700 px-2 py-1 text-white disabled:opacity-40"
+                onClick={showSettled} disabled={phase === "prep" || phase === "run"}>정착 상태 표시</button>
       </div>
 
       {phase === "prep" && <div className="text-gray-600">장면 조립·SDF 굽는 중…</div>}
