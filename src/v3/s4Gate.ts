@@ -14,7 +14,11 @@ import type { Prepared } from './dressRun.ts';
 export const S4_THRESHOLD = {
   penMaxM: 5e-4,        // ③a 절대 관통 ≤ 0.5mm (v3-29 「두께의 절반」 도출분)
   crossings: 0,         // 자기관통 삼각형 교차 0
-  ringRatio: 1.1,       // 목선 원주비 ≤ 1.10 (설계 §4 S4 ② · v3-24 확인)
+  /** v3-40 §1 — 목선 «초과비» R = C_ring / C_allow ≤ **1**.
+   * C_allow = C_body + 2π(THICK + TOL_SELF) · C_body = 링을 몸에 정사영한 닫힌 둘레.
+   * **1 은 고른 수가 아니라 «정의»다** — 어림수 1.10(v3-24)을 교체했다.
+   * 구 채널(휴지 대비 비율)은 삭제하지 않고 `ringRestRatio` 로 **병기**한다(판정 아님). */
+  ringExcess: 1,
   settleNetM: TOL_SELF, // 창 순변위 ≤ 0.1mm (v3-22 형상 불변 채널)
   pinned: 0,            // 보조 장치 0
 } as const;
@@ -24,7 +28,9 @@ export type S4Result = {
   penMaxM: number; penCnt: number; penWorstVertex: number; penWorstXYZ: [number, number, number];
   crossings: number; minPairM: number;
   seamMedM: number; seamMaxM: number;
-  lambdaMax: number; ringRatio: number;
+  lambdaMax: number;
+  /** v3-40 판정 채널 */ ringExcess: number; ringM: number; ringBodyM: number; ringAllowM: number;
+  /** 구 채널 · 참고(판정 아님 · 옛 문턱 1.10) */ ringRestRatio: number;
   settleNetM: number; settled: boolean;
   pinned: number; diverged: boolean;
   fails: string[];
@@ -72,7 +78,19 @@ export function runS4Gate(P: Prepared, before?: Float64Array): S4Result {
   const polyLen = (ix: number[]) => ix.slice(1).reduce((t, v, k) =>
     t + Math.hypot(pos[v * 3] - pos[ix[k] * 3], pos[v * 3 + 1] - pos[ix[k] * 3 + 1],
                    pos[v * 3 + 2] - pos[ix[k] * 3 + 2]), 0);
-  const ringRatio = (polyLen(P.neckF) + polyLen(P.neckB)) / P.ringRest;
+  /** 구 채널 — 삭제하지 않고 병기(v3-40 §0-4). **판정에 쓰지 않는다.** */
+  const ringRestRatio = (polyLen(P.neckF) + polyLen(P.neckB)) / P.ringRest;
+
+  /* v3-40 §1 — 목선 «초과비». 링을 «닫힌 고리»로 보고, 그 링이 놓인 몸 자리의 둘레와 견준다. */
+  const loop = [...P.neckF, ...[...P.neckB].reverse()];
+  const closed = (pts: number[][]) => pts.reduce((t, _, k) => {
+    const a = pts[k], b = pts[(k + 1) % pts.length];
+    return t + Math.hypot(a[0] - b[0], a[1] - b[1], a[2] - b[2]);
+  }, 0);
+  const ringM = closed(loop.map((v) => [pos[v * 3], pos[v * 3 + 1], pos[v * 3 + 2]]));
+  const ringBodyM = closed(loop.map((v) => bd.nearestBodyPoint(pos[v * 3], pos[v * 3 + 1], pos[v * 3 + 2])));
+  const ringAllowM = ringBodyM + 2 * Math.PI * (THICK + TOL_SELF);
+  const ringExcess = ringM / ringAllowM;
 
   let pinned = 0;
   for (let v = 0; v < sc.n; v++) if (sc.s.invMass[v] === 0) pinned++;
@@ -90,7 +108,8 @@ export function runS4Gate(P: Prepared, before?: Float64Array): S4Result {
 
   if (!(bc.maxPen <= S4_THRESHOLD.penMaxM)) fails.push(`③a 관통 ${(bc.maxPen * 1000).toFixed(4)}mm > 0.5mm`);
   if (mp.hits !== S4_THRESHOLD.crossings) fails.push(`자기관통 교차 ${mp.hits} ≠ 0`);
-  if (!(ringRatio <= S4_THRESHOLD.ringRatio)) fails.push(`목선 원주비 ${ringRatio.toFixed(4)} > 1.10`);
+  if (!(ringExcess <= S4_THRESHOLD.ringExcess))
+    fails.push(`목선 초과비 ${ringExcess.toFixed(4)} > 1 (링 ${(ringM * 100).toFixed(2)}cm > 허용 ${(ringAllowM * 100).toFixed(2)}cm)`);
   if (pinned !== S4_THRESHOLD.pinned) fails.push(`보조 장치(invMass=0) ${pinned} ≠ 0`);
   if (before && !settled) fails.push(`정착 창 순변위 ${(settleNetM * 1000).toFixed(4)}mm > 0.1mm`);
   if (diverged) fails.push('발산');
@@ -102,6 +121,7 @@ export function runS4Gate(P: Prepared, before?: Float64Array): S4Result {
     penWorstXYZ: [pos[wo * 3], pos[wo * 3 + 1], pos[wo * 3 + 2]],
     crossings: mp.hits, minPairM: mp.min,
     seamMedM: gaps[Math.floor(gaps.length / 2)], seamMaxM: gaps[gaps.length - 1],
-    lambdaMax, ringRatio, settleNetM, settled, pinned, diverged, fails,
+    lambdaMax, ringExcess, ringM, ringBodyM, ringAllowM, ringRestRatio,
+    settleNetM, settled, pinned, diverged, fails,
   };
 }
