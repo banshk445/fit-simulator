@@ -5,6 +5,7 @@
  * 값으로 확인할 수 있게 한다. 물리·조립은 한 줄도 여기 없다.
  */
 import { useCallback, useEffect, useRef, useState } from "react";
+import { render as rasterize, VIEWS, type Mesh } from "../v3/raster.ts";
 
 const FABRICS = ["gray", "denim", "sweat", "swim"] as const;
 
@@ -22,11 +23,20 @@ export function V3Panel() {
   const [msg, setMsg] = useState<string>("");
   const [fabric, setFabric] = useState<string>("gray");
   const [frames, setFrames] = useState<number>(86);
+  const [dMm, setDMm] = useState<number>(11);
   const [hidden, setHidden] = useState<number>(0);        // 백그라운드에서 받은 진행 수
   const workerRef = useRef<Worker | null>(null);
   const blobRef = useRef<Uint8Array | null>(null);
+  /* v3-41 §1 — 표시 전용. 물리에 관여하지 않는다. */
+  const sceneRef = useRef<{ pos: Float32Array; idx: Uint32Array; bodyPos: Float32Array; bodyIdx: Uint32Array } | null>(null);
+  const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const [viewIx, setViewIx] = useState(0);
+  const [shaHex, setShaHex] = useState<string>("");
+  const [uxLog, setUxLog] = useState<string[]>([]);
 
   useEffect(() => () => workerRef.current?.terminate(), []);
+  /* v3-41 ㉠ — 진행 로그를 «계기 채널»로 노출한다(판정 자동화용 · 물리 무관) */
+  useEffect(() => { (window as unknown as Record<string, unknown>).__v3ux = uxLog; }, [uxLog]);
 
   const start = useCallback(() => {
     workerRef.current?.terminate();
@@ -39,11 +49,13 @@ export function V3Panel() {
       if (m.kind === "ready") { setReady(m); setPhase("run"); return; }
       if (m.kind === "progress") {
         setProg(m);
+        setUxLog((L) => [...L, `f=${m.frame}/${m.frames} net=${m.netMm.toFixed(4)}mm hidden=${document.hidden ? 1 : 0}`]);
         if (document.hidden) setHidden((h) => h + 1);      // ㉣③ 백그라운드 완주 확인용
         return;
       }
       if (m.kind === "done") {
         blobRef.current = m.blob;
+        sceneRef.current = { pos: m.pos, idx: m.idx, bodyPos: m.bodyPos, bodyIdx: m.bodyIdx };
         // §2 자동 대조 채널 — CC가 콘솔·window로 읽는다. 바이트를 옮기지 않고 해시로 본다.
         void (async () => {
           const h = await crypto.subtle.digest("SHA-256", m.blob.slice().buffer);
@@ -53,6 +65,7 @@ export function V3Panel() {
             elapsedMs: m.elapsedMs, bytes: m.blob.byteLength, sha256: hex,
             hiddenTicks: hidden, blob: m.blob,
           };
+          setShaHex(hex);
           console.log(`[v3] sha256=${hex} bytes=${m.blob.byteLength} frame=${m.frame}`);
         })();
         setPhase(m.stopped ? "cancelled" : "done");
@@ -70,9 +83,9 @@ export function V3Panel() {
     w.postMessage({
       kind: "start",
       glbUrl: `${import.meta.env.BASE_URL}models/mannequin.glb`,
-      fabric, d: 0.011, frames,
+      fabric, d: dMm / 1000, frames,
     });
-  }, [fabric, frames, hidden]);
+  }, [fabric, frames, hidden, dMm]);
 
   const cancel = useCallback(() => workerRef.current?.postMessage({ kind: "cancel" }), []);
 
@@ -86,6 +99,52 @@ export function V3Panel() {
     a.click();
     URL.revokeObjectURL(url);
   }, [fabric, frames]);
+
+  /* v3-41 §2 — **읽기 전용 표시**. 상태 배열을 «읽기»만 하고 한 바이트도 쓰지 않는다.
+   * 구도는 `src/v3/raster.ts` 의 등재 3뷰 프리셋(front · sideXplus · back) 그대로다. */
+  const draw = useCallback((vi: number) => {
+    const S = sceneRef.current, cv = canvasRef.current;
+    if (!S || !cv) return;
+    const lo: [number, number, number] = [Infinity, Infinity, Infinity];
+    const hi: [number, number, number] = [-Infinity, -Infinity, -Infinity];
+    for (const P of [S.bodyPos, S.pos])
+      for (let i = 0; i < P.length; i += 3)
+        for (let c = 0; c < 3; c++) { lo[c] = Math.min(lo[c], P[i + c]); hi[c] = Math.max(hi[c], P[i + c]); }
+    const meshes: Mesh[] = [
+      { pos: S.bodyPos, idx: S.bodyIdx, color: [190, 185, 178] },
+      { pos: S.pos, idx: S.idx, color: [40, 90, 200] },
+    ];
+    const W = cv.width, H = cv.height;
+    const rgb = rasterize(meshes, VIEWS[vi], { lo, hi }, W, H);
+    const g = cv.getContext("2d");
+    if (!g) return;
+    const img = g.createImageData(W, H);
+    for (let i = 0, j = 0; i < W * H; i++, j += 3) {
+      img.data[i * 4] = rgb[j]; img.data[i * 4 + 1] = rgb[j + 1];
+      img.data[i * 4 + 2] = rgb[j + 2]; img.data[i * 4 + 3] = 255;
+    }
+    g.putImageData(img, 0, 0);
+  }, []);
+
+  useEffect(() => { if (sceneRef.current) draw(viewIx); }, [viewIx, draw, phase]);
+
+  const capture = useCallback(() => {
+    const cv = canvasRef.current, S = sceneRef.current;
+    if (!cv || !S) return;
+    VIEWS.forEach((v, i) => {
+      draw(i);
+      cv.toBlob((b) => {
+        if (!b) return;
+        const url = URL.createObjectURL(b);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = `v3-41-${fabric}-d${Math.round(dMm)}-f${prog?.frame ?? frames}-${shaHex.slice(0, 8)}-${v.name}.png`;
+        document.body.appendChild(a); a.click(); a.remove();
+        URL.revokeObjectURL(url);
+      }, "image/png");
+    });
+    setTimeout(() => draw(viewIx), 50);
+  }, [draw, fabric, frames, prog, shaHex, viewIx, dMm]);
 
   const pct = prog ? Math.round((prog.frame / prog.frames) * 100) : 0;
 
@@ -102,7 +161,11 @@ export function V3Panel() {
                  onChange={(e) => setFrames(Number(e.target.value))}
                  disabled={phase === "prep" || phase === "run"} />
         </label>
-        <span className="text-xs text-gray-500">d 11.0mm</span>
+        <label className="flex items-center gap-1">d
+          <input className="w-14 rounded border px-1 py-0.5" type="number" value={dMm}
+                 onChange={(e) => setDMm(Number(e.target.value))}
+                 disabled={phase === "prep" || phase === "run"} />mm
+        </label>
       </div>
       <div className="mb-2 flex gap-2">
         <button className="rounded bg-black px-2 py-1 text-white disabled:opacity-40"
@@ -134,6 +197,23 @@ export function V3Panel() {
         </div>
       )}
       {msg && <div className={phase === "error" ? "text-red-700" : "text-gray-800"}>{msg}</div>}
+
+      {/* v3-41 §2 — 읽기 전용 표시. 등재 3뷰 프리셋. */}
+      <div className="mt-2">
+        <div className="mb-1 flex items-center gap-2 text-xs">
+          {VIEWS.map((v, i) => (
+            <button key={v.name} onClick={() => setViewIx(i)}
+                    className={`rounded border px-1.5 py-0.5 ${i === viewIx ? "bg-black text-white" : ""}`}>
+              {v.name}
+            </button>
+          ))}
+          <button className="rounded border px-1.5 py-0.5 disabled:opacity-40"
+                  onClick={capture} disabled={!sceneRef.current}>캡처 3장</button>
+        </div>
+        <canvas ref={canvasRef} width={300} height={420}
+                className="w-full rounded border bg-white" />
+        {shaHex && <div className="mt-1 break-all text-[10px] text-gray-500">sha256 {shaHex}</div>}
+      </div>
     </div>
   );
 }

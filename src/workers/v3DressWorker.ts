@@ -80,9 +80,12 @@ ctx.onmessage = async (e: MessageEvent) => {
     const blob = stateBlob(P, r.frame, P.S.PLACE_SIG);
     const pos = Float32Array.from(P.sc.s.pos);
     const idx = Uint32Array.from(P.sc.tris);
+    /* v3-41 §1 — 표시 전용. 몸 메시를 함께 보내 패널이 «Node 캡처와 같은 구도»로 그린다. */
+    const bodyPos = Float32Array.from(P.prim0.pos);
+    const bodyIdx2 = Uint32Array.from(P.bodyIdx);
     ctx.postMessage(
-      { kind: 'done', ...r, elapsedMs: performance.now() - t0, pos, idx, blob },
-      [pos.buffer, idx.buffer, blob.buffer],
+      { kind: 'done', ...r, elapsedMs: performance.now() - t0, pos, idx, blob, bodyPos, bodyIdx: bodyIdx2 },
+      [pos.buffer, idx.buffer, blob.buffer, bodyPos.buffer, bodyIdx2.buffer],
     );
   } catch (err) {
     // 관측 가능한 사실만 말한다 — 원인 단정 0
