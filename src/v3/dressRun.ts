@@ -94,9 +94,24 @@ export function prepare(inp: RunInput) {
     selfCollision: { tris: sc.tris, thickness: THICK, every: 1 },
   };
   if (inp.injectState) {
+    /* v3-41 ㉠④ — 고지는 «관측 사실»만 담는다. 원인 단정·추정 0(P30 §2 형식). */
+    const total = inp.injectState.byteLength;
+    if (total < 8) throw new Error(`주입 상태: 받은 바이트 ${total} — 헤더 길이 4바이트도 못 읽는다`);
     const dv = new DataView(inp.injectState);
     const hl = dv.getUint32(0, true);
-    const hdr = JSON.parse(new TextDecoder().decode(new Uint8Array(inp.injectState, 4, hl)));
+    if (hl < 2 || 4 + hl > total)
+      throw new Error(`주입 상태: 헤더 길이 필드가 ${hl}, 받은 전체는 ${total}바이트 — 헤더가 전체를 넘는다`);
+    let hdr: { n?: number; frame?: number; d?: number };
+    try {
+      hdr = JSON.parse(new TextDecoder().decode(new Uint8Array(inp.injectState, 4, hl)));
+    } catch {
+      const head = new TextDecoder().decode(new Uint8Array(inp.injectState, 0, Math.min(40, total)));
+      throw new Error(`주입 상태: 헤더 ${hl}바이트가 JSON 이 아니다 — 앞 40바이트 「${head.replace(/\s+/g, ' ')}」`);
+    }
+    if (typeof hdr.n !== 'number') throw new Error(`주입 상태: 헤더에 정점 수(n)가 없다 — 헤더 ${JSON.stringify(hdr)}`);
+    const need = 4 + hl + hdr.n * 3 * 8 * 2;
+    if (need !== total)
+      throw new Error(`주입 상태: 헤더의 n=${hdr.n} 이면 ${need}바이트여야 하는데 받은 것은 ${total}바이트`);
     if (hdr.n !== sc.n) throw new Error(`주입 상태의 정점 수가 다르다 (${hdr.n} ≠ ${sc.n})`);
     const nb = sc.n * 3 * 8;
     sc.s.pos.set(new Float64Array(inp.injectState.slice(4 + hl, 4 + hl + nb)));
