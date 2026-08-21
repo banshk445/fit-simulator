@@ -44,6 +44,17 @@ export function V3Panel() {
       }
       if (m.kind === "done") {
         blobRef.current = m.blob;
+        // §2 자동 대조 채널 — CC가 콘솔·window로 읽는다. 바이트를 옮기지 않고 해시로 본다.
+        void (async () => {
+          const h = await crypto.subtle.digest("SHA-256", m.blob.slice().buffer);
+          const hex = [...new Uint8Array(h)].map((b) => b.toString(16).padStart(2, "0")).join("");
+          (window as unknown as Record<string, unknown>).__v3 = {
+            frame: m.frame, diverged: m.diverged, stopped: m.stopped,
+            elapsedMs: m.elapsedMs, bytes: m.blob.byteLength, sha256: hex,
+            hiddenTicks: hidden, blob: m.blob,
+          };
+          console.log(`[v3] sha256=${hex} bytes=${m.blob.byteLength} frame=${m.frame}`);
+        })();
         setPhase(m.stopped ? "cancelled" : "done");
         setMsg(`프레임 ${m.frame} · ${(m.elapsedMs / 1000).toFixed(1)}초 · 발산 ${m.diverged ? "있음" : "0"}`);
         // 콘솔에도 남긴다 — 자동 대조가 읽는 채널이다
