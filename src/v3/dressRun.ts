@@ -125,12 +125,15 @@ export function runFrames(
   frames: number,
   onProgress?: (p: Progress) => void,
   shouldStop?: () => boolean,
+  /** 이어받는 프레임 번호 — 주입한 상태를 «잇는» 실행에서 램프가 되감기지 않게 한다.
+   * 0 이면 처음부터다(기본). 램프 식은 그대로이고 «인자»만 는다(로직 변경 0). */
+  startFrame = 0,
 ): { frame: number; diverged: boolean; stopped: boolean } {
   const { sc, setRest, params } = P;
   let ref = Float64Array.from(sc.s.pos);
   let f = 0;
   for (; f < frames; f++) {
-    setRest(f + 1);
+    setRest(startFrame + f + 1);
     step(sc.s, sc.cons, params);
     if (!Number.isFinite(sc.s.pos[0])) return { frame: f + 1, diverged: true, stopped: false };
     if ((f + 1) % N_WIN === 0) {

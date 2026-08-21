@@ -28,6 +28,7 @@ type StartMsg = {
   kind: 'start'; glbUrl: string; fabric: string; d: number; frames: number;
   garment?: typeof DEFAULT_GARMENT; bodyScale?: [number, number, number];
   injectStateUrl?: string;   // v3-36 §2 진단 — 주입할 상태 blob 의 URL
+  startFrame?: number;       // v3-37 §3 — 주입 상태를 «잇는» 실행(램프 되감기 방지)
 };
 
 ctx.onmessage = async (e: MessageEvent) => {
@@ -70,6 +71,7 @@ ctx.onmessage = async (e: MessageEvent) => {
         ctx.postMessage({ kind: 'progress', ...p, elapsedMs: performance.now() - t0 });
       },
       () => cancelled,
+      m.startFrame ?? 0,
     );
     if (m.frames >= N_WIN && !before) before = undefined;
     /* v3-37 §3 — **브라우저용 S4 게이트**. 문턱은 Node 게이트와 같은 값이다(새 문턱 0). */
