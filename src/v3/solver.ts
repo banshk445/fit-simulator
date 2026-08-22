@@ -891,67 +891,6 @@ export function makeBend(
   return out;
 }
 
-/**
- * v3-46 — **시접 «횡단» 굽힘**. 재봉선에 «회전 연속성»을 준다.
- *
- * 왜 필요한가(v3-46 §0-1·§0-2): `makeBend` 는 «두 삼각형이 공유하는» 엣지에만 힌지를 만드는데
- * (`e.wings.length !== 2 ⟹ continue`), 시접 쌍은 **서로 다른 패널**이라 정점을 하나도 공유하지
- * 않는다 ⟹ **시접을 가로지르는 굽힘 결합이 0**이고, 두 패널은 rest(=SEP)만 지킨 채 «자유 경첩»처럼
- * 회전한다. 실물 재봉선에는 없는 자유도다. 이것은 «보조 힘»이 아니라 **결핍 물리의 보충**이다.
- *
- * 형식은 `makeBend` «그대로»다 — 다른 것은 날개를 «패널 경계 너머»에서 집어 온다는 것뿐이다.
- *   축   = 시접 구간 `(a[k], a[k+1])`. 휴지 패턴에서 `b[k]`·`b[k+1]` 과 **동일시**되는 엣지다
- *          (봉제 = 두 가장자리를 붙이는 것 · 이즈 0.000%, v3-44 ㉡3).
- *   날개 = 양쪽 패널의 **실제** 경계 삼각형 두 개 ⟹ `a = areaA + areaB` 로 내부 힌지와 «같은 차수».
- *   정지각 = **0** — 평평한 패턴 두 장을 시접에서 이으면 공면이다(내부 힌지와 같은 도출).
- *   강성 = **그 원단의 B** — 이음선을 원단보다 뻣뻣하게 만들지 않는다(v3-13 §3 원칙).
- * **새 상수 0.**
- */
-export function makeSeamBend(
-  tris: ArrayLike<number>,
-  restUV: ArrayLike<number>,
-  seams: readonly { readonly a: readonly number[]; readonly b: readonly number[] }[],
-  ke: number,
-): { bends: BendConstraint[]; skipped: number } {
-  // 엣지 → 날개. 경계 엣지는 날개가 하나다 — 시접 구간이 바로 그 경계다.
-  const wing = new Map<string, number[]>();
-  const key = (a: number, b: number) => (a < b ? `${a}_${b}` : `${b}_${a}`);
-  for (let t = 0; t < tris.length; t += 3) {
-    const v = [tris[t], tris[t + 1], tris[t + 2]];
-    for (let i = 0; i < 3; i++) {
-      const k = key(v[i], v[(i + 1) % 3]);
-      const e = wing.get(k);
-      if (e) e.push(v[(i + 2) % 3]);
-      else wing.set(k, [v[(i + 2) % 3]]);
-    }
-  }
-  const out: BendConstraint[] = [];
-  let skipped = 0;
-  for (const sm of seams) {
-    const n = Math.min(sm.a.length, sm.b.length);
-    for (let k = 0; k + 1 < n; k++) {
-      const a0 = sm.a[k], a1 = sm.a[k + 1], b0 = sm.b[k], b1 = sm.b[k + 1];
-      const wA = wing.get(key(a0, a1));
-      const wB = wing.get(key(b0, b1));
-      // 시접 구간은 «양쪽 다» 경계 엣지여야 한다. 아니면 세지 않고 건너뛴다(등재한다).
-      if (!wA || wA.length !== 1 || !wB || wB.length !== 1) { skipped++; continue; }
-      const l = Math.hypot(restUV[a1 * 2] - restUV[a0 * 2], restUV[a1 * 2 + 1] - restUV[a0 * 2 + 1]);
-      if (!(l > 0)) { skipped++; continue; }
-      const area = triArea(restUV, a0, a1, wA[0]) + triArea(restUV, b0, b1, wB[0]);
-      out.push({
-        kind: 'bend',
-        p0: a0, p1: a1,
-        p2: wA[0], p3: wB[0],
-        restAngle: 0,
-        ke,
-        shape: (4 * area) / (l * l),
-        lambda: 0,
-      });
-    }
-  }
-  return { bends: out, skipped };
-}
-
 /** 이면각 [rad]. 평면이면 0. 부호는 엣지 방향 기준. */
 export function dihedral(s: Solver, c: BendConstraint): number {
   const o0 = c.p0 * 3;
