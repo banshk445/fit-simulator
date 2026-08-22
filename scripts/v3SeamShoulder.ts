@@ -17,6 +17,7 @@ import { minPairDistLite, makeBodyDistance } from '../src/v3/instruments.ts';
 import { sampleSdf } from '../src/v3/bodySdf.ts';
 import { FABRICS, THICK, SEP } from '../src/v3/consts.ts';
 import { render, VIEWS, type View } from '../src/v3/raster.ts';
+import { seamBridgeIndices, bridgeStripCount, withBridge } from '../src/v3/seamBridge.ts';
 
 const IN = process.env.IN!, FAB = process.env.FAB ?? 'gray';
 const D = Number(process.env.D_MM ?? 9) / 1000;
@@ -28,6 +29,11 @@ const { S, sc } = P;
 const pos = sc.s.pos;
 const clothPos = Float32Array.from(pos);
 const clothIdx = Uint32Array.from(sc.tris);
+/* v3-45 ㉢ — **표시 전용**. `BRIDGE=1` 일 때만 «렌더에 넘기는» 인덱스에 이어 붙인다.
+ * `sc.tris` · 제약 · 상태는 한 바이트도 안 바뀐다(솔버·게이트 경로 유입 0). */
+const BRIDGE_ON = process.env.BRIDGE === '1';
+const bridgeIdx = seamBridgeIndices(sc.seams);
+const drawIdx = BRIDGE_ON ? withBridge(clothIdx, bridgeIdx) : clothIdx;
 const bodyPos = Float32Array.from(P.prim0.pos);
 const bodyIdx = P.bodyIdx;
 const cm = (v: number) => (v * 100).toFixed(2);
@@ -176,7 +182,8 @@ for (const [tag, yLo] of [['CAP_H', S.Y_TOP - S.CAP_H], ['ARM_D(민감도)', S.Y
 /* ══ ㉠2 시접 «가시량» — 뷰별 픽셀 ══════════════════════════════════════════ */
 const BODY_COL: [number, number, number] = [190, 185, 178];
 const CLOTH_COL: [number, number, number] = [40, 90, 200];
-const W = 300, H = 420;
+const RES = Number(process.env.RES ?? 1);
+const W = 300 * RES, H = 420 * RES;
 const bounds = (() => {
   const lo: [number, number, number] = [Infinity, Infinity, Infinity];
   const hi: [number, number, number] = [-Infinity, -Infinity, -Infinity];
@@ -205,7 +212,7 @@ function projector(view: View) {
   const s = Math.max((u1-u0)/W, (v1-v0)/H), cu = (u0+u1)/2, cv = (v0+v1)/2;
   return { px: (x:number,y:number,z:number)=>[Math.floor(W/2+(pr(x,y,z)[0]-cu)/s), Math.floor(H/2-(y-cv)/s)], mPerPx: s };
 }
-console.log(`  ── ㉠2 시접 «가시량» — 시접 대역(투영 시접 정점 ± d) 안의 비옷색 픽셀 ──`);
+console.log(`  ── ㉠2 시접 «가시량» · 브리지 ${BRIDGE_ON ? `**on** (스트립 ${bridgeStripCount(bridgeIdx)} · 삼각형 ${bridgeIdx.length/3})` : 'off (등재 기준)'} — 시접 대역(투영 시접 정점 ± d) 안의 비옷색 픽셀 ──`);
 console.log(`     ${'뷰'.padEnd(10)} 대역px  옷    몸    배경  | 끊김(윤곽 안 비옷색) ‰(대역)`);
 /* v3-43 #94 — 근측 맨팔의 «전방 폐색»이 sideXplus 의 몸 픽셀에 섞인다.
  * 그 성분을 빼려면 v3-43 §1-2 와 «같은 방법»으로 소매 밖 원위 삼각형을 표시에서만 숨긴다.
@@ -222,9 +229,9 @@ const bodyIdxNoArm = (() => {
   return Uint32Array.from(keep);
 })();
 for (const view of VIEWS) {
-  const full = render([{pos:bodyPos,idx:bodyIdx,color:BODY_COL},{pos:clothPos,idx:clothIdx,color:CLOTH_COL}], view, bounds, W, H);
-  const fullNA = render([{pos:bodyPos,idx:bodyIdxNoArm,color:BODY_COL},{pos:clothPos,idx:clothIdx,color:CLOTH_COL}], view, bounds, W, H);
-  const only = render([{pos:clothPos,idx:clothIdx,color:CLOTH_COL}], view, bounds, W, H);
+  const full = render([{pos:bodyPos,idx:bodyIdx,color:BODY_COL},{pos:clothPos,idx:drawIdx,color:CLOTH_COL}], view, bounds, W, H);
+  const fullNA = render([{pos:bodyPos,idx:bodyIdxNoArm,color:BODY_COL},{pos:clothPos,idx:drawIdx,color:CLOTH_COL}], view, bounds, W, H);
+  const only = render([{pos:clothPos,idx:drawIdx,color:CLOTH_COL}], view, bounds, W, H);
   /* 윤곽 «안»: 옷이 아닌 곳을 테두리에서 채워 바깥을 지운다 — 남은 것이 옷 윤곽 내부다 */
   const outside = new Uint8Array(W*H);
   const isCloth = (i: number) => classify(only[i*3], only[i*3+1], only[i*3+2]) === 'cloth';
@@ -259,4 +266,35 @@ for (const view of VIEWS) {
     if (cn !== 'cloth' && !outside[i]) brkNA++;
   }
   console.log(`     ${view.name.padEnd(10)} ${String(nb).padStart(5)}  ${String(cl).padStart(5)} ${String(bo).padStart(5)} ${String(bg).padStart(5)} | **${String(brk).padStart(4)}**  ${(1000*brk/nb).toFixed(1)}‰  → 팔 숨김 후 **${String(brkNA).padStart(4)}** ${(1000*brkNA/nb).toFixed(1)}‰   (R=${R}px · 1px=${mm(pj.mPerPx)}mm · 전체화면 팔차이 ${diffFull}px · 실루엣 ${sil} · 윤곽밖 ${outCnt})`);
+  /* 잔여의 «자리» — 팔 숨김 후에도 남는 끊김 픽셀을 가장 가까운 시접에 귀속시킨다.
+   * 갈래 B 가 요구하는 「잔여의 자리·크기」다. 판정 채널을 바꾸지 않는다. */
+  if (view.name === 'sideXplus' && brkNA > 0) {
+    const seamPx: { name: string; x: number; y: number }[] = [];
+    for (const sm of sc.seams) for (let k = 0; k < sm.a.length; k++) for (const v of [sm.a[k], sm.b[k]]) {
+      const [x, y] = pj.px(pos[v*3], pos[v*3+1], pos[v*3+2]);
+      seamPx.push({ name: sm.name, x, y });
+    }
+    const cnt = new Map<string, number>();
+    for (let i = 0; i < W*H; i++) {
+      if (!band[i] || outside[i]) continue;
+      if (classify(fullNA[i*3], fullNA[i*3+1], fullNA[i*3+2]) === 'cloth') continue;
+      const x = i % W, y = (i/W)|0;
+      let best = Infinity, nm = '?';
+      for (const sp of seamPx) { const dd = (sp.x-x)**2 + (sp.y-y)**2; if (dd < best) { best = dd; nm = sp.name; } }
+      cnt.set(nm, (cnt.get(nm) ?? 0) + 1);
+    }
+    console.log(`       잔여 ${brkNA}px 의 최근접 시접별 귀속: ${[...cnt].sort((a,b)=>b[1]-a[1]).map(([k,c])=>`${k} ${c}`).join(' · ')}`);
+    /* 잔여가 «시접선 위»인가 «대역 가장자리»인가 — 최근접 시접 정점까지의 픽셀 거리 */
+    const dists: number[] = [];
+    for (let i = 0; i < W*H; i++) {
+      if (!band[i] || outside[i]) continue;
+      if (classify(fullNA[i*3], fullNA[i*3+1], fullNA[i*3+2]) === 'cloth') continue;
+      const x = i % W, y = (i/W)|0;
+      let best = Infinity;
+      for (const sp of seamPx) { const dd = (sp.x-x)**2 + (sp.y-y)**2; if (dd < best) best = dd; }
+      dists.push(Math.sqrt(best));
+    }
+    dists.sort((a,b)=>a-b);
+    console.log(`       잔여의 최근접 시접 정점까지 거리[px] 중앙 ${q(dists,.5).toFixed(2)} · p90 ${q(dists,.9).toFixed(2)} · 최대 ${q(dists,1).toFixed(2)} (대역 반경 R=${R}px · 1px=${mm(pj.mPerPx)}mm)`);
+  }
 }

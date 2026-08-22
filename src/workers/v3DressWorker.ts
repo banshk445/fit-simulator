@@ -15,6 +15,7 @@ import { prepare, runFrames, stateBlob, DEFAULT_GARMENT, type Prepared } from '.
 import { minPairDistLite } from '../v3/instruments.ts';
 import { FABRICS } from '../v3/consts.ts';
 import { runS4Gate, N_WIN } from '../v3/s4Gate.ts';
+import { seamBridgeIndices } from '../v3/seamBridge.ts';
 
 /** 워커 전역 — 타입 정의가 Window로 잡혀 있어 최소 형태로 좁힌다(동작 변경 0) */
 const ctx = self as unknown as {
@@ -82,10 +83,12 @@ ctx.onmessage = async (e: MessageEvent) => {
     const idx = Uint32Array.from(P.sc.tris);
     /* v3-41 §1 — 표시 전용. 몸 메시를 함께 보내 패널이 «Node 캡처와 같은 구도»로 그린다. */
     const bodyPos = Float32Array.from(P.prim0.pos);
+    /* v3-45 — **표시 전용** 시접 브리지 인덱스. 정점을 새로 만들지 않고 `sc.tris` 도 안 건드린다. */
+    const bridgeIdx = seamBridgeIndices(P.sc.seams);
     const bodyIdx2 = Uint32Array.from(P.bodyIdx);
     ctx.postMessage(
-      { kind: 'done', ...r, elapsedMs: performance.now() - t0, pos, idx, blob, bodyPos, bodyIdx: bodyIdx2 },
-      [pos.buffer, idx.buffer, blob.buffer, bodyPos.buffer, bodyIdx2.buffer],
+      { kind: 'done', ...r, elapsedMs: performance.now() - t0, pos, idx, blob, bodyPos, bodyIdx: bodyIdx2, bridgeIdx },
+      [pos.buffer, idx.buffer, blob.buffer, bodyPos.buffer, bodyIdx2.buffer, bridgeIdx.buffer],
     );
   } catch (err) {
     // 관측 가능한 사실만 말한다 — 원인 단정 0

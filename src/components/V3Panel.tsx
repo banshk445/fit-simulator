@@ -7,6 +7,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { render as rasterize, VIEWS, type Mesh } from "../v3/raster.ts";
 import { renderProduct, PRODUCT_VIEWS } from "../v3/productView.ts";
+import { withBridge } from "../v3/seamBridge.ts";
 
 const FABRICS = ["gray", "denim", "sweat", "swim"] as const;
 /** v3-41 §2 — C-브라우저 정착 상태(v3-38 산출). **표시 전용 · 물리 0프레임**. */
@@ -35,7 +36,7 @@ export function V3Panel() {
   const workerRef = useRef<Worker | null>(null);
   const blobRef = useRef<Uint8Array | null>(null);
   /* v3-41 §1 — 표시 전용. 물리에 관여하지 않는다. */
-  const sceneRef = useRef<{ pos: Float32Array; idx: Uint32Array; bodyPos: Float32Array; bodyIdx: Uint32Array } | null>(null);
+  const sceneRef = useRef<{ pos: Float32Array; idx: Uint32Array; bodyPos: Float32Array; bodyIdx: Uint32Array; bridgeIdx?: Uint32Array } | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const [viewIx, setViewIx] = useState(0);
   const [shaHex, setShaHex] = useState<string>("");
@@ -44,6 +45,9 @@ export function V3Panel() {
   const pCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const [pViewIx, setPViewIx] = useState(1);        // 기본 side-p (불합격 지목 구도)
   const [mode, setMode] = useState<"diag" | "prod">("prod");
+  /* v3-45 — 시접 브리지. **표시 전용**(정점 0 추가 · 상태 무변조). 진단 래스터에서는 «벌»이고
+   * **off 가 등재 기준**이다. 제품 씬은 기본 on(모델이 지고 있는 두께를 그린다). */
+  const [bridge, setBridge] = useState(true);
   const [uxLog, setUxLog] = useState<string[]>([]);
 
   useEffect(() => () => workerRef.current?.terminate(), []);
@@ -80,7 +84,7 @@ export function V3Panel() {
       }
       if (m.kind === "done") {
         blobRef.current = m.blob;
-        sceneRef.current = { pos: m.pos, idx: m.idx, bodyPos: m.bodyPos, bodyIdx: m.bodyIdx };
+        sceneRef.current = { pos: m.pos, idx: m.idx, bodyPos: m.bodyPos, bodyIdx: m.bodyIdx, bridgeIdx: m.bridgeIdx };
         // §2 자동 대조 채널 — CC가 콘솔·window로 읽는다. 바이트를 옮기지 않고 해시로 본다.
         void (async () => {
           const h = await crypto.subtle.digest("SHA-256", m.blob.slice().buffer);
@@ -129,7 +133,7 @@ export function V3Panel() {
       if (m.kind === "error") { setPhase("error"); setMsg(m.message); return; }
       if (m.kind !== "done") return;
       blobRef.current = m.blob;
-      sceneRef.current = { pos: m.pos, idx: m.idx, bodyPos: m.bodyPos, bodyIdx: m.bodyIdx };
+      sceneRef.current = { pos: m.pos, idx: m.idx, bodyPos: m.bodyPos, bodyIdx: m.bodyIdx, bridgeIdx: m.bridgeIdx };
       /* 파일명·표시에 쓰는 sha 는 «상태 페이로드»(헤더 제외)다 — 헤더의 frame 은 재발행으로 바뀐다 */
       const dv = new DataView(m.blob.slice().buffer);
       const hl = dv.getUint32(0, true);
@@ -158,6 +162,9 @@ export function V3Panel() {
 
   /* v3-41 §2 — **읽기 전용 표시**. 상태 배열을 «읽기»만 하고 한 바이트도 쓰지 않는다.
    * 구도는 `src/v3/raster.ts` 의 등재 3뷰 프리셋(front · sideXplus · back) 그대로다. */
+  /* 표시용 인덱스 — 브리지가 켜져 있고 워커가 실어 보냈을 때만 이어 붙인다. 원본 불변. */
+  const dIdx = useCallback((S: { idx: Uint32Array; bridgeIdx?: Uint32Array }) =>
+    bridge && S.bridgeIdx && S.bridgeIdx.length ? withBridge(S.idx, S.bridgeIdx) : S.idx, [bridge]);
   const draw = useCallback((vi: number) => {
     const S = sceneRef.current, cv = canvasRef.current;
     if (!S || !cv) return;
@@ -168,7 +175,7 @@ export function V3Panel() {
         for (let c = 0; c < 3; c++) { lo[c] = Math.min(lo[c], P[i + c]); hi[c] = Math.max(hi[c], P[i + c]); }
     const meshes: Mesh[] = [
       { pos: S.bodyPos, idx: S.bodyIdx, color: [190, 185, 178] },
-      { pos: S.pos, idx: S.idx, color: [40, 90, 200] },
+      { pos: S.pos, idx: dIdx(S), color: [40, 90, 200] },
     ];
     const W = cv.width, H = cv.height;
     const rgb = rasterize(meshes, VIEWS[vi], { lo, hi }, W, H);
@@ -180,7 +187,7 @@ export function V3Panel() {
       img.data[i * 4 + 2] = rgb[j + 2]; img.data[i * 4 + 3] = 255;
     }
     g.putImageData(img, 0, 0);
-  }, []);
+  }, [dIdx]);
 
   useEffect(() => { if (sceneRef.current) draw(viewIx); }, [viewIx, draw, phase]);
 
@@ -191,14 +198,14 @@ export function V3Panel() {
     /* 화면은 devicePixelRatio, **캡처는 CAP_SCALE 배**로 그린다. 이 기계의 dPR 은 1 이라
      * 그대로 두면 캡처가 진단 래스터와 같은 300×420 이 되어 «제품급»이 성립하지 않는다.
      * 표시 층 파라미터이고 물리·문턱 채널이 아니다. */
-    renderProduct(cv, { pos: S.bodyPos, idx: S.bodyIdx }, { pos: S.pos, idx: S.idx },
+    renderProduct(cv, { pos: S.bodyPos, idx: S.bodyIdx }, { pos: S.pos, idx: dIdx(S) },
                   PRODUCT_VIEWS[vi], 300, 420, scale);
-  }, []);
+  }, [dIdx]);
   const CAP_SCALE = 3;
   useEffect(() => { if (mode === "prod" && sceneRef.current) drawProd(pViewIx); }, [pViewIx, drawProd, phase, mode]);
 
   const nameOf = useCallback((v: string) =>
-    `v3-43-${fabric}-d${Math.round(dMm)}-f${capFrame ?? prog?.frame ?? frames}-${shaHex.slice(0, 8)}-${v}.png`,
+    `v3-45-${fabric}-d${Math.round(dMm)}-f${capFrame ?? prog?.frame ?? frames}-${shaHex.slice(0, 8)}-${v}.png`,
     [fabric, dMm, capFrame, prog, frames, shaHex]);
   const dl = useCallback((b: Blob | null, name: string) => {
     if (!b) return;
@@ -245,7 +252,7 @@ export function V3Panel() {
       for (let i = 0; i < A.length; i += 3)
         for (let c = 0; c < 3; c++) { lo[c] = Math.min(lo[c], A[i + c]); hi[c] = Math.max(hi[c], A[i + c]); }
     const rgb = rasterize([{ pos: S.bodyPos, idx: S.bodyIdx, color: [190, 185, 178] },
-                           { pos: S.pos, idx: S.idx, color: [40, 90, 200] }],
+                           { pos: S.pos, idx: dIdx(S), color: [40, 90, 200] }],
                           VIEWS[si], { lo, hi }, 300, 420);
     const tmp = document.createElement("canvas");
     tmp.width = 300; tmp.height = 420;
@@ -353,6 +360,10 @@ export function V3Panel() {
                 className={`rounded border px-1.5 py-0.5 ${mode === "prod" ? "bg-black text-white" : ""}`}>제품 표시</button>
         <button onClick={() => setMode("diag")}
                 className={`rounded border px-1.5 py-0.5 ${mode === "diag" ? "bg-black text-white" : ""}`}>진단 래스터</button>
+        <label className="ml-1 flex items-center gap-1">
+          <input type="checkbox" checked={bridge} onChange={(e) => setBridge(e.target.checked)} />
+          시접 브리지
+        </label>
       </div>
 
       <div className={mode === "prod" ? "mt-2" : "hidden"}>
