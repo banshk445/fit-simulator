@@ -14,7 +14,7 @@
 import type { GridSdf } from './bodySdf.ts';
 import { sampleSdf } from './bodySdf.ts';
 import {
-  makeSolver, makeInplane, makeBend, assignMassFromMesh,
+  makeSolver, makeInplane, makeBend, makeSeamBend, assignMassFromMesh,
   substepsForBending, substepsForCloth,
   type Constraint, type DistanceConstraint,
 } from './solver.ts';
@@ -710,9 +710,15 @@ export function createScene(cfg: SceneConfig) {
         seamCons.push({ kind: 'dist', i: sm.a[k], j: sm.b[k], rest: SEP, k: KMEM, lambda: 0 });
 
     assignMassFromMesh(s, tris, uv, MAT.rho, new Set());
+    /* v3-46 — 시접 «횡단» 굽힘. `makeBend` 는 패널 «내부» 엣지에만 힌지를 만들고(공유 정점 필요)
+     * 시접 쌍은 서로 다른 패널이라 정점을 공유하지 않는다 ⟹ 시접을 가로지르는 굽힘 결합이 0 이었다.
+     * 강성은 «같은 MAT.B» · 정지각 0 · 새 상수 0. 서브스텝 산정에도 그대로 들어간다. */
     const bends = makeBend(tris, uv, MAT.B);
-    const cons: Constraint[] = [...makeInplane(tris, uv, KMEM, KMEM, KMEM), ...bends, ...seamCons];
-    return { ...B, n, uv, tris, s, seams, seamCons, bends, cons };
+    const sb = makeSeamBend(tris, uv, seams, MAT.B);
+    const allBends = [...bends, ...sb.bends];
+    const cons: Constraint[] = [...makeInplane(tris, uv, KMEM, KMEM, KMEM), ...allBends, ...seamCons];
+    return { ...B, n, uv, tris, s, seams, seamCons, bends: allBends,
+             seamBends: sb.bends, seamBendSkipped: sb.skipped, cons };
   }
 
   type Scene = ReturnType<typeof assemble>;
