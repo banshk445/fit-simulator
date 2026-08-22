@@ -15,6 +15,8 @@ const SETTLED = [
   { label: "gray d9 (정착 220)", fab: "gray", d: 9, frame: 220, url: "/v3diag/settled-gray-d9.bin" },
   { label: "swim d10 (정착 180)", fab: "swim", d: 10, frame: 180, url: "/v3diag/settled-swim-d10.bin" },
   { label: "sweat d9 (정착 190)", fab: "sweat", d: 9, frame: 190, url: "/v3diag/settled-sweat-d9.bin" },
+  /* v3-47 — 해상도 상향 «후보». 구 정본 3종은 위에 그대로 남는다(무삭제). */
+  { label: "swim d9 신 (정착 260 · 후보)", fab: "swim", d: 9, frame: 260, url: "/v3diag/settled-swim-d9-new.bin" },
 ] as const;
 
 type Phase = "idle" | "prep" | "run" | "done" | "error" | "cancelled";
