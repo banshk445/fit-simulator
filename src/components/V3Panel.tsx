@@ -82,6 +82,12 @@ export function V3Panel() {
         if (document.hidden) setHidden((h) => h + 1);      // ㉣③ 백그라운드 완주 확인용
         return;
       }
+      /* v3-46 ㉣ — 워커가 내는 S4 게이트 결과를 계기 채널로 노출한다(표시·판정 자동화용). */
+      if (m.kind === "s4") {
+        (window as unknown as Record<string, unknown>).__v3s4 = m.s4;
+        console.log(`[v3] s4 ${JSON.stringify(m.s4)}`);
+        return;
+      }
       if (m.kind === "done") {
         blobRef.current = m.blob;
         sceneRef.current = { pos: m.pos, idx: m.idx, bodyPos: m.bodyPos, bodyIdx: m.bodyIdx, bridgeIdx: m.bridgeIdx };
