@@ -14,6 +14,10 @@
  * 순수성: `node:` 0 · 파일 0 · `process` 0 · console 0 · **v2 임포트 0**(G1).
  */
 import { SEP, THICK } from './consts.ts';
+import { S4_THRESHOLD } from './s4Gate.ts';
+
+/** 색 분기점의 «눌림 하한» — 게이트 ③a 문턱 그대로다(`s4Gate` 등재값 · 새 수 0). */
+const PEN_FLOOR = -S4_THRESHOLD.penMaxM;
 import { sampleSdf } from './bodySdf.ts';
 import { makeBodyDistance } from './instruments.ts';
 import type { Prepared } from './dressRun.ts';
@@ -38,6 +42,8 @@ export type FitReportResult = {
     noiseMm: number; overNoise: number; hMm: number };
   /** 구 채널(`sampleSdf`)로 낸 같은 표. **v3-54 로 «자기검사 전용» 강등 — 판정에 쓰지 않는다.** */
   sdfRows: FitRow[];
+  /** v3-54 ㉢ — 정점색(0~1 RGB · 표시 전용)과 그 분기점. **판정 채널 아님.** */
+  color: { rgb: Float32Array; looseTopMm: number; penFloorMm: number; derivation: string };
   /** 밴드 상한[mm] — 구 채널이 포화하던 자리(`THICK + 2h`). 화면이 밝힌다. */
   bandMm: number;
 };
@@ -121,6 +127,40 @@ export function buildFitReport(P: Prepared, L: Levels): FitReportResult {
     if ((signed < 0) === (g < 0)) same++;
   }
 
+  /* ── v3-54 ㉢ — **핏 맵 색**. 표시 층이고 물리 채널이 아니다. 값 c 는 위와 «같은 것»을 쓴다. ──
+   * 분기점 4개는 전부 «등재량 또는 그 상태»에서 온다(손 상수 0):
+   *   −0.5mm = 게이트 하한(`S4_THRESHOLD.penMaxM`) · 0 = 눌림/밀착 경계 ·
+   *   SEP(2mm) = 밀착/여유 경계(#110 Q1) · 여유 상한 = **그 상태 c 의 p95**.
+   * **p95 의 근거**: 상한을 p100 으로 두면 «가장 멀리 뜬 몇 정점»(밑단 자락)이 그라데이션 전체를
+   *   눌러 대부분이 한 색으로 뭉친다. p95 는 그 꼬리만 잘라내는 **표시 층 절단**이고,
+   *   값은 «그 상태»에서 뜨므로 원단·해상도마다 다르다. **판정 채널이 아니며 범례가 mm 를 밝힌다.** */
+  function colorOf() {
+    const all: number[] = [];
+    for (let v = 0; v < sc.n; v++) all.push(c(v));
+    const sorted = [...all].sort((a, b) => a - b);
+    const looseTop = sorted[Math.min(sorted.length - 1, Math.floor(0.95 * sorted.length))];
+    const rgb = new Float32Array(sc.n * 3);
+    /* 색상은 표시 재량 — 눌림 진홍 → 밀착 호박 → 여유 하늘. 세 국면이 «색상»으로 갈리고
+     * 국면 «안»에서만 밝기가 움직인다(경계가 색으로 읽히게). */
+    for (let v = 0; v < sc.n; v++) {
+      const q = all[v];
+      let r = 0, g2 = 0, b = 0;
+      if (q < 0) {                                   // 눌림 — 게이트 하한에서 0 까지
+        const t = Math.min(1, q / -PEN_FLOOR);       // 0(경계) → 1(하한)
+        r = 0.55 + 0.45 * t; g2 = 0.16 * (1 - t); b = 0.26 * (1 - t);
+      } else if (q <= SEP) {                         // 밀착
+        const t = q / SEP;
+        r = 0.98; g2 = 0.62 + 0.20 * t; b = 0.15 + 0.15 * t;
+      } else {                                       // 여유 — SEP 에서 p95 까지
+        const t = Math.min(1, (q - SEP) / Math.max(1e-9, looseTop - SEP));
+        r = 0.42 - 0.30 * t; g2 = 0.66 - 0.18 * t; b = 0.90;
+      }
+      rgb[v * 3] = r; rgb[v * 3 + 1] = g2; rgb[v * 3 + 2] = b;
+    }
+    return { rgb, looseTopMm: looseTop * 1000, penFloorMm: PEN_FLOOR * 1000,
+      derivation: '분기점 −0.5mm(게이트 하한) · 0 · SEP 2mm · 여유 상한 = 그 상태 c 의 p95(표시 층 절단 · 판정 아님)' };
+  }
+
   return {
     sepMm: SEP * 1000,
     sepDerivation: 'SEP = 2 × THICK(옷 두께 1mm) — v3-13 등재 · 자기충돌 분리 거리와 «같은 수»',
@@ -130,7 +170,7 @@ export function buildFitReport(P: Prepared, L: Levels): FitReportResult {
       chestYCm: L.chestY * 100, waistYCm: L.waistY * 100, yLowCm: L.Y_LOW * 100,
       yArmCm: L.Y_ARM * 100, cChestCm: L.C_chest * 100, cWaistCm: L.C_waist * 100,
     },
-    rows, sdfRows, bandMm: BAND * 1000,
+    rows, sdfRows, bandMm: BAND * 1000, color: colorOf(),
     self: { n, maxDiffMm: maxDiff * 1000, signAgreePct: n ? (100 * same) / n : NaN, domain: `SDF 밴드 안(< ${(BAND * 1000).toFixed(3)}mm)`, noiseMm: NOISE * 1000, overNoise: over, hMm: P.sdfSpec.h * 1000 },
   };
 }

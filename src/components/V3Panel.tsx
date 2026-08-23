@@ -137,6 +137,8 @@ export function V3Panel() {
 
   /** v3-41 §2 — 정착 상태를 «주입»해 표시만 한다(프레임 0 · 물리 0). */
   const [fit, setFit] = useState<FitReportResult | null>(null);
+  /* v3-54 ㉢ — 핏 맵 색 on/off. **표시 전용**(물리·상태 무관). */
+  const [fitColor, setFitColor] = useState(true);
   const [fitErr, setFitErr] = useState<string>("");
   const [settledIx, setSettledIx] = useState(0);
   const showSettled = useCallback(() => {
@@ -222,9 +224,10 @@ export function V3Panel() {
     /* 화면은 devicePixelRatio, **캡처는 CAP_SCALE 배**로 그린다. 이 기계의 dPR 은 1 이라
      * 그대로 두면 캡처가 진단 래스터와 같은 300×420 이 되어 «제품급»이 성립하지 않는다.
      * 표시 층 파라미터이고 물리·문턱 채널이 아니다. */
-    renderProduct(cv, { pos: S.bodyPos, idx: S.bodyIdx }, { pos: S.pos, idx: dIdx(S) },
+    renderProduct(cv, { pos: S.bodyPos, idx: S.bodyIdx },
+                  { pos: S.pos, idx: dIdx(S), vcol: fitColor && fit ? fit.color.rgb : undefined },
                   PRODUCT_VIEWS[vi], 300, 420, scale);
-  }, [dIdx]);
+  }, [dIdx, fitColor, fit]);
   const CAP_SCALE = 3;
   useEffect(() => { if (mode === "prod" && sceneRef.current) drawProd(pViewIx); }, [pViewIx, drawProd, phase, mode]);
 
@@ -406,6 +409,21 @@ export function V3Panel() {
         <canvas ref={pCanvasRef} className="w-full rounded border" style={{ aspectRatio: "300 / 420" }} />
         {/* v3-52 §1-4 — **핏 리포트 5행**. G5(경계 자기 공개) · G6(자기검사 표시)를 화면이 진다. */}
         {fitErr && <div className="mt-2 text-rose-600">핏 리포트 산출 불가 — {fitErr}</div>}
+        {fit && (
+          <div className="mt-1 flex flex-wrap items-center gap-2 text-[11px]">
+            <label className="flex items-center gap-1">
+              <input type="checkbox" checked={fitColor} onChange={(e) => setFitColor(e.target.checked)} />
+              <span>핏 맵 색</span>
+            </label>
+            {/* G5 — 범례가 «분기점 값»을 스스로 밝힌다 */}
+            <span className="rounded px-1" style={{ background: "rgb(230,45,60)", color: "#fff" }}>눌림 &lt;0</span>
+            <span className="rounded px-1" style={{ background: "rgb(250,168,50)" }}>밀착 0~{fit.sepMm.toFixed(1)}mm</span>
+            <span className="rounded px-1" style={{ background: "rgb(70,150,230)", color: "#fff" }}>
+              여유 {fit.sepMm.toFixed(1)}~{fit.color.looseTopMm.toFixed(1)}mm(p95)
+            </span>
+            <span className="opacity-70">눌림 하한 {fit.color.penFloorMm.toFixed(1)}mm(게이트 ③a 문턱)</span>
+          </div>
+        )}
         {fit && (
           <div className="mt-2 border-t pt-2 text-[11px]">
             <div>

@@ -40,11 +40,16 @@ export const DISPLAY = {
 type Ctx = { r: WebGLRenderer; sc: Scene; cam: PerspectiveCamera; body: Mesh; cloth: Mesh };
 const CTX = new WeakMap<HTMLCanvasElement, Ctx>();
 
-function geom(pos: Float32Array, idx: Uint32Array): BufferGeometry {
+/* v3-54 ㉢ — 핏 맵 색은 «정점색»으로 얹는다. 위치·인덱스는 그대로이고 색 속성만 붙는다
+ * ⟹ **blob 무변조**(사본만 쓴다) · 지오메트리 구조 변경 0.
+ * **브리지 공존 규칙**: 브리지 스트립은 «기존 정점»을 새 삼각형으로 이을 뿐 정점을 만들지 않는다
+ * (v3-45 등재) ⟹ 정점색이 그대로 스트립에도 «이어진다». 스트립 전용 색을 따로 두지 않는다. */
+function geom(pos: Float32Array, idx: Uint32Array, vcol?: Float32Array): BufferGeometry {
   const g = new BufferGeometry();
   /* 사본을 쓴다 — 입력 배열을 three 가 소유하지 않게 한다(무변조 보장) */
   g.setAttribute('position', new BufferAttribute(Float32Array.from(pos), 3));
   g.setIndex(new BufferAttribute(Uint32Array.from(idx), 1));
+  if (vcol) g.setAttribute('color', new BufferAttribute(Float32Array.from(vcol), 3));
   g.computeVertexNormals();          // ← 스무딩 셰이딩(v3-42 §4: 각짐 34~36% 감소)
   return g;
 }
@@ -81,7 +86,7 @@ function ctxOf(canvas: HTMLCanvasElement): Ctx {
 export function renderProduct(
   canvas: HTMLCanvasElement,
   body: { pos: Float32Array; idx: Uint32Array },
-  cloth: { pos: Float32Array; idx: Uint32Array },
+  cloth: { pos: Float32Array; idx: Uint32Array; vcol?: Float32Array },
   view: ProductView,
   cssW: number,
   cssH: number,
@@ -89,7 +94,12 @@ export function renderProduct(
 ): void {
   const c = ctxOf(canvas);
   c.body.geometry.dispose(); c.body.geometry = geom(body.pos, body.idx);
-  c.cloth.geometry.dispose(); c.cloth.geometry = geom(cloth.pos, cloth.idx);
+  c.cloth.geometry.dispose(); c.cloth.geometry = geom(cloth.pos, cloth.idx, cloth.vcol);
+  /* 색이 오면 정점색을 켜고 기저색을 흰색으로 둔다(곱해지므로) · 없으면 등재 기본색 그대로 */
+  const cm = c.cloth.material as MeshStandardMaterial;
+  cm.vertexColors = !!cloth.vcol;
+  cm.color.set(cloth.vcol ? 0xffffff : DISPLAY.cloth.color);
+  cm.needsUpdate = true;
 
   const bb: Box3 = new Box3().setFromBufferAttribute(c.body.geometry.getAttribute('position') as BufferAttribute);
   bb.union(new Box3().setFromBufferAttribute(c.cloth.geometry.getAttribute('position') as BufferAttribute));
