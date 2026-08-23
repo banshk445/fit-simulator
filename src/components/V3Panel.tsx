@@ -12,7 +12,9 @@ import { withBridge } from "../v3/seamBridge.ts";
 import type { FitReportResult } from "../v3/fitReport.ts";
 /* v3-59 §3 — 프린트 UV(정규화 층)와 패널 분리 렌더. **표시 전용 · 물리 0프레임.** */
 import { buildPrintUv, type PrintUv } from "../v3/printUv.ts";
-import { TextureLoader, SRGBColorSpace, type Texture } from "three";
+import { CanvasTexture, SRGBColorSpace, type Texture } from "three";
+/* v3-60 §1 — 프린트 «합성 층»(대표색 + 가슴 프린트). v2 계약 문언 준거 · 코드 임포트 0. */
+import { compositePrint, type CompositeResult } from "../v3/printComposite.ts";
 
 const FABRICS = ["gray", "denim", "sweat", "swim"] as const;
 /** v3-41 §2 — C-브라우저 정착 상태(v3-38 산출). **표시 전용 · 물리 0프레임**. */
@@ -147,11 +149,30 @@ export function V3Panel() {
   const [printOn, setPrintOn] = useState(false);
   const [printUv, setPrintUv] = useState<PrintUv | null>(null);
   const [tex, setTex] = useState<Texture | null>(null);
+  const [comp, setComp] = useState<CompositeResult | null>(null);
+  const uMax = printUv?.panels.find((p) => p.name === "front")?.uMax ?? 1;
   useEffect(() => {
-    /* 프린트 원본 = **v2 경로가 쓰는 기존 자산 파일**(데이터 읽기이지 코드 임포트가 아니다 · v3-13). */
-    const l = new TextureLoader();
-    l.load(`${import.meta.env.BASE_URL}v3print/print-tee.png`, (t) => { t.colorSpace = SRGBColorSpace; setTex(t); });
-  }, []);
+    /* 프린트 원본 = **v2 경로가 쓰는 기존 자산 파일**(데이터 읽기이지 코드 임포트가 아니다 · v3-13).
+     * v3-60 — 원본을 «그대로» 붙이지 않고 **합성 층**을 거친다(대표색 + 가슴 프린트). */
+    const im = new Image();
+    im.onload = () => {
+      const r = compositePrint(im, im.naturalWidth, im.naturalHeight, uMax);
+      const t = new CanvasTexture(r.canvas);
+      t.colorSpace = SRGBColorSpace;
+      setComp(r); setTex(t);
+      console.log(`[v3-60 합성] 대표색 rgb(${r.color.r.toFixed(0)}, ${r.color.g.toFixed(0)}, ${r.color.b.toFixed(0)})`
+        + ` · 프린트 bbox ${r.printBox ? `${r.printBox.w.toFixed(0)}×${r.printBox.h.toFixed(0)}@(${r.printBox.x.toFixed(0)},${r.printBox.y.toFixed(0)})` : "없음"}`
+        + ` · 프레임 문턱 ${r.maxFrameFired ? "**발동**(프린트 버림)" : "미발동"}`
+        + ` · 재스캔 ${r.rescan ? `성분 ${r.rescan.components}개 중 경계접촉 ${r.rescan.excluded}개 제외` : "미실행(1패스 통과)"}`
+        + ` · 하단 축소 ${r.shrunk ? r.shrunk.toFixed(4) : "없음"} · uMax ${uMax.toFixed(4)}`);
+    };
+    /* v3-60 — 자산 선택은 «값으로» 했다(§2-1 실측):
+     `print-tee.png`      → 프레임 문턱 **발동**(bbox 100% · 재스캔 경계접촉 0 제외) ⟹ 프린트 버림
+     `print-tee-white.webp` → bbox **40%×43%** · **미발동**(재스캔 경계접촉 1 제외) ⟹ **계약 전제 충족**
+   ⟹ **후자를 쓴다.** 전자는 «검정 옷의 하이라이트»가 대표색과 거리 55 를 넘어 프레임 전역에
+   퍼지는 자산이고, 그것은 **v2 계약이 이미 등재한 한계**다(색으로는 못 가른다 · v2 :203-206). */
+    im.src = `${import.meta.env.BASE_URL}v3print/print-tee-white.webp`;
+  }, [uMax]);
   const [fitErr, setFitErr] = useState<string>("");
   const [settledIx, setSettledIx] = useState(0);
   const showSettled = useCallback(() => {
@@ -241,9 +262,11 @@ export function V3Panel() {
     renderProduct(cv, { pos: S.bodyPos, idx: S.bodyIdx },
                   { pos: S.pos, idx: dIdx(S),
                     vcol: !printOn && fitColor && fit ? fit.color.rgb : undefined,
-                    print: printOn && printUv ? { uv: printUv.uv, panels: printUv.panels, tex, printPanel: "front" } : null },
+                    print: printOn && printUv ? { uv: printUv.uv, panels: printUv.panels, tex, printPanel: "front",
+                      solid: comp ? ((Math.round(comp.color.r) << 16) | (Math.round(comp.color.g) << 8) | Math.round(comp.color.b)) : undefined,
+                      bridgeIdx: bridge && S.bridgeIdx && S.bridgeIdx.length ? S.bridgeIdx : null } : null },
                   PRODUCT_VIEWS[vi], 300, 420, scale);
-  }, [dIdx, fitColor, fit, printOn, printUv, tex]);
+  }, [dIdx, fitColor, fit, printOn, printUv, tex, comp, bridge]);
   const CAP_SCALE = 3;
   useEffect(() => { if (mode === "prod" && sceneRef.current) drawProd(pViewIx); }, [pViewIx, drawProd, phase, mode]);
 
@@ -440,6 +463,9 @@ export function V3Panel() {
               <span className="opacity-70">
                 UV 축척 <b>{(printUv.scaleM * 100).toFixed(2)}cm</b> = uv 1.0 · 앞판 uMax{" "}
                 <b>{printUv.panels.find((p) => p.name === "front")?.uMax.toFixed(4)}</b>
+                {comp && <> · 대표색 <b>rgb({comp.color.r.toFixed(0)},{comp.color.g.toFixed(0)},{comp.color.b.toFixed(0)})</b>
+                  {comp.printBox ? <> · 프린트 <b>{comp.printBox.w.toFixed(0)}×{comp.printBox.h.toFixed(0)}px</b></> : <> · <b>무지</b></>}
+                  {comp.shrunk && <b className="text-amber-600"> · 하단 축소 {comp.shrunk.toFixed(3)}</b>}</>}
                 {!tex && <b className="text-rose-600"> · 텍스처 미로드</b>}
               </span>
             )}

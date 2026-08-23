@@ -50,6 +50,12 @@ export type PrintInput = {
   tex?: Texture | null;
   /** 텍스처를 받을 패널 이름 — v2 계약은 «앞판»이다. */
   printPanel?: string;
+  /** v3-60 — **대표색**(뒤판·소매·브리지가 «같은 색»을 쓴다). `#rrggbb` 또는 정수. */
+  solid?: number;
+  /** v3-60 — **브리지 복원**. 프린트 모드에서 스트립을 «대표색 단색»의 별도 지오메트리로 그린다.
+   * 텍스처를 못 얹는 근거: 스트립 UV 가 **단일 패널 정규화 공간에 속하지 않는다**
+   * (패널을 가로지른다 · v3-59 §3 등재) ⟹ **v3-45 «목적»(시접선을 화면에서 잇는다)만 보존**한다. */
+  bridgeIdx?: Uint32Array | null;
 };
 
 type Ctx = { r: WebGLRenderer; sc: Scene; cam: PerspectiveCamera; body: Mesh; cloth: Mesh; split: Group };
@@ -140,10 +146,22 @@ export function renderProduct(
       const isPrint = tex && p.name === printPanel;
       const mat = new MeshStandardMaterial({
         ...DISPLAY.cloth, side: DoubleSide,
-        color: isPrint ? 0xffffff : DISPLAY.cloth.color,
+        color: isPrint ? 0xffffff : (cloth.print.solid ?? DISPLAY.cloth.color),
         map: isPrint ? tex : null,
       });
       c.split.add(new Mesh(g, mat));
+    }
+    /* v3-60 — 브리지 스트립: **대표색 단색**의 별도 지오메트리(텍스처 0 · UV 0). */
+    const bi = cloth.print.bridgeIdx;
+    if (bi && bi.length) {
+      const g = new BufferGeometry();
+      g.setAttribute('position', new BufferAttribute(Float32Array.from(cloth.pos), 3));
+      g.setIndex(new BufferAttribute(Uint32Array.from(bi), 1));
+      g.computeVertexNormals();
+      c.split.add(new Mesh(g, new MeshStandardMaterial({
+        ...DISPLAY.cloth, side: DoubleSide,
+        color: cloth.print.solid ?? DISPLAY.cloth.color,
+      })));
     }
   }
   c.cloth.geometry.dispose(); c.cloth.geometry = geom(cloth.pos, cloth.idx, cloth.vcol);
