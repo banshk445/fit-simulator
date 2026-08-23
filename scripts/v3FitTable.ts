@@ -24,6 +24,18 @@ console.log(`  높이  chestY ${R.levels.chestYCm.toFixed(2)}cm(C ${R.levels.cCh
 console.log(`  ${'부위'.padEnd(6)}${'중앙'.padStart(8)}${'p25'.padStart(8)}${'p75'.padStart(8)}${'눌림'.padStart(7)}${'밀착'.padStart(7)}${'여유'.padStart(7)}${'표본/정의역'.padStart(13)}`);
 for (const r of R.rows)
   console.log(`  ${r.name.padEnd(6)}${f(r.medMm)}${f(r.p25Mm)}${f(r.p75Mm)}${String(r.pressN).padStart(7)}${String(r.snugN).padStart(7)}${String(r.looseN).padStart(7)}${`${r.n}/${r.domain}`.padStart(13)}`);
+console.log(`  ── 구 채널(sampleSdf · 포화) 대조 · **판정 아님** ──`);
+for (const r of R.sdfRows)
+  console.log(`  ${r.name.padEnd(6)}${f(r.medMm)}${f(r.p25Mm)}${f(r.p75Mm)}${String(r.pressN).padStart(7)}${String(r.snugN).padStart(7)}${String(r.looseN).padStart(7)}${`${r.n}/${r.domain}`.padStart(13)}`);
+for (let i = 0; i < R.rows.length; i++) {
+  const a = R.rows[i], b2 = R.sdfRows[i];
+  if (a.pressN !== b2.pressN || a.snugN !== b2.snugN || a.looseN !== b2.looseN)
+    console.log(`     **차이** ${a.name}: 눌림 ${b2.pressN}→${a.pressN} · 밀착 ${b2.snugN}→${a.snugN} · 여유 ${b2.looseN}→${a.looseN}`);
+}
+const same = R.rows.every((r, i) => r.pressN === R.sdfRows[i].pressN && r.snugN === R.sdfRows[i].snugN && r.looseN === R.sdfRows[i].looseN);
+console.log(`  **국면 개수 전후 동일** ⟹ ${same ? '**예 (갈래 C 불발화)**' : '**아니오 — 갈래 C 정지**'}`);
+console.log(`  밴드 상한 ${R.bandMm.toFixed(3)}mm`);
 console.log(`  **자기검사(G6)** 표본 ${R.self.n} · 최대차 **${R.self.maxDiffMm.toFixed(4)}mm** · 부호 일치율 **${R.self.signAgreePct.toFixed(2)}%** · 정의역 ${R.self.domain}`);
 const bad = R.rows.filter((r) => r.n === 0 || !Number.isFinite(r.medMm));
+console.log(`     등재 잡음 문언 h의 5% = **${R.self.noiseMm.toFixed(3)}mm**(h ${R.self.hMm.toFixed(3)}mm) · 그것을 넘는 표본 **${R.self.overNoise}/${R.self.n}** (${(100 * R.self.overNoise / R.self.n).toFixed(1)}%) ⟹ ${R.self.maxDiffMm > R.self.noiseMm ? '**등재 잡음 «초과» — 갈래 B**' : '잡음 이내'}`);
 console.log(`  **G4** NaN·산출 불가 행 ${bad.length} ⟹ ${bad.length === 0 ? '**통과**' : `**실패** (${bad.map((r) => r.name).join(',')})`}`);

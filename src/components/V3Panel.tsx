@@ -440,6 +440,11 @@ export function V3Panel() {
               자기검사 — 리포트 층 c ↔ 게이트 정확 거리: 표본 <b>{fit.self.n}</b> · 최대차{" "}
               <b>{fit.self.maxDiffMm.toFixed(3)}mm</b> · 부호 일치율 <b>{fit.self.signAgreePct.toFixed(2)}%</b>
               <span className="opacity-60"> · 정의역 {fit.self.domain}</span>
+              <div>
+                등재 잡음(h의 5%) <b>{fit.self.noiseMm.toFixed(3)}mm</b> · 초과 표본{" "}
+                <b>{fit.self.overNoise}/{fit.self.n}</b> · 밴드 상한 <b>{fit.bandMm.toFixed(3)}mm</b>
+                {fit.self.maxDiffMm > fit.self.noiseMm && <b className="text-rose-600"> — 등재 잡음 초과</b>}
+              </div>
             </div>
           </div>
         )}
