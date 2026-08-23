@@ -16,6 +16,9 @@ import { minPairDistLite } from '../v3/instruments.ts';
 import { FABRICS } from '../v3/consts.ts';
 import { runS4Gate, N_WIN } from '../v3/s4Gate.ts';
 import { seamBridgeIndices } from '../v3/seamBridge.ts';
+/* v3-52 §1-4 — **핏 리포트 층**. 물리·게이트 0줄이고, 읽기만 한다. */
+import { deriveLevels } from '../v3/bodyLevels.ts';
+import { buildFitReport } from '../v3/fitReport.ts';
 
 /** 워커 전역 — 타입 정의가 Window로 잡혀 있어 최소 형태로 좁힌다(동작 변경 0) */
 const ctx = self as unknown as {
@@ -78,6 +81,13 @@ ctx.onmessage = async (e: MessageEvent) => {
     /* v3-37 §3 — **브라우저용 S4 게이트**. 문턱은 Node 게이트와 같은 값이다(새 문턱 0). */
     const s4 = runS4Gate(P, before);
     ctx.postMessage({ kind: 's4', s4 });
+    /* v3-52 §1-4 — 5행 핏 리포트. **물리 0프레임**(상태를 읽기만 한다) · 실패해도 사실만 보낸다. */
+    try {
+      const L = deriveLevels(P.prim0.pos, P.bodyIdx, P.S.AXIS_Z, P.S.Y_TOP);
+      ctx.postMessage({ kind: 'fit', fit: buildFitReport(P, L) });
+    } catch (e2) {
+      ctx.postMessage({ kind: 'fit', fitError: e2 instanceof Error ? e2.message : String(e2) });
+    }
     const blob = stateBlob(P, r.frame, P.S.PLACE_SIG);
     const pos = Float32Array.from(P.sc.s.pos);
     const idx = Uint32Array.from(P.sc.tris);

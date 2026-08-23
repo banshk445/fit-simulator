@@ -8,6 +8,8 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { render as rasterize, VIEWS, type Mesh } from "../v3/raster.ts";
 import { renderProduct, PRODUCT_VIEWS } from "../v3/productView.ts";
 import { withBridge } from "../v3/seamBridge.ts";
+/* v3-52 §1-4 — 핏 리포트 «표시»만 한다(계산은 워커의 `fitReport.ts`). */
+import type { FitReportResult } from "../v3/fitReport.ts";
 
 const FABRICS = ["gray", "denim", "sweat", "swim"] as const;
 /** v3-41 §2 — C-브라우저 정착 상태(v3-38 산출). **표시 전용 · 물리 0프레임**. */
@@ -91,6 +93,12 @@ export function V3Panel() {
         console.log(`[v3] s4 ${JSON.stringify(m.s4)}`);
         return;
       }
+      /* v3-52 §1-4 — 5행 핏 리포트. **표시 전용 · 물리 0프레임.** */
+      if (m.kind === "fit") {
+        if (m.fit) { setFit(m.fit); setFitErr(""); (window as unknown as Record<string, unknown>).__v3fit = m.fit; }
+        else { setFit(null); setFitErr(m.fitError ?? "산출 불가"); }
+        return;
+      }
       if (m.kind === "done") {
         blobRef.current = m.blob;
         sceneRef.current = { pos: m.pos, idx: m.idx, bodyPos: m.bodyPos, bodyIdx: m.bodyIdx, bridgeIdx: m.bridgeIdx };
@@ -128,18 +136,25 @@ export function V3Panel() {
   const cancel = useCallback(() => workerRef.current?.postMessage({ kind: "cancel" }), []);
 
   /** v3-41 §2 — 정착 상태를 «주입»해 표시만 한다(프레임 0 · 물리 0). */
+  const [fit, setFit] = useState<FitReportResult | null>(null);
+  const [fitErr, setFitErr] = useState<string>("");
   const [settledIx, setSettledIx] = useState(0);
   const showSettled = useCallback(() => {
     const S = SETTLED[settledIx];
     workerRef.current?.terminate();
     setReady(null); setProg(null); setMsg(""); blobRef.current = null; sceneRef.current = null;
-    setPhase("prep"); setFabric(S.fab); setDMm(S.d); setCapFrame(null);
+    setPhase("prep"); setFabric(S.fab); setDMm(S.d); setCapFrame(null); setFit(null); setFitErr("");
     const w = new Worker(new URL("../workers/v3DressWorker.ts", import.meta.url), { type: "module" });
     workerRef.current = w;
     w.onmessage = async (e) => {
       const m = e.data;
       if (m.kind === "ready") { setReady(m); return; }
       if (m.kind === "error") { setPhase("error"); setMsg(m.message); return; }
+      if (m.kind === "fit") {
+        if (m.fit) { setFit(m.fit); setFitErr(""); (window as unknown as Record<string, unknown>).__v3fit = m.fit; }
+        else { setFit(null); setFitErr(m.fitError ?? "산출 불가"); }
+        return;
+      }
       if (m.kind !== "done") return;
       blobRef.current = m.blob;
       sceneRef.current = { pos: m.pos, idx: m.idx, bodyPos: m.bodyPos, bodyIdx: m.bodyIdx, bridgeIdx: m.bridgeIdx };
@@ -389,6 +404,45 @@ export function V3Panel() {
                   onClick={captureCompare} disabled={!sceneRef.current}>대조 1장</button>
         </div>
         <canvas ref={pCanvasRef} className="w-full rounded border" style={{ aspectRatio: "300 / 420" }} />
+        {/* v3-52 §1-4 — **핏 리포트 5행**. G5(경계 자기 공개) · G6(자기검사 표시)를 화면이 진다. */}
+        {fitErr && <div className="mt-2 text-rose-600">핏 리포트 산출 불가 — {fitErr}</div>}
+        {fit && (
+          <div className="mt-2 border-t pt-2 text-[11px]">
+            <div>
+              핏 리포트 — 옷↔몸 부호거리(mm) · 경계 <b>{fit.sepMm.toFixed(1)}mm</b>
+              <span className="opacity-70"> ({fit.sepDerivation})</span>
+            </div>
+            <div className="opacity-70">
+              대역 반폭 <b>{fit.bandHalfMm.toFixed(1)}mm</b> — {fit.bandDerivation} · 가슴 y{fit.levels.chestYCm.toFixed(2)}cm(둘레 {fit.levels.cChestCm.toFixed(2)}cm) · 허리 y{fit.levels.waistYCm.toFixed(2)}cm(둘레 {fit.levels.cWaistCm.toFixed(2)}cm) · 겨드랑이 y{fit.levels.yArmCm.toFixed(2)}cm
+            </div>
+            <table className="mt-1 w-full">
+              <thead className="opacity-70">
+                <tr><th className="text-left">부위</th><th className="text-right">중앙</th><th className="text-right">p25~p75</th><th className="text-left">판정</th><th className="text-left">눌림/밀착/여유</th></tr>
+              </thead>
+              <tbody>
+                {fit.rows.map((r) => {
+                  const l = !Number.isFinite(r.medMm) ? ["산출 불가", "opacity-50"]
+                    : r.medMm < 0 ? ["눌림", "text-rose-600"]
+                    : r.medMm <= fit.sepMm ? ["밀착", "text-amber-600"] : ["여유", "text-sky-600"];
+                  return (
+                    <tr key={r.name} title={r.domainSpec}>
+                      <td>{r.name}</td>
+                      <td className="text-right">{Number.isFinite(r.medMm) ? r.medMm.toFixed(2) : "—"}</td>
+                      <td className="text-right opacity-70">{Number.isFinite(r.p25Mm) ? `${r.p25Mm.toFixed(2)}~${r.p75Mm.toFixed(2)}` : "—"}</td>
+                      <td className={l[1]}>{l[0]}</td>
+                      <td className="opacity-70">{r.pressN} / {r.snugN} / {r.looseN} <span className="opacity-60">(표본 {r.n}/{r.domain})</span></td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+            <div className="mt-1 opacity-70">
+              자기검사 — 리포트 층 c ↔ 게이트 정확 거리: 표본 <b>{fit.self.n}</b> · 최대차{" "}
+              <b>{fit.self.maxDiffMm.toFixed(3)}mm</b> · 부호 일치율 <b>{fit.self.signAgreePct.toFixed(2)}%</b>
+              <span className="opacity-60"> · 정의역 {fit.self.domain}</span>
+            </div>
+          </div>
+        )}
       </div>
 
       {/* v3-41 §2 — 읽기 전용 표시. 등재 3뷰 프리셋. */}
