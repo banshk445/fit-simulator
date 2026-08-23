@@ -23098,3 +23098,92 @@ v3-38 과 같은 경로(브라우저 워커 + `s4Gate.ts`) · **단독** · 220�
       문서에 있다**는 것이었다. ㉰ 부수 실측: **`.gitignore` 디렉터리형(`dir/`)은 안쪽 `!` 예외를 막는다**
       — 예외를 걸려면 **`dir/*`(내용물 형)** 이어야 한다. 재현성 자산을 저장소에 넣을 때 같은 함정이 온다
 ```
+
+---
+
+## 2026-08-23 v3-50 — 4/5 개시: 핏 리포트 지형 정찰 (**코드 0줄 · 물리 0프레임** · 갈래 **A**)
+
+노트 `docs/v3/31-핏리포트정찰.md` · 브랜치 `v3-50-fitreport-scout` · 기점 `48ffc6b`
+**정찰 판 — 이 블록에 «측정값»은 없다.** 산출은 **코드 자리 지목 + 대조표 + 요건 초안**이다.
+
+### 갈래 B 판정 — **은밀 의존 잔존 «아니오»**
+```
+ ① `pattern-meta.json` 읽기 **0** — `scripts/v3S4.ts` 의 3건(:7 · :108 · :150)은 **주석·인쇄 문자열**.
+    그 파일의 `readFileSync` 는 GLB 와 체크포인트(:583)뿐. **실제로 읽는 곳은 v2 하네스**
+    `scripts/dressPattern.ts:52` 하나다
+ ② v3 코드의 v2 `src/lib` 임포트 **0건** — `src/v3/*.ts` 임포트는 자기 모듈 8개
+    (`bodySdf`·`consts`·`dressRun`·`garmentScene`·`glb`·`instruments`·`solver`·`wangStretch`)
+ ③ v3-33 #56 종결 문언(`docs/v3/18-파생치수도출.md:1007`)과 현재 코드 **일치**
+ **사실 2건 병기(의존 아님)**
+   · `V2REF` = `scripts/v3S4.ts:125-126` **소스 리터럴** — neckHalfWidth 8.12 · armholeGirth 44.39 ·
+     capHeight 12.31 · necklineGirth 48.27 · sleeveWidth 18.0 · seam{38,62,124,16}. **대조 인쇄용**
+   · **`V2DIMS=1`**(:117 · :135 `dimsOverride`) 이면 파생 4종을 **v2 값으로 고정**. **기본 off** ·
+     「판정 대상이 아니라 비교 대상을 만드는 장치」로 등재됨 ⟹ **게이트 경로 진입 금지 대상(R1)**
+```
+
+### ㉠ 재고 — 사용자에게 나가는 핏 산출물 **3종 · 경로 «둘»**
+```
+ A1 핏 맵 색(**제품 기본** · v1/v2) 옷 정점→몸 **부호거리[cm]** · 산출불가 = `FIT_MAP_UNKNOWN_CM`
+    `workers/garmentWorker.ts:86 computeFitCm` → `:503-512` → `Garment.tsx:1348 setFit`
+    → `weldedGarmentGeometry.ts:80` 정점색.  입력 = **워커 정착 좌표 + wholeBodyCollisionMesh**
+ A2 핏 맵 색(patternCore · 기본 off) 같은 부호거리(몸통=앞/뒤 반쪽 시트 · 소매=**전신 메시**)
+    `lib/patternDressCore.ts:1037-1043 fitPerVertexOut` → `DressButton.tsx:321-327`
+    → `PatternPreview.tsx:619-622 vertexColors`
+ B  **핏 리포트 표**(수치) 부위 5행 × {중앙 · p25~p75 · 눌림/밀착/여유} + `marginMm` + 소매 부호 일치율
+    계산 `patternDressCore.ts:947-1005 · 1069-1080` · 표시 `DressButton.tsx:364-405`
+    5행 = 목선(ringIdx) · 가슴(bandByY(body.chestY)) · 허리(bandByY(body.waistY)) · 밑단(hemIdx) ·
+          소매(sleeveIdx · 기준면 **전신 메시**) · 대역 반폭 **±2.5cm**(「몸에서 뜬다 · 손 상수 0」 :958-959)
+    국면 `med≤0` 눌림 / `0<med≤marginMm` 밀착 / `med>marginMm` 여유 (`DressButton.tsx:366-370`)
+    **새 문턱 0** — 경계 = `margins().meshMarginM`(흡착 껍질) · **화면이 그 값을 스스로 밝힌다**(:374)
+    자기검사 `sleeveSignAgreePct` = `signedClearance`(**와인딩 의존**) ↔ `insideParity`(패리티) 일치율.
+      마네킹에 **뒤집힌 면이 있다**(`bvhFromArrays.ts:120` 실측) ⟹ 낮으면 소매 행 신뢰 불가
+ **셋 다 v2 정착 좌표 의존.** **제품 «기본» 경로에는 표가 없다**(플래그 뒤)
+ **인접 수치**(콘솔 전용 · 화면 아님) ringLenCm · hemFront/BackCm · **cuffCm/cuffDraftCm/cuffEaseCm** ·
+   covPct · maxStrain · maxSeamGapMm · selfIntersections · inside* · pen.{byPanel,torsoByYCm,sleeveByArcCm,sleeveCross}
+ **파생 치수 4종은 사용자 화면에 «없다»** — Controls·PatternPreview 문자열 매치 0
+   (유일 매치 `Controls.tsx:432` 는 DEV 토글 이름 「암홀 용접」)
+```
+
+### ㉡ v3 공급 대조 — **결손은 한 곳**
+```
+ 이미 있다  정점별 부호거리(`v3O4` sampleSdf 루프 · `s4Gate` makeBodyDistance().bodyClearance) ·
+           목선 링(`s4Gate` neckF/neckB · ringM · ringBodyM · ringExcess) · 밑단(하네스 `hemObs` = v3-26 O1·O2) ·
+           소매 대역(`v3SeamShoulder` 패널 구분) · 관통·신장·시접(`s4Gate` penMaxM·penCnt·lambdaMax·시접갭) ·
+           **파생 치수 4종**(조립이 매 실행 인쇄 · **d 무관** — v3-47 §1 · v3-48 §2)
+ **결손**   **`chestY` · `waistY`** — v2 는 `bodyMeasure` 1cm 슬라이스로 잡는다. v3 엔 그 규칙이 없다.
+           v3 는 `Y_TOP`(어깨끝) · `Y_NECK`(목 밑동 · 벽비율 이분법)을 **손 상수 0** 으로 도출하는
+           기계를 이미 갖고 있다(#56 종결분) ⟹ **같은 계열 도출 1회**이지 새 층이 아니다. **처방 0**
+ **정의 문제** **`marginMm` 은 «같은 이름의 다른 수»** — v2 흡착 껍질 `meshMarginM` ↔ v3 `SEP` 2mm.
+           **v3 는 접착을 버렸으므로 흡착 껍질 개념 자체가 없다** ⟹ **4/5 의 선행 차단**
+ **소멸 후보** `sleeveSignAgreePct` — v3 는 부호를 SDF 에서 얻고 기준은 v3-13 수밀 필드 ⟹
+           **와인딩 의존이 원리적으로 없다**. **「없앤다」를 단정하지 않았다**(요건 질문 Q3)
+```
+
+### ㉢ 요건 «초안» — **판정 0 · 확정은 전략 세션**
+```
+ **질문 4개**  Q1 경계 정의(**선행 차단**) · Q2 `chestY`/`waistY` 도출(손 상수 금지) ·
+             Q3 자기검사 대체(「없음」도 답이나 **명시 등재 필요**) · Q4 완결 범위
+ **완결 후보**  1 표의 v3 자립(**2~3판 · 브라우저 재실행 0회**) · 2 +핏 맵 색(+1~2판) ·
+             3 +제품 기본 경로 전환(**5/5 성격일 수 있다** · 3/5 는 14판이었다)
+ **게이트 후보** G1 v2 임포트 0 · v2 데이터 읽기 0(+**`V2DIMS` 미사용** 조항 제안 · grep 자동 검사) ·
+             **G2 물리 0프레임**(정착 blob 주입만 · `v3O4` 전례) · G3 손 상수 0 ·
+             G4 정본 3종 전부 산출(NaN 행 0) · G5 경계를 화면이 밝힌다(v2 형식 계승) · G6 자기검사 1종
+             **v2 값 일치는 게이트에 «넣지 않았다» — 참고 채널**(§0-1 방향 고정)
+ **판정 지점**  수치 = G1~G6(CC 자체 판정 가능 · 전부 객관 채널) ·
+             화면 = **색이 들어갈 때만**(후보 2·3) ⟹ **후보 1 은 사용자 시간을 가장 적게 쓴다**(관찰)
+ **리스크**   R1 `V2DIMS` 오용 · **R2 swim ③a 0.56% 는 G2 를 지키면 발화하지 않는다**(후보 3 에서만 부활) ·
+             R3 Q1 미결이면 표가 안 선다 · R4 경로가 둘이라 요건 문언이 갈라 적어야 한다
+```
+
+### 회귀
+```
+ **코드 0줄 · 물리 0프레임** — 솔버·계기 실행 **0회**(읽기·grep 만) · `git diff`(문서 제외) **0**
+ 문턱·게이트·기준선·정본 구성·v2 경로 **전부 0** · tsc rc=0 · build 통과
+```
+
+### 신설
+```
+ **없음.** 이 판은 «질문»을 열었고 **함정을 등재하지 않았다** — 정찰 결과는 요건 초안(§4)에 있고
+ 그 확정은 전략 세션 몫이다. (**후보 문언을 만들어 등재하지 않는다** — v3-48 #108 이
+ 「두 표본으로 세운 추세」에 데인 선례를 따른다.)
+```
