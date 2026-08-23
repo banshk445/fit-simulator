@@ -81,6 +81,9 @@ ctx.onmessage = async (e: MessageEvent) => {
     /* v3-37 §3 — **브라우저용 S4 게이트**. 문턱은 Node 게이트와 같은 값이다(새 문턱 0). */
     const s4 = runS4Gate(P, before);
     ctx.postMessage({ kind: 's4', s4 });
+    /* v3-59 §1 — 프린트 UV 의 «입력»(패턴 미터 uv + 패널 경계). **정규화는 메인 스레드가 한다.** */
+    ctx.postMessage({ kind: 'uv', uv: Float64Array.from(P.sc.uv),
+      panels: P.sc.panels.map((p) => ({ name: p.name, base: p.base, count: (p.nu + 1) * (p.nv + 1) })) });
     /* v3-52 §1-4 — 5행 핏 리포트. **물리 0프레임**(상태를 읽기만 한다) · 실패해도 사실만 보낸다. */
     try {
       const L = deriveLevels(P.prim0.pos, P.bodyIdx, P.S.AXIS_Z, P.S.Y_TOP);

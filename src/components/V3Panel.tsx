@@ -10,6 +10,9 @@ import { renderProduct, PRODUCT_VIEWS } from "../v3/productView.ts";
 import { withBridge } from "../v3/seamBridge.ts";
 /* v3-52 §1-4 — 핏 리포트 «표시»만 한다(계산은 워커의 `fitReport.ts`). */
 import type { FitReportResult } from "../v3/fitReport.ts";
+/* v3-59 §3 — 프린트 UV(정규화 층)와 패널 분리 렌더. **표시 전용 · 물리 0프레임.** */
+import { buildPrintUv, type PrintUv } from "../v3/printUv.ts";
+import { TextureLoader, SRGBColorSpace, type Texture } from "three";
 
 const FABRICS = ["gray", "denim", "sweat", "swim"] as const;
 /** v3-41 §2 — C-브라우저 정착 상태(v3-38 산출). **표시 전용 · 물리 0프레임**. */
@@ -94,6 +97,7 @@ export function V3Panel() {
         return;
       }
       /* v3-52 §1-4 — 5행 핏 리포트. **표시 전용 · 물리 0프레임.** */
+      if (m.kind === "uv") { setPrintUv(buildPrintUv(m.uv, m.panels)); return; }
       if (m.kind === "fit") {
         if (m.fit) { setFit(m.fit); setFitErr(""); (window as unknown as Record<string, unknown>).__v3fit = m.fit; }
         else { setFit(null); setFitErr(m.fitError ?? "산출 불가"); }
@@ -139,6 +143,15 @@ export function V3Panel() {
   const [fit, setFit] = useState<FitReportResult | null>(null);
   /* v3-54 ㉢ — 핏 맵 색 on/off. **표시 전용**(물리·상태 무관). */
   const [fitColor, setFitColor] = useState(true);
+  /* v3-59 — **프린트 모드**. 핏 색과 «동시 적용하지 않는다»(둘 중 하나만 렌더에 넘긴다). */
+  const [printOn, setPrintOn] = useState(false);
+  const [printUv, setPrintUv] = useState<PrintUv | null>(null);
+  const [tex, setTex] = useState<Texture | null>(null);
+  useEffect(() => {
+    /* 프린트 원본 = **v2 경로가 쓰는 기존 자산 파일**(데이터 읽기이지 코드 임포트가 아니다 · v3-13). */
+    const l = new TextureLoader();
+    l.load(`${import.meta.env.BASE_URL}v3print/print-tee.png`, (t) => { t.colorSpace = SRGBColorSpace; setTex(t); });
+  }, []);
   const [fitErr, setFitErr] = useState<string>("");
   const [settledIx, setSettledIx] = useState(0);
   const showSettled = useCallback(() => {
@@ -152,6 +165,7 @@ export function V3Panel() {
       const m = e.data;
       if (m.kind === "ready") { setReady(m); return; }
       if (m.kind === "error") { setPhase("error"); setMsg(m.message); return; }
+      if (m.kind === "uv") { setPrintUv(buildPrintUv(m.uv, m.panels)); return; }
       if (m.kind === "fit") {
         if (m.fit) { setFit(m.fit); setFitErr(""); (window as unknown as Record<string, unknown>).__v3fit = m.fit; }
         else { setFit(null); setFitErr(m.fitError ?? "산출 불가"); }
@@ -225,9 +239,11 @@ export function V3Panel() {
      * 그대로 두면 캡처가 진단 래스터와 같은 300×420 이 되어 «제품급»이 성립하지 않는다.
      * 표시 층 파라미터이고 물리·문턱 채널이 아니다. */
     renderProduct(cv, { pos: S.bodyPos, idx: S.bodyIdx },
-                  { pos: S.pos, idx: dIdx(S), vcol: fitColor && fit ? fit.color.rgb : undefined },
+                  { pos: S.pos, idx: dIdx(S),
+                    vcol: !printOn && fitColor && fit ? fit.color.rgb : undefined,
+                    print: printOn && printUv ? { uv: printUv.uv, panels: printUv.panels, tex, printPanel: "front" } : null },
                   PRODUCT_VIEWS[vi], 300, 420, scale);
-  }, [dIdx, fitColor, fit]);
+  }, [dIdx, fitColor, fit, printOn, printUv, tex]);
   const CAP_SCALE = 3;
   useEffect(() => { if (mode === "prod" && sceneRef.current) drawProd(pViewIx); }, [pViewIx, drawProd, phase, mode]);
 
@@ -412,9 +428,21 @@ export function V3Panel() {
         {fit && (
           <div className="mt-1 flex flex-wrap items-center gap-2 text-[11px]">
             <label className="flex items-center gap-1">
-              <input type="checkbox" checked={fitColor} onChange={(e) => setFitColor(e.target.checked)} />
-              <span>핏 맵 색</span>
+              <input type="checkbox" checked={fitColor} disabled={printOn}
+                     onChange={(e) => setFitColor(e.target.checked)} />
+              <span className={printOn ? "opacity-50" : ""}>핏 맵 색</span>
             </label>
+            <label className="flex items-center gap-1">
+              <input type="checkbox" checked={printOn} onChange={(e) => setPrintOn(e.target.checked)} />
+              <span>프린트</span>
+            </label>
+            {printUv && (
+              <span className="opacity-70">
+                UV 축척 <b>{(printUv.scaleM * 100).toFixed(2)}cm</b> = uv 1.0 · 앞판 uMax{" "}
+                <b>{printUv.panels.find((p) => p.name === "front")?.uMax.toFixed(4)}</b>
+                {!tex && <b className="text-rose-600"> · 텍스처 미로드</b>}
+              </span>
+            )}
             {/* G5 — 범례가 «분기점 값»을 스스로 밝힌다 */}
             <span className="rounded px-1" style={{ background: "rgb(230,45,60)", color: "#fff" }}>눌림 &lt;0</span>
             <span className="rounded px-1" style={{ background: "rgb(250,168,50)" }}>밀착 0~{fit.sepMm.toFixed(1)}mm</span>
