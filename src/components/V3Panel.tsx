@@ -12,13 +12,12 @@ import { withBridge } from "../v3/seamBridge.ts";
 const FABRICS = ["gray", "denim", "sweat", "swim"] as const;
 /** v3-41 §2 — C-브라우저 정착 상태(v3-38 산출). **표시 전용 · 물리 0프레임**. */
 const SETTLED = [
-  { label: "gray d9 (정착 220)", fab: "gray", d: 9, frame: 220, url: "/v3diag/settled-gray-d9.bin" },
-  { label: "swim d10 (정착 180)", fab: "swim", d: 10, frame: 180, url: "/v3diag/settled-swim-d10.bin" },
-  { label: "sweat d9 (정착 190)", fab: "sweat", d: 9, frame: 190, url: "/v3diag/settled-sweat-d9.bin" },
-  /* v3-47 — 해상도 상향 «후보». 구 정본 3종은 위에 그대로 남는다(무삭제). */
-  { label: "swim d9 신 (정착 260 · 후보)", fab: "swim", d: 9, frame: 260, url: "/v3diag/settled-swim-d9-new.bin" },
-  /* v3-48 — sweat d8 «후보»(하드 게이트 전 채널 통과). 구 sweat d9 는 위에 그대로 남는다. */
-  { label: "sweat d8 신 (정착 330 · 후보)", fab: "sweat", d: 8, frame: 330, url: "/v3diag/settled-sweat-d8-new.bin" },
+  { label: "gray d9 정본 (정착 220)", fab: "gray", d: 9, frame: 220, url: "/v3diag/settled-gray-d9.bin" },
+  { label: "swim d10 (전 정본 · 정착 180)", fab: "swim", d: 10, frame: 180, url: "/v3diag/settled-swim-d10.bin" },
+  { label: "sweat d9 (전 정본 · 정착 190)", fab: "sweat", d: 9, frame: 190, url: "/v3diag/settled-sweat-d9.bin" },
+  /* v3-49 — 사용자 화면 합격 + 전략 세션 3/5 종결 선언으로 «정본» 승격. 전 정본 2종은 위에 무삭제. */
+  { label: "swim d9 정본 (정착 260)", fab: "swim", d: 9, frame: 260, url: "/v3diag/settled-swim-d9-new.bin" },
+  { label: "sweat d8 정본 (정착 330)", fab: "sweat", d: 8, frame: 330, url: "/v3diag/settled-sweat-d8-new.bin" },
 ] as const;
 
 type Phase = "idle" | "prep" | "run" | "done" | "error" | "cancelled";

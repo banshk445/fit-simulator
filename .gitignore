@@ -10,4 +10,14 @@ public/dress-state.json
 .obsidian/
 .obsidian-log/.obsidian/
 .v3cache/
-public/v3diag/
+# v3-49 ㉢ — 디렉터리형(`public/v3diag/`)이면 git 이 안으로 안 내려가 `!` 예외가 듣지 않는다.
+# 그래서 «내용물»을 무시하는 형태로 바꿨다. 무시 범위는 그대로다.
+public/v3diag/*
+# v3-49 ㉢ — **정본 3종 + 전 정본 2종의 정착 상태만** 예외로 추적한다(합계 2.43MB · LFS 없음).
+# 근거: 재현이 원단당 61~66분이라 파일이 사라지면 3/5 종결 구성이 되살아나지 않는다(v3-48 한계 9항 #9).
+# 나머지 v3diag 산출물(프로브·중간 blob)은 그대로 무시한다.
+!public/v3diag/settled-gray-d9.bin
+!public/v3diag/settled-swim-d9-new.bin
+!public/v3diag/settled-sweat-d8-new.bin
+!public/v3diag/settled-swim-d10.bin
+!public/v3diag/settled-sweat-d9.bin
