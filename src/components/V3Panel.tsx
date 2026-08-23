@@ -17,6 +17,8 @@ const SETTLED = [
   { label: "sweat d9 (정착 190)", fab: "sweat", d: 9, frame: 190, url: "/v3diag/settled-sweat-d9.bin" },
   /* v3-47 — 해상도 상향 «후보». 구 정본 3종은 위에 그대로 남는다(무삭제). */
   { label: "swim d9 신 (정착 260 · 후보)", fab: "swim", d: 9, frame: 260, url: "/v3diag/settled-swim-d9-new.bin" },
+  /* v3-48 — sweat d8 «후보»(하드 게이트 전 채널 통과). 구 sweat d9 는 위에 그대로 남는다. */
+  { label: "sweat d8 신 (정착 330 · 후보)", fab: "sweat", d: 8, frame: 330, url: "/v3diag/settled-sweat-d8-new.bin" },
 ] as const;
 
 type Phase = "idle" | "prep" | "run" | "done" | "error" | "cancelled";
