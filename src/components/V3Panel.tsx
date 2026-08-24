@@ -169,9 +169,13 @@ export function V3Panel() {
     /* v3-60 — 자산 선택은 «값으로» 했다(§2-1 실측):
      `print-tee.png`      → 프레임 문턱 **발동**(bbox 100% · 재스캔 경계접촉 0 제외) ⟹ 프린트 버림
      `print-tee-white.webp` → bbox **40%×43%** · **미발동**(재스캔 경계접촉 1 제외) ⟹ **계약 전제 충족**
-   ⟹ **후자를 쓴다.** 전자는 «검정 옷의 하이라이트»가 대표색과 거리 55 를 넘어 프레임 전역에
-   퍼지는 자산이고, 그것은 **v2 계약이 이미 등재한 한계**다(색으로는 못 가른다 · v2 :203-206). */
-    im.src = `${import.meta.env.BASE_URL}v3print/print-tee-white.webp`;
+   ⟹ (v3-60 당시) 후자를 썼다. 전자는 «검정 옷의 하이라이트»가 대표색과 거리 55 를 넘어 프레임 전역에
+   퍼지는 자산이고, 그것은 **v2 계약이 이미 등재한 한계**다(색으로는 못 가른다 · v2 :203-206).
+   **v3-64 갱신(위 이력 무삭제)**: 사용자가 **그래픽 전용 자산**을 제공했다 —
+     `print-graphic.png` 1200×1200 RGBA · α<250 **74.1%** · 불투명 bbox **61.8%×68.0%** ·
+     테두리 불투명 **0.0%** ⟹ **v3-62 §0-3a 규칙 ㉠㉡㉢ 전부 통과**(적합 1건 · 면적비 최소).
+   ⟹ **이 자산을 쓴다.** 앞의 둘은 **「옷 사진」**이라 규칙 ㉡ 에 걸렸다(대조용으로 저장소에 남는다). */
+    im.src = `${import.meta.env.BASE_URL}v3print/print-graphic.png`;
   }, [uMax]);
   const [fitErr, setFitErr] = useState<string>("");
   const [settledIx, setSettledIx] = useState(0);
