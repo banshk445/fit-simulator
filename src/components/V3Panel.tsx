@@ -38,6 +38,10 @@ const SETTLED = [
   /* v3-49 — 사용자 화면 합격 + 전략 세션 3/5 종결 선언으로 «정본» 승격. 전 정본 2종은 위에 무삭제. */
   { label: "swim d9 정본 (정착 260)", fab: "swim", d: 9, frame: 260, url: "/v3diag/settled-swim-d9-new.bin" },
   { label: "sweat d8 정본 (정착 330)", fab: "sweat", d: 8, frame: 330, url: "/v3diag/settled-sweat-d8-new.bin" },
+  /* v3-74 §5 — **측정 전용 칸**(v3-70 §0-C · **정본 아님**). 몸·옷을 함께 실어야 조립이 같아진다. */
+  { label: "v3-74 기준칸 T포즈 (GARMENT_V1 · 측정 전용)", fab: "gray", d: 9, frame: 0,
+    url: "/v3diag/v3-74/settled-base.bin", vertsUrl: "/v3diag/v3-74/body-tpose-chest100.bin",
+    garment: { L: 0.71, W: 0.51, SW: 0.44, SLEN: 0.20, ARM_G: 0.4439 } },
 ] as const;
 
 type Phase = "idle" | "prep" | "run" | "done" | "error" | "cancelled";
@@ -192,7 +196,7 @@ export function V3Panel() {
   }, [uMax]);
   const [fitErr, setFitErr] = useState<string>("");
   const [settledIx, setSettledIx] = useState(0);
-  const showSettled = useCallback(() => {
+  const showSettled = useCallback(async () => {
     const S = SETTLED[settledIx];
     workerRef.current?.terminate();
     setReady(null); setProg(null); setMsg(""); blobRef.current = null; sceneRef.current = null;
@@ -221,9 +225,18 @@ export function V3Panel() {
       setPhase("done"); setMsg(`정착 상태 표시 — 정착 프레임 ${S.frame} · 물리 0프레임 · 상태 페이로드 sha`);
       console.log(`[v3] settled sha256=${hex}`);
     };
+    /* v3-74 §5 — **측정 전용 칸 배선**(최소). 칸의 몸은 «구운 마네킹 체계»라
+     * `vertsUrl`(주입 몸 정점)과 `garment`(GARMENT_V1)를 **함께** 실어야 조립이 같아진다.
+     * **정본 3종에는 두 필드가 «없다»** ⟹ 기존 경로는 **한 글자도 바뀌지 않는다**(분기 1개). */
+    const S2 = S as unknown as { vertsUrl?: string; garment?: { L: number; W: number; SW: number; SLEN: number; ARM_G: number } };
+    const extra = S2.vertsUrl
+      ? await fetch(`${import.meta.env.BASE_URL}${S2.vertsUrl.replace(/^\//, "")}`)
+          .then((r) => r.arrayBuffer())
+          .then((b) => ({ bodyVerts: new Float32Array(b), garment: S2.garment }))
+      : {};
     w.postMessage({
       kind: "start", glbUrl: `${import.meta.env.BASE_URL}models/mannequin.glb`,
-      fabric: S.fab, d: S.d / 1000, frames: 0, injectStateUrl: S.url,
+      fabric: S.fab, d: S.d / 1000, frames: 0, injectStateUrl: S.url, ...extra,
     });
   }, [settledIx]);
 
