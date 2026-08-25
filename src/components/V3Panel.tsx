@@ -10,6 +10,8 @@ import { renderProduct, PRODUCT_VIEWS } from "../v3/productView.ts";
 import { withBridge } from "../v3/seamBridge.ts";
 /* v3-52 §1-4 — 핏 리포트 «표시»만 한다(계산은 워커의 `fitReport.ts`). */
 import type { FitReportResult } from "../v3/fitReport.ts";
+/* v3-67 §1 — 표·범례 마크업은 «공유»한다(제품 화면과 두 벌 쓰지 않는다). */
+import { FitLegend, FitReportTable } from "./FitReportTable.tsx";
 /* v3-59 §3 — 프린트 UV(정규화 층)와 패널 분리 렌더. **표시 전용 · 물리 0프레임.** */
 import { buildPrintUv, type PrintUv } from "../v3/printUv.ts";
 import { CanvasTexture, SRGBColorSpace, type Texture } from "three";
@@ -473,57 +475,12 @@ export function V3Panel() {
                 {!tex && <b className="text-rose-600"> · 텍스처 미로드</b>}
               </span>
             )}
-            {/* G5 — 범례가 «분기점 값»을 스스로 밝힌다 */}
-            <span className="rounded px-1" style={{ background: "rgb(230,45,60)", color: "#fff" }}>눌림 &lt;0</span>
-            <span className="rounded px-1" style={{ background: "rgb(250,168,50)" }}>밀착 0~{fit.sepMm.toFixed(1)}mm</span>
-            <span className="rounded px-1" style={{ background: "rgb(70,150,230)", color: "#fff" }}>
-              여유 {fit.sepMm.toFixed(1)}~{fit.color.looseTopMm.toFixed(1)}mm(p95)
-            </span>
-            <span className="opacity-70">눌림 하한 {fit.color.penFloorMm.toFixed(1)}mm(게이트 ③a 문턱)</span>
+            {/* G5 — 범례가 «분기점 값»을 스스로 밝힌다. **v3-67 §1: 마크업을 `FitReportTable.tsx` 로
+              «옮겨» 제품 화면과 공유한다 — 렌더 결과 동일 · 계산 채널 0줄.** */}
+            <FitLegend fit={fit} />
           </div>
         )}
-        {fit && (
-          <div className="mt-2 border-t pt-2 text-[11px]">
-            <div>
-              핏 리포트 — 옷↔몸 부호거리(mm) · 경계 <b>{fit.sepMm.toFixed(1)}mm</b>
-              <span className="opacity-70"> ({fit.sepDerivation})</span>
-            </div>
-            <div className="opacity-70">
-              대역 반폭 <b>{fit.bandHalfMm.toFixed(1)}mm</b> — {fit.bandDerivation} · 가슴 y{fit.levels.chestYCm.toFixed(2)}cm(둘레 {fit.levels.cChestCm.toFixed(2)}cm) · 허리 y{fit.levels.waistYCm.toFixed(2)}cm(둘레 {fit.levels.cWaistCm.toFixed(2)}cm) · 겨드랑이 y{fit.levels.yArmCm.toFixed(2)}cm
-            </div>
-            <table className="mt-1 w-full">
-              <thead className="opacity-70">
-                <tr><th className="text-left">부위</th><th className="text-right">중앙</th><th className="text-right">p25~p75</th><th className="text-left">판정</th><th className="text-left">눌림/밀착/여유</th></tr>
-              </thead>
-              <tbody>
-                {fit.rows.map((r) => {
-                  const l = !Number.isFinite(r.medMm) ? ["산출 불가", "opacity-50"]
-                    : r.medMm < 0 ? ["눌림", "text-rose-600"]
-                    : r.medMm <= fit.sepMm ? ["밀착", "text-amber-600"] : ["여유", "text-sky-600"];
-                  return (
-                    <tr key={r.name} title={r.domainSpec}>
-                      <td>{r.name}</td>
-                      <td className="text-right">{Number.isFinite(r.medMm) ? r.medMm.toFixed(2) : "—"}</td>
-                      <td className="text-right opacity-70">{Number.isFinite(r.p25Mm) ? `${r.p25Mm.toFixed(2)}~${r.p75Mm.toFixed(2)}` : "—"}</td>
-                      <td className={l[1]}>{l[0]}</td>
-                      <td className="opacity-70">{r.pressN} / {r.snugN} / {r.looseN} <span className="opacity-60">(표본 {r.n}/{r.domain})</span></td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-            <div className="mt-1 opacity-70">
-              자기검사 — 리포트 층 c ↔ 게이트 정확 거리: 표본 <b>{fit.self.n}</b> · 최대차{" "}
-              <b>{fit.self.maxDiffMm.toFixed(3)}mm</b> · 부호 일치율 <b>{fit.self.signAgreePct.toFixed(2)}%</b>
-              <span className="opacity-60"> · 정의역 {fit.self.domain}</span>
-              <div>
-                등재 잡음(h의 5%) <b>{fit.self.noiseMm.toFixed(3)}mm</b> · 초과 표본{" "}
-                <b>{fit.self.overNoise}/{fit.self.n}</b> · 밴드 상한 <b>{fit.bandMm.toFixed(3)}mm</b>
-                {fit.self.maxDiffMm > fit.self.noiseMm && <b className="text-rose-600"> — 등재 잡음 초과</b>}
-              </div>
-            </div>
-          </div>
-        )}
+        {fit && <FitReportTable fit={fit} />}
       </div>
 
       {/* v3-41 §2 — 읽기 전용 표시. 등재 3뷰 프리셋. */}

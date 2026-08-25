@@ -14,6 +14,8 @@ import { buildPrintUv, type PrintUv } from "../v3/printUv.ts";
 import { compositePrint, type CompositeResult } from "../v3/printComposite.ts";
 import { FABRICS } from "../v3/consts.ts";
 import type { FitReportResult } from "../v3/fitReport.ts";
+/* v3-67 §1 — 표·범례는 **V3Panel 과 같은 컴포넌트**를 쓴다(계산 채널 0줄 · 배치만 신규). */
+import { FitLegend, FitReportTable } from "./FitReportTable.tsx";
 import { CanvasTexture, SRGBColorSpace, type Texture } from "three";
 
 /** **정본 3종**. `d` · `frame` · 페이로드 `sha` · 정점 `n` 은 **등재값의 전사**다 —
@@ -115,7 +117,7 @@ export function V3Product() {
   const F = FABRICS[CANON[ix].fab];
   return (
     <div className="flex h-full w-full bg-[#0b1020]">
-      <div className="w-[320px] shrink-0 overflow-auto border-r border-white/10 bg-[#141a2e] p-4 text-[12px] text-white/90">
+      <div className="w-[420px] shrink-0 overflow-auto border-r border-white/10 bg-[#141a2e] p-4 text-[12px] text-white/90">
         <div className="mb-3 text-[14px] font-semibold">Fit Simulator</div>
         <div className="mb-1 text-white/60">원단</div>
         <div className="mb-3 flex gap-1">
@@ -148,6 +150,12 @@ export function V3Product() {
           <input type="checkbox" checked={printOn} onChange={(e) => setPrintOn(e.target.checked)} />
           <span>프린트</span>
         </label>
+        {fit && (
+          <div className="mt-3 flex flex-wrap items-center gap-2 text-[11px]">
+            <FitLegend fit={fit} />
+          </div>
+        )}
+        {fit && <FitReportTable fit={fit} />}
         <div className="mt-3 whitespace-pre-wrap text-white/60">{msg}</div>
         {err && <div className="mt-2 whitespace-pre-wrap text-red-400">{err}</div>}
         {checked && (
