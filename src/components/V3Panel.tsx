@@ -42,6 +42,25 @@ const SETTLED = [
   { label: "v3-74 기준칸 T포즈 (GARMENT_V1 · 측정 전용)", fab: "gray", d: 9, frame: 0,
     url: "/v3diag/v3-74/settled-base.bin", vertsUrl: "/v3diag/v3-74/body-tpose-chest100.bin",
     garment: { L: 0.71, W: 0.51, SW: 0.44, SLEN: 0.20, ARM_G: 0.4439 } },
+  /* v3-75 §1 — 민감도 «칸» 6종(정착 도달분 + height140 미도달분). **측정 전용 · 정본 아님.** */
+  { label: "v3-75 chest70 (측정 전용)", fab: "gray", d: 9, frame: 0,
+    url: "/v3diag/v3-75/settled-chest70.bin", vertsUrl: "/v3diag/v3-75/v3-75-body-chest70.bin",
+    garment: { L: 0.71, W: 0.51, SW: 0.44, SLEN: 0.20, ARM_G: 0.4439 } },
+  { label: "v3-75 shoulder35 (측정 전용)", fab: "gray", d: 9, frame: 0,
+    url: "/v3diag/v3-75/settled-shoulder35.bin", vertsUrl: "/v3diag/v3-75/v3-75-body-shoulder35.bin",
+    garment: { L: 0.71, W: 0.51, SW: 0.44, SLEN: 0.20, ARM_G: 0.4439 } },
+  { label: "v3-75 shoulder55 (측정 전용)", fab: "gray", d: 9, frame: 0,
+    url: "/v3diag/v3-75/settled-shoulder55.bin", vertsUrl: "/v3diag/v3-75/v3-75-body-shoulder55.bin",
+    garment: { L: 0.71, W: 0.51, SW: 0.44, SLEN: 0.20, ARM_G: 0.4439 } },
+  { label: "v3-75 height140 (측정 전용)", fab: "gray", d: 9, frame: 0,
+    url: "/v3diag/v3-75/settled-height140.bin", vertsUrl: "/v3diag/v3-75/v3-75-body-height140.bin",
+    garment: { L: 0.71, W: 0.51, SW: 0.44, SLEN: 0.20, ARM_G: 0.4439 } },
+  { label: "v3-75 arm80 (측정 전용)", fab: "gray", d: 9, frame: 0,
+    url: "/v3diag/v3-75/settled-arm80.bin", vertsUrl: "/v3diag/v3-75/v3-75-body-arm80.bin",
+    garment: { L: 0.71, W: 0.51, SW: 0.44, SLEN: 0.20, ARM_G: 0.4439 } },
+  { label: "v3-75 leg60 (측정 전용)", fab: "gray", d: 9, frame: 0,
+    url: "/v3diag/v3-75/settled-leg60.bin", vertsUrl: "/v3diag/v3-75/v3-75-body-leg60.bin",
+    garment: { L: 0.71, W: 0.51, SW: 0.44, SLEN: 0.20, ARM_G: 0.4439 } },
 ] as const;
 
 type Phase = "idle" | "prep" | "run" | "done" | "error" | "cancelled";
