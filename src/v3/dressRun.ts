@@ -34,6 +34,14 @@ export type RunInput = {
   glb: ArrayBuffer;
   /** 몸 축 비례 [x,y,z] · 기본 1/1/1 */
   bodyScale?: [number, number, number];
+  /** v3-70 §1 — **주입 몸 정점**[m]. 있으면 `parseGlb` 의 몸 «대신» 쓴다(`glb` 인자는 그대로 필요하다 —
+   * **위상(`idx`)은 GLB 것을 쓰기 때문**이다). **규약 3항**:
+   *   ① **길이 = `parseGlb(glb).prims[0].pos.length`** — 어긋나면 **던진다**(조용한 성공 0).
+   *   ② **정점 «순서» = 그 배열과 동일** — 위상을 공유하므로 순서가 다르면 삼각형이 뒤섞인다.
+   *   ③ **법선은 «넘기지 않는다»** — 몸 법선은 v3 가 쓰지 않는다(충돌은 `bodySdf` 격자,
+   *      표시는 `productView` 가 «위치에서» 다시 만든다). 넘기면 두 벌이 되어 갈릴 수 있다.
+   * 주입 경로에서는 **`bodyScale` 을 «곱하지 않는다»** — 스케일이 이미 정점에 반영돼 있다. */
+  bodyVerts?: Float32Array;
   /** 옷 치수 [m] — 제품 UI 입력 */
   garment?: { L: number; W: number; SW: number; SLEN: number; ARM_G: number };
   fabric: Fabric;
@@ -62,11 +70,29 @@ export function prepare(inp: RunInput) {
   const weld = weldMap(prim0.pos, 0);
   const bodyIdx = Uint32Array.from(prim0.idx, (v) => weld[v]);
   const BS = inp.bodyScale ?? [1, 1, 1];
-  if (BS[0] !== 1 || BS[1] !== 1 || BS[2] !== 1)
+  /* v3-70 §1 — **주입 경로**. 위상(`bodyIdx`)은 위에서 GLB 것으로 이미 떴고, 여기서 «위치»만 갈아끼운다. */
+  if (inp.bodyVerts) {
+    if (inp.bodyVerts.length !== prim0.pos.length)
+      throw new Error(`주입 몸 정점 수가 다르다 — 받은 ${inp.bodyVerts.length / 3}, GLB ${prim0.pos.length / 3}`);
+    prim0.pos = Float32Array.from(inp.bodyVerts);
+  } else if (BS[0] !== 1 || BS[1] !== 1 || BS[2] !== 1)
     for (let v = 0; v < prim0.pos.length; v += 3) {
       prim0.pos[v] *= BS[0]; prim0.pos[v + 1] *= BS[1]; prim0.pos[v + 2] *= BS[2];
     }
-  const BEXT: [number, number, number] = [1.78 * BS[0], 1.765 * BS[1], 0.282 * BS[2]];
+  /* v3-70 §1-② — **BEXT 도출**.
+   *   **주입 경로**: 몸이 무엇인지 미리 알 수 없으므로 **정점에서 «실측»한다**.
+   *   **`glb` 경로**: 구 식을 **그대로** 둔다 — 이것이 **「기본 몸 캐시」**다(v3-70 §0-B ② 강등 ·
+   *     **무삭제**). 정본 3종 회귀가 **비트로** 유지되는 근거가 이 분기다.
+   * BEXT 는 `deriveSpacing` 의 유일 입력이므로 **h · band · ③b 문턱이 전부 여기서** 나온다(v3-69 §1-4). */
+  const measureExt = (pos: Float32Array): [number, number, number] => {
+    const lo = [Infinity, Infinity, Infinity], hi = [-Infinity, -Infinity, -Infinity];
+    for (let v = 0; v < pos.length; v += 3)
+      for (let c = 0; c < 3; c++) { const x = pos[v + c]; if (x < lo[c]) lo[c] = x; if (x > hi[c]) hi[c] = x; }
+    return [hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2]];
+  };
+  const BEXT: [number, number, number] = inp.bodyVerts
+    ? measureExt(prim0.pos)
+    : [1.78 * BS[0], 1.765 * BS[1], 0.282 * BS[2]];
   const sdfSpec = deriveSpacing(BEXT, SDF_BUDGET, THICK);
   const bodyG: GridSdf = bakeSdf(prim0.pos, bodyIdx, sdfSpec.h, sdfSpec.band);
   const gd = inp.garment ?? DEFAULT_GARMENT;
@@ -121,7 +147,7 @@ export function prepare(inp: RunInput) {
   const neckF = Array.from({ length: sc.N_nk + 1 }, (_, k) => S.at(sc.front, sc.N_sh + k, sc.nvB));
   const neckB = Array.from({ length: sc.N_nk + 1 }, (_, k) => S.at(sc.back, sc.N_sh + k, sc.nvB));
   const ringRest = 2 * S.LEN_NECK;
-  return { S, sc, bodyG, sdfSpec, d, SUB, sub: st, RAMP_N, setRest, params, prim0, bodyIdx,
+  return { S, sc, bodyG, sdfSpec, bext: BEXT, d, SUB, sub: st, RAMP_N, setRest, params, prim0, bodyIdx,
            neckF, neckB, ringRest };
 }
 

@@ -4,7 +4,7 @@
  * 물리·조립은 전부 `src/v3/*` 순수 모듈이다 — 이 파일에는 물리가 한 줄도 없다.
  *
  * 프로토콜
- *   ← { kind:'start', glbUrl, fabric, d, frames, garment?, bodyScale? }
+ *   ← { kind:'start', glbUrl, fabric, d, frames, garment?, bodyScale?, bodyVerts? }
  *   ← { kind:'cancel' }
  *   → { kind:'ready',    n, tris, sub, rampN, dims, placeSig }
  *   → { kind:'progress', frame, frames, netMm, elapsedMs }
@@ -31,6 +31,8 @@ let cancelled = false;
 type StartMsg = {
   kind: 'start'; glbUrl: string; fabric: string; d: number; frames: number;
   garment?: typeof DEFAULT_GARMENT; bodyScale?: [number, number, number];
+  /** v3-70 §1 — 주입 몸 정점[m]. 규약 3항은 `dressRun.RunInput.bodyVerts` 주석이 정본. */
+  bodyVerts?: Float32Array;
   injectStateUrl?: string;   // v3-36 §2 진단 — 주입할 상태 blob 의 URL
   startFrame?: number;       // v3-37 §3 — 주입 상태를 «잇는» 실행(램프 되감기 방지)
 };
@@ -55,7 +57,7 @@ ctx.onmessage = async (e: MessageEvent) => {
     }
     const P: Prepared = prepare({
       glb, fabric, d: m.d, garment: m.garment ?? DEFAULT_GARMENT,
-      bodyScale: m.bodyScale, minPairDistLite, injectState,
+      bodyScale: m.bodyScale, bodyVerts: m.bodyVerts, minPairDistLite, injectState,
     });
     ctx.postMessage({
       kind: 'ready', n: P.sc.n, tris: P.sc.tris.length / 3, sub: P.SUB, rampN: P.RAMP_N,
@@ -63,6 +65,14 @@ ctx.onmessage = async (e: MessageEvent) => {
       dims: {
         neckHalfWidthCm: P.S.NECK_A * 100, necklineGirthCm: P.S.NECK_G * 100,
         capHeightCm: P.S.CAP_H * 100, armholeDepthCm: P.S.ARM_D * 100,
+      },
+      /* v3-70 §2-㉯ — **몸에서 «도출»되는 값들**. 주입 몸이 실제로 도출식을 통과했는지
+       * 값으로 보이기 위한 «인쇄 전용» 채널이다(판정 로직 0줄 · 물리 0프레임). */
+      derived: {
+        bextM: P.bext, hMm: P.sdfSpec.h * 1000, bandMm: P.sdfSpec.band * 1000,
+        gate3bThMm: 0.25 * P.sdfSpec.h * 1000,
+        yTopCm: P.S.Y_TOP * 100, axisZCm: P.S.AXIS_Z * 100, yNeckCm: P.S.Y_NECK * 100,
+        injected: !!m.bodyVerts,
       },
       prepMs: performance.now() - t0,
     });

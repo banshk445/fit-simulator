@@ -17,6 +17,13 @@ import { buildPrintUv, type PrintUv } from "../v3/printUv.ts";
 import { CanvasTexture, SRGBColorSpace, type Texture } from "three";
 /* v3-60 §1 — 프린트 «합성 층»(대표색 + 가슴 프린트). v2 계약 문언 준거 · 코드 임포트 0. */
 import { compositePrint, type CompositeResult } from "../v3/printComposite.ts";
+/* v3-70 §1-③ — **몸 주입 연결부**(계기). ★ **G1 경계 «명시»**: 이 임포트는 `src/lib/mannequinRef`
+ * (v2 자산)를 «참조»한다. 살아있는 마네킹은 v2 씬에만 있고, 본 스케일 재구현은 §0-B ① 이 기각했다.
+ * **V3Panel 자체가 «하네스·플래그 전용»**(v3-67 §0-3 분류)이므로 «제품 경로»는 오염되지 않는다 —
+ * **제품 경로(`src/v3/**` · `V3Product` · `FitReportTable`)의 v2 임포트는 여전히 0건**이고,
+ * 그 사실을 §2-㉱ 가 값으로 확인한다. **정의역을 조용히 넓히지 않는다 — 이 줄이 등재다.** */
+import { mannequinRootRef } from "../lib/mannequinRef";
+import { bakeBodyVerts } from "./bodyInjectBake.ts";
 
 const FABRICS = ["gray", "denim", "sweat", "swim"] as const;
 /** v3-41 §2 — C-브라우저 정착 상태(v3-38 산출). **표시 전용 · 물리 0프레임**. */
@@ -216,6 +223,39 @@ export function V3Panel() {
     });
   }, [settledIx]);
 
+  /* v3-70 §2 — **주입 경로 스모크**. `frames: 0` 이라 **물리 0프레임**이고, 워커가 돌려주는
+   * `derived` 를 그대로 찍는다. `useLive=false` 면 «기본 몸»(마네킹 없이 `parseGlb` 항등)을 주입해
+   * ㉮(경로 등가)를, `true` 면 «현 슬라이더 몸»을 구워 ㉯(도출 스모크)를 낸다. */
+  const injectSmoke = useCallback(async (useLive: boolean) => {
+    const url = `${import.meta.env.BASE_URL}models/mannequin.glb`;
+    const glb = await (await fetch(url)).arrayBuffer();
+    const root = useLive ? mannequinRootRef.current : null;
+    const b = bakeBodyVerts(glb, root);
+    console.log(`[v3-70] 굽기 — 살아있는 마네킹 ${root ? "**있다**" : "**없다**"}`
+      + ` · 스킨드 메시 ${b.skinned ? "찾음" : "**못 찾음**"} · 정점 ${b.n}`
+      + ` · parseGlb 배열과 **비트 ${b.bitEqual ? "동일" : "상이"}**`
+      + (b.bitEqual ? "" : ` · 최대 편차 ${(b.maxDeltaM * 1000).toExponential(3)}mm`));
+    workerRef.current?.terminate();
+    const w = new Worker(new URL("../workers/v3DressWorker.ts", import.meta.url), { type: "module" });
+    workerRef.current = w;
+    w.onmessage = (e) => {
+      const m = e.data;
+      if (m.kind === "error") { console.log(`[v3-70] 오류 — ${m.message}`); return; }
+      if (m.kind !== "ready") return;
+      const D = m.derived;
+      console.log(`[v3-70] 도출(주입 ${D.injected ? "**예**" : "아니오"}) —`
+        + ` BEXT [${D.bextM.map((v: number) => v.toFixed(4)).join(", ")}]m`
+        + ` · h **${D.hMm.toFixed(4)}mm** · band **${D.bandMm.toFixed(4)}mm**`
+        + ` · ③b 문턱 **${D.gate3bThMm.toFixed(4)}mm**`
+        + ` · Y_TOP **${D.yTopCm.toFixed(3)}cm** · Y_NECK **${D.yNeckCm.toFixed(3)}cm**`
+        + ` · AXIS_Z **${D.axisZCm.toFixed(4)}cm** · 목선둘레 ${m.dims.necklineGirthCm.toFixed(3)}cm`
+        + ` · 정점 ${m.n}`);
+      w.terminate();
+    };
+    w.postMessage({ kind: "start", glbUrl: url, fabric, d: dMm / 1000, frames: 0,
+                    bodyVerts: b.verts });
+  }, [fabric, dMm]);
+
   const save = useCallback(() => {
     const b = blobRef.current;
     if (!b) return;
@@ -402,6 +442,18 @@ export function V3Panel() {
         </select>
         <button className="rounded bg-slate-700 px-2 py-1 text-white disabled:opacity-40"
                 onClick={showSettled} disabled={phase === "prep" || phase === "run"}>정착 상태 표시</button>
+      </div>
+
+      {/* v3-70 §2 — **몸 주입 스모크**(계기 · 물리 0프레임). 살아있는 마네킹이 있어야 하므로
+        `?v2=1&v3=1` 에서만 의미가 있다(v2 씬이 마네킹을 마운트한다). */}
+      <div className="mb-1 flex flex-wrap items-center gap-1">
+        <button className="rounded border px-2 py-1 disabled:opacity-40"
+                onClick={() => injectSmoke(false)} disabled={phase === "prep" || phase === "run"}>
+          몸 주입 스모크(기본 몸)</button>
+        <button className="rounded border px-2 py-1 disabled:opacity-40"
+                onClick={() => injectSmoke(true)} disabled={phase === "prep" || phase === "run"}>
+          몸 주입 스모크(현 슬라이더)</button>
+        <span className="opacity-60">결과는 콘솔 `[v3-70]`</span>
       </div>
 
       {phase === "prep" && <div className="text-gray-600">장면 조립·SDF 굽는 중…</div>}
