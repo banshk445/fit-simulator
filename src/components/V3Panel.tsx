@@ -24,6 +24,10 @@ import { compositePrint, type CompositeResult } from "../v3/printComposite.ts";
  * 그 사실을 §2-㉱ 가 값으로 확인한다. **정의역을 조용히 넓히지 않는다 — 이 줄이 등재다.** */
 import { mannequinRootRef } from "../lib/mannequinRef";
 import { bakeBodyVerts } from "./bodyInjectBake.ts";
+/* v3-71 §1 — 전용 «베이크 마운트»(하네스 층). v2 화면 수정 0줄 · 제품 화면 노출 0. */
+import { BakeMount, bakeMountFrames, BAKE_MOUNT_PX } from "./BakeMount.tsx";
+import { awaitMannequinSettled, mannequinPoseRef } from "../lib/mannequinRef";
+import { useFitStore } from "../store/useFitStore";
 
 const FABRICS = ["gray", "denim", "sweat", "swim"] as const;
 /** v3-41 §2 — C-브라우저 정착 상태(v3-38 산출). **표시 전용 · 물리 0프레임**. */
@@ -226,6 +230,57 @@ export function V3Panel() {
   /* v3-70 §2 — **주입 경로 스모크**. `frames: 0` 이라 **물리 0프레임**이고, 워커가 돌려주는
    * `derived` 를 그대로 찍는다. `useLive=false` 면 «기본 몸»(마네킹 없이 `parseGlb` 항등)을 주입해
    * ㉮(경로 등가)를, `true` 면 «현 슬라이더 몸»을 구워 ㉯(도출 스모크)를 낸다. */
+  /* v3-71 §2-㉠ — **백화 «판별»**. 3값만 찍는다(원인 단정 0 · 위치만 좁힌다). */
+  const bakeProbe = useCallback(() => {
+    const cv = document.querySelector<HTMLCanvasElement>("[data-bakemount] canvas");
+    console.log(`[v3-71 판별] 마네킹 ref **${mannequinRootRef.current ? "생존" : "사망(null)"}**`
+      + ` · 캔버스 실측 ${cv ? `${cv.width}×${cv.height}(css ${cv.clientWidth}×${cv.clientHeight})` : "**없음**"}`
+      + ` · 지정값 ${BAKE_MOUNT_PX.w}×${BAKE_MOUNT_PX.h}`
+      + ` · useFrame 프레임 **${bakeMountFrames.current}**`
+      + ` · 스케일 잔차 ${mannequinPoseRef.maxScaleResidual.toExponential(2)}`);
+  }, []);
+
+  /* v3-71 §3 — **정착 «후»에만 굽는다**(§0-5 · 조용한 조기 굽기 0).
+   * 정착 판정은 `awaitMannequinSettled`(P23 §1 조항)를 **그대로 재사용**한다 — 새 문턱 0. */
+  const bakeAndRun = useCallback(async (chestCm: number | null) => {
+    if (chestCm !== null) useFitStore.getState().setBodyChest(chestCm);
+    const st = await awaitMannequinSettled();
+    console.log(`[v3-71 굽기] 가슴 ${chestCm ?? useFitStore.getState().bodySize.chest}cm`
+      + ` · 정착 **${st.ok ? "성립" : "**상한 초과**(굽되 사실 남김)"}** · 프레임 ${st.frames}`
+      + ` · 잔차 ${st.residual.toExponential(3)}`);
+    const url = `${import.meta.env.BASE_URL}models/mannequin.glb`;
+    const glb = await (await fetch(url)).arrayBuffer();
+    const b = bakeBodyVerts(glb, mannequinRootRef.current);
+    console.log(`[v3-71 굽기] 스킨드 메시 ${b.skinned ? "찾음" : "**못 찾음**"} · 정점 ${b.n}`
+      + ` · parseGlb 배열과 **비트 ${b.bitEqual ? "동일" : "상이"}**`
+      + ` · **max|Δ| ${(b.maxDeltaM * 1000).toExponential(4)}mm**`);
+    /* 산출 배열을 파일로 내린다 — Node 계기가 «둘레 배율»을 정밀하게 재기 위함. */
+    const blob = new Blob([b.verts.buffer as ArrayBuffer], { type: "application/octet-stream" });
+    const bu = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = bu; a.download = `v3-71-body-chest${Math.round(chestCm ?? useFitStore.getState().bodySize.chest)}.bin`;
+    document.body.appendChild(a); a.click(); a.remove();
+    URL.revokeObjectURL(bu);
+    workerRef.current?.terminate();
+    const w = new Worker(new URL("../workers/v3DressWorker.ts", import.meta.url), { type: "module" });
+    workerRef.current = w;
+    w.onmessage = (e) => {
+      const m = e.data;
+      if (m.kind === "error") { console.log(`[v3-71 굽기] 오류 — ${m.message}`); return; }
+      if (m.kind !== "ready") return;
+      const D = m.derived;
+      console.log(`[v3-71 도출] 가슴 ${chestCm ?? "기본"} —`
+        + ` BEXT [${D.bextM.map((v: number) => v.toFixed(6)).join(", ")}]m`
+        + ` · h **${D.hMm.toFixed(6)}mm** · band **${D.bandMm.toFixed(6)}mm**`
+        + ` · ③b 문턱 **${D.gate3bThMm.toFixed(6)}mm**`
+        + ` · Y_TOP **${D.yTopCm.toFixed(4)}cm** · Y_NECK **${D.yNeckCm.toFixed(4)}cm**`
+        + ` · AXIS_Z **${D.axisZCm.toFixed(4)}cm** · 목선둘레 ${m.dims.necklineGirthCm.toFixed(4)}cm`
+        + ` · 조립 정점 ${m.n}`);
+      w.terminate();
+    };
+    w.postMessage({ kind: "start", glbUrl: url, fabric, d: dMm / 1000, frames: 0, bodyVerts: b.verts });
+  }, [fabric, dMm]);
+
   const injectSmoke = useCallback(async (useLive: boolean) => {
     const url = `${import.meta.env.BASE_URL}models/mannequin.glb`;
     const glb = await (await fetch(url)).arrayBuffer();
@@ -442,6 +497,17 @@ export function V3Panel() {
         </select>
         <button className="rounded bg-slate-700 px-2 py-1 text-white disabled:opacity-40"
                 onClick={showSettled} disabled={phase === "prep" || phase === "run"}>정착 상태 표시</button>
+      </div>
+
+      {/* v3-71 §1 — **베이크 마운트**(하네스). 크기를 픽셀로 못박은 전용 캔버스다. */}
+      <div data-bakemount className="mb-1 inline-block border border-white/20">
+        <BakeMount />
+      </div>
+      <div className="mb-1 flex flex-wrap items-center gap-1">
+        <button className="rounded border px-2 py-1" onClick={bakeProbe}>㉠ 판별(3값)</button>
+        <button className="rounded border px-2 py-1" onClick={() => bakeAndRun(null)}>㉰ 기본 굽기</button>
+        <button className="rounded border px-2 py-1" onClick={() => bakeAndRun(110)}>㉱ 가슴 110 굽기</button>
+        <span className="opacity-60">결과는 콘솔 `[v3-71]`</span>
       </div>
 
       {/* v3-70 §2 — **몸 주입 스모크**(계기 · 물리 0프레임). 살아있는 마네킹이 있어야 하므로
