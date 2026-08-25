@@ -249,11 +249,19 @@ export function V3Panel() {
       /* v3-72 §2 — **동기 정착**. rAF 를 기다리지 않고 `advance` 로 프레임을 «민다».
        * 판정은 기존 채널 그대로(`poseStopped` ∧ 잔차 ≤ `POSE_SETTLE_EPS`) — **새 문턱 0**.
        * 상한 600프레임(=10초 상당)에 걸리면 **굽되 그 사실을 남긴다**(말없는 실패 금지 · 함정 25). */
-      let k = 0;
+      /* ★ 조기 종료 «정정»(같은 판 안에서 값으로 잡았다):
+       *   ① 스토어를 바꿔도 React 재렌더가 «비동기»라, 바로 `advance` 하면 `useFrame` 이
+       *      **옛 `bodySize` 클로저**를 본다 ⟹ 새 target 이 반영되지 않는다. **한 번 양보한다.**
+       *   ② `maxScaleResidual` 은 «직전 프레임» 값이라 변경 직후엔 **낡은 0**이다 ⟹
+       *      **연속 2프레임** 충족을 요구한다(P26 의 「target 이 직전 프레임과 같을 것」과 같은 성질). */
+      await new Promise((r) => setTimeout(r, 0));
+      let k = 0, hit = 0;
       const CAP = 600;
       while (k < CAP) {
         stepFrames(1); k += 1;
-        if (poseStopped() && mannequinPoseRef.maxScaleResidual <= POSE_SETTLE_EPS) break;
+        if (poseStopped() && mannequinPoseRef.maxScaleResidual <= POSE_SETTLE_EPS) {
+          hit += 1; if (hit >= 2) break;
+        } else hit = 0;
       }
       const ok = k < CAP;
       tag = `**동기** · 정착 **${ok ? "성립" : "**상한 초과**(굽되 사실 남김)"}** · 전진 ${k}프레임`
