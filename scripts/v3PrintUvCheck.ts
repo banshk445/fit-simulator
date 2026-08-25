@@ -5,8 +5,14 @@
  *   **②** **축척 보존** — «등재 가능한 결정적 표본»에서 **패턴 거리 / uv 거리 = scale**.
  *         표본 = **각 패널의 네 «모서리 쌍»**(i·j 격자 끝점 · 무작위 0 · 뽑는 규칙이 문서에 적힌다).
  *         문턱 = **`TOL_SELF`(0.1mm)를 `scale` 로 나눈 상대량**(**새 수 0** — 등재 상수의 «단위 환산»).
- *   **③** **v 방향** — 각 패널 **어깨측 정점의 v < 밑단측 정점의 v**(텍스처 «위» = 어깨).
- *         어깨측/밑단측은 **패턴 y 의 최대/최소**로 가른다(패턴 y 는 아래로 증가 · v2 계약 문언).
+ *   **③** **v 방향** — **v3-65 §2 정정**(#120 · **구 문언 무삭제**):
+ *         구: 「어깨측 정점의 v **<** 밑단측 정점의 v」 — **v2 계약 «유도»와 정반대로 등록됐다**
+ *             (귀책 = 전략 세션 · v3-65 §0-2 ①). 함정 14 아님: 정정 방향이 **「통과 → 실패」**이고
+ *             근거가 결과가 아니라 **계약 문언 유도 + 방향 자명 자산의 픽셀**이다.
+ *         신: **어깨측 정점의 v > 밑단측 정점의 v**  ← 텍스처 «위»(v=1) = 어깨 · flipY=true 가
+ *             캔버스 «위»를 v=1 로 올린다 ⟹ 어깨가 v 큰 쪽이어야 프린트가 정립한다.
+ *         **어깨측/밑단측은 «패턴 y» 로 가르지 않는다**(그것이 정정 대상이라 순환이다 · #118):
+ *             **정착 세계 y**(독립 채널)가 큰 쪽이 어깨다.
  *
  * 진입: `FAB=gray D_MM=9 BLOB=<경로> npx tsx scripts/v3PrintUvCheck.ts`
  */
@@ -57,18 +63,29 @@ for (const pn of sc.panels) {
 }
 console.log(`  **② 판정** 축척 편차 max **${maxRel.toExponential(3)}** ≤ 문턱 ${REL.toExponential(3)}(= TOL_SELF/scale) ⟹ ${maxRel <= REL ? '**통과**' : '**실패 — 갈래 B**'}`);
 
-/* ③ v 방향 — 패턴 y 최대(어깨측) 의 v < 패턴 y 최소(밑단측) 의 v */
+/* ③ v 방향 — **어깨측 v > 밑단측 v**(v3-65 §2 정정 · 구 문언은 머리주석에 무삭제).
+ * 어깨측/밑단측은 **패턴 y 로 가르지 않는다**(그것이 정정 대상 ⟹ 순환 · #118).
+ * **독립 채널 = 정착 세계 y** — 두 끝 행의 세계 y 평균이 «위»인 쪽이 어깨다. */
 let dirBad = 0;
 for (const p of R.panels) {
-  let hi = p.base, lo = p.base;
-  for (let k = 0; k < p.count; k++) {
-    const v = p.base + k;
-    if (sc.uv[v * 2 + 1] > sc.uv[hi * 2 + 1]) hi = v;
-    if (sc.uv[v * 2 + 1] < sc.uv[lo * 2 + 1]) lo = v;
-  }
-  const ok = R.uv[hi * 2 + 1] < R.uv[lo * 2 + 1];
+  let yLo = Infinity, yHi = -Infinity;
+  for (let k = 0; k < p.count; k++) { const y = sc.uv[(p.base + k) * 2 + 1]; if (y < yLo) yLo = y; if (y > yHi) yHi = y; }
+  const eps = (yHi - yLo) * 1e-6;
+  const row = (target: number) => {
+    let n = 0, wy = 0, vv = 0;
+    for (let k = 0; k < p.count; k++) {
+      const i = (p.base + k) * 2;
+      if (Math.abs(sc.uv[i + 1] - target) > eps) continue;
+      n++; wy += sc.s.pos[(p.base + k) * 3 + 1]; vv += R.uv[i + 1];
+    }
+    return { n, wy: wy / n, v: vv / n };
+  };
+  const a = row(yHi), b = row(yLo);
+  const sh = a.wy > b.wy ? a : b, hm = a.wy > b.wy ? b : a;
+  const ok = sh.v > hm.v;
   if (!ok) dirBad++;
-  console.log(`  ③ ${p.name.padEnd(8)} 패턴 y 최대(v ${R.uv[hi * 2 + 1].toFixed(4)}) < 최소(v ${R.uv[lo * 2 + 1].toFixed(4)}) ⟹ ${ok ? '성립' : '**불성립**'}`);
+  console.log(`  ③ ${p.name.padEnd(8)} 어깨측(세계 y ${(sh.wy * 100).toFixed(2)}cm · v ${sh.v.toFixed(4)})`
+    + ` > 밑단측(세계 y ${(hm.wy * 100).toFixed(2)}cm · v ${hm.v.toFixed(4)}) ⟹ ${ok ? '성립' : '**불성립**'}`);
 }
 console.log(`  **③ 판정** 불성립 패널 **${dirBad}** ⟹ ${dirBad === 0 ? '**통과**' : '**실패 — 갈래 B**'}`);
 console.log(`  **G7 종합** ${bad === 0 && maxRel <= REL && dirBad === 0 ? '**3/3 통과**' : '**실패 — 갈래 B 정지**'}`);
