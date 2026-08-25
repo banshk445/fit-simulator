@@ -27,7 +27,7 @@ import { bakeBodyVerts, type BakePose } from "./bodyInjectBake.ts";
 /* v3-71 §1 — 전용 «베이크 마운트»(하네스 층). v2 화면 수정 0줄 · 제품 화면 노출 0. */
 import { BakeMount, bakeMountFrames, BAKE_MOUNT_PX, stepFrames } from "./BakeMount.tsx";
 import { awaitMannequinSettled, mannequinPoseRef, poseStopped, POSE_SETTLE_EPS } from "../lib/mannequinRef";
-import { useFitStore } from "../store/useFitStore";
+import { useFitStore, DEFAULT_BODY_SIZE } from "../store/useFitStore";
 
 const FABRICS = ["gray", "denim", "sweat", "swim"] as const;
 /** v3-41 §2 — C-브라우저 정착 상태(v3-38 산출). **표시 전용 · 물리 0프레임**. */
@@ -327,6 +327,54 @@ export function V3Panel() {
     w.postMessage({ kind: "start", glbUrl: url, fabric, d: dMm / 1000, frames: 0, bodyVerts: b.verts });
   }, [fabric, dMm]);
 
+  /* v3-75 §1 — **민감도 «세트» 굽기**(하네스 · 물리 0프레임 · 굽기만).
+   * 축 끝값은 **`Controls.tsx:128-137` 등재 min/max 그대로**(창작 0). 축은 **하나씩 단독**으로 바꾸고
+   * 굽기 «뒤에» 기본값으로 되돌린다(칸 간 오염 0). 정착·T포즈 복원은 기존 경로를 그대로 부른다. */
+  const bakeSet = useCallback(async () => {
+    const D = DEFAULT_BODY_SIZE;
+    const cells: { tag: string; apply: () => void; reset: () => void }[] = [];
+    const st = () => useFitStore.getState();
+    const push = (tag: string, set: (v: number) => void, v: number, back: number) =>
+      cells.push({ tag, apply: () => set(v), reset: () => set(back) });
+    push("chest70", (v) => st().setBodyChest(v), 70, D.chest);
+    push("chest140", (v) => st().setBodyChest(v), 140, D.chest);
+    push("shoulder35", (v) => st().setShoulderWidth(v), 35, D.shoulderWidth);
+    push("shoulder55", (v) => st().setShoulderWidth(v), 55, D.shoulderWidth);
+    push("height140", (v) => st().setBodyHeight(v), 140, D.height);
+    push("height200", (v) => st().setBodyHeight(v), 200, D.height);
+    push("arm40", (v) => st().setArmLength(v), 40, D.armLength);
+    push("arm80", (v) => st().setArmLength(v), 80, D.armLength);
+    push("leg60", (v) => st().setLegLength(v), 60, D.legLength);
+    push("leg110", (v) => st().setLegLength(v), 110, D.legLength);
+    const url = `${import.meta.env.BASE_URL}models/mannequin.glb`;
+    const glb = await (await fetch(url)).arrayBuffer();
+    for (const c of cells) {
+      c.apply();
+      await new Promise((r) => setTimeout(r, 0));
+      let k = 0, hit = 0;
+      while (k < 600) {
+        stepFrames(1); k += 1;
+        if (poseStopped() && mannequinPoseRef.maxScaleResidual <= POSE_SETTLE_EPS) { hit += 1; if (hit >= 2) break; }
+        else hit = 0;
+      }
+      let b;
+      try { b = bakeBodyVerts(glb, mannequinRootRef.current, "tpose"); }
+      catch (e) { console.log(`[v3-75 세트] ${c.tag} **던짐** — ${(e as Error).message}`); c.reset(); continue; }
+      const bl = new Blob([b.verts.buffer as ArrayBuffer], { type: "application/octet-stream" });
+      const u = URL.createObjectURL(bl);
+      const a = document.createElement("a");
+      a.href = u; a.download = `v3-75-body-${c.tag}.bin`;
+      document.body.appendChild(a); a.click(); a.remove();
+      URL.revokeObjectURL(u);
+      console.log(`[v3-75 세트] **${c.tag}** · 전진 ${k}프레임 · 잔차 ${mannequinPoseRef.maxScaleResidual.toExponential(2)}`
+        + ` · 자세 되돌린 본 ${b.poseDelta.length} · 최대 ${b.poseDelta.length ? Math.max(...b.poseDelta.map((d) => d.deg)).toFixed(3) : "—"}°`
+        + ` · parseGlb 대비 max|Δ| ${(b.maxDeltaM * 1000).toFixed(4)}mm`);
+      c.reset();
+      await new Promise((r) => setTimeout(r, 900));
+    }
+    console.log(`[v3-75 세트] **완료** — 칸 ${cells.length}개`);
+  }, []);
+
   const injectSmoke = useCallback(async (useLive: boolean) => {
     const url = `${import.meta.env.BASE_URL}models/mannequin.glb`;
     const glb = await (await fetch(url)).arrayBuffer();
@@ -555,6 +603,7 @@ export function V3Panel() {
         <button className="rounded border px-2 py-1" onClick={() => bakeAndRun(null, true, "apose")}>A포즈 기본</button>
         <button className="rounded border px-2 py-1" onClick={() => bakeAndRun(null, true, "tpose")}>T포즈 기본</button>
         <button className="rounded border px-2 py-1" onClick={() => bakeAndRun(110, true, "tpose")}>T포즈 가슴110</button>
+        <button className="rounded border px-2 py-1" onClick={bakeSet}>민감도 세트 굽기(10칸)</button>
         <span className="opacity-60">결과는 콘솔 `[v3-71]`</span>
       </div>
 
