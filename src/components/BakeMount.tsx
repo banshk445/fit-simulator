@@ -26,8 +26,25 @@ function FrameTick() {
 
 export const BAKE_MOUNT_PX = { w: 320, h: 440 } as const;
 
+/* ★ v3-71 §2 — **수동 프레임 «펌프» 시도와 «기각»**(구현은 되돌렸다 · 사실만 남긴다).
+ *
+ * 실측 사슬(전부 이 판에서 잰 값):
+ *   ① 이 탭은 `document.visibilityState = **"hidden"**` 이다(Chrome 확장 구동 · 사용자 조작 아님).
+ *   ② 그 상태에서 **`requestAnimationFrame` = 0회/초** · **`MessageChannel` = 949회/초**(같은 1초 창).
+ *   ③ **`ResizeObserver` 가 발화하지 않는다**(2초 관찰 · 발화 0건).
+ *   ④ R3F `<Canvas>` 는 크기가 측정돼야 루트를 만든다 ⟹ **`_roots` 가 비어 있다**.
+ *   ⑤ 그래서 `frameloop="never"` + `advance()` 펌프는 **`advance` 1,620,000회에 `useFrame` 0회**였다
+ *      (예외 0건 · 조용히 아무 것도 안 한다).
+ *   ⑥ **스크린샷 1장**을 찍으면 페인트가 유발돼 **RO 가 발화하고 루트가 생긴다** —
+ *      그 뒤 ref 생존 · 캔버스 320×440(css) 로 정상화된다.
+ * ⟹ **펌프는 원인을 못 고친다**(루트 부재가 앞선다). 구동원 교체를 **되돌리고** 기본 루프를 쓴다.
+ *    **남는 사실**: 「**비가시 탭에서는 R3F 가 초기화조차 되지 않는다**」 —
+ *    v3-70 이 남긴 백화 관측 4건이 **이 한 위치로 좁혀진다**.
+ */
+
 export function BakeMount() {
   return (
+    <>
     <Canvas
       style={{ width: `${BAKE_MOUNT_PX.w}px`, height: `${BAKE_MOUNT_PX.h}px`, display: "block" }}
       camera={{ position: [0, 1.3, 3], fov: 45 }}
@@ -39,5 +56,6 @@ export function BakeMount() {
         <Mannequin />
       </Suspense>
     </Canvas>
+    </>
   );
 }
