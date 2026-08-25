@@ -12,7 +12,7 @@ import { dirname } from 'node:path';
 import { prepare, runFrames, stateBlob, DEFAULT_GARMENT } from '../src/v3/dressRun.ts';
 import { minPairDistLite } from '../src/v3/instruments.ts';
 import { FABRICS } from '../src/v3/consts.ts';
-import { runS4Gate, N_WIN } from '../src/v3/s4Gate.ts';
+import { runS4Gate, N_WIN, S4_THRESHOLD } from '../src/v3/s4Gate.ts';
 import { deriveLevels } from '../src/v3/bodyLevels.ts';
 import { buildFitReport } from '../src/v3/fitReport.ts';
 
@@ -55,10 +55,14 @@ while (frame < CAP) {
   console.log(`  f=${frame} · ${el.toFixed(1)}s · 관통 ${(s4.penMaxM * 1000).toFixed(4)}mm`
     + ` · 교차 ${s4.crossings} · 순변위 ${(s4.settleNetM * 1000).toFixed(4)}mm · ringExcess ${s4.ringExcess.toFixed(4)}`
     + ` · pass ${s4.pass}${s4.fails.length ? ` · fails ${s4.fails.join(',')}` : ''}`);
-  if (s4.pass) break;
+  /* ★ v3-75 정정 — 종전에는 `s4.pass` 로만 멈췄다. 그러면 **③a·목선이 «실패로 고정»된 칸**은
+   * 정착이 끝난 뒤에도 상한(900)까지 돈다(칸당 약 3시간 ⟹ 예산 초과). **목적은 «정착»이고
+   * 게이트 실패는 §0-5 대로 «그 칸의 데이터»**다 ⟹ **정착 도달로 멈추고 게이트는 «그때 값»을 적는다**.
+   * **문턱은 등재값 그대로**(`S4_THRESHOLD.settleNetM`) — **새 문턱 0**. */
+  if (s4.pass || s4.settleNetM <= S4_THRESHOLD.settleNetM) break;
 }
 const runS = (performance.now() - tRun) / 1000;
-console.log(`  **정착 ${s4?.pass ? '성립' : '**미도달**'}** · f=${frame} · 실행 **${runS.toFixed(1)}s** · 총 **${((performance.now() - t0) / 1000).toFixed(1)}s**`);
+console.log(`  **정착 ${s4 && s4.settleNetM <= S4_THRESHOLD.settleNetM ? '도달' : '**미도달**'}** · **게이트 ${s4?.pass ? 'pass' : `fail(${s4?.fails.join(' / ')})`}** · f=${frame} · 실행 **${runS.toFixed(1)}s** · 총 **${((performance.now() - t0) / 1000).toFixed(1)}s**`);
 
 try {
   const L = deriveLevels(P.prim0.pos, P.bodyIdx, P.S.AXIS_Z, P.S.Y_TOP);
