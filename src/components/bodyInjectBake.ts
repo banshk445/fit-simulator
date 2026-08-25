@@ -43,6 +43,12 @@
 import * as THREE from "three";
 import { parseGlb } from "../v3/glb.ts";
 
+/** v3-74 §2 — 굽기 «자세» 모드. **기본값 = T포즈**(판정 채널의 전제) · A포즈 경로는 **무삭제**. */
+export type BakePose = "tpose" | "apose";
+
+/** v3-74 §1 — 본별 «바인드 대비 회전» 실측(자세 출처 등재용). */
+export type PoseDelta = { name: string; deg: number };
+
 export type BakeResult = {
   verts: Float32Array;
   /** `parseGlb` 배열과 **비트 동일**인가(㉮ 의 판정 채널). */
@@ -51,6 +57,10 @@ export type BakeResult = {
   maxDeltaM: number;
   /** 실제로 순회한 정점 수. */
   n: number;
+  /** v3-74 — 이 굽기가 쓴 자세 모드. */
+  pose: BakePose;
+  /** v3-74 §1 — T포즈로 되돌리면서 «잰» 바인드 대비 회전각[°]. A포즈 모드에서는 빈 배열. */
+  poseDelta: PoseDelta[];
   /** **항상 `true`**. v3-72 §0-5 이후 «항등 폴백»은 폐기됐고 부재 시 **던진다**(#121).
    * 필드는 **무삭제**로 남긴다 — 호출부가 이 값을 «확인»한 기록이 ㉮″ 의 등재 채널이다. */
   skinned: boolean;
@@ -69,13 +79,32 @@ function findSkinned(root: THREE.Object3D): THREE.SkinnedMesh | null {
  * 종전에는 `parseGlb` 배열을 **조용히 항등 통과**시켰고, 그 때문에 v3-70 ㉮ 가 **공허하게 «통과»**했다
  * (「미집행」과 「통과」를 구별하지 못했다). **이제 구별한다.**
  */
-export function bakeBodyVerts(glb: ArrayBuffer, root: THREE.Object3D | null): BakeResult {
+export function bakeBodyVerts(glb: ArrayBuffer, root: THREE.Object3D | null,
+                              pose: BakePose = "tpose"): BakeResult {
   const base = parseGlb(glb).prims[0].pos;
   const n = base.length / 3;
   if (!root) throw new Error("몸 굽기: 살아있는 마네킹이 없다(root null) — 항등 폴백은 폐기됐다(#121)");
   const sk = findSkinned(root);
   if (!sk) throw new Error("몸 굽기: 스킨드 메시를 못 찾는다 — 항등 폴백은 폐기됐다(#121)");
 
+  /* ★ v3-74 §1·§2 — **T포즈 복원**. 바인드 회전의 «출처»는 씬이다:
+   * `src/lib/boneUtils.ts:230-233` 이 A포즈를 걸기 «전»의 `bone.quaternion` 을
+   * **`bone.userData.__p27Bind` 에 최초 1회 보관**한다(P27 §2 절대 구성판).
+   * ⟹ **그 사본을 되돌리면 GLB 바인드 자세**다. **손 상수 0 · 각도 창작 0.**
+   * **배율(`bone.scale`)은 손대지 않는다** — 슬라이더 target 이 그대로 남는다.
+   * 되돌리면서 **바인드 대비 회전각을 «재서» 돌려준다**(§1 등재 채널). */
+  const poseDelta: PoseDelta[] = [];
+  if (pose === "tpose") {
+    root.traverse((o) => {
+      const b = (o as THREE.Object3D & { userData: { __p27Bind?: THREE.Quaternion } });
+      const bind = b.userData.__p27Bind;
+      if (!bind) return;
+      const dot = Math.min(1, Math.abs(b.quaternion.dot(bind)));
+      poseDelta.push({ name: o.name, deg: (2 * Math.acos(dot) * 180) / Math.PI });
+      b.quaternion.copy(bind);
+    });
+  }
+  root.updateMatrixWorld(true);
   sk.updateMatrixWorld(true);
   sk.skeleton.update();
   /* v3-72 §1 — **복원 행렬 = inverse(bindMatrix) · matrixWorld**. 두 행렬 모두 **씬에서 읽는다**
@@ -94,5 +123,5 @@ export function bakeBodyVerts(glb: ArrayBuffer, root: THREE.Object3D | null): Ba
       if (d !== 0) { bitEqual = false; if (d > maxDeltaM) maxDeltaM = d; }
     }
   }
-  return { verts: out, bitEqual, maxDeltaM, n, skinned: true };
+  return { verts: out, bitEqual, maxDeltaM, n, skinned: true, pose, poseDelta };
 }

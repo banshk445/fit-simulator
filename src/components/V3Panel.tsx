@@ -23,7 +23,7 @@ import { compositePrint, type CompositeResult } from "../v3/printComposite.ts";
  * **제품 경로(`src/v3/**` · `V3Product` · `FitReportTable`)의 v2 임포트는 여전히 0건**이고,
  * 그 사실을 §2-㉱ 가 값으로 확인한다. **정의역을 조용히 넓히지 않는다 — 이 줄이 등재다.** */
 import { mannequinRootRef } from "../lib/mannequinRef";
-import { bakeBodyVerts } from "./bodyInjectBake.ts";
+import { bakeBodyVerts, type BakePose } from "./bodyInjectBake.ts";
 /* v3-71 §1 — 전용 «베이크 마운트»(하네스 층). v2 화면 수정 0줄 · 제품 화면 노출 0. */
 import { BakeMount, bakeMountFrames, BAKE_MOUNT_PX, stepFrames } from "./BakeMount.tsx";
 import { awaitMannequinSettled, mannequinPoseRef, poseStopped, POSE_SETTLE_EPS } from "../lib/mannequinRef";
@@ -242,7 +242,8 @@ export function V3Panel() {
 
   /* v3-71 §3 — **정착 «후»에만 굽는다**(§0-5 · 조용한 조기 굽기 0).
    * 정착 판정은 `awaitMannequinSettled`(P23 §1 조항)를 **그대로 재사용**한다 — 새 문턱 0. */
-  const bakeAndRun = useCallback(async (chestCm: number | null, sync = false) => {
+  const bakeAndRun = useCallback(async (chestCm: number | null, sync = false,
+                                      pose: BakePose = "tpose") => {
     if (chestCm !== null) useFitStore.getState().setBodyChest(chestCm);
     let tag: string;
     if (sync) {
@@ -275,8 +276,14 @@ export function V3Panel() {
     const url = `${import.meta.env.BASE_URL}models/mannequin.glb`;
     const glb = await (await fetch(url)).arrayBuffer();
     let b;
-    try { b = bakeBodyVerts(glb, mannequinRootRef.current); }
+    try { b = bakeBodyVerts(glb, mannequinRootRef.current, pose); }
     catch (e) { console.log(`[v3-72 굽기] **던짐** — ${(e as Error).message}`); return; }
+    if (b.poseDelta.length) {
+      const top = [...b.poseDelta].sort((x, y) => y.deg - x.deg).slice(0, 6);
+      console.log(`[v3-74 자세] 모드 **${b.pose}** · 바인드 대비 회전 잰 본 **${b.poseDelta.length}개**`
+        + ` · 최대 **${Math.max(...b.poseDelta.map((d) => d.deg)).toFixed(4)}°**`
+        + ` · 상위 ${top.map((d) => `${d.name} ${d.deg.toFixed(3)}°`).join(" / ")}`);
+    } else console.log(`[v3-74 자세] 모드 **${b.pose}** — 되돌린 본 0개(A포즈 경로)`);
     console.log(`[v3-72 굽기] **skinned:${b.skinned}**(실통과 확인) · 정점 ${b.n}`
       + ` · parseGlb 배열과 **비트 ${b.bitEqual ? "동일" : "상이"}**`
       + ` · **max|Δ| ${(b.maxDeltaM * 1000).toExponential(4)}mm**`);
@@ -532,8 +539,9 @@ export function V3Panel() {
       <div className="mb-1 flex flex-wrap items-center gap-1">
         <button className="rounded border px-2 py-1" onClick={bakeProbe}>㉠ 판별(3값)</button>
         <button className="rounded border px-2 py-1" onClick={() => bakeAndRun(null)}>㉮″ rAF 기본</button>
-        <button className="rounded border px-2 py-1" onClick={() => bakeAndRun(null, true)}>동기 기본</button>
-        <button className="rounded border px-2 py-1" onClick={() => bakeAndRun(110, true)}>㉱ 동기 가슴110</button>
+        <button className="rounded border px-2 py-1" onClick={() => bakeAndRun(null, true, "apose")}>A포즈 기본</button>
+        <button className="rounded border px-2 py-1" onClick={() => bakeAndRun(null, true, "tpose")}>T포즈 기본</button>
+        <button className="rounded border px-2 py-1" onClick={() => bakeAndRun(110, true, "tpose")}>T포즈 가슴110</button>
         <span className="opacity-60">결과는 콘솔 `[v3-71]`</span>
       </div>
 
