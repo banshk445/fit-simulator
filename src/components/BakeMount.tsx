@@ -12,7 +12,7 @@
  * **v2 화면은 한 줄도 고치지 않는다**(§0-3). 여기서 `Mannequin` 을 «따로» 마운트할 뿐이다.
  * `Mannequin` 은 마운트되면 `mannequinRootRef` 를 채우고 `bodySize` 슬라이더(스토어)를 따라간다.
  */
-import { Canvas, useFrame } from "@react-three/fiber";
+import { Canvas, useFrame, advance } from "@react-three/fiber";
 import { Suspense } from "react";
 import { Mannequin } from "./Mannequin";
 
@@ -41,6 +41,19 @@ export const BAKE_MOUNT_PX = { w: 320, h: 440 } as const;
  *    **남는 사실**: 「**비가시 탭에서는 R3F 가 초기화조차 되지 않는다**」 —
  *    v3-70 이 남긴 백화 관측 4건이 **이 한 위치로 좁혀진다**.
  */
+
+/* ★ v3-72 §2 — **동기 프레임 «전진»**. `advance(t)` 는 R3F 의 **공개 API**이고,
+ * 루트가 «있으면» rAF 없이도 한 프레임을 돌린다(v3-71 §2-㉢ 이 확인한 것은 「루트가 «없으면»
+ * 아무 것도 안 한다」였다 — 루트 유무가 앞선다).
+ * ⟹ **가시성·rAF 에 의존하지 않는 «굽기 전 정착»**을 만든다. **`Mannequin` 로직 0줄**(호출만) ·
+ *   **새 문턱 0**(정착 판정은 기존 `poseStopped` / `POSE_SETTLE_EPS` 그대로).
+ * `dtMs` 기본 1/60초는 **R3F 기본 루프와 같은 자릿수**의 표시 층 값이다(물리 채널 아님 —
+ * v3 물리의 `DT` 와 무관하고, 여기서 도는 것은 «몸 스케일 lerp» 뿐이다).
+ * 남는 환경 의존 1건: **루트 생성 자체는 «가시화 계기» 1회를 요구한다**(v3-71 §2 ⑥). */
+export function stepFrames(n: number, dtMs = 1000 / 60): void {
+  let t = performance.now();
+  for (let i = 0; i < n; i++) { t += dtMs; advance(t); }
+}
 
 export function BakeMount() {
   return (

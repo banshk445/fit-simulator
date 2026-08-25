@@ -19,6 +19,22 @@
  *   (`skinned:false` ⟹ `base` 를 그대로 반환) ⟹ **비트 동일이 «진짜 등가»가 아니었다**.
  *   **기전 가설은 적지 않는다**(단정 0). **다음 판의 첫 과제 = 프레임 복원식 도출.**
  *
+ * ★★ **v3-72 §1 — 해소. 복원식을 «씬에서» 도출했다**(위 결손 문언은 **무삭제**).
+ *   근거는 three 의 소스 두 줄이다(**스칼라 수기 입력 0**):
+ *     `node_modules/three/src/objects/SkinnedMesh.js:319-345` — `applyBoneTransform` 은
+ *        **`bindMatrixInverse · Σ(boneMatrix · bindMatrix · p)`** 를 돌려준다.
+ *     같은 파일 `:230-240` — `bind(skeleton, bindMatrix)` 에서 `bindMatrix` 가 없으면
+ *        **`this.matrixWorld`**(= **바인드 «시점»의 월드 행렬**)를 쓴다.
+ *   ⟹ 렌더가 그리는 «월드» 위치는  `world = matrixWorld · applyBoneTransform(p)` 이고,
+ *      `parseGlb` 의 POSITION 프레임 = **바인드 시점의 «국소» 프레임** = `bindMatrix` 가 월드로 보내는 그 공간.
+ *   ⟹ **`p_glb = inverse(bindMatrix) · matrixWorld · applyBoneTransform(p)`**.
+ *   **항등에서 항등**: 바인드 이후 조상 변환이 안 바뀌었으면 `matrixWorld === bindMatrix` 이므로
+ *      복원 행렬이 **단위행렬**이 되어 `applyBoneTransform` 결과를 그대로 통과시킨다.
+ *   **키(조상 균등 스케일)는 «살아남는다»**: 조상이 바뀌면 `matrixWorld ≠ bindMatrix` 라 그 비가 남는다.
+ *   ★ 이 GLB 의 사실(참고 · 값은 코드에 쓰지 않는다): 루트 `Armature` 노드가
+ *      **scale 0.01 · x축 −90° 회전**을 갖고 메시 `Ch36` 이 그 자식이다 ⟹ 조인트 세계와
+ *      POSITION 세계가 **100배·회전만큼 어긋나 있다**. 그것이 v3-71 의 「정확히 100배」다.
+ *
  * `applyBoneTransform(i, v)` 는 **바인드 포즈 «국소» 좌표**를 받아 **스킨 적용 국소 좌표**를 낸다.
  * 본 스케일은 `skeleton.boneMatrices` 를 타고 들어오고, 조상(루트)의 균등 스케일도
  * `bone.matrixWorld` 를 통해 반영된다 ⟹ **키·팔·다리·어깨·가슴둘레 5축이 모두 담긴다**.
@@ -35,7 +51,8 @@ export type BakeResult = {
   maxDeltaM: number;
   /** 실제로 순회한 정점 수. */
   n: number;
-  /** 스킨드 메시를 못 찾으면 그대로 통과시킨다(그 사실을 남긴다). */
+  /** **항상 `true`**. v3-72 §0-5 이후 «항등 폴백»은 폐기됐고 부재 시 **던진다**(#121).
+   * 필드는 **무삭제**로 남긴다 — 호출부가 이 값을 «확인»한 기록이 ㉮″ 의 등재 채널이다. */
   skinned: boolean;
 };
 
@@ -47,22 +64,30 @@ function findSkinned(root: THREE.Object3D): THREE.SkinnedMesh | null {
 
 /**
  * GLB 바이트 + 살아있는 마네킹 → **주입용 몸 정점**.
- * `root` 가 없거나 스킨드 메시가 없으면 **`parseGlb` 배열을 그대로** 돌려준다(항등).
+ *
+ * ★ **v3-72 §0-5 · #121** — `root` 가 없거나 스킨드 메시가 없으면 **던진다**.
+ * 종전에는 `parseGlb` 배열을 **조용히 항등 통과**시켰고, 그 때문에 v3-70 ㉮ 가 **공허하게 «통과»**했다
+ * (「미집행」과 「통과」를 구별하지 못했다). **이제 구별한다.**
  */
 export function bakeBodyVerts(glb: ArrayBuffer, root: THREE.Object3D | null): BakeResult {
   const base = parseGlb(glb).prims[0].pos;
   const n = base.length / 3;
-  const sk = root ? findSkinned(root) : null;
-  if (!sk) return { verts: base, bitEqual: true, maxDeltaM: 0, n, skinned: false };
+  if (!root) throw new Error("몸 굽기: 살아있는 마네킹이 없다(root null) — 항등 폴백은 폐기됐다(#121)");
+  const sk = findSkinned(root);
+  if (!sk) throw new Error("몸 굽기: 스킨드 메시를 못 찾는다 — 항등 폴백은 폐기됐다(#121)");
 
   sk.updateMatrixWorld(true);
   sk.skeleton.update();
+  /* v3-72 §1 — **복원 행렬 = inverse(bindMatrix) · matrixWorld**. 두 행렬 모두 **씬에서 읽는다**
+   * (three `SkinnedMesh` 의 필드 · **손 상수 0**). 머리주석의 유도 참고. */
+  const restore = new THREE.Matrix4().copy(sk.bindMatrix).invert().multiply(sk.matrixWorld);
   const out = new Float32Array(base.length);
   const v = new THREE.Vector3();
   let bitEqual = true, maxDeltaM = 0;
   for (let i = 0; i < n; i++) {
     v.set(base[i * 3], base[i * 3 + 1], base[i * 3 + 2]);
     sk.applyBoneTransform(i, v);
+    v.applyMatrix4(restore);
     out[i * 3] = v.x; out[i * 3 + 1] = v.y; out[i * 3 + 2] = v.z;
     for (let c = 0; c < 3; c++) {
       const d = Math.abs(out[i * 3 + c] - base[i * 3 + c]);

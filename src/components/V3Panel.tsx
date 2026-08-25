@@ -25,8 +25,8 @@ import { compositePrint, type CompositeResult } from "../v3/printComposite.ts";
 import { mannequinRootRef } from "../lib/mannequinRef";
 import { bakeBodyVerts } from "./bodyInjectBake.ts";
 /* v3-71 §1 — 전용 «베이크 마운트»(하네스 층). v2 화면 수정 0줄 · 제품 화면 노출 0. */
-import { BakeMount, bakeMountFrames, BAKE_MOUNT_PX } from "./BakeMount.tsx";
-import { awaitMannequinSettled, mannequinPoseRef } from "../lib/mannequinRef";
+import { BakeMount, bakeMountFrames, BAKE_MOUNT_PX, stepFrames } from "./BakeMount.tsx";
+import { awaitMannequinSettled, mannequinPoseRef, poseStopped, POSE_SETTLE_EPS } from "../lib/mannequinRef";
 import { useFitStore } from "../store/useFitStore";
 
 const FABRICS = ["gray", "denim", "sweat", "swim"] as const;
@@ -242,23 +242,41 @@ export function V3Panel() {
 
   /* v3-71 §3 — **정착 «후»에만 굽는다**(§0-5 · 조용한 조기 굽기 0).
    * 정착 판정은 `awaitMannequinSettled`(P23 §1 조항)를 **그대로 재사용**한다 — 새 문턱 0. */
-  const bakeAndRun = useCallback(async (chestCm: number | null) => {
+  const bakeAndRun = useCallback(async (chestCm: number | null, sync = false) => {
     if (chestCm !== null) useFitStore.getState().setBodyChest(chestCm);
-    const st = await awaitMannequinSettled();
-    console.log(`[v3-71 굽기] 가슴 ${chestCm ?? useFitStore.getState().bodySize.chest}cm`
-      + ` · 정착 **${st.ok ? "성립" : "**상한 초과**(굽되 사실 남김)"}** · 프레임 ${st.frames}`
-      + ` · 잔차 ${st.residual.toExponential(3)}`);
+    let tag: string;
+    if (sync) {
+      /* v3-72 §2 — **동기 정착**. rAF 를 기다리지 않고 `advance` 로 프레임을 «민다».
+       * 판정은 기존 채널 그대로(`poseStopped` ∧ 잔차 ≤ `POSE_SETTLE_EPS`) — **새 문턱 0**.
+       * 상한 600프레임(=10초 상당)에 걸리면 **굽되 그 사실을 남긴다**(말없는 실패 금지 · 함정 25). */
+      let k = 0;
+      const CAP = 600;
+      while (k < CAP) {
+        stepFrames(1); k += 1;
+        if (poseStopped() && mannequinPoseRef.maxScaleResidual <= POSE_SETTLE_EPS) break;
+      }
+      const ok = k < CAP;
+      tag = `**동기** · 정착 **${ok ? "성립" : "**상한 초과**(굽되 사실 남김)"}** · 전진 ${k}프레임`
+          + ` · 잔차 ${mannequinPoseRef.maxScaleResidual.toExponential(3)}`;
+    } else {
+      const st = await awaitMannequinSettled();
+      tag = `**rAF** · 정착 **${st.ok ? "성립" : "**상한 초과**(굽되 사실 남김)"}** · 프레임 ${st.frames}`
+          + ` · 잔차 ${st.residual.toExponential(3)}`;
+    }
+    console.log(`[v3-72 굽기] 가슴 ${chestCm ?? useFitStore.getState().bodySize.chest}cm · ${tag}`);
     const url = `${import.meta.env.BASE_URL}models/mannequin.glb`;
     const glb = await (await fetch(url)).arrayBuffer();
-    const b = bakeBodyVerts(glb, mannequinRootRef.current);
-    console.log(`[v3-71 굽기] 스킨드 메시 ${b.skinned ? "찾음" : "**못 찾음**"} · 정점 ${b.n}`
+    let b;
+    try { b = bakeBodyVerts(glb, mannequinRootRef.current); }
+    catch (e) { console.log(`[v3-72 굽기] **던짐** — ${(e as Error).message}`); return; }
+    console.log(`[v3-72 굽기] **skinned:${b.skinned}**(실통과 확인) · 정점 ${b.n}`
       + ` · parseGlb 배열과 **비트 ${b.bitEqual ? "동일" : "상이"}**`
       + ` · **max|Δ| ${(b.maxDeltaM * 1000).toExponential(4)}mm**`);
     /* 산출 배열을 파일로 내린다 — Node 계기가 «둘레 배율»을 정밀하게 재기 위함. */
     const blob = new Blob([b.verts.buffer as ArrayBuffer], { type: "application/octet-stream" });
     const bu = URL.createObjectURL(blob);
     const a = document.createElement("a");
-    a.href = bu; a.download = `v3-71-body-chest${Math.round(chestCm ?? useFitStore.getState().bodySize.chest)}.bin`;
+    a.href = bu; a.download = `v3-72-body-${sync ? "sync" : "raf"}-chest${Math.round(chestCm ?? useFitStore.getState().bodySize.chest)}.bin`;
     document.body.appendChild(a); a.click(); a.remove();
     URL.revokeObjectURL(bu);
     workerRef.current?.terminate();
@@ -266,10 +284,10 @@ export function V3Panel() {
     workerRef.current = w;
     w.onmessage = (e) => {
       const m = e.data;
-      if (m.kind === "error") { console.log(`[v3-71 굽기] 오류 — ${m.message}`); return; }
+      if (m.kind === "error") { console.log(`[v3-72 굽기] **조립 오류** — ${m.message}`); return; }
       if (m.kind !== "ready") return;
       const D = m.derived;
-      console.log(`[v3-71 도출] 가슴 ${chestCm ?? "기본"} —`
+      console.log(`[v3-72 도출] 가슴 ${chestCm ?? "기본"}(${sync ? "동기" : "rAF"}) —`
         + ` BEXT [${D.bextM.map((v: number) => v.toFixed(6)).join(", ")}]m`
         + ` · h **${D.hMm.toFixed(6)}mm** · band **${D.bandMm.toFixed(6)}mm**`
         + ` · ③b 문턱 **${D.gate3bThMm.toFixed(6)}mm**`
@@ -505,8 +523,9 @@ export function V3Panel() {
       </div>
       <div className="mb-1 flex flex-wrap items-center gap-1">
         <button className="rounded border px-2 py-1" onClick={bakeProbe}>㉠ 판별(3값)</button>
-        <button className="rounded border px-2 py-1" onClick={() => bakeAndRun(null)}>㉰ 기본 굽기</button>
-        <button className="rounded border px-2 py-1" onClick={() => bakeAndRun(110)}>㉱ 가슴 110 굽기</button>
+        <button className="rounded border px-2 py-1" onClick={() => bakeAndRun(null)}>㉮″ rAF 기본</button>
+        <button className="rounded border px-2 py-1" onClick={() => bakeAndRun(null, true)}>동기 기본</button>
+        <button className="rounded border px-2 py-1" onClick={() => bakeAndRun(110, true)}>㉱ 동기 가슴110</button>
         <span className="opacity-60">결과는 콘솔 `[v3-71]`</span>
       </div>
 
