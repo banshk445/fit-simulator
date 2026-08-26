@@ -28,6 +28,8 @@ import { bakeBodyVerts, type BakePose } from "./bodyInjectBake.ts";
 import { BakeMount, bakeMountFrames, BAKE_MOUNT_PX, stepFrames } from "./BakeMount.tsx";
 import { awaitMannequinSettled, mannequinPoseRef, poseStopped, POSE_SETTLE_EPS } from "../lib/mannequinRef";
 import { useFitStore, DEFAULT_BODY_SIZE } from "../store/useFitStore";
+/* v3-77 §1 — 그리드 목록은 **순수 모듈**에서 온다(Node 와 같은 목록). */
+import { bodies, bodyIdOf, FIXED } from "../v3/grid.ts";
 
 const FABRICS = ["gray", "denim", "sweat", "swim"] as const;
 /** v3-41 §2 — C-브라우저 정착 상태(v3-38 산출). **표시 전용 · 물리 0프레임**. */
@@ -394,6 +396,42 @@ export function V3Panel() {
     console.log(`[v3-75 세트] **완료** — 칸 ${cells.length}개`);
   }, []);
 
+  /* v3-77 §1 — **본 그리드 몸 굽기**(27칸 · 하네스 · 굽기만 · 물리 0프레임).
+   * 목록은 **순수 모듈 `src/v3/grid.ts`** 가 준다(Node 오케스트레이터와 «같은» 목록 · #65 계열).
+   * 개시 시퀀스(v3-73 §0-2) 준수: **가시화 계기 1회 → 루트 생성 → 동기 굽기 «반복»**.
+   * 축은 셋만 움직이고 **팔·다리는 `FIXED` 기본값으로 되돌린다**(칸 간 오염 0). */
+  const bakeGrid = useCallback(async () => {
+    const st = () => useFitStore.getState();
+    st().setArmLength(FIXED.armLength); st().setLegLength(FIXED.legLength);
+    const url = `${import.meta.env.BASE_URL}models/mannequin.glb`;
+    const glb = await (await fetch(url)).arrayBuffer();
+    const list = bodies();
+    console.log(`[v3-77 그리드] 몸 ${list.length}칸 굽기 시작 · 팔 ${FIXED.armLength} · 다리 ${FIXED.legLength} 고정`);
+    for (const b of list) {
+      st().setBodyChest(b.chest); st().setBodyHeight(b.height); st().setShoulderWidth(b.shoulder);
+      await new Promise((r) => setTimeout(r, 0));
+      let k = 0, hit = 0;
+      while (k < 600) {
+        stepFrames(1); k += 1;
+        if (poseStopped() && mannequinPoseRef.maxScaleResidual <= POSE_SETTLE_EPS) { hit += 1; if (hit >= 2) break; }
+        else hit = 0;
+      }
+      let r;
+      try { r = bakeBodyVerts(glb, mannequinRootRef.current, "tpose"); }
+      catch (e) { console.log(`[v3-77 그리드] ${bodyIdOf(b)} **던짐** — ${(e as Error).message}`); continue; }
+      const bl = new Blob([r.verts.buffer as ArrayBuffer], { type: "application/octet-stream" });
+      const u = URL.createObjectURL(bl);
+      const a = document.createElement("a");
+      a.href = u; a.download = `v3-77-body-${bodyIdOf(b)}.bin`;
+      document.body.appendChild(a); a.click(); a.remove();
+      URL.revokeObjectURL(u);
+      console.log(`[v3-77 그리드] **${bodyIdOf(b)}** · 전진 ${k}프레임 · 잔차 ${mannequinPoseRef.maxScaleResidual.toExponential(2)}`
+        + ` · 자세 본 ${r.poseDelta.length}${k >= 600 ? " · **상한 초과**" : ""}`);
+      await new Promise((res) => setTimeout(res, 700));
+    }
+    console.log(`[v3-77 그리드] **완료** — ${list.length}칸`);
+  }, []);
+
   const injectSmoke = useCallback(async (useLive: boolean) => {
     const url = `${import.meta.env.BASE_URL}models/mannequin.glb`;
     const glb = await (await fetch(url)).arrayBuffer();
@@ -623,6 +661,7 @@ export function V3Panel() {
         <button className="rounded border px-2 py-1" onClick={() => bakeAndRun(null, true, "tpose")}>T포즈 기본</button>
         <button className="rounded border px-2 py-1" onClick={() => bakeAndRun(110, true, "tpose")}>T포즈 가슴110</button>
         <button className="rounded border px-2 py-1" onClick={bakeSet}>민감도 세트 굽기(10칸)</button>
+        <button className="rounded border px-2 py-1" onClick={bakeGrid}>그리드 몸 굽기(27칸)</button>
         <span className="opacity-60">결과는 콘솔 `[v3-71]`</span>
       </div>
 
