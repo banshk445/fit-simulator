@@ -20,7 +20,14 @@ import { createHash } from 'node:crypto';
 
 const DIR = 'public/v3diag/v3-77';
 const IDX = `${DIR}/index.json`;
-const CAP = Number(process.env.FRAMES ?? 900);
+/* ★ v3-78 §0′ 개정 — **프레임 상한 규칙**(손 상수 0 · 「오케스트레이터 수정 금지」의 **유일 예외**).
+ * 규칙: **「상한 = «기측정 v1 체제 정착 f» 최대 × 2」**
+ * 현재 기측정 최대 = **200**(기준 칸 v3-74 f=180 · 스모크 `c100-h170-s45_M` 180 ·
+ *   `c87.5-h155-s40_XL` **200**) ⟹ **상한 400**.
+ * **자동 변경 0** — 정착 f 최대가 갱신돼도 **다음 «개정 커밋»에서만** 이 수를 고친다.
+ * **소급 영향 0**(값으로 확인): 개정 시점 편입 칸 f = 200 / 190 / 180 ⟹ **전부 ≤ 200**. */
+const SETTLED_F_MAX = 200;
+const CAP = Number(process.env.FRAMES ?? SETTLED_F_MAX * 2);
 const D = Number(process.env.D_MM ?? 9) / 1000;
 const ONLY = process.env.ONLY ? new Set(process.env.ONLY.split(',')) : null;
 
@@ -80,8 +87,10 @@ for (const c of list) {
     writeFileSync(`${DIR}/settled-${c.id}.bin`, blob);
     idx[c.id] = { status: '편입', f: frame, sec, sha, gate, at: now() };
   } else {
-    idx[c.id] = { status: '보류', f: frame, sec, gate,
-                  reason: settled ? '게이트 미통과' : '정착 미도달', at: now() };
+    /* v3-78 §0′ ④ — **「상한 도달 보류」를 「정착 실패 보류」와 «구분»** 표기한다.
+     * 상한에 닿아 멈춘 것과, 상한 «안»에서 돌다 정착을 못 본 것은 다른 사실이다. */
+    const reason = settled ? '게이트 미통과' : frame >= CAP ? '상한 도달' : '정착 미도달';
+    idx[c.id] = { status: '보류', f: frame, sec, gate, reason, at: now() };
   }
   save();
   const R = idx[c.id];
