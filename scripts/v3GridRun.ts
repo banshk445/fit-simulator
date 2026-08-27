@@ -8,9 +8,10 @@
  *   ㉡ **칸 실패가 순회를 죽이지 않는다** — throw 는 «착용 불가»로 분류하고 **계속 돈다**.
  *   ㉢ **순회 드라이버** — 목록·명명·인덱스를 `src/v3/grid.ts`(순수)가 준다.
  *
- * 진입: `[ONLY=<id,id>] [FRAMES=900] npx tsx scripts/v3GridRun.ts`
+ * 진입: `[ONLY=<id,id>] [REV=1] [SLICE=a:b] [FRAMES=900] npx tsx scripts/v3GridRun.ts`
  */
 import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'node:fs';
+import { hostname } from 'node:os';
 import { prepare, runFrames, stateBlob } from '../src/v3/dressRun.ts';
 import { minPairDistLite } from '../src/v3/instruments.ts';
 import { FABRICS } from '../src/v3/consts.ts';
@@ -31,8 +32,20 @@ const CAP = Number(process.env.FRAMES ?? SETTLED_F_MAX * 2);
 const D = Number(process.env.D_MM ?? 9) / 1000;
 const ONLY = process.env.ONLY ? new Set(process.env.ONLY.split(',')) : null;
 
+/* ★ v3-78B §0 개정 ① — **실행 구간 인자**(「오케스트레이터 수정 금지」 **2차 예외** · 2호기 분산 굽기).
+ * `REV=1` = 칸 목록 **역순** · `SLICE=a:b` = 부분집합(**역순 적용 «후»** 인덱스 · 끝 배타 · `b` 생략 가능).
+ * **목록 «내용»은 바뀌지 않는다** — `cells()` 정본 108칸의 순서·부분만 고른다(새 칸 0 · 명명 0).
+ * 근거: 두 머신이 **양 끝에서** 같은 목록을 돌아 만나는 지점에서만 중복되게 한다(v3-78B 분담 규약). */
+const REV = process.env.REV === '1';
+const SLICE = process.env.SLICE ?? null;
+
+/* ★ v3-78B §0 개정 ② — **칸 기록의 머신 출처**. 이 판 이전 기록(맥 순회)에는 **이 필드가 없다** ⟹
+ * **부재 = 맥(원 순회)**로 읽는다(병합 규칙의 판별자). **판정·문턱에는 쓰이지 않는다** — 출처 표기 전용. */
+const SRC = { host: hostname(), os: `${process.platform}-${process.arch}`, node: process.version };
+
 type Rec = { status: '편입' | '착용불가' | '보류'; f?: number; sec?: number; sha?: string;
-             gate?: string; reason?: string; at: string };
+             gate?: string; reason?: string; at: string;
+             host?: string; os?: string; node?: string };
 const idx: Record<string, Rec> = existsSync(IDX) ? JSON.parse(readFileSync(IDX, 'utf8')) : {};
 const save = () => { mkdirSync(DIR, { recursive: true }); writeFileSync(IDX, JSON.stringify(idx, null, 1)); };
 const now = () => new Date().toISOString().slice(11, 19);
@@ -40,8 +53,16 @@ const now = () => new Date().toISOString().slice(11, 19);
 const glbBuf = readFileSync('public/models/mannequin.glb');
 const glb = () => glbBuf.buffer.slice(glbBuf.byteOffset, glbBuf.byteOffset + glbBuf.byteLength) as ArrayBuffer;
 
-const list = cells().filter((c) => !ONLY || ONLY.has(c.id));
-console.log(`[그리드] 대상 ${list.length}칸 · 완료분 ${Object.keys(idx).length}칸 · 상한 ${CAP}프레임`);
+let list = cells().filter((c) => !ONLY || ONLY.has(c.id));
+if (REV) list = list.slice().reverse();
+if (SLICE) {
+  const [a, b] = SLICE.split(':').map(Number);
+  list = list.slice(Number.isFinite(a) ? a : 0, Number.isFinite(b) ? b : undefined);
+}
+console.log(`[그리드] 대상 ${list.length}칸 · 완료분 ${Object.keys(idx).length}칸 · 상한 ${CAP}프레임`
+  + ` · 순서 ${REV ? '역순' : '순방향'}${SLICE ? ` · 구간 ${SLICE}` : ''}`
+  + ` · 머신 ${SRC.host} (${SRC.os} · node ${SRC.node})`);
+if (list.length) console.log(`[그리드] 첫 칸 ${list[0].id} · 끝 칸 ${list[list.length - 1].id}`);
 
 type BodyCache = { id: string; verts: Float32Array };
 let bodyCache: BodyCache | null = null;
@@ -63,8 +84,8 @@ for (const c of list) {
                   bodyVerts: bodyCache.verts, minPairDistLite });
   } catch (e) {
     /* ㉡ 조립 불능 = **착용 불가**(제품의 정당한 상태 · v3-76 §0-2). 순회는 «계속»한다. */
-    idx[c.id] = { status: '착용불가', reason: (e as Error).message, at: now() }; save();
-    console.log(`  ${now()} ${c.id.padEnd(22)} **착용불가** — ${(e as Error).message}`);
+    idx[c.id] = { status: '착용불가', reason: (e as Error).message, at: now(), ...SRC }; save();
+    console.log(`  ${now()} ${c.id.padEnd(22)} **착용불가** — ${(e as Error).message} · @${SRC.host}`);
     continue;
   }
   let frame = 0, s4: ReturnType<typeof runS4Gate> | null = null;
@@ -85,17 +106,17 @@ for (const c of list) {
     const hl = new DataView(blob.buffer, blob.byteOffset).getUint32(0, true);
     const sha = createHash('sha256').update(blob.subarray(4 + hl)).digest('hex');
     writeFileSync(`${DIR}/settled-${c.id}.bin`, blob);
-    idx[c.id] = { status: '편입', f: frame, sec, sha, gate, at: now() };
+    idx[c.id] = { status: '편입', f: frame, sec, sha, gate, at: now(), ...SRC };
   } else {
     /* v3-78 §0′ ④ — **「상한 도달 보류」를 「정착 실패 보류」와 «구분»** 표기한다.
      * 상한에 닿아 멈춘 것과, 상한 «안»에서 돌다 정착을 못 본 것은 다른 사실이다. */
     const reason = settled ? '게이트 미통과' : frame >= CAP ? '상한 도달' : '정착 미도달';
-    idx[c.id] = { status: '보류', f: frame, sec, gate, reason, at: now() };
+    idx[c.id] = { status: '보류', f: frame, sec, gate, reason, at: now(), ...SRC };
   }
   save();
   const R = idx[c.id];
   console.log(`  ${now()} ${c.id.padEnd(22)} **${R.status}** · f=${frame} · ${sec.toFixed(1)}s · ${gate}`
-    + (R.sha ? ` · sha ${R.sha.slice(0, 16)}…` : '') + (R.reason ? ` · ${R.reason}` : ''));
+    + (R.sha ? ` · sha ${R.sha.slice(0, 16)}…` : '') + (R.reason ? ` · ${R.reason}` : '') + ` · @${SRC.host}`);
 }
 const tally = Object.values(idx).reduce((a, r) => { a[r.status] = (a[r.status] ?? 0) + 1; return a; }, {} as Record<string, number>);
 console.log(`[그리드] 종료 — ${Object.entries(tally).map(([k, v]) => `${k} ${v}`).join(' · ')} · 총 ${Object.keys(idx).length}칸`);
