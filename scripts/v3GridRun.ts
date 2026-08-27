@@ -28,6 +28,19 @@ const IDX = `${DIR}/index.json`;
  * **소급 영향 0**(값으로 확인): 개정 시점 편입 칸 f = 200 / 190 / 180 ⟹ **전부 ≤ 200**. */
 const SETTLED_F_MAX = 200;
 const CAP = Number(process.env.FRAMES ?? SETTLED_F_MAX * 2);
+/* ★ v3-78 §0″ 개정 — **칸 «시간» 상한**(「그 외 수리 0」의 **2차 예외** · 이 커밋 등재 변경 1건).
+ * 규칙: **「시간 상한 = «그 머신의 기측정 정착 도달 칸» 최대 벽시계 × 2」**
+ *   **정착 도달** = 프레임 상한 «안»에서 `settleNet` 성립 — **게이트 결과는 무관**하다.
+ *   상한의 «목적» = **정착 가망이 없는 칸의 «조기 포기»** ⟹ 프레임 상한 규칙과 **동형**.
+ *   **벽시계는 «머신 종속»**이라 머신별로 도출한다(프레임 수와 달리 이식되지 않는다).
+ * 이 맥의 도출: 정착 도달 칸 최대 **59.3분**(`c87.5-h170-s45_S`) ⟹ **59.3 × 2 = 118.6분**.
+ *   ★ **오염 칸 «제외» 근거**: 기계적 최대는 `c87.5-h155-s40_M` 690.1분이지만
+ *     그 값은 **잠자기가 섞인 벽시계**다(§0′-4 등재 · 가동률 7.7% 실측) ⟹ **도출에서 뺀다**.
+ * **자동 변경 0** — 갱신은 **다음 개정 커밋에서만**.
+ * ★ **프레임 상한이 못 막는 것을 막는다** — 「교차 발생 ⟹ 프레임당 시간 폭증」은 **프레임 수를
+ *   잘라도 안 잘린다**(§0′-4 가 값으로 등재한 그 성질). */
+const TIME_CAP_MIN = 59.3 * 2;
+const TIME_CAP_MS = TIME_CAP_MIN * 60_000;
 const D = Number(process.env.D_MM ?? 9) / 1000;
 const ONLY = process.env.ONLY ? new Set(process.env.ONLY.split(',')) : null;
 
@@ -76,6 +89,8 @@ for (const c of list) {
     if (r.diverged) break;
     s4 = runS4Gate(P, before);
     if (s4.pass || s4.settleNetM <= S4_THRESHOLD.settleNetM) break;
+    /* v3-78 §0″ — **시간 상한 도달 ⟹ 조기 포기**. 청크 경계에서만 본다(프레임 중간 절단 0). */
+    if (performance.now() - t0 >= TIME_CAP_MS) break;
   }
   const sec = (performance.now() - t0) / 1000;
   const settled = !!s4 && s4.settleNetM <= S4_THRESHOLD.settleNetM;
@@ -89,7 +104,9 @@ for (const c of list) {
   } else {
     /* v3-78 §0′ ④ — **「상한 도달 보류」를 「정착 실패 보류」와 «구분»** 표기한다.
      * 상한에 닿아 멈춘 것과, 상한 «안»에서 돌다 정착을 못 본 것은 다른 사실이다. */
-    const reason = settled ? '게이트 미통과' : frame >= CAP ? '상한 도달' : '정착 미도달';
+    const reason = settled ? '게이트 미통과'
+                 : sec * 1000 >= TIME_CAP_MS ? '시간 상한 도달'
+                 : frame >= CAP ? '프레임 상한 도달' : '정착 미도달';
     idx[c.id] = { status: '보류', f: frame, sec, gate, reason, at: now() };
   }
   save();
