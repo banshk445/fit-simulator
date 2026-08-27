@@ -17,7 +17,7 @@
  *     식은 오케스트레이터와 **같다**: 헤더 길이 `hl` 을 앞 4바이트에서 읽고 `blob[4+hl:]` 만 해싱한다.
  *
  * 진입:
- *   `IDX_MAC=<index.json> IDX_WIN=<index.json> [BLOB_MAC=<blob 디렉터리>] [BLOB_WIN=…] [OUT=<merged.json>] npx tsx scripts/v3GridMerge.ts`
+ *   `IDX_MAC=<index.json> IDX_WIN=<index.json[,index-shard-1.json,…]> [BLOB_MAC=…] [BLOB_WIN=…] [OUT=<merged.json>] npx tsx scripts/v3GridMerge.ts`
  *   `BLOB_MAC`/`BLOB_WIN` 기본값 = 각 index.json 이 놓인 디렉터리.
  * ★ 인자명 주의: `WINDIR` 은 **Windows 시스템 환경변수**(`C:\WINDOWS`)라 쓸 수 없다 — 단위 확인에서 실제로 충돌했다.
  */
@@ -26,7 +26,7 @@ import { dirname } from 'node:path';
 import { createHash } from 'node:crypto';
 import { cells } from '../src/v3/grid.ts';
 
-type Rec = { status: '편입' | '착용불가' | '보류'; f?: number; sec?: number; sha?: string;
+type Rec = { status: '편입' | '착용불가' | '보류'; f?: number; sec?: number; sha?: string; par?: number;
              gate?: string; reason?: string; at: string;
              host?: string; os?: string; node?: string };
 type Idx = Record<string, Rec>;
@@ -34,11 +34,28 @@ type Idx = Record<string, Rec>;
 const MAC = process.env.IDX_MAC ?? 'public/v3diag/v3-77/index.json';
 const WIN = process.env.IDX_WIN ?? 'public/v3diag/v3-77/index.json';
 const MACDIR = process.env.BLOB_MAC ?? dirname(MAC);
-const WINDIR = process.env.BLOB_WIN ?? dirname(WIN);
+const WINDIR = process.env.BLOB_WIN ?? dirname(WIN.split(',')[0].trim());
 const OUT = process.env.OUT ?? null;
 
 const load = (p: string): Idx => (existsSync(p) ? JSON.parse(readFileSync(p, 'utf8')) : {});
-const mac = load(MAC), win = load(WIN);
+/** ★ v3-78B §0‴ 조건 ⑤ — 2호기 인덱스는 **샤드로 갈린다**(`index-shard-<n>.json`).
+ *  `IDX_WIN` 은 **쉼표로 여러 파일**을 받는다. 샤드는 서로 겹치지 않는 구간을 돌지만,
+ *  겹침이 «있다면» 그것 자체가 사실이므로 **합치면서 센다**(자동 교정 0 · 보고만). */
+function loadMany(spec: string): { idx: Idx; overlap: string[] } {
+  const files = spec.split(',').map((s) => s.trim()).filter(Boolean);
+  const idx: Idx = {}; const overlap: string[] = [];
+  for (const f of files) {
+    const one = load(f);
+    for (const id in one) {
+      if (idx[id]) overlap.push(`${id}: 샤드 ${files.length}개 중 둘 이상에 있다 (뒤 파일 ${f} 채택)`);
+      idx[id] = one[id];
+    }
+  }
+  return { idx, overlap };
+}
+
+const mac = load(MAC);
+const { idx: win, overlap: shardOverlap } = loadMany(WIN);
 
 /** 오케스트레이터와 **같은 식** — 헤더를 뺀 본문만 해싱한다(`v3GridRun.ts` 편입 분기). */
 function blobSha(path: string): string | null {
@@ -93,7 +110,14 @@ for (const id of ALL) {
 /* ── 보고 ────────────────────────────────────────────────────────────── */
 const macOnly = ALL.filter((id) => mac[id] && !win[id]).length;
 const winOnly = ALL.filter((id) => win[id] && !mac[id]).length;
-console.log(`[병합] 맥 ${Object.keys(mac).length}칸(${MAC}) · 2호기 ${Object.keys(win).length}칸(${WIN})`);
+console.log(`[병합] 맥 ${Object.keys(mac).length}칸(${MAC}) · 2호기 ${Object.keys(win).length}칸(${WIN.split(',').length}개 파일)`);
+if (shardOverlap.length) {
+  console.log(`[샤드] 파일 간 중복 ${shardOverlap.length}건(자동 교정 0):`);
+  for (const s of shardOverlap) console.log(`  ! ${s}`);
+}
+/* 병렬 굽기분은 `par` 로 표시된다 — **sec 은 처리량 채널로 강등**(§0‴ 조건 ②). */
+const parCells = Object.keys(win).filter((id) => win[id].par);
+if (parCells.length) console.log(`[샤드] 병렬 굽기 칸 ${parCells.length} — 이 칸들의 sec 은 «오염»(par 병기 · 절대 비교 금지)`);
 console.log(`[병합] 맥 단독 ${macOnly} · 2호기 단독 ${winOnly} · 중복 ${dups.length} · 미기록 ${missing.length}`);
 console.log(`[계정] 편입 ${tally.편입} · 착용불가 ${tally.착용불가} · 보류 ${tally.보류} · 미기록 ${missing.length}`
   + ` ⟹ 합 ${total} / ${ALL.length} — ${total === ALL.length ? '**일치**' : '**불일치**'}`);
