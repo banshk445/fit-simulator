@@ -8,7 +8,7 @@
  *   ㉡ **칸 실패가 순회를 죽이지 않는다** — throw 는 «착용 불가»로 분류하고 **계속 돈다**.
  *   ㉢ **순회 드라이버** — 목록·명명·인덱스를 `src/v3/grid.ts`(순수)가 준다.
  *
- * 진입: `[ONLY=<id,id>] [REV=1] [SLICE=a:b] [FRAMES=900] npx tsx scripts/v3GridRun.ts`
+ * 진입: `[ONLY=<id,id>] [REV=1] [SLICE=a:b] [FRAMES=900] [SECS=15730] npx tsx scripts/v3GridRun.ts`
  */
 import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'node:fs';
 import { hostname } from 'node:os';
@@ -29,6 +29,18 @@ const IDX = `${DIR}/index.json`;
  * **소급 영향 0**(값으로 확인): 개정 시점 편입 칸 f = 200 / 190 / 180 ⟹ **전부 ≤ 200**. */
 const SETTLED_F_MAX = 200;
 const CAP = Number(process.env.FRAMES ?? SETTLED_F_MAX * 2);
+/* ★ v3-78B §0″ 개정 — **칸 «시간» 상한 규칙**. 맥의 프레임 상한 규칙과 **같은 형태**(손 상수 0).
+ * 규칙: **「상한 = «그 머신의 기측정 정착 도달 칸» 최대 벽시계 × 2」**
+ * 2호기 기측정 최대 = **7865.0s = 131.1분** — `c122.5-h185-s40_XL`(f=190 · **정착 도달** · 게이트 미통과)
+ *   ⟹ **상한 15730s = 262.2분**.
+ * **자동 변경 0** — 더 큰 값이 나와도 **다음 «개정 커밋»에서만** 이 수를 고친다.
+ * **소급 0** — 이미 기록된 9칸을 다시 판정하지 않는다.
+ * ★ 도출값의 **측정 조건 병기**: 7865.0s 는 **게임이 물리 6코어를 쓰는 구간에서 잰 값**이다
+ *   (v3-78B §4 오염 등재분) ⟹ 이 상한은 무경합 조건에서 그만큼 **느슨하다**. 조이지 않는다 —
+ *   문턱을 결과에 맞춰 움직이지 않는다(함정 14).
+ * ★ 검사 granularity: 상한은 **`N_WIN` 프레임 창 경계에서만** 본다 ⟹ 실제 정지는 최대 **한 창**만큼 넘길 수 있다. */
+const SETTLED_SEC_MAX = 7865.0;
+const SEC_CAP = Number(process.env.SECS ?? SETTLED_SEC_MAX * 2);
 const D = Number(process.env.D_MM ?? 9) / 1000;
 const ONLY = process.env.ONLY ? new Set(process.env.ONLY.split(',')) : null;
 
@@ -61,6 +73,7 @@ if (SLICE) {
 }
 console.log(`[그리드] 대상 ${list.length}칸 · 완료분 ${Object.keys(idx).length}칸 · 상한 ${CAP}프레임`
   + ` · 순서 ${REV ? '역순' : '순방향'}${SLICE ? ` · 구간 ${SLICE}` : ''}`
+  + ` · 시간 상한 ${(SEC_CAP / 60).toFixed(1)}분`
   + ` · 머신 ${SRC.host} (${SRC.os} · node ${SRC.node})`);
 if (list.length) console.log(`[그리드] 첫 칸 ${list[0].id} · 끝 칸 ${list[list.length - 1].id}`);
 
@@ -88,7 +101,7 @@ for (const c of list) {
     console.log(`  ${now()} ${c.id.padEnd(22)} **착용불가** — ${(e as Error).message} · @${SRC.host}`);
     continue;
   }
-  let frame = 0, s4: ReturnType<typeof runS4Gate> | null = null;
+  let frame = 0, s4: ReturnType<typeof runS4Gate> | null = null, timeCapped = false;
   while (frame < CAP) {
     const before = Float64Array.from(P.sc.s.pos);
     const step = Math.min(N_WIN, CAP - frame);
@@ -97,6 +110,9 @@ for (const c of list) {
     if (r.diverged) break;
     s4 = runS4Gate(P, before);
     if (s4.pass || s4.settleNetM <= S4_THRESHOLD.settleNetM) break;
+    /* §0″ — 시간 상한. **창 경계에서만** 본다(최대 한 창 초과 가능).
+     * 정착·게이트 판정이 먼저다 — 위 break 를 지나온 칸만 여기 걸린다. */
+    if ((performance.now() - t0) / 1000 >= SEC_CAP) { timeCapped = true; break; }
   }
   const sec = (performance.now() - t0) / 1000;
   const settled = !!s4 && s4.settleNetM <= S4_THRESHOLD.settleNetM;
@@ -110,7 +126,9 @@ for (const c of list) {
   } else {
     /* v3-78 §0′ ④ — **「상한 도달 보류」를 「정착 실패 보류」와 «구분»** 표기한다.
      * 상한에 닿아 멈춘 것과, 상한 «안»에서 돌다 정착을 못 본 것은 다른 사실이다. */
-    const reason = settled ? '게이트 미통과' : frame >= CAP ? '상한 도달' : '정착 미도달';
+    /* 우선순위: 정착을 봤으면 시간과 무관하게 **게이트 판정**이 확정이다. 그 다음이 시간 상한. */
+    const reason = settled ? '게이트 미통과' : timeCapped ? '시간 상한 도달'
+      : frame >= CAP ? '상한 도달' : '정착 미도달';
     idx[c.id] = { status: '보류', f: frame, sec, gate, reason, at: now(), ...SRC };
   }
   save();
