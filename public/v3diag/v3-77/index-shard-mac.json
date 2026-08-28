@@ -444,5 +444,49 @@
   "sha": "baae9b812141ede7831760989d1fbb7ba35d6c4e0521422b116f632941ad6ab6",
   "gate": "pass",
   "at": "02:27:00"
+ },
+ "c100-h170-s50_L": {
+  "status": "편입",
+  "f": 180,
+  "sec": 1728.298070291,
+  "sha": "b485ccd15a5cac4c635d34eb2a6f2b8f540f1afb3c4d816c5b85565fd0790189",
+  "gate": "pass",
+  "at": "03:10:33",
+  "host": "banseunghyeog-ui-MacBookAir.local",
+  "os": "darwin-arm64",
+  "node": "v25.9.0"
+ },
+ "c100-h185-s50_S": {
+  "status": "보류",
+  "f": 180,
+  "sec": 1660.2924848750001,
+  "gate": "fail(③a 관통 0.6331mm > 0.5mm)",
+  "reason": "게이트 미통과",
+  "at": "03:38:14",
+  "host": "banseunghyeog-ui-MacBookAir.local",
+  "os": "darwin-arm64",
+  "node": "v25.9.0"
+ },
+ "c100-h185-s50_M": {
+  "status": "보류",
+  "f": 100,
+  "sec": 7844.969193667001,
+  "gate": "fail(자기관통 교차 61716 ≠ 0 / 목선 초과비 2.2369 > 1 (링 119.03cm > 허용 53.21cm) / 정착 창 순변위 488.1212mm > 0.1mm)",
+  "reason": "시간 상한 도달",
+  "at": "05:48:59",
+  "host": "banseunghyeog-ui-MacBookAir.local",
+  "os": "darwin-arm64",
+  "node": "v25.9.0"
+ },
+ "c100-h185-s50_L": {
+  "status": "보류",
+  "f": 400,
+  "sec": 5772.826469124999,
+  "gate": "fail(③a 관통 1.9779mm > 0.5mm / 자기관통 교차 10 ≠ 0 / 정착 창 순변위 0.9677mm > 0.1mm)",
+  "reason": "상한 도달",
+  "at": "07:25:11",
+  "host": "banseunghyeog-ui-MacBookAir.local",
+  "os": "darwin-arm64",
+  "node": "v25.9.0"
  }
 }
