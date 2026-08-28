@@ -53,6 +53,11 @@ const CAP = Number(process.env.FRAMES ?? SETTLED_F_MAX * 2);
  *   문턱을 결과에 맞춰 움직이지 않는다(함정 14).
  * ★ 검사 granularity: 상한은 **`N_WIN` 프레임 창 경계에서만** 본다 ⟹ 실제 정지는 최대 **한 창**만큼 넘길 수 있다. */
 const SETTLED_SEC_MAX = 7865.0;
+/* ★ 병합 처분(맥 `503adf6` ↔ 2호기) — 맥 파일은 **같은 규칙**으로 «맥 도출값» **118.6분**을 쓴다
+ *   (정착 도달 칸 최대 59.3분 × 2 · `c87.5-h170-s45_S` · 잠자기 오염 칸 690.1분 제외).
+ *   맥 주석의 「충돌은 맥의 시간 상한 «로직» 보존 우선」은 **맥 파일이 2호기 값에 덮이지 않게** 하는 조항이다.
+ *   규칙은 공유하고 **수는 머신마다 각자 뜬다**(맥 주석도 그렇게 적고 있다) ⟹ **이 파일은 2호기 머신이므로
+ *   2호기 도출값 7865.0(262.2분)을 유지한다.** 맥 값은 이식하지 않는다 — 이 주석이 그 기록이다. */
 const SEC_CAP = Number(process.env.SECS ?? SETTLED_SEC_MAX * 2);
 const D = Number(process.env.D_MM ?? 9) / 1000;
 const ONLY = process.env.ONLY ? new Set(process.env.ONLY.split(',')) : null;
