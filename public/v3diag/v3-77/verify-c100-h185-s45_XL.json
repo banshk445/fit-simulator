@@ -1,0 +1,13 @@
+{
+ "c100-h185-s45_XL": {
+  "status": "편입",
+  "f": 200,
+  "sec": 4710.641736099999,
+  "sha": "4b60c3415eef75bbfa44bb7caae93503674dea32b1e9abd88ec4b2dbf39fcd7d",
+  "gate": "pass",
+  "at": "17:22:02",
+  "host": "DESKTOP-OV72A46",
+  "os": "win32-x64",
+  "node": "v25.9.0"
+ }
+}
