@@ -118,5 +118,29 @@
   "os": "win32-x64",
   "node": "v25.9.0",
   "par": 4
+ },
+ "c100-h185-s50_XL": {
+  "status": "편입",
+  "f": 210,
+  "sec": 6476.039083400001,
+  "sha": "49952f01010b763e2b31fa244321befa2ff5d276c89b5af90e61d0dd42fecd8b",
+  "gate": "pass",
+  "at": "04:43:30",
+  "host": "DESKTOP-OV72A46",
+  "os": "win32-x64",
+  "node": "v25.9.0",
+  "par": 4
+ },
+ "c122.5-h155-s40_S": {
+  "status": "편입",
+  "f": 190,
+  "sec": 5273.722232800001,
+  "sha": "49a50bb8b66ec3184b1442d6af472bebed05f655a9735fb2db384cd97b94c955",
+  "gate": "pass",
+  "at": "06:11:24",
+  "host": "DESKTOP-OV72A46",
+  "os": "win32-x64",
+  "node": "v25.9.0",
+  "par": 4
  }
 }
