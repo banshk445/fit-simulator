@@ -1,0 +1,98 @@
+{
+ "c100-h170-s40_XL": {
+  "status": "편입",
+  "f": 200,
+  "sec": 7715.6423634,
+  "sha": "f06c2a88815ee7153cdb42ed639ca20f660ec038ce4e88861ced6e06abf6446d",
+  "gate": "pass",
+  "at": "11:00:17",
+  "host": "DESKTOP-OV72A46",
+  "os": "win32-x64",
+  "node": "v25.9.0",
+  "par": 4
+ },
+ "c100-h170-s40_L": {
+  "status": "편입",
+  "f": 200,
+  "sec": 5615.639424799999,
+  "sha": "b2fd23962fccb7e2d6e4175ff0be87c0f687167b722911e96c2d556ca38b3061",
+  "gate": "pass",
+  "at": "15:42:43",
+  "host": "DESKTOP-OV72A46",
+  "os": "win32-x64",
+  "node": "v25.9.0",
+  "par": 4
+ },
+ "c100-h170-s40_M": {
+  "status": "편입",
+  "f": 180,
+  "sec": 4330.4852019,
+  "sha": "482d696feb7318f1f6ca052dda4c0546d50139273d74b797a6e3e001ad4bb0f5",
+  "gate": "pass",
+  "at": "16:54:53",
+  "host": "DESKTOP-OV72A46",
+  "os": "win32-x64",
+  "node": "v25.9.0",
+  "par": 4
+ },
+ "c100-h170-s40_S": {
+  "status": "보류",
+  "f": 200,
+  "sec": 4533.899884399999,
+  "gate": "fail(③a 관통 1.3717mm > 0.5mm / 자기관통 교차 12 ≠ 0)",
+  "reason": "게이트 미통과",
+  "at": "18:10:27",
+  "host": "DESKTOP-OV72A46",
+  "os": "win32-x64",
+  "node": "v25.9.0",
+  "par": 4
+ },
+ "c100-h155-s50_XL": {
+  "status": "편입",
+  "f": 200,
+  "sec": 6230.458951999998,
+  "sha": "da1bbf32e2b5073299d2c089cb5aadf378c6429799c821174936b7ec8442c6c4",
+  "gate": "pass",
+  "at": "19:54:18",
+  "host": "DESKTOP-OV72A46",
+  "os": "win32-x64",
+  "node": "v25.9.0",
+  "par": 4
+ },
+ "c100-h155-s50_L": {
+  "status": "보류",
+  "f": 210,
+  "sec": 5825.4606188,
+  "gate": "fail(③a 관통 1.8704mm > 0.5mm)",
+  "reason": "게이트 미통과",
+  "at": "21:31:23",
+  "host": "DESKTOP-OV72A46",
+  "os": "win32-x64",
+  "node": "v25.9.0",
+  "par": 4
+ },
+ "c100-h155-s50_M": {
+  "status": "편입",
+  "f": 200,
+  "sec": 4998.659532400001,
+  "sha": "9c04e887d95aa8889b40711cb174b6a4b6be8c21d2db8cf48e62dcaa90b75840",
+  "gate": "pass",
+  "at": "22:54:42",
+  "host": "DESKTOP-OV72A46",
+  "os": "win32-x64",
+  "node": "v25.9.0",
+  "par": 4
+ },
+ "c100-h155-s50_S": {
+  "status": "보류",
+  "f": 400,
+  "sec": 9318.302270499997,
+  "gate": "fail(③a 관통 0.5125mm > 0.5mm / 정착 창 순변위 0.4878mm > 0.1mm)",
+  "reason": "상한 도달",
+  "at": "01:30:00",
+  "host": "DESKTOP-OV72A46",
+  "os": "win32-x64",
+  "node": "v25.9.0",
+  "par": 4
+ }
+}

@@ -1,0 +1,92 @@
+{
+ "c122.5-h155-s50_XL": {
+  "status": "편입",
+  "f": 360,
+  "sec": 12968.2402518,
+  "sha": "ba21dc6f55ecfcd89c34a731d9dfeb8c393e6c5f005d3da0ecc6ac009338bf8b",
+  "gate": "pass",
+  "at": "19:42:15",
+  "host": "DESKTOP-OV72A46",
+  "os": "win32-x64",
+  "node": "v25.9.0",
+  "par": 4
+ },
+ "c122.5-h155-s50_L": {
+  "status": "착용불가",
+  "reason": "옆 틈 G를 8회 안에 못 찾았다 — 갈래 D",
+  "at": "19:42:29",
+  "host": "DESKTOP-OV72A46",
+  "os": "win32-x64",
+  "node": "v25.9.0",
+  "par": 4
+ },
+ "c122.5-h155-s50_M": {
+  "status": "착용불가",
+  "reason": "옆 틈 G를 8회 안에 못 찾았다 — 갈래 D",
+  "at": "19:42:41",
+  "host": "DESKTOP-OV72A46",
+  "os": "win32-x64",
+  "node": "v25.9.0",
+  "par": 4
+ },
+ "c122.5-h155-s50_S": {
+  "status": "착용불가",
+  "reason": "옆 틈 G를 8회 안에 못 찾았다 — 갈래 D",
+  "at": "19:42:54",
+  "host": "DESKTOP-OV72A46",
+  "os": "win32-x64",
+  "node": "v25.9.0",
+  "par": 4
+ },
+ "c122.5-h155-s45_XL": {
+  "status": "보류",
+  "f": 220,
+  "sec": 7453.1927688,
+  "gate": "fail(③a 관통 13.3114mm > 0.5mm / 자기관통 교차 20 ≠ 0)",
+  "reason": "게이트 미통과",
+  "at": "21:47:07",
+  "host": "DESKTOP-OV72A46",
+  "os": "win32-x64",
+  "node": "v25.9.0",
+  "par": 4
+ },
+ "c122.5-h155-s45_L": {
+  "status": "편입",
+  "f": 280,
+  "sec": 9490.752022499999,
+  "sha": "9bb003dadeffb69fc1cee1d7ea0bfd2b5eb3e3f16da5b9c811d3c6fda12f942d",
+  "gate": "pass",
+  "at": "01:04:26",
+  "host": "DESKTOP-OV72A46",
+  "os": "win32-x64",
+  "node": "v25.9.0",
+  "par": 4
+ },
+ "c122.5-h155-s45_M": {
+  "status": "착용불가",
+  "reason": "옆 틈 G를 8회 안에 못 찾았다 — 갈래 D",
+  "at": "01:04:42",
+  "host": "DESKTOP-OV72A46",
+  "os": "win32-x64",
+  "node": "v25.9.0",
+  "par": 4
+ },
+ "c122.5-h155-s45_S": {
+  "status": "착용불가",
+  "reason": "옆 틈 G를 8회 안에 못 찾았다 — 갈래 D",
+  "at": "01:04:57",
+  "host": "DESKTOP-OV72A46",
+  "os": "win32-x64",
+  "node": "v25.9.0",
+  "par": 4
+ },
+ "c122.5-h155-s40_XL": {
+  "status": "착용불가",
+  "reason": "옆 틈 G를 8회 안에 못 찾았다 — 갈래 D",
+  "at": "01:05:14",
+  "host": "DESKTOP-OV72A46",
+  "os": "win32-x64",
+  "node": "v25.9.0",
+  "par": 4
+ }
+}
