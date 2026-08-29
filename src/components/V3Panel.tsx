@@ -14,7 +14,7 @@ import type { FitReportResult } from "../v3/fitReport.ts";
 import { FitLegend, FitReportTable } from "./FitReportTable.tsx";
 /* v3-59 §3 — 프린트 UV(정규화 층)와 패널 분리 렌더. **표시 전용 · 물리 0프레임.** */
 import { buildPrintUv, type PrintUv } from "../v3/printUv.ts";
-import { CanvasTexture, SRGBColorSpace, type Texture } from "three";
+import { CanvasTexture, SRGBColorSpace, type Object3D, type Texture } from "three";
 /* v3-60 §1 — 프린트 «합성 층»(대표색 + 가슴 프린트). v2 계약 문언 준거 · 코드 임포트 0. */
 import { compositePrint, type CompositeResult } from "../v3/printComposite.ts";
 /* v3-70 §1-③ — **몸 주입 연결부**(계기). ★ **G1 경계 «명시»**: 이 임포트는 `src/lib/mannequinRef`
@@ -452,7 +452,12 @@ export function V3Panel() {
       const measured = mx - mn, target = b.height / 100, dh = measured - target;
       const tallOk = Math.abs(dh) <= HEIGHT_TOL_M;               // ㉰
       const pass = !capped && resid <= POSE_SETTLE_EPS && tallOk;
-      const sceneScale = mannequinRootRef.current?.parent?.scale.x ?? NaN;
+      /* ★ v3-84 §1-③ **계기 정정**: 옛 코드는 `root.parent` 를 읽었는데 그것은 **R3F 루트 씬**이라
+       * 언제나 1 이다(= v3-83 이 「Scene.scale.x = 1」로 읽은 그 노드 · 잘못 겨눈 계기).
+       * `unitScale` 이 실제로 걸리는 곳은 **GLTF 씬**이다 — 마네킹 아래에서 찾아 «그것»을 읽는다. */
+      let gltfScene: Object3D | null = null;
+      mannequinRootRef.current?.traverse((o) => { if (!gltfScene && o.name === "Scene") gltfScene = o; });
+      const sceneScale = (gltfScene as Object3D | null)?.scale.x ?? NaN;
       let sha = "";
       if (pass && !dry) {
         const bl = new Blob([r.verts.buffer as ArrayBuffer], { type: "application/octet-stream" });
