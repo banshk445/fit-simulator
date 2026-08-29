@@ -298,6 +298,21 @@ export function Mannequin() {
     const rawHeight = box.max.y - box.min.y;
     const targetHeight = DEFAULT_BODY_SIZE.height / 100;
     const scale = rawHeight > 0.001 ? targetHeight / rawHeight : 1;
+    /* v3-83 §1-① — **인쇄 «전용» 계기**. 위 네 줄은 한 글자도 바뀌지 않았다(동작 변경 0).
+     * 재는 것: `rawHeight` · `unitScale` · **폴백 발화 여부**(`rawHeight ≤ 0.001` 가지) ·
+     * 그 시점의 씬 배율과 프레임 번호. v3-82 가 「자리는 여기 두 줄」까지 좁혔고
+     * **어느 가지인지**는 못 갈랐다 — 그것을 값으로 가른다. **처방 0.** */
+    {
+      const fallback = !(rawHeight > 0.001);
+      const rec = { rawHeight, targetHeight, unitScale: scale, fallback,
+                    sceneScaleX: scene.scale.x, frames: mannequinPoseRef.frames };
+      const w = window as unknown as Record<string, unknown>;
+      ((w.__v3unit ??= []) as unknown[]).push(rec);
+      console.log(`[v3-83 §1-①] unitScale 계산 — rawHeight ${rawHeight.toFixed(6)}m`
+        + ` · target ${targetHeight.toFixed(6)}m · unitScale ${scale.toFixed(6)}`
+        + ` · **폴백 ${fallback ? "발화" : "미발화"}** · 계산 시점 scene.scale.x ${scene.scale.x.toFixed(6)}`
+        + ` · 프레임 ${mannequinPoseRef.frames}`);
+    }
     return { groundOffsetY: -box.min.y * scale, unitScale: scale };
   }, [scene]);
 

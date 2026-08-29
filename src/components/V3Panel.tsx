@@ -400,14 +400,35 @@ export function V3Panel() {
    * 목록은 **순수 모듈 `src/v3/grid.ts`** 가 준다(Node 오케스트레이터와 «같은» 목록 · #65 계열).
    * 개시 시퀀스(v3-73 §0-2) 준수: **가시화 계기 1회 → 루트 생성 → 동기 굽기 «반복»**.
    * 축은 셋만 움직이고 **팔·다리는 `FIXED` 기본값으로 되돌린다**(칸 간 오염 0). */
+  /* v3-83 §1-②③ — **순서 교란 플래그 · 게이트 · 생산 시점 기록**.
+   *
+   * 순서(§0-2): **기본 순서는 바뀌지 않는다**. `?bakeorder=rev`(또는 `VITE_BAKE_ORDER=rev`)일 때만
+   *   목록을 뒤집는다 — **측정 전용**이고 자산 생산에는 쓰지 않는다.
+   * 게이트(§0-4 ③ · **새 수 0**):
+   *   ㉮ 상한 600 도달 = **몸 굽기 실패** ⟹ blob **저장 0** · 실패 행 기록 · **재시도 1회**(순회 «끝»)
+   *   ㉯ 통과 문턱 = `POSE_SETTLE_EPS`(기존 상수) · ㉰ 높이 |실측 − 목표| ≤ `HEIGHT_TOL_M`
+   *      (= v3-82 `body-index-27.json` 등재 문턱 **인용** · 이 파일이 새로 정한 수 0)
+   * 드라이런: `?bakedry=1` ⟹ **다운로드 0**(blob 도 기록 파일도 내려받지 않는다 · 행만 만든다).
+   */
   const bakeGrid = useCallback(async () => {
+    const q = new URLSearchParams(window.location.search);
+    const rev = (q.get("bakeorder") ?? import.meta.env.VITE_BAKE_ORDER) === "rev";
+    const dry = q.get("bakedry") === "1";
+    /** v3-82 §1-③ 등재 문턱[m] — **인용**이다(신설 0). */
+    const HEIGHT_TOL_M = 0.0020;
     const st = () => useFitStore.getState();
     st().setArmLength(FIXED.armLength); st().setLegLength(FIXED.legLength);
     const url = `${import.meta.env.BASE_URL}models/mannequin.glb`;
     const glb = await (await fetch(url)).arrayBuffer();
-    const list = bodies();
-    console.log(`[v3-77 그리드] 몸 ${list.length}칸 굽기 시작 · 팔 ${FIXED.armLength} · 다리 ${FIXED.legLength} 고정`);
-    for (const b of list) {
+    const base = bodies();
+    const list = rev ? [...base].reverse() : base;
+    const rows: Record<string, unknown>[] = [];
+    const retry: typeof list = [];
+    console.log(`[v3-83 그리드] 몸 ${list.length}칸 · 순서 ${rev ? "**rev(측정 전용)**" : "기본"}`
+      + ` · ${dry ? "**드라이런(다운로드 0)**" : "저장"} · 팔 ${FIXED.armLength} · 다리 ${FIXED.legLength}`);
+
+    const bakeOne = async (b: ReturnType<typeof bodies>[number], pos: number, isRetry: boolean) => {
+      const id = bodyIdOf(b);
       st().setBodyChest(b.chest); st().setBodyHeight(b.height); st().setShoulderWidth(b.shoulder);
       await new Promise((r) => setTimeout(r, 0));
       let k = 0, hit = 0;
@@ -416,20 +437,72 @@ export function V3Panel() {
         if (poseStopped() && mannequinPoseRef.maxScaleResidual <= POSE_SETTLE_EPS) { hit += 1; if (hit >= 2) break; }
         else hit = 0;
       }
+      const resid = mannequinPoseRef.maxScaleResidual;
+      const capped = k >= 600;                                   // ㉮
       let r;
       try { r = bakeBodyVerts(glb, mannequinRootRef.current, "tpose"); }
-      catch (e) { console.log(`[v3-77 그리드] ${bodyIdOf(b)} **던짐** — ${(e as Error).message}`); continue; }
-      const bl = new Blob([r.verts.buffer as ArrayBuffer], { type: "application/octet-stream" });
+      catch (e) {
+        rows.push({ id, 순회위치: pos, 재시도: isRetry, 결과: "던짐", 사유: (e as Error).message });
+        console.log(`[v3-83 그리드] ${id} **던짐** — ${(e as Error).message}`);
+        return false;
+      }
+      /* 높이 실측 — 구운 정점에서 «직접» 잰다(따로 세지 않는다 · 함정 12). */
+      let mn = Infinity, mx = -Infinity;
+      for (let i = 1; i < r.verts.length; i += 3) { const y = r.verts[i]; if (y < mn) mn = y; if (y > mx) mx = y; }
+      const measured = mx - mn, target = b.height / 100, dh = measured - target;
+      const tallOk = Math.abs(dh) <= HEIGHT_TOL_M;               // ㉰
+      const pass = !capped && resid <= POSE_SETTLE_EPS && tallOk;
+      const sceneScale = mannequinRootRef.current?.parent?.scale.x ?? NaN;
+      let sha = "";
+      if (pass && !dry) {
+        const bl = new Blob([r.verts.buffer as ArrayBuffer], { type: "application/octet-stream" });
+        const u = URL.createObjectURL(bl);
+        const a = document.createElement("a");
+        a.href = u; a.download = `v3-83-body-${id}.bin`;
+        document.body.appendChild(a); a.click(); a.remove();
+        URL.revokeObjectURL(u);
+      }
+      if (pass || dry) {
+        const h = await crypto.subtle.digest("SHA-256", r.verts.buffer as ArrayBuffer);
+        sha = [...new Uint8Array(h)].map((x) => x.toString(16).padStart(2, "0")).join("");
+      }
+      rows.push({ id, 목표높이_m: +target.toFixed(4), 실측높이_m: +measured.toFixed(4), 잔차_m: +dh.toFixed(4),
+        전진프레임: k, 굽기잔차: resid, sha256: sha, unitScale실측: +Number(sceneScale).toFixed(6),
+        순회위치: pos, 재시도: isRetry,
+        결과: pass ? "통과" : "실패",
+        실패사유: pass ? null : [capped ? "㉮ 상한 600 도달" : null,
+          resid > POSE_SETTLE_EPS ? `㉯ 굽기 잔차 ${resid.toExponential(2)} > ${POSE_SETTLE_EPS}` : null,
+          tallOk ? null : `㉰ 높이 잔차 ${dh.toFixed(4)}m > ${HEIGHT_TOL_M}m`].filter(Boolean).join(" · ") });
+      console.log(`[v3-83 그리드] **${id}**${isRetry ? "(재시도)" : ""} · 전진 ${k} · 잔차 ${resid.toExponential(2)}`
+        + ` · 높이 ${measured.toFixed(4)}m(목표 ${target.toFixed(2)} · Δ${dh.toFixed(4)})`
+        + ` · unitScale ${Number(sceneScale).toFixed(6)} · **${pass ? "통과" : "실패"}**`
+        + (pass ? "" : ` — ${rows[rows.length - 1].실패사유}`));
+      await new Promise((res) => setTimeout(res, 700));
+      return pass;
+    };
+
+    for (let i = 0; i < list.length; i++) {
+      const ok = await bakeOne(list[i], i, false);
+      if (!ok) retry.push(list[i]);                              // ㉮ 재시도 1회 · 순회 «끝»에
+    }
+    for (const b of retry) await bakeOne(b, -1, true);
+
+    const 통과 = rows.filter((x) => x.결과 === "통과" && !x.재시도).length
+      + rows.filter((x) => x.결과 === "통과" && x.재시도).length;
+    const rec = { 메타: `v3-83 §1-③ 몸 굽기 «생산 시점» 기록. 순서 ${rev ? "rev(측정 전용)" : "기본"}`
+      + ` · ${dry ? "드라이런(다운로드 0)" : "저장"} · 게이트 ㉮상한600 ㉯잔차≤${POSE_SETTLE_EPS} ㉰높이≤${HEIGHT_TOL_M}m`
+      + " · 문턱은 전부 «인용»이고 이 판이 새로 정한 수는 0이다.", 행: rows };
+    (window as unknown as Record<string, unknown>).__v3bodyIndex = rec;
+    if (!dry) {
+      const bl = new Blob([JSON.stringify(rec, null, 1)], { type: "application/json" });
       const u = URL.createObjectURL(bl);
       const a = document.createElement("a");
-      a.href = u; a.download = `v3-77-body-${bodyIdOf(b)}.bin`;
+      a.href = u; a.download = `body-index-${new Date().toISOString().slice(0, 10)}.json`;
       document.body.appendChild(a); a.click(); a.remove();
       URL.revokeObjectURL(u);
-      console.log(`[v3-77 그리드] **${bodyIdOf(b)}** · 전진 ${k}프레임 · 잔차 ${mannequinPoseRef.maxScaleResidual.toExponential(2)}`
-        + ` · 자세 본 ${r.poseDelta.length}${k >= 600 ? " · **상한 초과**" : ""}`);
-      await new Promise((res) => setTimeout(res, 700));
     }
-    console.log(`[v3-77 그리드] **완료** — ${list.length}칸`);
+    console.log(`[v3-83 그리드] **완료** — 행 ${rows.length} · 통과 ${통과} · 실패 ${rows.length - 통과}`
+      + ` · 재시도 ${retry.length}칸 · 기록은 window.__v3bodyIndex`);
   }, []);
 
   const injectSmoke = useCallback(async (useLive: boolean) => {
