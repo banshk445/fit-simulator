@@ -414,7 +414,11 @@ export function V3Panel() {
     const q = new URLSearchParams(window.location.search);
     const rev = (q.get("bakeorder") ?? import.meta.env.VITE_BAKE_ORDER) === "rev";
     const dry = q.get("bakedry") === "1";
-    /** v3-82 §1-③ 등재 문턱[m] — **인용**이다(신설 0). */
+    /* v3-85 §0-3 — **검출력 증명 플래그**. v3-84 ① 을 «임시로» 되돌린 상태를 만든다:
+     * 굽기 직전에 GLTF 씬 배율을 1 로 덮어 「unitScale 이 안 실린 몸」을 재현한다.
+     * **`Mannequin.tsx` 는 건드리지 않는다**(§0-4) — 주입은 여기서만 하고 기본값은 불변이다. */
+    const legacy = q.get("unitscale") === "legacy";
+    /** v3-82 §1-③ 등재 높이 범위[m] — **기록 열 전용**이다. v3-85 부터 **게이트가 아니다**(㉰ → ㉰′). */
     const HEIGHT_TOL_M = 0.0020;
     const st = () => useFitStore.getState();
     st().setArmLength(FIXED.armLength); st().setLegLength(FIXED.legLength);
@@ -439,6 +443,14 @@ export function V3Panel() {
       }
       const resid = mannequinPoseRef.maxScaleResidual;
       const capped = k >= 600;                                   // ㉮
+      /* v3-85 검출력 증명 — `?unitscale=legacy` 에서만. 정착 «뒤» 굽기 «직전»에
+       * GLTF 씬 배율을 1 로 덮어 v3-84 이전 상태를 재현한다. **기본 경로 0줄.** */
+      if (legacy) {
+        let gs: Object3D | null = null;
+        mannequinRootRef.current?.traverse((o) => { if (!gs && o.name === "Scene") gs = o; });
+        (gs as Object3D | null)?.scale.setScalar(1);
+        mannequinRootRef.current?.updateMatrixWorld(true);
+      }
       let r;
       try { r = bakeBodyVerts(glb, mannequinRootRef.current, "tpose"); }
       catch (e) {
@@ -450,14 +462,32 @@ export function V3Panel() {
       let mn = Infinity, mx = -Infinity;
       for (let i = 1; i < r.verts.length; i += 3) { const y = r.verts[i]; if (y < mn) mn = y; if (y > mx) mx = y; }
       const measured = mx - mn, target = b.height / 100, dh = measured - target;
-      const tallOk = Math.abs(dh) <= HEIGHT_TOL_M;               // ㉰
-      const pass = !capped && resid <= POSE_SETTLE_EPS && tallOk;
+      /* v3-85 — 높이는 **기록 열**로만 남는다(게이트 0 · §0-2). 판정은 ㉮ · ㉯ · **㉰′** 셋이다. */
+      const tallInRange = Math.abs(dh) <= HEIGHT_TOL_M;
       /* ★ v3-84 §1-③ **계기 정정**: 옛 코드는 `root.parent` 를 읽었는데 그것은 **R3F 루트 씬**이라
        * 언제나 1 이다(= v3-83 이 「Scene.scale.x = 1」로 읽은 그 노드 · 잘못 겨눈 계기).
-       * `unitScale` 이 실제로 걸리는 곳은 **GLTF 씬**이다 — 마네킹 아래에서 찾아 «그것»을 읽는다. */
+       * `unitScale` 이 실제로 걸리는 곳은 **GLTF 씬**이다 — 마네킹 아래에서 찾아 «그것»을 읽는다.
+       * ★ v3-85 ㉰′ 는 «이 노드»를 잰다(§0-2 · 오독 재발 금지). */
       let gltfScene: Object3D | null = null;
       mannequinRootRef.current?.traverse((o) => { if (!gltfScene && o.name === "Scene") gltfScene = o; });
       const sceneScale = (gltfScene as Object3D | null)?.scale.x ?? NaN;
+      /* ★ v3-85 §0-2 — **㉰′ = |씬 배율 − unitScale_geom|**. 「몸이 몇 cm 인가」가 아니라
+       * **「정규화가 씬에 실렸는가」**를 «직접» 잰다 ⟹ 통과/실패가 **표본 분포에 의존하지 않는다**.
+       * `unitScale_geom` 은 v3-84 ① 과 **같은 경로**(지오메트리 bbox · 배율 무관)로 다시 뜬다. */
+      let gmn = Infinity, gmx = -Infinity;
+      mannequinRootRef.current?.traverse((o) => {
+        const g = (o as unknown as { geometry?: { boundingBox?: { min: { y: number }; max: { y: number } } | null;
+          computeBoundingBox?: () => void } }).geometry;
+        if (!g) return;
+        if (!g.boundingBox && g.computeBoundingBox) g.computeBoundingBox();
+        if (g.boundingBox) { if (g.boundingBox.min.y < gmn) gmn = g.boundingBox.min.y;
+                             if (g.boundingBox.max.y > gmx) gmx = g.boundingBox.max.y; }
+      });
+      const geomH = gmx - gmn;
+      const unitGeom = geomH > 0.001 ? (DEFAULT_BODY_SIZE.height / 100) / geomH : 1;
+      const dPrime = Math.abs(sceneScale - unitGeom);
+      const scaleOk = dPrime <= POSE_SETTLE_EPS;               // ㉰′
+      const pass = !capped && resid <= POSE_SETTLE_EPS && scaleOk;
       let sha = "";
       if (pass && !dry) {
         const bl = new Blob([r.verts.buffer as ArrayBuffer], { type: "application/octet-stream" });
@@ -472,15 +502,19 @@ export function V3Panel() {
         sha = [...new Uint8Array(h)].map((x) => x.toString(16).padStart(2, "0")).join("");
       }
       rows.push({ id, 목표높이_m: +target.toFixed(4), 실측높이_m: +measured.toFixed(4), 잔차_m: +dh.toFixed(4),
-        전진프레임: k, 굽기잔차: resid, sha256: sha, unitScale실측: +Number(sceneScale).toFixed(6),
-        순회위치: pos, 재시도: isRetry,
+        높이_등재범위_안: tallInRange,                         // 기록 열(게이트 아님)
+        전진프레임: k, 굽기잔차: resid, sha256: sha,
+        unitScale실측: +Number(sceneScale).toFixed(6), unitScale_geom: +unitGeom.toFixed(6),
+        "㉰′": dPrime, 순회위치: pos, 재시도: isRetry,
         결과: pass ? "통과" : "실패",
         실패사유: pass ? null : [capped ? "㉮ 상한 600 도달" : null,
           resid > POSE_SETTLE_EPS ? `㉯ 굽기 잔차 ${resid.toExponential(2)} > ${POSE_SETTLE_EPS}` : null,
-          tallOk ? null : `㉰ 높이 잔차 ${dh.toFixed(4)}m > ${HEIGHT_TOL_M}m`].filter(Boolean).join(" · ") });
+          scaleOk ? null : `㉰′ |씬 배율 − unitScale_geom| ${dPrime.toExponential(3)} > ${POSE_SETTLE_EPS}`
+          ].filter(Boolean).join(" · ") });
       console.log(`[v3-83 그리드] **${id}**${isRetry ? "(재시도)" : ""} · 전진 ${k} · 잔차 ${resid.toExponential(2)}`
         + ` · 높이 ${measured.toFixed(4)}m(목표 ${target.toFixed(2)} · Δ${dh.toFixed(4)})`
-        + ` · unitScale ${Number(sceneScale).toFixed(6)} · **${pass ? "통과" : "실패"}**`
+        + ` · 씬배율 ${Number(sceneScale).toFixed(6)} · ㉰′ ${dPrime.toExponential(2)}`
+        + ` · **${pass ? "통과" : "실패"}**`
         + (pass ? "" : ` — ${rows[rows.length - 1].실패사유}`));
       await new Promise((res) => setTimeout(res, 700));
       return pass;
@@ -494,8 +528,12 @@ export function V3Panel() {
 
     const 통과 = rows.filter((x) => x.결과 === "통과" && !x.재시도).length
       + rows.filter((x) => x.결과 === "통과" && x.재시도).length;
-    const rec = { 메타: `v3-83 §1-③ 몸 굽기 «생산 시점» 기록. 순서 ${rev ? "rev(측정 전용)" : "기본"}`
-      + ` · ${dry ? "드라이런(다운로드 0)" : "저장"} · 게이트 ㉮상한600 ㉯잔차≤${POSE_SETTLE_EPS} ㉰높이≤${HEIGHT_TOL_M}m`
+    const rec = { 메타: `v3-85 §1 몸 굽기 «생산 시점» 기록. 순서 ${rev ? "rev(측정 전용)" : "기본"}`
+      + ` · ${dry ? "드라이런(blob 다운로드 0)" : "저장"}`
+      + ` · 게이트 ㉮상한600 · ㉯굽기잔차≤${POSE_SETTLE_EPS}`
+      + ` · **㉰′ |씬 배율 − unitScale_geom| ≤ ${POSE_SETTLE_EPS}**`
+      + ` · 높이는 **기록 열**(게이트 아님 · 등재 범위 ±${HEIGHT_TOL_M}m 는 참고)`
+      + `${legacy ? " · **legacy 주입(검출력 증명 · 씬 배율 1 로 덮음)**" : ""}`
       + " · 문턱은 전부 «인용»이고 이 판이 새로 정한 수는 0이다.", 행: rows };
     (window as unknown as Record<string, unknown>).__v3bodyIndex = rec;
     {
