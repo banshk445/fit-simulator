@@ -615,7 +615,7 @@ export function V3Panel() {
 
   return (
     <div className="absolute right-3 top-3 z-50 w-[320px] rounded-lg bg-white/95 p-3 text-sm shadow-lg ring-1 ring-black/10">
-      <div className="mb-2 font-semibold">v3 착장 (별도 진입 · 제품 기본은 v2)</div>
+      <div className="mb-2 font-semibold">v3 착장 하네스 (별도 진입 · 제품 기본은 v1 화면 · 정본 3종 = ?canon=1 · v2 = ?v2=1)</div>
       <div className="mb-2 flex items-center gap-2">
         <select className="rounded border px-1 py-0.5" value={fabric} onChange={(e) => setFabric(e.target.value)}
                 disabled={phase === "prep" || phase === "run"}>
