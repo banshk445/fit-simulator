@@ -4,7 +4,8 @@ import { readFileSync, readdirSync } from 'node:fs';
 import { PerspectiveCamera, Vector3 } from 'three';
 import { FRAMING, REF_BODY_HEIGHT_M, cameraDistanceM } from '../src/v3/framing.ts';
 /** 뷰 방위는 `productView.PRODUCT_VIEWS` 와 «같은 값»이다(DOM 임포트를 피하려 여기 전사 · 값 동일). */
-const PRODUCT_VIEWS = [{ name: 'front-p', dir: [0, 0, -1] }] as const;
+const PRODUCT_VIEWS = [{ name: 'front-p', dir: [0, 0, -1] },
+  { name: 'side-p', dir: [-1, 0, 0] }, { name: 'back-p', dir: [0, 0, 1] }] as const;
 
 const D = 'public/v3diag/v3-77';
 const load = (id: string) => {
@@ -34,6 +35,39 @@ function projectedPx(id: string, cssW: number, cssH: number, viewIx = 0) {
   const lft = toPx(new Vector3(mn[0], mid.y, mid.z));
   const rgt = toPx(new Vector3(mx[0], mid.y, mid.z));
   return { h: Math.abs(bot.y - top.y), w: Math.abs(rgt.x - lft.x), mesh: mx[1] - mn[1], span: mx[0] - mn[0], dist };
+}
+
+/* v3-81 §1-① — **정본 3종 화면(`?canon=1`) 잘림 검사**. 그 화면의 몸은 «주입 0»이라
+ * `parseGlb` 가 낸 원본 메시 그대로다(`dressRun.prepare` 의 `bodyVerts` 미전달 경로). */
+if (process.env.MODE === 'canon') {
+  const { parseGlb } = await import('../src/v3/glb.ts');
+  const glb = readFileSync('public/models/mannequin.glb');
+  const pos = parseGlb(glb.buffer.slice(glb.byteOffset, glb.byteOffset + glb.byteLength) as ArrayBuffer).prims[0].pos;
+  const v = Float32Array.from(pos);
+  const { mn, mx } = bbox(v);
+  const W2 = Number(process.env.CW ?? 840), H2 = Number(process.env.CH ?? 672);
+  console.log(`── 정본 3종 화면 잘림 검사 (캔버스 ${W2}×${H2}) ──`);
+  console.log(`  몸 bbox — 높이 ${(mx[1] - mn[1]).toFixed(4)}m · 가로 ${(mx[0] - mn[0]).toFixed(4)}m · 깊이 ${(mx[2] - mn[2]).toFixed(4)}m`);
+  const mid = new Vector3((mn[0] + mx[0]) / 2, (mn[1] + mx[1]) / 2, (mn[2] + mx[2]) / 2);
+  let bad2 = 0;
+  for (const view of PRODUCT_VIEWS) {
+    const cam = new PerspectiveCamera(FRAMING.fovDeg, W2 / H2, 0.01, 100);
+    const dist = cameraDistanceM();
+    cam.position.set(mid.x - view.dir[0] * dist, mid.y - view.dir[1] * dist, mid.z - view.dir[2] * dist);
+    cam.lookAt(mid); cam.updateMatrixWorld(true); cam.updateProjectionMatrix();
+    let xmin = 1e9, xmax = -1e9, ymin = 1e9, ymax = -1e9;
+    for (let i = 0; i < v.length; i += 3) {
+      const q = new Vector3(v[i], v[i + 1], v[i + 2]).project(cam);
+      const px = (q.x + 1) / 2 * W2, py = (1 - q.y) / 2 * H2;
+      if (px < xmin) xmin = px; if (px > xmax) xmax = px;
+      if (py < ymin) ymin = py; if (py > ymax) ymax = py;
+    }
+    const cut = xmin < 0 || xmax > W2 || ymin < 0 || ymax > H2;
+    if (cut) bad2++;
+    console.log(`  ${view.name.padEnd(7)} x ${xmin.toFixed(1)}~${xmax.toFixed(1)} (0~${W2}) · y ${ymin.toFixed(1)}~${ymax.toFixed(1)} (0~${H2})  ${cut ? '잘림 ❌' : '잘림 없음 ✅'}`);
+  }
+  console.log(`\n[v3-81 §1-①] 잘린 뷰 ${bad2}/3`);
+  process.exit(bad2 === 0 ? 0 : 1);
 }
 
 const W = Number(process.env.CW ?? 840), H = Number(process.env.CH ?? 672);

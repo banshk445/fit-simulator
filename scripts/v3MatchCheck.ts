@@ -6,7 +6,9 @@ import { buttonState, landingSize, type Canon } from '../src/v3/provide.ts';
 import { cells, bodyIdOf } from '../src/v3/grid.ts';
 
 const D = 'public/v3diag/v3-77';
-const provide: string[] = JSON.parse(readFileSync(`${D}/v1-provide-37.json`, 'utf8'));
+/* v3-81 §1-② — 제공 정본은 **35**(37 은 대조 전용 · 무삭제). */
+const provideRaw = JSON.parse(readFileSync(`${D}/v1-provide-35.json`, 'utf8'));
+const provide: string[] = Array.isArray(provideRaw) ? provideRaw : provideRaw.provide;
 const index: Record<string, { status: string; reason?: string }> = JSON.parse(readFileSync(`${D}/index-merged-108.json`, 'utf8'));
 const canon = { provide, index } as unknown as Canon;
 
@@ -85,10 +87,10 @@ for (const b of bodyIds) {
   const ok = got.size === want && got.fallback === (want !== null && want !== 'M');
   if (ok) lOk++; else bad.push(`${b} 착지 기대 ${want} 실제 ${got.size}`);
 }
-console.log(`  일치 ${lOk}/27 · 제공 0칸 몸 ${noneList.length}개(기대 7)`);
+console.log(`  일치 ${lOk}/27 · 제공 0칸 몸 ${noneList.length}개(기대 8 — v3-81 §2-3 등재분)`);
 console.log('  제공 0칸: ' + noneList.join(' '));
 
 const pass = mOk === 12 && bOk === 108 && armgHit === 9 && armgLeak === 0
-  && leakWords === 0 && lOk === 27 && noneList.length === 7;
-console.log(`\n[v3-80 §3-1·§3-2] ${pass ? '전량 통과' : '불일치 — 갈래 D'}`);
+  && leakWords === 0 && lOk === 27 && noneList.length === 8;
+console.log(`\n[v3-81 §2] ${pass ? '전량 통과' : '불일치 — 갈래 D'}`);
 process.exit(pass ? 0 : 1);

@@ -110,7 +110,10 @@ export function V3Product() {
           solid: comp ? ((Math.round(comp.color.r) << 16) | (Math.round(comp.color.g) << 8)
                         | Math.round(comp.color.b)) : undefined,
           bridgeIdx: S.bridgeIdx && S.bridgeIdx.length ? S.bridgeIdx : null } : null },
-      PRODUCT_VIEWS[viewIx], 480, 672);
+      /* v3-81 §1-① — 캔버스 폭 **480 → 840**. v3-80 이 프레이밍을 «기준 키 하나»로 바꾼 뒤
+       * 이 폭에서는 T포즈 손이 잘렸다. 840 의 출처는 v3-80 `v3FramingCheck` 실측 **834.5px** 이고
+       * v1 화면(`V3ProductV1.CANVAS`)과 **같은 값**이다. **이 파일에서 바뀐 것은 이 한 줄뿐이다.** */
+      PRODUCT_VIEWS[viewIx], 840, 672);
   }, [viewIx, fitColor, fit, printOn, printUv, tex, comp]);
   useEffect(() => { draw(); }, [draw, msg]);
 
