@@ -80,6 +80,8 @@ const armProbe = new THREE.Vector3();
 const armPrev = new Float64Array(18);
 // P23 §1 — 스케일 값의 직전 프레임 사본(개수는 본 구성에 따라 정해진다).
 const scalePrev: number[] = [];
+/** v3-84 §1-② — 마네킹 «인스턴스» 일련번호(계기 전용 · 동작 채널 0). */
+const mannequinInstanceSeq = { n: 0 };
 
 // "길이 방향" 축은 모델마다 다를 수 있다 (Soldier.glb는 로컬 Y가 길이 방향이지만
 // Xbot.glb는 로컬 X였다 — Y로 하드코딩했다가 팔이 길어지는 대신 두꺼워지는
@@ -231,6 +233,10 @@ export function Mannequin() {
   // P26 §2 — 목표 배율 서명(직전 프레임)과 「대입했다」 표시(로그 1회용).
   const lastTargetKey = useRef("");
   const snappedRef = useRef(false);
+  /* v3-84 §1-② — **인스턴스 id**(계기 전용). 마운트마다 다음 번호를 받는다 ⟹
+   * 「같은 인스턴스가 두 번 계산했는가(StrictMode) / 다른 인스턴스가 계산했는가」를 값으로 가른다. */
+  const instIdRef = useRef(0);
+  if (instIdRef.current === 0) instIdRef.current = ++mannequinInstanceSeq.n;
   // P24 §2 — A포즈 되먹임 고정 상태. 스케일이 다시 움직이면 풀린다(위 주석).
   const armPoseLocked = useRef(false);
   useFrame((_, delta) => {
@@ -294,7 +300,20 @@ export function Mannequin() {
   // 영향이 없고, cm 단위 파일은 자동으로 1/100로 줄어든다 — 모델을 바꿀
   // 때마다 단위를 직접 확인/하드코딩할 필요가 없다.
   const { groundOffsetY, unitScale } = useMemo(() => {
-    const box = new THREE.Box3().setFromObject(scene);
+    /* ★ v3-84 §1-① — **rawHeight 의 «산출 대상»을 바꾼다**(멱등화).
+     * 옛 대상: `Box3.setFromObject(scene)` = **월드 공간** ⟹ `scene.scale` 이 들어간다 ⟹
+     *   이 값을 재서 얻은 배율을 **그 씬에 다시 적용**하면, 두 번째 계산은 몫이 1 이 되어
+     *   앞의 적용을 **되돌린다**(v3-83 §1-①′ 「자기 상쇄」 · 실측 4회 중 3·4회가 그랬다).
+     * 새 대상: **지오메트리 공간 bbox**(바인드 포즈 · `geometry.boundingBox` 합집합) ⟹
+     *   `scene`·부모의 배율과 **무관**하다 ⟹ **몇 번을 계산해도 같은 값**이다(멱등).
+     * **계산 «횟수»는 손대지 않는다**(판정문 조항) — 값이 안 변하면 횟수는 무해하다. */
+    const box = new THREE.Box3();
+    scene.traverse((o) => {
+      const g = (o as THREE.Mesh).geometry;
+      if (!g) return;
+      if (!g.boundingBox) g.computeBoundingBox();
+      if (g.boundingBox) box.union(g.boundingBox);
+    });
     const rawHeight = box.max.y - box.min.y;
     const targetHeight = DEFAULT_BODY_SIZE.height / 100;
     const scale = rawHeight > 0.001 ? targetHeight / rawHeight : 1;
@@ -304,11 +323,12 @@ export function Mannequin() {
      * **어느 가지인지**는 못 갈랐다 — 그것을 값으로 가른다. **처방 0.** */
     {
       const fallback = !(rawHeight > 0.001);
-      const rec = { rawHeight, targetHeight, unitScale: scale, fallback,
+      const rec = { inst: instIdRef.current, rawHeight, targetHeight, unitScale: scale, fallback,
                     sceneScaleX: scene.scale.x, frames: mannequinPoseRef.frames };
       const w = window as unknown as Record<string, unknown>;
       ((w.__v3unit ??= []) as unknown[]).push(rec);
-      console.log(`[v3-83 §1-①] unitScale 계산 — rawHeight ${rawHeight.toFixed(6)}m`
+      console.log(`[v3-84 §1-①] unitScale 계산 — inst#${instIdRef.current}`
+        + ` · rawHeight ${rawHeight.toFixed(6)}m`
         + ` · target ${targetHeight.toFixed(6)}m · unitScale ${scale.toFixed(6)}`
         + ` · **폴백 ${fallback ? "발화" : "미발화"}** · 계산 시점 scene.scale.x ${scene.scale.x.toFixed(6)}`
         + ` · 프레임 ${mannequinPoseRef.frames}`);

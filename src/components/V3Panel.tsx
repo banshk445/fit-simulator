@@ -493,7 +493,10 @@ export function V3Panel() {
       + ` · ${dry ? "드라이런(다운로드 0)" : "저장"} · 게이트 ㉮상한600 ㉯잔차≤${POSE_SETTLE_EPS} ㉰높이≤${HEIGHT_TOL_M}m`
       + " · 문턱은 전부 «인용»이고 이 판이 새로 정한 수는 0이다.", 행: rows };
     (window as unknown as Record<string, unknown>).__v3bodyIndex = rec;
-    if (!dry) {
+    {
+      /* v3-84 §1-③ — **기록 파일은 드라이런에서도 내려받는다**(blob 다운로드는 여전히 0).
+       * v3-83 은 드라이런에서 기록도 막았고, 그 결과 sha 를 «옮기는» 경로가 64자를 잘랐다
+       * (v3-83 §4-2 ㉣ 한계). 판정문 조항 「**sha 64자**」를 지키려면 파일이 나와야 한다. */
       const bl = new Blob([JSON.stringify(rec, null, 1)], { type: "application/json" });
       const u = URL.createObjectURL(bl);
       const a = document.createElement("a");
