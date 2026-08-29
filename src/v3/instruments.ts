@@ -12,6 +12,16 @@ import type { Solver } from './solver.ts';
  * 로직 변경 0 · 연산 순서 변경 0. 순수성: `node:` 0 · 파일 0 · `process` 0.
  */
 /* ══ 계기 — 하네스 «사본». 솔버·격자와 코드를 공유하지 않는다(v3-13 규범) ══ */
+/** v3-80 §1-④ — **격자 SDF 오차의 «등재» 비율**(h 대비). **이 판이 정한 수가 아니다.**
+ *
+ * 출처는 **v3-54 정정**(Q2 승인분 · 이 파일 아래 주석에 원문 무삭제):
+ *   구 문언 「h의 **5%**」는 **틀렸다(약 5배)** — 실측 밴드 안 최대차 0.943/0.961/0.975mm
+ *   = **h의 23.9~24.7%** ⟹ 새 문언 「**최대 h의 약 25%**」.
+ * 이 상수가 생긴 이유는 **소비자가 리터럴을 자기 손으로 다시 쓰지 않게 하기 위해서**다 —
+ * `fitReport.ts` 가 정정 «전» 값 `0.05` 를 따로 들고 있어 화면이 **옛 문턱으로 판정**했다.
+ * **문턱을 결과에 맞춰 움직인 것이 아니다**(함정 14) — 등재된 실측으로 «되돌린» 것이다. */
+export const SDF_ERR_FRAC = 0.25;
+
 export function ptTriSq(px: number, py: number, pz: number, ax: number, ay: number, az: number, bx: number, by: number, bz: number, cx: number, cy: number, cz: number): number {
   const abx = bx - ax, aby = by - ay, abz = bz - az;
   const acx = cx - ax, acy = cy - ay, acz = cz - az;

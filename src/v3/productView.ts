@@ -14,6 +14,8 @@ import {
   Color, DirectionalLight, DoubleSide, Group, HemisphereLight, Mesh, MeshStandardMaterial,
   PerspectiveCamera, Scene, Texture, Vector3, WebGLRenderer,
 } from 'three';
+/* v3-80 §1-① — 프레이밍 식·상수는 «순수» 모듈 하나가 정본이다(검사 스크립트와 공유). */
+import { FRAMING, cameraDistanceM } from './framing.ts';
 
 export type ProductView = { name: string; dir: [number, number, number] };
 /** `raster.ts` 의 `VIEWS` 와 «같은 방위각». dir 은 그쪽과 같은 «보는 방향»이다. */
@@ -23,10 +25,12 @@ export const PRODUCT_VIEWS: ProductView[] = [
   { name: 'back-p', dir: [0, 0, 1] },
 ];
 
+/** ★ 최대 몸 높이 1.8520m / 기준 1.70m = 1.089 < `fitMargin` 1.18 ⟹ **세로 잘림 없음**(실측 27몸). */
+
 /** 표시 층 파라미터 — **물리 채널이 아니다.** 값은 표시 재량이고 여기 한 곳에만 둔다. */
 export const DISPLAY = {
-  fovDeg: 32,
-  fitMargin: 1.18,
+  fovDeg: FRAMING.fovDeg,
+  fitMargin: FRAMING.fitMargin,
   exposure: 1.05,
   bg: 0xf4f4f2,
   key: { color: 0xffffff, intensity: 2.4, dir: [0.55, 0.75, 0.9] },
@@ -171,33 +175,23 @@ export function renderProduct(
   cm.color.set(cloth.vcol ? 0xffffff : DISPLAY.cloth.color);
   cm.needsUpdate = true;
 
+  /* v3-80 §1-① — **프레이밍 기준은 «몸» 하나다.** 옷은 bbox 에 들어가지 않는다(옷 폭 무관). */
   const bb: Box3 = new Box3().setFromBufferAttribute(c.body.geometry.getAttribute('position') as BufferAttribute);
-  bb.union(new Box3().setFromBufferAttribute(c.cloth.geometry.getAttribute('position') as BufferAttribute));
   const mid = bb.getCenter(new Vector3());
 
   c.r.setPixelRatio(dpr);
   c.r.setSize(cssW, cssH, false);
   c.cam.aspect = cssW / cssH;
-  /* 세로가 좁으면 세로 화각이 구속한다 — 두 축 중 빡빡한 쪽으로 맞춘다 */
-  const vFov = (DISPLAY.fovDeg * Math.PI) / 180;
-  const hFov = 2 * Math.atan(Math.tan(vFov / 2) * c.cam.aspect);
-  /* bbox 대각으로 맞추면 T 포즈 팔 스팬(±89cm)이 거리를 지배해 인물이 작아진다.
-   * 화면 축(u = 시선×up · v = up)에 «투영»한 반폭으로 맞추고, 깊이 반폭만 거리에 더한다. */
-  const dv = view.dir;
-  const ux = dv[2], uz = -dv[0];                       // up=(0,1,0) 과의 외적
-  const ul = Math.hypot(ux, uz) || 1;
-  const U = [ux / ul, 0, uz / ul];
-  let hu = 0, hv = 0, hd = 0;
-  for (let k = 0; k < 8; k++) {
-    const px = (k & 1 ? bb.max.x : bb.min.x) - mid.x;
-    const py = (k & 2 ? bb.max.y : bb.min.y) - mid.y;
-    const pz = (k & 4 ? bb.max.z : bb.min.z) - mid.z;
-    hu = Math.max(hu, Math.abs(px * U[0] + pz * U[2]));
-    hv = Math.max(hv, Math.abs(py));
-    hd = Math.max(hd, Math.abs(px * dv[0] + py * dv[1] + pz * dv[2]));
-  }
-  const dist = DISPLAY.fitMargin *
-    Math.max(hu / Math.tan(hFov / 2), hv / Math.tan(vFov / 2)) + hd;
+  /* v3-80 §1-① — **카메라 거리는 «기준 키» 하나로 정한다.**
+   *
+   * 옛 규칙(v3-59~79)은 `max(가로 반폭, 세로 반폭)` 에 깊이 반폭을 더했다 ⟹
+   * T포즈 **팔 스팬이 어깨너비 축에 직접 걸려** 어깨가 넓을수록 인물이 작아졌고,
+   * 깊이 항 때문에 가슴이 굵을수록 또 작아졌다(v3-80 §0-2 의 「같은 키 330 ↔ 247」).
+   * **몸마다 거리가 달라지면 화면 크기가 체형을 «가린다»** — 비교가 성립하지 않는다.
+   *
+   * 새 규칙: `dist = fitMargin × (기준 키/2) / tan(vFov/2)` — **몸·옷 어느 것에도 의존하지 않는다.**
+   * ⟹ 같은 키 두 몸은 **같은 픽셀 높이**, 키가 다르면 **키에 정비례한 픽셀 높이**로 보인다. */
+  const dist = cameraDistanceM();
   c.cam.position.set(mid.x - view.dir[0] * dist, mid.y - view.dir[1] * dist, mid.z - view.dir[2] * dist);
   c.cam.lookAt(mid);
   c.cam.updateProjectionMatrix();

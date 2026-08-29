@@ -22,6 +22,7 @@ import { sampleSdf } from './bodySdf.ts';
 import { makeBodyDistance } from './instruments.ts';
 import type { Prepared } from './dressRun.ts';
 import type { Levels } from './bodyLevels.ts';
+import { SDF_ERR_FRAC } from './instruments.ts';
 
 export type FitRow = {
   name: string; domainSpec: string;
@@ -38,8 +39,10 @@ export type FitReportResult = {
   rows: FitRow[];
   /** G6 자기검사 — 같은 blob 에서 리포트 층 c ↔ 게이트 정확 거리 대조. */
   self: { n: number; maxDiffMm: number; signAgreePct: number; domain: string;
-    /** 등재 문언(`instruments.ts`: 「SDF 오차 ≤ h의 5%」)을 넘는 표본 수와 그 문턱[mm]. */
-    noiseMm: number; overNoise: number; hMm: number };
+    /** 등재 문언(`instruments.SDF_ERR_FRAC` — v3-54 정정: 「최대 h의 약 25%」)을 넘는 표본 수와 그 문턱[mm]. */
+    noiseMm: number; overNoise: number; hMm: number;
+    /** v3-80 §1-④ — 화면 라벨이 «비율»을 손으로 적지 않도록 함께 싣는다(표시 전용). */
+    noiseFrac: number };
   /** 구 채널(`sampleSdf`)로 낸 같은 표. **v3-54 로 «자기검사 전용» 강등 — 판정에 쓰지 않는다.** */
   sdfRows: FitRow[];
   /** v3-54 ㉢ — 정점색(0~1 RGB · 표시 전용)과 그 분기점. **판정 채널 아님.** */
@@ -111,8 +114,9 @@ export function buildFitReport(P: Prepared, L: Levels): FitReportResult {
   /* ── G6 자기검사(v3-53 확장) — **밴드 «안»** 표본에서 신 채널(정확 거리) ↔ 구 채널(SDF) 대조.
    * 정의역을 밴드 안으로 좁힌 것이 v3-52 와의 차이다 — 밴드 밖은 구 채널이 «포화»라 대조가 무의미하고,
    * 그 사실 자체는 v3-52 §3-1 이 이미 값으로 등재했다. 여기서 묻는 것은 「**둘이 같은 곳을 같게 보는가**」다. */
-  /** 등재 잡음 문언 — `instruments.ts` 의 「SDF 오차 ≤ h의 5%」. **이 판이 정한 수가 아니다.** */
-  const NOISE = 0.05 * P.sdfSpec.h;
+  /** v3-80 §1-④ — 등재 잡음은 **`instruments.SDF_ERR_FRAC` 정본을 읽는다**.
+   * 옛 코드는 리터럴 `0.05`(= v3-54 정정 «전» 문언)를 자기 손으로 들고 있었다 ⟹ **손 상수 0**. */
+  const NOISE = SDF_ERR_FRAC * P.sdfSpec.h;
   let n = 0, maxDiff = 0, same = 0, over = 0;
   for (let v = 0; v < sc.n; v++) {
     const g = cSdf(v);
@@ -171,6 +175,6 @@ export function buildFitReport(P: Prepared, L: Levels): FitReportResult {
       yArmCm: L.Y_ARM * 100, cChestCm: L.C_chest * 100, cWaistCm: L.C_waist * 100,
     },
     rows, sdfRows, bandMm: BAND * 1000, color: colorOf(),
-    self: { n, maxDiffMm: maxDiff * 1000, signAgreePct: n ? (100 * same) / n : NaN, domain: `SDF 밴드 안(< ${(BAND * 1000).toFixed(3)}mm)`, noiseMm: NOISE * 1000, overNoise: over, hMm: P.sdfSpec.h * 1000 },
+    self: { n, maxDiffMm: maxDiff * 1000, signAgreePct: n ? (100 * same) / n : NaN, domain: `SDF 밴드 안(< ${(BAND * 1000).toFixed(3)}mm)`, noiseMm: NOISE * 1000, overNoise: over, hMm: P.sdfSpec.h * 1000, noiseFrac: SDF_ERR_FRAC },
   };
 }

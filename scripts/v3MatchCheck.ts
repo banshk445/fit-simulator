@@ -2,7 +2,7 @@
  * 버튼 상태 기대는 `provide.ts` 를 «부르지 않고» raw JSON 에서 독립으로 도출한다(§3-2 조항). */
 import { readFileSync } from 'node:fs';
 import { matchBody, clampAxis } from '../src/v3/match.ts';
-import { buttonState, type Canon } from '../src/v3/provide.ts';
+import { buttonState, landingSize, type Canon } from '../src/v3/provide.ts';
 import { cells, bodyIdOf } from '../src/v3/grid.ts';
 
 const D = 'public/v3diag/v3-77';
@@ -47,7 +47,9 @@ for (const c of cells()) {
   const ok = g.active === wantActive && g.gray === wantGray
     && (g.detail !== null) === (wantGray === '착용불가');
   if (ok) bOk++; else bad.push(`${c.id} 기대(${wantActive}·${wantGray}) 실제(${g.active}·${g.gray})`);
-  if (g.detail?.includes('ARM_G')) {
+  /* v3-80 — 탐침을 «본문 + 접힘»으로 넓힌다: §1-③ 이 ARM_G 수치를 «접힘 안»으로 옮기라고
+   * 이 판에서 «미리» 지시했기 때문이다. **기대값 9/0 은 그대로**이고 읽는 자리만 따라간다. */
+  if (`${g.detail ?? ''}${g.raw ?? ''}`.includes('ARM_G')) {
     if (r?.reason?.startsWith('소매산')) armgHit++; else { armgLeak++; bad.push(`${c.id} ARM_G 문언 혼입 — ${r?.reason}`); }
   }
 }
@@ -55,6 +57,38 @@ console.log('── §3-2 버튼 상태 108칸 ──');
 console.log(`  일치 ${bOk}/108 · ARM_G 문언 ${armgHit}건(기대 9) · 혼입 ${armgLeak}건(기대 0)`);
 bad.slice(0, 10).forEach((b) => console.log('  ❌ ' + b));
 
-const pass = mOk === 12 && bOk === 108 && armgHit === 9 && armgLeak === 0;
-console.log(`\n[v3-79 §3] ${pass ? '전량 통과' : '불일치 — 갈래 B'}`);
+/* ── §3-1 문언 «혼입» 역검사: ㉡·㉢ 본문에 암홀/소매/제도 문자열이 있으면 실패 ── */
+let leakWords = 0;
+for (const c of cells()) {
+  const r = index[c.id]; const g = buttonState(canon, c.id);
+  if (!g.detail || r?.reason?.startsWith('소매산')) continue;
+  if (/암홀|소매|제도/.test(g.detail)) { leakWords++; bad.push(`${c.id} ㉡㉢ 본문 금지어 — ${g.detail}`); }
+}
+console.log(`  ㉡·㉢ 본문 금지어(암홀·소매·제도) ${leakWords}건(기대 0)`);
+
+/* ── §3-2 착지 규칙 27몸 — 기대를 raw JSON 에서 «독립» 도출 ── */
+const SZ = ['S', 'M', 'L', 'XL'];
+const bodyIds = [...new Set(cells().map((c) => c.bodyId))];
+let lOk = 0; const noneList: string[] = [];
+console.log('── §3-2 착지 규칙 27몸 ──');
+for (const b of bodyIds) {
+  const av = SZ.filter((s) => provide.includes(`${b}_${s}`));
+  /* 독립 기대: |i−1| 최소 · 동률이면 큰 쪽 */
+  let want: string | null = null;
+  for (const s of av) {
+    if (want === null) { want = s; continue; }
+    const d = Math.abs(SZ.indexOf(s) - 1), wd = Math.abs(SZ.indexOf(want) - 1);
+    if (d < wd || (d === wd && SZ.indexOf(s) > SZ.indexOf(want))) want = s;
+  }
+  if (want === null) noneList.push(b);
+  const got = landingSize(canon, b);
+  const ok = got.size === want && got.fallback === (want !== null && want !== 'M');
+  if (ok) lOk++; else bad.push(`${b} 착지 기대 ${want} 실제 ${got.size}`);
+}
+console.log(`  일치 ${lOk}/27 · 제공 0칸 몸 ${noneList.length}개(기대 7)`);
+console.log('  제공 0칸: ' + noneList.join(' '));
+
+const pass = mOk === 12 && bOk === 108 && armgHit === 9 && armgLeak === 0
+  && leakWords === 0 && lOk === 27 && noneList.length === 7;
+console.log(`\n[v3-80 §3-1·§3-2] ${pass ? '전량 통과' : '불일치 — 갈래 D'}`);
 process.exit(pass ? 0 : 1);

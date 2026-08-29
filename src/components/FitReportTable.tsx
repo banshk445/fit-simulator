@@ -57,7 +57,8 @@ export function FitReportTable({ fit }: { fit: FitReportResult }) {
         <b>{fit.self.maxDiffMm.toFixed(3)}mm</b> · 부호 일치율 <b>{fit.self.signAgreePct.toFixed(2)}%</b>
         <span className="opacity-60"> · 정의역 {fit.self.domain}</span>
         <div>
-          등재 잡음(h의 5%) <b>{fit.self.noiseMm.toFixed(3)}mm</b> · 초과 표본{" "}
+          {/* v3-80 §1-④ — 라벨의 «비율»도 결과에서 읽는다. 손으로 적힌 「5%」는 v3-54 정정 «전» 값이었다. */}
+          등재 잡음(h의 {(fit.self.noiseFrac * 100).toFixed(0)}%) <b>{fit.self.noiseMm.toFixed(3)}mm</b> · 초과 표본{" "}
           <b>{fit.self.overNoise}/{fit.self.n}</b> · 밴드 상한 <b>{fit.bandMm.toFixed(3)}mm</b>
           {fit.self.maxDiffMm > fit.self.noiseMm && <b className="text-rose-600"> — 등재 잡음 초과</b>}
         </div>
