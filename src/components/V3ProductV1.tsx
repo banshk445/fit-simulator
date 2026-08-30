@@ -31,15 +31,31 @@ const CANVAS = { w: 840, h: 672 };
 /** 뷰 «표시» 라벨(v3-80 §2-1). **프리셋 id(`front-p` 등)는 그대로다** — 바뀐 것은 문자열뿐이다. */
 const VIEW_LABEL: Record<string, string> = { "front-p": "앞", "side-p": "옆", "back-p": "뒤" };
 
+/* ★ v3-92 §1-① — **드래그 회전**. 카메라 «자세»만 바꾼다:
+ *   `renderProduct` 는 `view.dir`(보는 방향)만 읽고 **거리는 `framing.cameraDistanceM()`** 이
+ *   따로 정한다(v3-80). 그래서 각도를 돌려도 **프레이밍 규칙은 한 글자도 안 건드린다** —
+ *   회전 중심도 그 함수가 쓰는 «몸 bbox 중심» 그대로다. `productView.ts` **diff 0**.
+ * 각도 규약: yaw 0° = 앞 · 90° = 옆 · 180° = 뒤 (아래 `dirOf` 가 프리셋 dir 을 «재생»한다). */
+const dirOf = (yawDeg: number, pitchDeg: number): [number, number, number] => {
+  const a = (yawDeg * Math.PI) / 180, b = (pitchDeg * Math.PI) / 180;
+  return [-Math.sin(a) * Math.cos(b), Math.sin(b), -Math.cos(a) * Math.cos(b)];
+};
+/** 프리셋 → yaw. `PRODUCT_VIEWS` 의 dir 과 `dirOf(yaw, 0)` 이 «같은 값»이 되는 각(§2 대조 대상). */
+const PRESET_YAW: Record<string, number> = { "front-p": 0, "side-p": 90, "back-p": 180 };
+/** 상하 제한 — §0-4 ① 등재값. */
+const PITCH_LIMIT = 15;
+
 type Scene = { pos: Float32Array; idx: Uint32Array; bodyPos: Float32Array; bodyIdx: Uint32Array;
                bridgeIdx?: Uint32Array };
 
 /** 국면 3종 — `FitReportTable` 과 **같은 분기점**(`fit.sepMm`)을 읽는다. 새 문턱 0. 문구는 §2-2 정본. */
 function phaseOf(medMm: number, sepMm: number) {
+  /* ★ v3-92 §1-② — **본문은 «말»만 남긴다**(mm 은 오른쪽 배지에). 대역·경계·색은
+   * v3-54 규칙 그대로이고 **새 수 0**이다 — 문장에서 숫자를 뺀 것뿐이다(계산 0줄). */
   if (!Number.isFinite(medMm)) return { name: "산출 불가", cls: "text-white/40", say: "이 부위는 표본이 부족해 값을 내지 못했습니다" };
-  if (medMm < 0) return { name: "눌림", cls: "text-rose-400", say: `옷이 몸을 ${(-medMm).toFixed(1)}mm 누릅니다` };
-  if (medMm <= sepMm) return { name: "밀착", cls: "text-amber-400", say: `옷이 몸에 ${medMm.toFixed(1)}mm 로 붙습니다` };
-  return { name: "여유", cls: "text-sky-400", say: `옷과 몸 사이가 ${medMm.toFixed(1)}mm 떠 있습니다` };
+  if (medMm < 0) return { name: "눌림", cls: "text-rose-400", say: "옷이 몸을 누릅니다" };
+  if (medMm <= sepMm) return { name: "밀착", cls: "text-amber-400", say: "옷이 몸에 붙습니다" };
+  return { name: "여유", cls: "text-sky-400", say: "옷과 몸 사이가 떠 있습니다" };
 }
 
 export function V3ProductV1() {
@@ -51,6 +67,11 @@ export function V3ProductV1() {
   const [size, setSize] = useState<Size | null>(DEFAULT_SIZE);
   const [openDetail, setOpenDetail] = useState<Size | null>(null);
   const [viewIx, setViewIx] = useState(0);
+  /* v3-92 §1-① — 카메라 자세(도). 프리셋 버튼은 여기로 «스냅»한다. */
+  const [yaw, setYaw] = useState(0);
+  const [pitch, setPitch] = useState(0);
+  const dragRef = useRef<{ x: number; y: number; yaw: number; pitch: number } | null>(null);
+  const animRef = useRef<number | null>(null);
   const [fit, setFit] = useState<FitReportResult | null>(null);
   const [fitColor, setFitColor] = useState(true);
   const [printOn, setPrintOn] = useState(false);
@@ -159,9 +180,51 @@ export function V3ProductV1() {
         print: printOn && printUv ? { uv: printUv.uv, panels: printUv.panels, tex, printPanel: "front",
           solid: comp ? ((Math.round(comp.color.r) << 16) | (Math.round(comp.color.g) << 8) | Math.round(comp.color.b)) : undefined,
           bridgeIdx: S.bridgeIdx && S.bridgeIdx.length ? S.bridgeIdx : null } : null },
-      PRODUCT_VIEWS[viewIx], CANVAS.w, CANVAS.h);
-  }, [viewIx, fitColor, fit, printOn, printUv, tex, comp]);
+      /* v3-92 §1-① — 프리셋 «이름»은 그대로 쓰고 방향만 각도에서 만든다(프리셋 목록 변경 0). */
+      { name: PRODUCT_VIEWS[viewIx].name, dir: dirOf(yaw, pitch) }, CANVAS.w, CANVAS.h);
+  }, [viewIx, yaw, pitch, fitColor, fit, printOn, printUv, tex, comp]);
   useEffect(() => { draw(); }, [draw, msg, fit]);
+
+  /* v3-92 §1-① — **관성 없음**: 포인터를 떼면 그 각도에서 멈춘다(속도 적분 0). */
+  const onDown = useCallback((e: React.PointerEvent<HTMLCanvasElement>) => {
+    if (animRef.current !== null) { cancelAnimationFrame(animRef.current); animRef.current = null; }
+    dragRef.current = { x: e.clientX, y: e.clientY, yaw, pitch };
+    e.currentTarget.setPointerCapture(e.pointerId);
+  }, [yaw, pitch]);
+  const onMove = useCallback((e: React.PointerEvent<HTMLCanvasElement>) => {
+    const d = dragRef.current; if (!d) return;
+    /* 화면 폭 절반을 끌면 180° — 손 상수가 아니라 «캔버스 크기»에서 뜬다. */
+    const kx = 360 / CANVAS.w, ky = 180 / CANVAS.h;
+    setYaw(d.yaw + (e.clientX - d.x) * kx);
+    setPitch(Math.max(-PITCH_LIMIT, Math.min(PITCH_LIMIT, d.pitch + (e.clientY - d.y) * ky)));
+  }, []);
+  const onUp = useCallback(() => { dragRef.current = null; }, []);
+
+  /** 프리셋 스냅 — 0.3s 안에 «가장 가까운 방향»으로 돈다(≤ 0.3s · §0-4 ①). */
+  const snapTo = useCallback((i: number) => {
+    setViewIx(i);
+    const target = PRESET_YAW[PRODUCT_VIEWS[i].name] ?? 0;
+    if (animRef.current !== null) cancelAnimationFrame(animRef.current);
+    const y0 = yaw, p0 = pitch;
+    /* 360° 를 한 바퀴로 접어 «짧은 쪽»으로 돈다. */
+    let dy = ((target - y0) % 360 + 540) % 360 - 180;
+    const t0 = performance.now(), DUR = 300;
+    const tick = () => {
+      const u = Math.min(1, (performance.now() - t0) / DUR);
+      const e2 = u * u * (3 - 2 * u);                     // smoothstep — 관성 아님(고정 시간)
+      setYaw(y0 + dy * e2); setPitch(p0 * (1 - e2));
+      if (u < 1) animRef.current = requestAnimationFrame(tick);
+      else { animRef.current = null; setYaw(target); setPitch(0); }
+    };
+    animRef.current = requestAnimationFrame(tick);
+    /* ★ 스냅은 «반드시 도달»한다. `requestAnimationFrame` 은 **비가시 탭에서 안 돈다**
+     * (v3-71 §2 실측 — rAF 0회/초) ⟹ 애니메이션만 믿으면 각도가 중간에 멎는다.
+     * 시간이 지나면 목표를 그냥 «놓는다» — 애니메이션은 «있으면 좋은 것»이고 도달이 계약이다. */
+    window.setTimeout(() => {
+      if (animRef.current !== null) { cancelAnimationFrame(animRef.current); animRef.current = null; }
+      setYaw(target); setPitch(0);
+    }, DUR + 20);
+  }, [yaw, pitch]);
 
   const F = FABRICS[BAKE.fab];
   return (
@@ -208,7 +271,7 @@ export function V3ProductV1() {
           </div>
         )}
         {landing && landing.size === null && (
-          <div className="mb-3 rounded bg-white/5 px-2 py-1 text-white/60">이 몸에는 제공되는 사이즈가 없습니다</div>
+          <div className="mb-3 rounded bg-white/5 px-2 py-1 text-white/60">이 몸에 맞는 준비된 사이즈가 아직 없습니다</div>
         )}
         {!landing?.fallback && landing?.size && <div className="mb-3" />}
 
@@ -241,7 +304,7 @@ export function V3ProductV1() {
                     <>
                       {" "}
                       <button className="underline" onClick={() => setOpenDetail(openDetail === s ? null : s)}>
-                        {openDetail === s ? "닫기" : "사유 보기"}
+                        {openDetail === s ? "닫기" : "자세히"}
                       </button>
                       {openDetail === s && (
                         <div className="mt-1 text-white/60">
@@ -294,7 +357,7 @@ export function V3ProductV1() {
         <div className="mb-1 text-white/60">보기</div>
         <div className="mb-2 flex flex-wrap gap-1">
           {PRODUCT_VIEWS.map((v, i) => (
-            <button key={v.name} onClick={() => setViewIx(i)}
+            <button key={v.name} onClick={() => snapTo(i)}
               className={`rounded px-3 py-1 ${i === viewIx ? "bg-white text-black" : "bg-white/10"}`}>
               {VIEW_LABEL[v.name] ?? v.name}
             </button>
@@ -329,7 +392,8 @@ export function V3ProductV1() {
       </div>
       <div className="flex flex-1 items-center justify-center">
         {/* 씬이 없으면 «감춘다» — 낡은 그림을 남기지 않는다(§1-⑥). 요소는 DOM 에 남아 ref 가 유지된다. */}
-        <canvas ref={cvRef} hidden={!scened} className="max-h-full max-w-full" />
+        <canvas ref={cvRef} hidden={!scened} className="max-h-full max-w-full touch-none cursor-grab active:cursor-grabbing"
+          onPointerDown={onDown} onPointerMove={onMove} onPointerUp={onUp} onPointerCancel={onUp} />
       </div>
     </div>
   );

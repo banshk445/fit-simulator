@@ -25,7 +25,9 @@ export type ButtonState = {
   active: boolean;
   /** 회색의 «성격» — 사유 열람이 붙는가(`착용불가`), 아닌가(`검증`). 활성이면 `null`. */
   gray: '착용불가' | '검증' | null;
-  /** 버튼 밑 한 줄(v3-80 §2-3 정본 문구). */
+  /** 버튼 밑 한 줄. ★ v3-92 §1-③ — **두 회색 문언을 하나로** 바꿨다(「준비 중」).
+   * 분류는 그대로다(`gray` 가 여전히 착용불가/검증을 가른다) — 바뀐 것은 **구매자에게 보이는 말**뿐이고,
+   * 「자세히」가 붙는가는 `detail` 이 있는가로 정해진다(사유 본문·측정 원문 접힘 **그대로**). */
   note: string;
   /** 사유 «본문» — 착용불가에만 있다(보류·경계는 열람 «없음»). v3-80 §2-4 정본 문구. */
   detail: string | null;
@@ -58,10 +60,10 @@ export function buttonState(canon: Canon, id: string): ButtonState {
   if (canon.provide.includes(id))
     return { active: true, gray: null, note: '입어본 결과 있음', detail: null, raw: null };
   const r = canon.index[id];
-  const 검증 = { active: false, gray: '검증' as const, note: '검증을 통과하지 못해 제공하지 않습니다', detail: null, raw: null };
+  const 검증 = { active: false, gray: '검증' as const, note: '이 사이즈는 아직 준비 중입니다', detail: null, raw: null };
   if (!r || r.status !== '착용불가') return 검증;
   const d = detailOf(r);
-  return { active: false, gray: '착용불가', note: '이 사이즈는 만들 수 없습니다', detail: d.detail, raw: d.raw };
+  return { active: false, gray: '착용불가', note: '이 사이즈는 아직 준비 중입니다', detail: d.detail, raw: d.raw };
 }
 
 export type Landing = { size: SizeName | null; fallback: boolean };
