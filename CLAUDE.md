@@ -210,7 +210,8 @@ A-③/C/B-1이 전부 "보정을 빼면 미끄러진다"로 수렴했는데 원�
  정답지      **정점 대조 39칸**(blob 존재) + **판정 대조 69칸**(게이트 판정·실패 사유만 — blob 부재)
              분류 `index-merged-108.v3-91.json` · 제공 `v1-provide-35.v3-91.json`
  정본 파일   접두 **`v4-`**
- 진입        `gpu/.venv/bin/python -m pytest gpu/tests -q`
+ 진입        에어 `gpu/.venv/bin/python -m pytest gpu/tests -q` · **2호기 `py -m pytest gpu/tests -q`**
+ 자산        정답지·덤프는 **git 밖**(`.gitignore`)이다 — 기계 간 이전은 **scp**(맥 → 2호기 단방향)
 ```
 
 **규약은 v3 와 «같다»** — 사전 등재 · 갈래 · 복원(diff 0 증명) · 귀책 등재 · 문턱 인용(손 상수 0) ·

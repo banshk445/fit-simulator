@@ -42,10 +42,19 @@ def test_provide_list_is_35():
     assert len(load.provide()) == 35               # v3-91 정본
 
 
-@pytest.mark.parametrize("arch_name", ["metal", "cpu"])
-def test_single_vertex_fall(arch_name):
+# v4-02 §1-① — **기계마다 되는 백엔드가 다르다**. 이름을 손으로 적지 않고 «플랫폼에서» 고른다:
+#   에어 M4(darwin) → metal · 2호기(win32 · CUDA) → cuda. cpu 는 둘 다 있다.
+GPU_ARCH = "metal" if sys.platform == "darwin" else "cuda"
+
+
+def _arch(name):
     import taichi as ti
-    arch = {"metal": ti.metal, "cpu": ti.cpu}[arch_name]
+    return {"metal": ti.metal, "cuda": ti.cuda, "cpu": ti.cpu}[name]
+
+
+@pytest.mark.parametrize("arch_name", [GPU_ARCH, "cpu"])
+def test_single_vertex_fall(arch_name):
+    arch = _arch(arch_name)
     N, SUB = 600, 8
     y, v = F.fall(arch, N, SUB)
     yd, vd = F.exact_discrete(N, SUB)
@@ -55,8 +64,22 @@ def test_single_vertex_fall(arch_name):
 
 
 def test_backends_agree():
-    import taichi as ti
+    """GPU 백엔드 ↔ cpu 가 같은 값을 내는가. v4-01 은 metal↔arm64 가 **비트 동일**이었다."""
     N, SUB = 600, 8
-    ym, _ = F.fall(ti.metal, N, SUB)
-    yc, _ = F.fall(ti.cpu, N, SUB)
-    assert abs(ym - yc) <= F.ulp_bound(ym, N)
+    yg, _ = F.fall(_arch(GPU_ARCH), N, SUB)
+    yc, _ = F.fall(_arch("cpu"), N, SUB)
+    assert abs(yg - yc) <= F.ulp_bound(yg, N)
+
+
+def test_fall_matches_v4_01_registered():
+    """v4-01 §1-③′ 등재값과의 대조 — **기계가 바뀌어도 같은 수**여야 한다(이식의 첫 기준선).
+
+    등재 원문: y = −6.676847458 · v = −12.262486 · 이산해 대비 −1.152e-05(상한 1.144e-03).
+    표기 자릿수까지만 비교한다 — 노트가 «반올림해» 실었기 때문이다(비트 대조는 아니다).
+    """
+    N, SUB = 600, 8
+    y, v = F.fall(_arch(GPU_ARCH), N, SUB)
+    yd, _ = F.exact_discrete(N, SUB)
+    assert round(y, 9) == -6.676847458          # v4-01 등재 표기
+    assert round(v, 6) == -12.262486            # v4-01 등재 표기
+    assert abs(y - yd) <= F.ulp_bound(y, N)

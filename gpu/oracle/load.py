@@ -60,3 +60,52 @@ def cloth_positions(cell_id: str) -> np.ndarray:
     head, state, _ = cloth(cell_id)
     n = int(head["n"])
     return state[: n * 3].reshape(n, 3)
+
+
+# ─── v4-02 §1-② — **덤프 리더**(v3 조립 산출물). `scripts/v4Export.ts` · `scripts/v4Strip.ts` 가 쓴다 ───
+EXPORT = Path(__file__).resolve().parent / "export"
+
+
+def _blob(path):
+    """[u32 헤더길이][헤더 JSON][페이로드] — v3 blob 과 «같은» 포장 규칙."""
+    raw = Path(path).read_bytes()
+    (hlen,) = struct.unpack_from("<I", raw, 0)
+    return json.loads(raw[4 : 4 + hlen].decode("utf-8")), raw[4 + hlen :]
+
+
+def cells_table() -> list:
+    """39칸 요약표(칸 · 정점 · 삼각형 · 제약 수 · 원단) — `v4Export.ts` 산출."""
+    return json.loads((EXPORT / "cells.json").read_text(encoding="utf-8"))
+
+
+def scene(cell_id: str):
+    """한 칸의 **늘어남 장면** → (헤더, invMass f64[n], idx i32[m,3], par f64[m,5])."""
+    head, pay = _blob(EXPORT / f"scene-{cell_id}.bin")
+    n, m = int(head["n"]), int(head["m"])
+    o = 0
+    invm = np.frombuffer(pay, dtype="<f8", count=n, offset=o); o += n * 8
+    idx = np.frombuffer(pay, dtype="<i4", count=m * 3, offset=o).reshape(m, 3); o += m * 3 * 4
+    par = np.frombuffer(pay, dtype="<f8", count=m * 5, offset=o).reshape(m, 5)
+    return head, invm, idx, par
+
+
+def strip_v3():
+    """합성 「한 줄 천」의 v3 정답 → (헤더, uv, tris, invMass, pos, vel) — 전부 f64."""
+    head, pay = _blob(EXPORT / "strip-v3.bin")
+    n, nt = int(head["n"]), int(head["tris"])
+    o = 0
+    uv = np.frombuffer(pay, dtype="<f8", count=n * 2, offset=o).reshape(n, 2); o += n * 2 * 8
+    tris = np.frombuffer(pay, dtype="<i4", count=nt * 3, offset=o).reshape(nt, 3); o += nt * 3 * 4
+    invm = np.frombuffer(pay, dtype="<f8", count=n, offset=o); o += n * 8
+    pos = np.frombuffer(pay, dtype="<f8", count=n * 3, offset=o).reshape(n, 3); o += n * 3 * 8
+    vel = np.frombuffer(pay, dtype="<f8", count=n * 3, offset=o).reshape(n, 3)
+    return head, uv, tris, invm, pos, vel
+
+
+def cell_step(cell_id: str):
+    """「늘어남만 1스텝」의 v3 정답 → (헤더, 투영 «전» pos f64[n,3], 투영 «후» pos f64[n,3])."""
+    head, pay = _blob(EXPORT / f"cellstep-{cell_id}.bin")
+    n = int(head["n"])
+    before = np.frombuffer(pay, dtype="<f8", count=n * 3, offset=0).reshape(n, 3)
+    after = np.frombuffer(pay, dtype="<f8", count=n * 3, offset=n * 3 * 8).reshape(n, 3)
+    return head, before, after
