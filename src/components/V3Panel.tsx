@@ -418,6 +418,9 @@ export function V3Panel() {
      * 굽기 직전에 GLTF 씬 배율을 1 로 덮어 「unitScale 이 안 실린 몸」을 재현한다.
      * **`Mannequin.tsx` 는 건드리지 않는다**(§0-4) — 주입은 여기서만 하고 기본값은 불변이다. */
     const legacy = q.get("unitscale") === "legacy";
+    /* v3-85 §0-5 ㄱ — **한 칸만 저장**. 「그 몸 «하나»만 저장(나머지 26 blob 은 쓰기 0)」 조항을
+     * 코드로 잠근다. 지정이 없으면 종전대로 통과 칸 전부 저장한다(기본 불변). */
+    const only = q.get("bakeonly");
     /** v3-82 §1-③ 등재 높이 범위[m] — **기록 열 전용**이다. v3-85 부터 **게이트가 아니다**(㉰ → ㉰′). */
     const HEIGHT_TOL_M = 0.0020;
     const st = () => useFitStore.getState();
@@ -489,7 +492,7 @@ export function V3Panel() {
       const scaleOk = dPrime <= POSE_SETTLE_EPS;               // ㉰′
       const pass = !capped && resid <= POSE_SETTLE_EPS && scaleOk;
       let sha = "";
-      if (pass && !dry) {
+      if (pass && !dry && (!only || id === only)) {
         const bl = new Blob([r.verts.buffer as ArrayBuffer], { type: "application/octet-stream" });
         const u = URL.createObjectURL(bl);
         const a = document.createElement("a");
@@ -534,6 +537,7 @@ export function V3Panel() {
       + ` · **㉰′ |씬 배율 − unitScale_geom| ≤ ${POSE_SETTLE_EPS}**`
       + ` · 높이는 **기록 열**(게이트 아님 · 등재 범위 ±${HEIGHT_TOL_M}m 는 참고)`
       + `${legacy ? " · **legacy 주입(검출력 증명 · 씬 배율 1 로 덮음)**" : ""}`
+      + `${only ? ` · **저장 대상 «${only}» 한 칸뿐**(나머지 blob 쓰기 0)` : ""}`
       + " · 문턱은 전부 «인용»이고 이 판이 새로 정한 수는 0이다.", 행: rows };
     (window as unknown as Record<string, unknown>).__v3bodyIndex = rec;
     {
