@@ -44,6 +44,12 @@ K_BEND_OPS_PER_CON = 156
 K_COLLIDE_DEPTH_PER_CON = 34
 K_COLLIDE_OPS_PER_CON = 282
 
+# ── 봉제(seam · 거리 제약) — `gpu/engine/seam.py:_project` ──
+#   스칼라 제약 하나 ⟹ 한 제약이 한 좌표를 «한 번» 갱신한다.
+#   깊이 12 · 총량 25      (세부는 docs/v4/06-봉제.md §1-① 표)
+K_SEAM_DEPTH_PER_CON = 12
+K_SEAM_OPS_PER_CON = 25
+
 
 def ulp_f32(x: float) -> float:
     """|x| 자리의 ULP_f32. x=0 이면 0(그 자리에 크기가 없다)."""

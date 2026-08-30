@@ -155,3 +155,13 @@ def converge_v3(sys_name: str):
     pos = np.frombuffer(pay, dtype="<f8", count=n * 3, offset=o).reshape(n, 3); o += n * 3 * 8
     vel = np.frombuffer(pay, dtype="<f8", count=n * 3, offset=o).reshape(n, 3)
     return head, uv, tris, invm, pos, vel
+
+
+def cell_step_kind(cell_id: str, kind: str):
+    """「<kind> 만 1스텝」의 v3 정답 → (헤더, 전 pos, 후 pos). kind = inplane|bend|dist|collision."""
+    suffix = "" if kind == "inplane" else f"-{kind}"
+    head, pay = _blob(EXPORT / f"cellstep{suffix}-{cell_id}.bin")
+    n = int(head["n"])
+    before = np.frombuffer(pay, dtype="<f8", count=n * 3, offset=0).reshape(n, 3)
+    after = np.frombuffer(pay, dtype="<f8", count=n * 3, offset=n * 3 * 8).reshape(n, 3)
+    return head, before, after

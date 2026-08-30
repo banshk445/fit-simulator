@@ -29,7 +29,7 @@ import { S4_THRESHOLD } from '../src/v3/s4Gate.ts';
 const SRC = 'public/v3diag/v3-77';
 const OUT = 'gpu/oracle/export';
 const CELL = process.env.CELL ?? 'c100-h170-s45_M';
-const KIND = (process.env.CONS ?? 'both') as 'inplane' | 'bend' | 'both' | 'all';
+const KIND = (process.env.CONS ?? 'both') as 'inplane' | 'bend' | 'both' | 'all' | 'ipseam' | 'bendseam';
 const CAP = Number(process.env.CAP ?? 2000);
 const PERTURB = Number(process.env.PERTURB ?? 0);
 const FORCE = process.env.FRAMES ? Number(process.env.FRAMES) : 0;   // 비용 측정용(수렴 무시)
@@ -60,10 +60,20 @@ sc.s.vel.set(new Float64Array(raw.buffer.slice(raw.byteOffset + 4 + hl + nb, raw
 let nFree = 0;
 for (let v = 0; v < sc.n; v++) if (sc.s.invMass[v] !== 0) { nFree++; if (PERTURB !== 0) sc.s.pos[v * 3] += PERTURB; }
 
-/* 'all' = 봉제(dist)까지 «전량» — v4 에 이식이 없어 대조에는 못 쓰고, **구속 여부 확인 전용**이다. */
-const cons: Constraint[] = KIND === 'all' ? sc.cons
-  : KIND === 'both' ? sc.cons.filter((x: Constraint) => x.kind !== 'dist')
-  : sc.cons.filter((x: Constraint) => x.kind === KIND);
+/* v4-06 §0-4 — 시험계 3종은 **몸 충돌·중력을 공통으로** 갖고, 여기서 고르는 것은 «옷 제약»뿐이다.
+ *   ipseam   = 늘어남 + 봉제      bendseam = 굽힘 + 봉제      all = 늘어남 + 굽힘 + 봉제
+ * (both = 봉제 «없는» v4-05 정의역 · inplane/bend = 단일 종류 · 대조용으로 남긴다) */
+const pick = (ks: string[]) => sc.cons.filter((x: Constraint) => ks.includes(x.kind));
+const cons: Constraint[] =
+    KIND === 'all' ? sc.cons
+  : KIND === 'ipseam' ? pick(['inplane', 'dist'])
+  : KIND === 'bendseam' ? pick(['bend', 'dist'])
+  : KIND === 'both' ? pick(['inplane', 'bend'])
+  : pick([KIND]);
+/* 봉제 rest 확인(§0-6 램프 주의 · 가정 0) — 생성값 SEP 와 «값으로» 대조한다. */
+const seam = sc.cons.filter((x: Constraint) => x.kind === 'dist') as Array<{ rest: number; k: number }>;
+const restMin = Math.min(...seam.map((x) => x.rest)), restMax = Math.max(...seam.map((x) => x.rest));
+console.log(`봉제 ${seam.length}개 · rest ${restMin.toExponential(6)}~${restMax.toExponential(6)} (SEP=${(2e-3).toExponential(6)}) · k ${seam[0].k} · RAMP_N ${P.RAMP_N}`);
 const params = { dt: DT, substeps: P.SUB, gravity: G, damping: DAMP, collision: P.params.collision };
 
 const netOf = (ref: Float64Array) => {

@@ -102,6 +102,22 @@ for (const c of targets) {
     writeFileSync(`${OUT}/scene-bend-${c.id}.bin`,
       Buffer.concat([bhead, bhb, Buffer.from(bidx.buffer), Buffer.from(bpar.buffer)]));
 
+    /* v4-06 §1-① — **봉제 장면**. 헤더 JSON + [i,j int32 2ms] + [rest f64 ms] */
+    const ms = seam.length;
+    const shdr = {
+      cell: c.id, n: sc.n, ms, d: D, fabric: FAB, k: fab.k, SEP: 2 * THICK, THICK,
+      G, DT, MU, DAMP, substeps: P.SUB, rampN: P.RAMP_N,
+      note: 'v4-06 §1-① 덤프 · dist(봉제) 제약만. 순서 = garmentScene.ts:728 seams 순회 순서. k = KMEM = 원단 k',
+    };
+    const shb = Buffer.from(JSON.stringify(shdr), 'utf8');
+    const sidx = new Int32Array(ms * 2);
+    const spar = new Float64Array(ms);
+    seam.forEach((x: any, t: number) => { sidx[t * 2] = x.i; sidx[t * 2 + 1] = x.j; spar[t] = x.rest; });
+    const shead = Buffer.alloc(4); shead.writeUInt32LE(shb.length, 0);
+    writeFileSync(`${OUT}/scene-seam-${c.id}.bin`,
+      Buffer.concat([shead, shb, Buffer.from(sidx.buffer), Buffer.from(spar.buffer)]));
+    console.log(`  → ${OUT}/scene-seam-${c.id}.bin (ms=${ms} · rest ${Math.min(...spar).toExponential(6)}~${Math.max(...spar).toExponential(6)} · SEP ${(2 * THICK).toExponential(6)} · RAMP_N ${P.RAMP_N})`);
+
     /* v4-05 §1-③ — **몸 SDF 격자**. 충돌 커널의 유일한 충돌체다(`dressRun.prepare` 가 굽는다).
      * 헤더 JSON + [data float32 nx·ny·nz]. `GridSdf` 필드는 `bodySdf.ts` 정의 그대로. */
     const g = P.bodyG;

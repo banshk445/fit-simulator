@@ -21,7 +21,7 @@ const SRC = 'public/v3diag/v3-77';
 const OUT = 'gpu/oracle/export';
 const CELL = process.env.CELL ?? 'c100-h170-s45_M';
 /* v4-03 §1-③ㄴ — 제약 «종류»를 고른다. 기본은 v4-02 그대로 `inplane`(산출물 바이트 불변). */
-const KIND = (process.env.CONS ?? 'inplane') as 'inplane' | 'bend' | 'collision';
+const KIND = (process.env.CONS ?? 'inplane') as 'inplane' | 'bend' | 'dist' | 'collision' | 'all1';
 const D = Number(process.env.D_MM ?? 9) / 1000;
 if (!existsSync(OUT)) mkdirSync(OUT, { recursive: true });
 
@@ -51,8 +51,11 @@ const before = Float64Array.from(sc.s.pos);
  * ★ 중력은 **켠다**(다른 두 모드와 다르다) — 마찰은 «접선 변위»에 걸리는데, 중력이 없으면
  *   예측 단계가 위치를 안 바꿔 `pos − prev = 0` 이 되고 **마찰 경로가 한 줄도 안 돈다**.
  *   중력을 켜면 예측이 g·h² 만큼 내리고 그 변위에 마찰이 걸린다 ⟹ 두 경로를 «함께» 잰다. */
-const isCol = KIND === 'collision';
-const picked = isCol ? [] : sc.cons.filter((x: Constraint) => x.kind === KIND);
+/* v4-06 §1-①′ — `all1` = **네 갈래를 «한꺼번에» 1스텝**. 결합 커널의 «순서»까지 대조하려는 것이다
+ * (갈래별 대조는 산술만 보고 순서를 못 본다). 제약 순서는 `garmentScene.ts:734` 그대로. */
+const isAll = KIND === 'all1';
+const isCol = KIND === 'collision' || isAll;
+const picked = isAll ? sc.cons : isCol ? [] : sc.cons.filter((x: Constraint) => x.kind === KIND);
 const h = DT / P.SUB;
 step(sc.s, picked, { dt: h, substeps: 1, gravity: isCol ? G : 0, damping: 0,
                      ...(isCol ? { collision: P.params.collision } : {}) });
