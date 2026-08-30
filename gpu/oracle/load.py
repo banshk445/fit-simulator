@@ -142,3 +142,16 @@ def hinge_v3():
     pos = np.frombuffer(pay, dtype="<f8", count=n * 3, offset=o).reshape(n, 3); o += n * 3 * 8
     vel = np.frombuffer(pay, dtype="<f8", count=n * 3, offset=o).reshape(n, 3)
     return head, uv, tris, bidx, invm, pos, vel
+
+
+def converge_v3(sys_name: str):
+    """층2 — 합성계를 «수렴까지» 돌린 v3 정답 → (헤더, uv, tris, invMass, pos, vel)."""
+    head, pay = _blob(EXPORT / f"converge-{sys_name}-v3.bin")
+    n, nt = int(head["n"]), int(head["tris"])
+    o = 0
+    uv = np.frombuffer(pay, dtype="<f8", count=n * 2, offset=o).reshape(n, 2); o += n * 2 * 8
+    tris = np.frombuffer(pay, dtype="<i4", count=nt * 3, offset=o).reshape(nt, 3); o += nt * 3 * 4
+    invm = np.frombuffer(pay, dtype="<f8", count=n, offset=o); o += n * 8
+    pos = np.frombuffer(pay, dtype="<f8", count=n * 3, offset=o).reshape(n, 3); o += n * 3 * 8
+    vel = np.frombuffer(pay, dtype="<f8", count=n * 3, offset=o).reshape(n, 3)
+    return head, uv, tris, invm, pos, vel

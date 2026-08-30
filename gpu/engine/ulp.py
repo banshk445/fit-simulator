@@ -50,3 +50,33 @@ def bound(k_per_con: int, deg: int, max_abs_coord: float, steps: int) -> float:
     한 스텝 안에서 그 정점의 좌표는 deg 번 갱신되므로 사슬이 deg 배로 는다.
     """
     return k_per_con * deg * ulp_f32(max_abs_coord) * steps
+
+
+# ─── v4-04 §0-2 층1 — **1스텝 정확도**. M 이 없다(증폭이 일어날 시간이 없다) ───────────────
+def ulp_f32_arr(x):
+    """배열판 ULP_f32. 0 인 자리는 0(그 자리에 «자»가 없다)."""
+    import numpy as np
+    a = np.abs(np.asarray(x, dtype=np.float64))
+    out = np.zeros_like(a)
+    nz = a > 0
+    out[nz] = 2.0 ** (np.floor(np.log2(a[nz])) - 23)
+    return out
+
+
+def layer1(diff, ref, k_per_con, deg=1):
+    """층1 판정 — 정점마다 «그 자리 값»으로 자를 만들고 그 자로 오차를 잰다.
+
+    「그 자리 값」 = **그 정점 위치의 최대 성분 크기**(v4-04 §0-2 ㄱ 등재).
+      좌표 하나는 0 을 지날 수 있고 **0 에는 자가 없다** — 좌표값 단독을 자로 쓰지 않는다.
+    상한 = `k_per_con × deg × ULP_f32(그 자리 값)`. **판정용 기본은 `deg = 1`**(더 엄격한 쪽 ·
+      v4-04 §0-2 ㄴ). 돌려주는 것은 **정점별 (오차/상한) 비**의 배열이다.
+    """
+    import numpy as np
+    d = np.max(np.abs(np.asarray(diff, dtype=np.float64)), axis=1)
+    scale = np.max(np.abs(np.asarray(ref, dtype=np.float64)), axis=1)
+    b = k_per_con * deg * ulp_f32_arr(scale)
+    r = np.zeros_like(d)
+    ok = b > 0
+    r[ok] = d[ok] / b[ok]
+    r[~ok] = np.where(d[~ok] > 0, np.inf, 0.0)     # 자가 없는데 오차가 있으면 «판정 불가»
+    return r
