@@ -525,9 +525,14 @@ export function createScene(cfg: SceneConfig) {
       const py = yOf(k) - (Y_TOP - L);          // 그 높이에 대응하는 2D 높이
       const need = 4 * panelHalfWidth(Math.max(0, Math.min(L, py))) + 2 * GAP_SIDE;
       const base = perimOf(boundaryOf(h, delta, 1));
-      /* v3-90 §1-① — **인쇄 «전용» 계기**(동작 0). 클램프 `Math.max(1, …)` 발화 = `need < base`. */
+      /* v3-90 §1-① — **인쇄 «전용» 계기**(동작 0). 클램프 `Math.max(1, …)` 발화 = `need < base`.
+       * ★ v3-91 §1-③ — **δ 증분의 호 길이 반응**도 «인쇄 전용»으로 함께 낸다.
+       *   `boundaryOf` 는 `hh = (h[k] + delta) * scale` 이므로 δ 는 «반경 오프셋»이다 ⟹
+       *   δ 를 키우면 폴리라인이 커진다. **얼마나** 커지는지를 값으로 남긴다(반환값 불변 · 동작 0). */
+      const bump = (dd: number) => perimOf(boundaryOf(h, delta + dd, 1));
       (globalThis as unknown as { __v3clampProbe?: (r: Record<string, number>) => void })
-        .__v3clampProbe?.({ k, need, base, ratio: need / base, GAP_SIDE, delta });
+        .__v3clampProbe?.({ k, need, base, ratio: need / base, GAP_SIDE, delta,
+          base_d1: bump(0.001), base_d2: bump(0.002), base_d5: bump(0.005) });
       return Math.max(1, need / base);
     });
   }
