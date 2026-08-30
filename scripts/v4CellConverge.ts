@@ -14,7 +14,7 @@
  *   `dressRun.ts:N_WIN` = round(1/(DAMP·DT)) = 10 · `s4Gate.ts:settleNetM` = `TOL_SELF` = 1e-4 m ·
  *   창 순변위 = `max_v |pos_v − ref_v|`(`runFrames` 의 식)
  *
- * 진입: `[CELL=…] [CONS=both] [CAP=2000] [PERTURB=1e-7] [FRAMES=n(강제 프레임 · 비용 측정용)]
+ * 진입: `[CELL=…] [CONS=both] [CAP=2000] [PERTURB=1e-7] [EXTRA=400] [SNAPS=0,50,100,200,400] [FRAMES=n]
  *        npx tsx scripts/v4CellConverge.ts`
  */
 import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'node:fs';
@@ -84,9 +84,41 @@ const netOf = (ref: Float64Array) => {
   return net;
 };
 
+/* v4-07 §1 — 계기 «교정» 훑기. **물리 경로는 한 줄도 바뀌지 않았다**(step 호출 · 제약 집합 ·
+ * 수렴 판정식 · N_WIN · settleNetM 전부 위와 동일). 바뀐 것은 «산출물의 자리와 시점»뿐이다:
+ *   ① ε 를 파일명에 싣는다(덮어쓰기 방지 — v4-06 은 `-p` 하나뿐이라 ε 를 훑을 수 없었다)
+ *   ② `EXTRA` — 수렴 선언 «후» 더 돌리고, `SNAPS` 오프셋마다 위치를 «스냅»한다
+ *      ⟹ 한 실행이 0·50·100·200·400 을 «전부 지난다»(중복 실행 0)
+ * 산출 접두는 **`cellconv7-`** 로 새로 판다 — v4-02~06 산출물을 바이트 한 개도 건드리지 않는다.
+ */
+const EXTRA = Number(process.env.EXTRA ?? 0);
+const SNAPS = (process.env.SNAPS ?? '0').split(',').map(Number).sort((a, b) => a - b);
+const etag = PERTURB === 0 ? '0' : PERTURB.toExponential(0).replace('e-', 'e-').replace('+', '');
+const snapDone = new Map<number, { frame: number; net: number }>();
+const writeSnap = (off: number, fr: number, nt: number) => {
+  const hdr = {
+    what: `v4-07 §1 계기교정 — v3 (${CELL} · ${KIND} · eps ${PERTURB} · 연장 +${off})`,
+    cell: CELL, kind: KIND, n: sc.n, m: cons.length, nFree, substeps: P.SUB, d: D, G, DT, DAMP,
+    k: FABRICS.gray.k, ke: FABRICS.gray.B, rho: FABRICS.gray.rho,
+    THICK: P.params.collision!.thickness, MU: P.params.collision!.mu,
+    N_WIN, tol: S4_THRESHOLD.settleNetM, perturb: PERTURB, blobFrame: bh.frame,
+    convFrame, convNet, ext: off, frame: fr, net: nt, cap: CAP, extra: EXTRA,
+    ms: Date.now() - t0,
+  };
+  const hbb = Buffer.from(JSON.stringify(hdr), 'utf8');
+  const hd = Buffer.alloc(4); hd.writeUInt32LE(hbb.length, 0);
+  const name = `cellconv7-${CELL}-${KIND}-e${etag}-x${off}`;
+  writeFileSync(`${OUT}/${name}.bin`,
+    Buffer.concat([hd, hbb, Buffer.from(sc.s.pos.buffer), Buffer.from(sc.s.vel.buffer)]));
+  writeFileSync(`${OUT}/${name}.json`, JSON.stringify(hdr, null, 1));
+  snapDone.set(off, { frame: fr, net: nt });
+  console.log(`  스냅 +${off} · 프레임 ${fr} · net ${nt.toExponential(6)} · ${((Date.now() - t0) / 1000).toFixed(0)}s`);
+};
+
 const t0 = Date.now();
 let ref = Float64Array.from(sc.s.pos);
 let frame = 0, net = Infinity, converged = false;
+let convFrame = -1, convNet = NaN;
 const trail: Array<[number, number]> = [];
 const LIMIT = FORCE || CAP;
 while (frame < LIMIT) {
@@ -96,25 +128,31 @@ while (frame < LIMIT) {
   if (frame % N_WIN === 0) {
     net = netOf(ref);
     trail.push([frame, net]);
-    if (!FORCE && net <= S4_THRESHOLD.settleNetM) { converged = true; break; }
+    if (!FORCE && !converged && net <= S4_THRESHOLD.settleNetM) {
+      converged = true; convFrame = frame; convNet = net;
+      console.log(`수렴 선언 · 프레임 ${frame} · 창 순변위 ${net.toExponential(6)} m`);
+      if (SNAPS.includes(0)) writeSnap(0, frame, net);
+      if (EXTRA <= 0) break;
+    } else if (converged) {
+      const off = frame - convFrame;
+      if (SNAPS.includes(off)) writeSnap(off, frame, net);
+      if (off >= EXTRA) break;
+    }
     ref = Float64Array.from(sc.s.pos);
   }
 }
 const ms = Date.now() - t0;
+if (!converged && SNAPS.includes(0)) {           // 미수렴 — 상한 자리를 «사실»로 남긴다
+  convFrame = frame; convNet = net; writeSnap(0, frame, net);
+}
 
-const hdr = {
-  what: `v4-05 §1 층2 구속계 — v3 정답 (${CELL} · ${KIND})`, cell: CELL, kind: KIND,
-  n: sc.n, m: cons.length, nFree, substeps: P.SUB, d: D, G, DT, DAMP,
-  k: FABRICS.gray.k, ke: FABRICS.gray.B, rho: FABRICS.gray.rho,
-  THICK: P.params.collision!.thickness, MU: P.params.collision!.mu,
-  N_WIN, tol: S4_THRESHOLD.settleNetM, frames: frame, converged, net, cap: LIMIT,
-  perturb: PERTURB, forced: FORCE, blobFrame: bh.frame, ms,
+const sum = {
+  what: `v4-07 §1 요약`, cell: CELL, kind: KIND, perturb: PERTURB, nFree, n: sc.n, m: cons.length,
+  converged, convFrame, convNet, lastFrame: frame, lastNet: net, cap: LIMIT, extra: EXTRA,
+  snaps: Object.fromEntries([...snapDone].map(([k, v]) => [k, v])),
+  ms, msPerFrame: ms / frame,
   trail: trail.filter((_, i) => i < 8 || i % 10 === 0 || i === trail.length - 1),
 };
-const hb = Buffer.from(JSON.stringify(hdr), 'utf8');
-const head = Buffer.alloc(4); head.writeUInt32LE(hb.length, 0);
-const suffix = `${KIND}${PERTURB !== 0 ? '-p' : ''}`;
-writeFileSync(`${OUT}/cellconv-${CELL}-${suffix}.bin`,
-  Buffer.concat([head, hb, Buffer.from(sc.s.pos.buffer), Buffer.from(sc.s.vel.buffer)]));
-console.log(`${CELL} ${KIND} n=${sc.n} 자유 ${nFree} m=${cons.length} sub=${P.SUB} perturb=${PERTURB}`);
-console.log(`수렴 ${converged ? '**도달**' : '**미도달**'} · 프레임 **${frame}** · 창 순변위 ${net.toExponential(6)} m · ${ms}ms (${(ms / frame).toFixed(0)}ms/프레임)`);
+writeFileSync(`${OUT}/cellconv7-${CELL}-${KIND}-e${etag}-sum.json`, JSON.stringify(sum, null, 1));
+console.log(`${CELL} ${KIND} eps=${PERTURB} n=${sc.n} 자유 ${nFree} m=${cons.length} sub=${P.SUB}`);
+console.log(`수렴 ${converged ? '**도달**' : '**미도달**'} · 수렴프레임 **${convFrame}** · 수렴시점 순변위 ${Number.isNaN(convNet) ? '-' : convNet.toExponential(6)} m · 최종프레임 ${frame} · ${ms}ms (${(ms / frame).toFixed(0)}ms/프레임)`);
