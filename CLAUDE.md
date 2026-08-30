@@ -207,7 +207,8 @@ A-③/C/B-1이 전부 "보정을 빼면 미끄러진다"로 수렴했는데 원�
  개발 기계   **에어 M4(Metal)** — 이 CC 세션이 도는 기계
  정본 기계   **2호기(CUDA · DESKTOP-OV72A46)** — 정본 굽기는 거기서 한다
  정밀도      **float32**
- 정답지      v3 108칸 — 분류 `index-merged-108.v3-91.json` · 제공 `v1-provide-35.v3-91.json`
+ 정답지      **정점 대조 39칸**(blob 존재) + **판정 대조 69칸**(게이트 판정·실패 사유만 — blob 부재)
+             분류 `index-merged-108.v3-91.json` · 제공 `v1-provide-35.v3-91.json`
  정본 파일   접두 **`v4-`**
  진입        `gpu/.venv/bin/python -m pytest gpu/tests -q`
 ```
