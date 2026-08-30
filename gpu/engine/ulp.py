@@ -35,6 +35,15 @@ K_STRETCH_OPS_PER_CON = 242
 K_BEND_DEPTH_PER_CON = 24
 K_BEND_OPS_PER_CON = 156
 
+# ── 몸 충돌(collide) — `gpu/engine/collide.py:_resolve`(+ `_sample`) ──
+#   한 정점은 한 서브스텝에 충돌체 하나로 **한 번** 해소된다 ⟹ deg = 1.
+#   `sampleSdf` 하나가 **깊이 10 · 33 연산**이고 법선 중심차분이 그것을 **6번** 더 부른다.
+#   깊이 34 · 총량 282      (세부는 docs/v4/05-몸충돌.md §1-③ 표)
+#   ★ 예측 단계(중력)가 앞에 **깊이 4** 를 더하지만 **세지 않는다** — 더 엄격한 쪽을 판정에 쓴다
+#     (34 로 통과하면 38 로도 통과한다).
+K_COLLIDE_DEPTH_PER_CON = 34
+K_COLLIDE_OPS_PER_CON = 282
+
 
 def ulp_f32(x: float) -> float:
     """|x| 자리의 ULP_f32. x=0 이면 0(그 자리에 크기가 없다)."""

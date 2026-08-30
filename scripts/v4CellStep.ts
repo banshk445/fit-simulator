@@ -12,7 +12,7 @@
  */
 import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'node:fs';
 import { prepare } from '../src/v3/dressRun.ts';
-import { FABRICS, DT } from '../src/v3/consts.ts';
+import { FABRICS, DT, G } from '../src/v3/consts.ts';
 import { step, type Constraint } from '../src/v3/solver.ts';
 import { minPairDistLite } from '../src/v3/instruments.ts';
 import { garmentOf, cells, type Size } from '../src/v3/grid.ts';
@@ -21,7 +21,7 @@ const SRC = 'public/v3diag/v3-77';
 const OUT = 'gpu/oracle/export';
 const CELL = process.env.CELL ?? 'c100-h170-s45_M';
 /* v4-03 §1-③ㄴ — 제약 «종류»를 고른다. 기본은 v4-02 그대로 `inplane`(산출물 바이트 불변). */
-const KIND = (process.env.CONS ?? 'inplane') as 'inplane' | 'bend';
+const KIND = (process.env.CONS ?? 'inplane') as 'inplane' | 'bend' | 'collision';
 const D = Number(process.env.D_MM ?? 9) / 1000;
 if (!existsSync(OUT)) mkdirSync(OUT, { recursive: true });
 
@@ -47,12 +47,20 @@ const settled = new Float64Array(raw.buffer.slice(raw.byteOffset + 4 + hl, raw.b
 sc.s.pos.set(settled);
 sc.s.vel.fill(0);                                    // 「늘어남만」 — 관성·중력을 뺀다
 const before = Float64Array.from(sc.s.pos);
-const picked = sc.cons.filter((x: Constraint) => x.kind === KIND);
+/* v4-05 §1-③ — **충돌만 1스텝**: 제약을 **0개** 넘기고 `collision` 만 켠다.
+ * ★ 중력은 **켠다**(다른 두 모드와 다르다) — 마찰은 «접선 변위»에 걸리는데, 중력이 없으면
+ *   예측 단계가 위치를 안 바꿔 `pos − prev = 0` 이 되고 **마찰 경로가 한 줄도 안 돈다**.
+ *   중력을 켜면 예측이 g·h² 만큼 내리고 그 변위에 마찰이 걸린다 ⟹ 두 경로를 «함께» 잰다. */
+const isCol = KIND === 'collision';
+const picked = isCol ? [] : sc.cons.filter((x: Constraint) => x.kind === KIND);
 const h = DT / P.SUB;
-step(sc.s, picked, { dt: h, substeps: 1, gravity: 0, damping: 0 });
+step(sc.s, picked, { dt: h, substeps: 1, gravity: isCol ? G : 0, damping: 0,
+                     ...(isCol ? { collision: P.params.collision } : {}) });
 
 const hdr = { cell: CELL, n: sc.n, m: picked.length, kind: KIND, substeps: P.SUB, h, d: D,
               blobFrame: bh.frame, blobD: bh.d, k: FABRICS.gray.k, ke: FABRICS.gray.B,
+              G: isCol ? G : 0, THICK: P.params.collision!.thickness, MU: P.params.collision!.mu,
+              body: c.bodyId,
               note: `v4 §1-③ㄴ · 정착 위치에 ${KIND} 투영 1회(중력 0 · 감쇠 0 · 속도 0)` };
 const hb = Buffer.from(JSON.stringify(hdr), 'utf8');
 const head = Buffer.alloc(4); head.writeUInt32LE(hb.length, 0);

@@ -24,3 +24,4 @@ public/v3diag/*
 gpu/.venv/
 gpu/__pycache__/
 gpu/**/__pycache__/
+gpu/oracle/export/sdf-*.bin

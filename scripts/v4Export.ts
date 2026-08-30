@@ -101,6 +101,21 @@ for (const c of targets) {
     const bhead = Buffer.alloc(4); bhead.writeUInt32LE(bhb.length, 0);
     writeFileSync(`${OUT}/scene-bend-${c.id}.bin`,
       Buffer.concat([bhead, bhb, Buffer.from(bidx.buffer), Buffer.from(bpar.buffer)]));
+
+    /* v4-05 §1-③ — **몸 SDF 격자**. 충돌 커널의 유일한 충돌체다(`dressRun.prepare` 가 굽는다).
+     * 헤더 JSON + [data float32 nx·ny·nz]. `GridSdf` 필드는 `bodySdf.ts` 정의 그대로. */
+    const g = P.bodyG;
+    const ghdr = {
+      cell: c.id, body: c.bodyId,
+      ox: g.ox, oy: g.oy, oz: g.oz, h: g.h, nx: g.nx, ny: g.ny, nz: g.nz, band: g.band,
+      THICK, MU, G, DT, substeps: P.SUB, bext: P.bext,
+      note: 'v4-05 §1-③ 덤프 · 몸 SDF 격자(bakeSdf 산출). 충돌 = sampleSdf 삼선형 + 중심차분 법선',
+    };
+    const ghb = Buffer.from(JSON.stringify(ghdr), 'utf8');
+    const ghead = Buffer.alloc(4); ghead.writeUInt32LE(ghb.length, 0);
+    writeFileSync(`${OUT}/sdf-${c.bodyId}.bin`, Buffer.concat([
+      ghead, ghb, Buffer.from(g.data.buffer, g.data.byteOffset, g.data.byteLength)]));
+    console.log(`  → ${OUT}/sdf-${c.bodyId}.bin (${g.nx}×${g.ny}×${g.nz} · h=${(g.h * 1000).toFixed(4)}mm · band=${g.band} · ${(g.data.length * 4 / 1048576).toFixed(1)}MB)`);
     console.log(`  → ${OUT}/scene-bend-${c.id}.bin (mb=${mb} · restAngle 최대 ${Math.max(...bpar.filter((_, i) => i % 2 === 0).length ? bend.map((x: any) => Math.abs(x.restAngle)) : [0])})`);
   }
 }
