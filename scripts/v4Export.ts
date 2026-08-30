@@ -82,6 +82,26 @@ for (const c of targets) {
     writeFileSync(`${OUT}/scene-${c.id}.bin`,
       Buffer.concat([head, hb, Buffer.from(im.buffer), Buffer.from(idx.buffer), Buffer.from(par.buffer)]));
     console.log(`  → ${OUT}/scene-${c.id}.bin (m=${m})`);
+
+    /* v4-03 §1-③ — **굽힘 장면**을 «따로» 쓴다(v4-02 산출물은 바이트 그대로 둔다).
+     * 헤더 JSON + [p0p1p2p3 int32 4mb] + [restAngle, shape f64 2mb] */
+    const mb = bend.length;
+    const bhdr = {
+      cell: c.id, n: sc.n, mb, d: D, fabric: FAB, ke: fab.B, k: fab.k, rho: fab.rho,
+      THICK, G, DT, MU, DAMP, substeps: P.SUB,
+      note: 'v4-03 §1-③ 덤프 · bend(굽힘) 제약만. 순서 = makeBend 순서 = 엣지 맵 순서. ke = MAT.B(garmentScene.ts:733)',
+    };
+    const bhb = Buffer.from(JSON.stringify(bhdr), 'utf8');
+    const bidx = new Int32Array(mb * 4);
+    const bpar = new Float64Array(mb * 2);
+    bend.forEach((x: any, t: number) => {
+      bidx[t * 4] = x.p0; bidx[t * 4 + 1] = x.p1; bidx[t * 4 + 2] = x.p2; bidx[t * 4 + 3] = x.p3;
+      bpar[t * 2] = x.restAngle; bpar[t * 2 + 1] = x.shape;
+    });
+    const bhead = Buffer.alloc(4); bhead.writeUInt32LE(bhb.length, 0);
+    writeFileSync(`${OUT}/scene-bend-${c.id}.bin`,
+      Buffer.concat([bhead, bhb, Buffer.from(bidx.buffer), Buffer.from(bpar.buffer)]));
+    console.log(`  → ${OUT}/scene-bend-${c.id}.bin (mb=${mb} · restAngle 최대 ${Math.max(...bpar.filter((_, i) => i % 2 === 0).length ? bend.map((x: any) => Math.abs(x.restAngle)) : [0])})`);
   }
 }
 if (!DUMP) {

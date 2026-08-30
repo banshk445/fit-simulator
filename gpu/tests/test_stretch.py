@@ -106,9 +106,18 @@ def test_cell_step_port_is_exact_in_f64():
 
 
 @missing
-@pytest.mark.xfail(strict=True, reason=(
-    "v4-02 §4 **갈래 C** — 사전등록 상한 M×4·ULP_f32(M=1)=4.768e-07 을 5.837e-07 로 «1.224배» 넘는다. "
-    "초과 좌표는 28,164 중 **1개**. 문턱은 옮기지 않는다(함정 14) — 처분은 전략 세션 몫."))
 def test_cell_step_within_registered_bound_f32():
+    """**v4-03 §1-① 재판정 — 통과**(실측 5.837018e-07 ≤ 상한 3.790855e-05 · 비 0.0154).
+
+    이력(지우지 않는다): v4-02 는 상한을 `M × 4·ULP_f32`(M=1 ⟹ 4.768372e-07)로 잡아
+    **1.224배 초과**했고 이 시험은 `xfail(strict)` 였다. 전략 세션이 **귀책을 자기에게 두고**
+    상한을 **재유도**했다 — 스텝 «안»의 연산 사슬 K 를 세지 않은 것이 결함이었다(v4-03 §0-1′).
+    새 상한은 `gpu/engine/ulp.py` 가 정의하고 K 는 **커널 코드에서 센 수**다(실측 무관).
+    **엄격한 쪽(깊이 K=53)으로 판정한다** — 총량 K=242 를 쓰면 4.6배 헐거워지는데 쓰지 않는다.
+    """
+    from engine import ulp as U
     d, mx = _cell_step(ti.f32, np.float32)
-    assert d <= S.ulp_bound(mx, 1)
+    _, _, idx, _ = load.scene(BASE)
+    deg = int(np.bincount(idx.reshape(-1)).max())
+    assert deg == 6                                    # 메시 «구조»값(측정값 아님)
+    assert d <= U.bound(U.K_STRETCH_DEPTH_PER_CON, deg, mx, 1)

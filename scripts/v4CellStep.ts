@@ -20,6 +20,8 @@ import { garmentOf, cells, type Size } from '../src/v3/grid.ts';
 const SRC = 'public/v3diag/v3-77';
 const OUT = 'gpu/oracle/export';
 const CELL = process.env.CELL ?? 'c100-h170-s45_M';
+/* v4-03 §1-③ㄴ — 제약 «종류»를 고른다. 기본은 v4-02 그대로 `inplane`(산출물 바이트 불변). */
+const KIND = (process.env.CONS ?? 'inplane') as 'inplane' | 'bend';
 const D = Number(process.env.D_MM ?? 9) / 1000;
 if (!existsSync(OUT)) mkdirSync(OUT, { recursive: true });
 
@@ -45,21 +47,22 @@ const settled = new Float64Array(raw.buffer.slice(raw.byteOffset + 4 + hl, raw.b
 sc.s.pos.set(settled);
 sc.s.vel.fill(0);                                    // 「늘어남만」 — 관성·중력을 뺀다
 const before = Float64Array.from(sc.s.pos);
-const inplane = sc.cons.filter((x: Constraint) => x.kind === 'inplane');
+const picked = sc.cons.filter((x: Constraint) => x.kind === KIND);
 const h = DT / P.SUB;
-step(sc.s, inplane, { dt: h, substeps: 1, gravity: 0, damping: 0 });
+step(sc.s, picked, { dt: h, substeps: 1, gravity: 0, damping: 0 });
 
-const hdr = { cell: CELL, n: sc.n, m: inplane.length, substeps: P.SUB, h, d: D,
-              blobFrame: bh.frame, blobD: bh.d, k: FABRICS.gray.k,
-              note: 'v4-02 §1-③ㄴ · 정착 위치에 inplane 투영 1회(중력 0 · 감쇠 0 · 속도 0)' };
+const hdr = { cell: CELL, n: sc.n, m: picked.length, kind: KIND, substeps: P.SUB, h, d: D,
+              blobFrame: bh.frame, blobD: bh.d, k: FABRICS.gray.k, ke: FABRICS.gray.B,
+              note: `v4 §1-③ㄴ · 정착 위치에 ${KIND} 투영 1회(중력 0 · 감쇠 0 · 속도 0)` };
 const hb = Buffer.from(JSON.stringify(hdr), 'utf8');
 const head = Buffer.alloc(4); head.writeUInt32LE(hb.length, 0);
-writeFileSync(`${OUT}/cellstep-${CELL}.bin`,
+const suffix = KIND === 'inplane' ? '' : `-${KIND}`;   // v4-02 파일명은 «그대로» 둔다
+writeFileSync(`${OUT}/cellstep${suffix}-${CELL}.bin`,
   Buffer.concat([head, hb, Buffer.from(before.buffer), Buffer.from(sc.s.pos.buffer)]));
 let mx = 0, dmax = 0;
 for (let i = 0; i < sc.n * 3; i++) {
   if (Math.abs(before[i]) > mx) mx = Math.abs(before[i]);
   const dd = Math.abs(sc.s.pos[i] - before[i]); if (dd > dmax) dmax = dd;
 }
-console.log(`${CELL} n=${sc.n} m=${inplane.length} sub=${P.SUB} h=${h.toExponential(12)}`);
+console.log(`${CELL} ${KIND} n=${sc.n} m=${picked.length} sub=${P.SUB} h=${h.toExponential(12)}`);
 console.log(`투영 변위 최대 ${dmax.toExponential(9)} m · 최대|좌표| ${mx.toFixed(9)}`);

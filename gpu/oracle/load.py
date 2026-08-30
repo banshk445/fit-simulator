@@ -109,3 +109,36 @@ def cell_step(cell_id: str):
     before = np.frombuffer(pay, dtype="<f8", count=n * 3, offset=0).reshape(n, 3)
     after = np.frombuffer(pay, dtype="<f8", count=n * 3, offset=n * 3 * 8).reshape(n, 3)
     return head, before, after
+
+
+# ─── v4-03 §1-③ — 굽힘 덤프 리더 ──────────────────────────────────────────────
+def scene_bend(cell_id: str):
+    """한 칸의 **굽힘 장면** → (헤더, idx i32[mb,4] = p0,p1,p2,p3, par f64[mb,2] = restAngle, shape)."""
+    head, pay = _blob(EXPORT / f"scene-bend-{cell_id}.bin")
+    mb = int(head["mb"])
+    idx = np.frombuffer(pay, dtype="<i4", count=mb * 4, offset=0).reshape(mb, 4)
+    par = np.frombuffer(pay, dtype="<f8", count=mb * 2, offset=mb * 4 * 4).reshape(mb, 2)
+    return head, idx, par
+
+
+def cell_step_bend(cell_id: str):
+    """「굽힘만 1스텝」의 v3 정답 → (헤더, 투영 «전» pos, 투영 «후» pos) — 전부 f64."""
+    head, pay = _blob(EXPORT / f"cellstep-bend-{cell_id}.bin")
+    n = int(head["n"])
+    before = np.frombuffer(pay, dtype="<f8", count=n * 3, offset=0).reshape(n, 3)
+    after = np.frombuffer(pay, dtype="<f8", count=n * 3, offset=n * 3 * 8).reshape(n, 3)
+    return head, before, after
+
+
+def hinge_v3():
+    """합성 「두 삼각형 힌지」의 v3 정답 → (헤더, uv, tris, bidx, invMass, pos, vel)."""
+    head, pay = _blob(EXPORT / "hinge-v3.bin")
+    n, nt, mb = int(head["n"]), int(head["tris"]), int(head["mb"])
+    o = 0
+    uv = np.frombuffer(pay, dtype="<f8", count=n * 2, offset=o).reshape(n, 2); o += n * 2 * 8
+    tris = np.frombuffer(pay, dtype="<i4", count=nt * 3, offset=o).reshape(nt, 3); o += nt * 3 * 4
+    bidx = np.frombuffer(pay, dtype="<i4", count=mb * 4, offset=o).reshape(mb, 4); o += mb * 4 * 4
+    invm = np.frombuffer(pay, dtype="<f8", count=n, offset=o); o += n * 8
+    pos = np.frombuffer(pay, dtype="<f8", count=n * 3, offset=o).reshape(n, 3); o += n * 3 * 8
+    vel = np.frombuffer(pay, dtype="<f8", count=n * 3, offset=o).reshape(n, 3)
+    return head, uv, tris, bidx, invm, pos, vel
