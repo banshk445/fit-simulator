@@ -728,8 +728,16 @@ export function createScene(cfg: SceneConfig) {
       const m0 = minPairDistLite(sc0.s.pos, sc0.tris);
       /* v3-86 §1-③ — **인쇄 «전용» 계기**. 판정식(`m0 >= need`)도 스텝(`*= 1.5`)도 회수(8)도
        * 한 글자 안 바뀌었다. 전역 훅이 «있을 때만» 회차 값을 넘긴다(기본 경로 0줄 · 처방 0). */
-      const probe = (globalThis as unknown as { __v3gapProbe?: (r: Record<string, number>) => void }).__v3gapProbe;
-      if (probe) probe({ 회차: i, GAP_SIDE, 측정_최소쌍거리_m: m0, 기준_need_m: need, DELTA });
+      const probe = (globalThis as unknown as { __v3gapProbe?: (r: Record<string, unknown>) => void }).__v3gapProbe;
+      /* v3-87 §1-①④ — 계기가 **그 회차의 씬 자체**를 받는다(정점·삼각형·패널 경계·몸 SDF).
+       * 조립 로직은 한 글자도 바뀌지 않았다 — 넘기는 «값»만 늘렸다. */
+      if (probe) probe({ 회차: i, GAP_SIDE, 측정_최소쌍거리_m: m0, 기준_need_m: need, DELTA,
+        pos: sc0.s.pos, tris: sc0.tris,
+        panels: sc0.panels.map((p) => ({ name: p.name, base: p.base })),
+        n: sc0.n,
+        /* v3-87 §1-③ — 소매 배치의 «유도값»도 함께 넘긴다(인쇄 전용). */
+        SLV_X0, SLV_R, CAP_W, RMIN_소매: CAP_W / Math.PI, 감김호_rad: 2 * CAP_W / SLV_R,
+        sdf: (x: number, y: number, z: number) => sampleSdf(bodyG, x, y, z) });
       if (m0 >= need) { ok = true; break; }
       GAP_SIDE *= 1.5;
     }
