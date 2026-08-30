@@ -726,6 +726,10 @@ export function createScene(cfg: SceneConfig) {
       fitDelta();
       const sc0 = assemble(D_FIXED);
       const m0 = minPairDistLite(sc0.s.pos, sc0.tris);
+      /* v3-86 §1-③ — **인쇄 «전용» 계기**. 판정식(`m0 >= need`)도 스텝(`*= 1.5`)도 회수(8)도
+       * 한 글자 안 바뀌었다. 전역 훅이 «있을 때만» 회차 값을 넘긴다(기본 경로 0줄 · 처방 0). */
+      const probe = (globalThis as unknown as { __v3gapProbe?: (r: Record<string, number>) => void }).__v3gapProbe;
+      if (probe) probe({ 회차: i, GAP_SIDE, 측정_최소쌍거리_m: m0, 기준_need_m: need, DELTA });
       if (m0 >= need) { ok = true; break; }
       GAP_SIDE *= 1.5;
     }

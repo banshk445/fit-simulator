@@ -430,8 +430,6 @@ export function V3Panel() {
     const base = bodies();
     const list = rev ? [...base].reverse() : base;
     const rows: Record<string, unknown>[] = [];
-    /** v3-85 §1-④ㄱ — 저장 대상 한 칸의 정점 바이트(기록 파일에 동봉 · 다운로드 1건). */
-    let blobPayload: { id: string; base64: string; bytes: number } | null = null;
     const retry: typeof list = [];
     console.log(`[v3-83 그리드] 몸 ${list.length}칸 · 순서 ${rev ? "**rev(측정 전용)**" : "기본"}`
       + ` · ${dry ? "**드라이런(다운로드 0)**" : "저장"} · 팔 ${FIXED.armLength} · 다리 ${FIXED.legLength}`);
@@ -494,19 +492,22 @@ export function V3Panel() {
       const scaleOk = dPrime <= POSE_SETTLE_EPS;               // ㉰′
       const pass = !capped && resid <= POSE_SETTLE_EPS && scaleOk;
       let sha = "";
-      if (pass && !dry && (!only || id === only)) {
-        /* v3-85 §1-④ㄱ — **바이트를 «기록 파일 안»으로 싣는다**.
-         * 브라우저가 한 페이지의 **자동 다운로드 2건째를 막는다**(기록 JSON + blob) ⟹
-         * 실측으로 blob 이 내려오지 않았다. 다운로드를 **1건**으로 줄여 그 제약을 피한다.
-         * base64 는 **전송 수단**이고 저장 형식이 아니다 — 받는 쪽이 곧바로 .bin 으로 되돌린다. */
-        let bin = "";
-        const u8 = new Uint8Array(r.verts.buffer as ArrayBuffer);
-        for (let i = 0; i < u8.length; i += 0x8000) bin += String.fromCharCode(...u8.subarray(i, i + 0x8000));
-        blobPayload = { id, base64: btoa(bin), bytes: u8.length };
-      }
       if (pass || dry) {
-        const h = await crypto.subtle.digest("SHA-256", r.verts.buffer as ArrayBuffer);
-        sha = [...new Uint8Array(h)].map((x) => x.toString(16).padStart(2, "0")).join("");
+        const h0 = await crypto.subtle.digest("SHA-256", r.verts.buffer as ArrayBuffer);
+        sha = [...new Uint8Array(h0)].map((x) => x.toString(16).padStart(2, "0")).join("");
+      }
+      if (pass && !dry && (!only || id === only)) {
+        /* v3-86 §1-⑤ — **수신기로 보낸다**(동봉 방식 폐기 · v3-85 의 임시 수단이었다).
+         * 브라우저 자동 다운로드는 막히므로 바이트는 `scripts/v3Receiver.ts` 가 받는다.
+         * **sha 는 여기서 계산해 함께 보내고**, 수신기가 **대조한 뒤에만** 저장한다. */
+        const u8 = new Uint8Array(r.verts.buffer as ArrayBuffer);
+        try {
+          await fetch(`http://127.0.0.1:5199/put?name=body-${id}.bin&sha256=${sha}`,
+                      { method: "POST", body: u8 });
+          console.log(`[v3-86 반출] ${id} → 수신기(${u8.length} bytes · sha ${sha.slice(0, 16)}…)`);
+        } catch (e) {
+          console.log(`[v3-86 반출] ${id} **실패** — 수신기가 안 떠 있다(${(e as Error).message})`);
+        }
       }
       rows.push({ id, 목표높이_m: +target.toFixed(4), 실측높이_m: +measured.toFixed(4), 잔차_m: +dh.toFixed(4),
         높이_등재범위_안: tallInRange,                         // 기록 열(게이트 아님)
@@ -542,7 +543,7 @@ export function V3Panel() {
       + ` · 높이는 **기록 열**(게이트 아님 · 등재 범위 ±${HEIGHT_TOL_M}m 는 참고)`
       + `${legacy ? " · **legacy 주입(검출력 증명 · 씬 배율 1 로 덮음)**" : ""}`
       + `${only ? ` · **저장 대상 «${only}» 한 칸뿐**(나머지 blob 쓰기 0)` : ""}`
-      + " · 문턱은 전부 «인용»이고 이 판이 새로 정한 수는 0이다.", 동봉blob: blobPayload, 행: rows };
+      + " · 문턱은 전부 «인용»이고 이 판이 새로 정한 수는 0이다.", 행: rows };
     (window as unknown as Record<string, unknown>).__v3bodyIndex = rec;
     {
       /* v3-84 §1-③ — **기록 파일은 드라이런에서도 내려받는다**(blob 다운로드는 여전히 0).
