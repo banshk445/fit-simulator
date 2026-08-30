@@ -13,6 +13,8 @@
  */
 import type { GridSdf } from './bodySdf.ts';
 import { sampleSdf } from './bodySdf.ts';
+/* v3-90 §1-① — 실패 문언이 «최소쌍 패널·값»을 싣기 위해 쓴다(판정 채널은 그대로). */
+import { minPairDist } from './instruments.ts';
 import {
   makeSolver, makeInplane, makeBend, assignMassFromMesh,
   substepsForBending, substepsForCloth,
@@ -523,6 +525,9 @@ export function createScene(cfg: SceneConfig) {
       const py = yOf(k) - (Y_TOP - L);          // 그 높이에 대응하는 2D 높이
       const need = 4 * panelHalfWidth(Math.max(0, Math.min(L, py))) + 2 * GAP_SIDE;
       const base = perimOf(boundaryOf(h, delta, 1));
+      /* v3-90 §1-① — **인쇄 «전용» 계기**(동작 0). 클램프 `Math.max(1, …)` 발화 = `need < base`. */
+      (globalThis as unknown as { __v3clampProbe?: (r: Record<string, number>) => void })
+        .__v3clampProbe?.({ k, need, base, ratio: need / base, GAP_SIDE, delta });
       return Math.max(1, need / base);
     });
   }
@@ -631,6 +636,16 @@ export function createScene(cfg: SceneConfig) {
         // 몸판(수직 기둥)과도 SEP 이상 떨어져야 한다 — 옷–옷 분리 거리다
         if (y >= Y_HEM && y <= Y_TOP) min = Math.min(min, distToSurface(x, y, z - AXIS_Z));
       }
+      /* ★ v3-90 §1-① — **소매 «자기» 최소쌍도 본다**(항 «하나» · 시드·브래킷 불변).
+       * 옛 probe 는 몸과 몸판만 봐서, 감김이 한 바퀴를 채워 두 끝이 겹쳐도 통과시켰다(v3-87 §1-③′).
+       * 감김의 두 끝은 px 의 양 극단이고 **x 가 같으므로** 거리는 (y, z) 차다 —
+       * 원통 이음매에서 `minPairDist` 가 재는 것과 **같은 양**이고 삼각화 해상도에 안 흔들린다.
+       * 문턱은 이 함수의 반환값이 `SEP` 와 비교되는 것을 **그대로** 쓴다 — **새 상수 0 · 새 문턱 0**.
+       * ★ `RMIN`(:624)·브래킷(:636-643)·손 상수는 **한 글자도 안 건드린다**(함정 37 · v3-89 증명). */
+      let pxMin = Infinity, pxMax = -Infinity;
+      for (const [px] of PROBE.sleeve) { if (px < pxMin) pxMin = px; if (px > pxMax) pxMax = px; }
+      const phA = pxMin / R, phB = pxMax / R;
+      min = Math.min(min, Math.hypot(R * (Math.cos(phB) - Math.cos(phA)), R * (Math.sin(phB) - Math.sin(phA))));
       return min;
     };
     for (let x0 = SW / 2; x0 < SW / 2 + SLEN; x0 += 0.005) {
@@ -741,7 +756,18 @@ export function createScene(cfg: SceneConfig) {
       if (m0 >= need) { ok = true; break; }
       GAP_SIDE *= 1.5;
     }
-    if (!ok) throw new Error('옆 틈 G를 8회 안에 못 찾았다 — 갈래 D');
+    if (!ok) {
+      /* ★ v3-90 §1-① — **문언을 채널 이름으로**(v3-88 형식 · 함정 38). 판정 채널은 «옷 전체»
+       * 자기 최소거리인데 옛 문언은 「옆 틈 G」였다 — 실패 20칸 중 «옆선»은 7칸뿐이었다.
+       * **구매자 문언 불변** · **108 원본 사유 불변**. */
+      const sc0 = assemble(D_FIXED);
+      const w = minPairDist(sc0.s.pos, sc0.tris, SEP * 2);
+      const bases = sc0.panels.map((p) => p.base).concat([sc0.n]);
+      const nameOf = (v: number) => { for (let k = 0; k < sc0.panels.length; k++) if (v >= bases[k] && v < bases[k + 1]) return sc0.panels[k].name; return '?'; };
+      const pn = (t: number) => t < 0 ? '?' : [...new Set([0, 1, 2].map((k) => nameOf(sc0.tris[t * 3 + k])))].join('+');
+      throw new Error(`옷 자기 간격 SEP 미달 — 최소쌍 ${pn(w.worst[0])}↔${pn(w.worst[1])}`
+        + ` ${(w.min * 1000).toPrecision(4)}mm — 갈래 D`);
+    }
   }
 
   /** 삼각화 품질 — 최소각 · 종횡비max · 엣지 길이. v3-08 §3과 «같은 정의». */
