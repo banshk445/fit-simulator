@@ -21,3 +21,6 @@ public/v3diag/*
 !public/v3diag/settled-sweat-d8-new.bin
 !public/v3diag/settled-swim-d10.bin
 !public/v3diag/settled-sweat-d9.bin
+gpu/.venv/
+gpu/__pycache__/
+gpu/**/__pycache__/
