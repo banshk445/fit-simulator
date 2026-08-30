@@ -15,6 +15,7 @@ import taichi as ti
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from oracle import load  # noqa: E402
 from engine import stretch as S, bending as B, ulp as U  # noqa: E402
+from _backend import needs_f64  # noqa: E402
 
 BASE = "c100-h170-s45_M"
 GPU = ti.metal if sys.platform == "darwin" else ti.cuda
@@ -79,6 +80,7 @@ def test_cell_bend_scene_shape():
 
 # ─── ㄱ 합성 힌지 ────────────────────────────────────────────────
 @missing
+@needs_f64
 def test_hinge_port_is_exact_in_f64():
     """**이식 자체가 옳은가** — f64 로 돌리면 v3 와 «수치적으로 같아야» 한다."""
     hh, d, dg, mx = _hinge(ti.f64, np.float64)
@@ -93,6 +95,7 @@ def test_hinge_degenerate_branch_never_fires():
 
 
 @missing
+@needs_f64
 @pytest.mark.parametrize("frames", [1, 10])
 def test_hinge_short_horizon_within_bound(frames):
     """M 이 작으면 f32 도 상한 «안»이다 — 초과는 «스텝당 오차»가 아니라 **증폭** 때문이다.
@@ -107,6 +110,7 @@ def test_hinge_short_horizon_within_bound(frames):
 
 
 @missing
+@needs_f64
 @pytest.mark.xfail(strict=True, reason=(
     "v4-03 §4 **갈래 C** — 합성 힌지 M=600 에서 f32 가 상한을 **30.1배** 넘는다(1.292866e-02 ↔ 4.291534e-04). "
     "f64 는 1.110223e-16 ⟹ 이식은 정확하다. 원인은 **상한식이 M 에 «선형»인데 이 계기의 오차가 "
@@ -119,6 +123,7 @@ def test_hinge_within_bound_f32():
 
 # ─── ㄴ 정답지 1칸 ───────────────────────────────────────────────
 @missing
+@needs_f64
 def test_cell_bend_port_is_exact_in_f64():
     d, dg, mx, _ = _cell(ti.f64, np.float64)
     assert dg == 0
