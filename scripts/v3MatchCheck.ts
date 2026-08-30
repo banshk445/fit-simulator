@@ -7,9 +7,9 @@ import { cells, bodyIdOf } from '../src/v3/grid.ts';
 
 const D = 'public/v3diag/v3-77';
 /* v3-81 §1-② — 제공 정본은 **35**(37 은 대조 전용 · 무삭제). */
-const provideRaw = JSON.parse(readFileSync(`${D}/v1-provide-35.json`, 'utf8'));
+const provideRaw = JSON.parse(readFileSync(`${D}/v1-provide-35.v3-85.json`, 'utf8'));
 const provide: string[] = Array.isArray(provideRaw) ? provideRaw : provideRaw.provide;
-const index: Record<string, { status: string; reason?: string }> = JSON.parse(readFileSync(`${D}/index-merged-108.json`, 'utf8'));
+const index: Record<string, { status: string; reason?: string }> = JSON.parse(readFileSync(`${D}/index-merged-108.v3-85.json`, 'utf8'));
 const canon = { provide, index } as unknown as Canon;
 
 /* ── §3-1 매칭 표 12건 (등재분 전사) ── */
@@ -87,7 +87,7 @@ for (const b of bodyIds) {
   const ok = got.size === want && got.fallback === (want !== null && want !== 'M');
   if (ok) lOk++; else bad.push(`${b} 착지 기대 ${want} 실제 ${got.size}`);
 }
-console.log(`  일치 ${lOk}/27 · 제공 0칸 몸 ${noneList.length}개(기대 8 — v3-81 §2-3 등재분)`);
+console.log(`  일치 ${lOk}/27 · 제공 0칸 몸 ${noneList.length}개(기대 8 — v3-81 §2-3 등재분 · v3-85 재도출)`);
 console.log('  제공 0칸: ' + noneList.join(' '));
 
 const pass = mOk === 12 && bOk === 108 && armgHit === 9 && armgLeak === 0

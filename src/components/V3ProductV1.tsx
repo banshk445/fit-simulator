@@ -74,9 +74,9 @@ export function V3ProductV1() {
     Promise.all([
       /* v3-81 §1-② — **제공 목록 정본은 35 다**(37 은 무삭제·대조 전용).
        * 35 파일은 제외 사유를 «메타 한 줄»로 담으므로 배열이 아니라 객체다 — 둘 다 받는다. */
-      fetch(`${B}${DIR}/v1-provide-35.json`).then((r) => r.ok ? r.json() : Promise.reject(new Error(`제공 목록 응답 ${r.status}`)))
+      fetch(`${B}${DIR}/v1-provide-35.v3-85.json`).then((r) => r.ok ? r.json() : Promise.reject(new Error(`제공 목록 응답 ${r.status}`)))
         .then((j) => (Array.isArray(j) ? j : j.provide)),
-      fetch(`${B}${DIR}/index-merged-108.json`).then((r) => r.ok ? r.json() : Promise.reject(new Error(`분류 정본 응답 ${r.status}`))),
+      fetch(`${B}${DIR}/index-merged-108.v3-85.json`).then((r) => r.ok ? r.json() : Promise.reject(new Error(`분류 정본 응답 ${r.status}`))),
     ]).then(([provide, index]) => setCanon({ provide, index }))
       .catch((e) => setCanonErr(`정본을 못 읽었다 — ${e.message}. **화면을 세운다**(폴백 0).`));
   }, []);
