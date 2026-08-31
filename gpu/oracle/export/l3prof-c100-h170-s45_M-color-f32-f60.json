@@ -1,0 +1,171 @@
+{
+ "mode": "color",
+ "cell": "c100-h170-s45_M",
+ "fp": "f32",
+ "n": 9388,
+ "substeps": 229,
+ "frames": 60,
+ "arch": "Arch.cuda",
+ "initSec": 1.2082262999974773,
+ "warmupSec": 68.21883339999476,
+ "wallSec": 782.6205996999997,
+ "secPerFrame": 13.043676661666662,
+ "trail": [
+  [
+   10,
+   0.027146641297750112
+  ],
+  [
+   20,
+   0.02366241860613866
+  ],
+  [
+   30,
+   0.0204403343153892
+  ],
+  [
+   40,
+   0.03043853378883212
+  ],
+  [
+   50,
+   0.020123499317108072
+  ],
+  [
+   60,
+   0.029749189424305246
+  ]
+ ],
+ "wall": [
+  [
+   10,
+   129.5963211000053
+  ],
+  [
+   20,
+   259.7907437000031
+  ],
+  [
+   30,
+   390.5878834000032
+  ],
+  [
+   40,
+   521.2941276000056
+  ],
+  [
+   50,
+   651.9902952000048
+  ],
+  [
+   60,
+   782.6205321000016
+  ]
+ ],
+ "topLevelLoopsPerSubstep": 29,
+ "launchesProfiler": 0,
+ "launchesFromCode": 398460,
+ "launchesFromCodeNote": "색분할 = 최상위 루프 29 × 서브스텝 229 × 프레임 60",
+ "pyKernelCalls": 13740,
+ "profilerTotalSec": 769.1626315708603,
+ "kernelMsTotal": 769162.6315708603,
+ "kernelSecTotal": 769.1626315708603,
+ "kernelShareOfWall": 0.9828039689546911,
+ "perKernel": [
+  {
+   "name": "substep_c84_0_kernel_4_serial",
+   "count": 13740,
+   "totalMs": 768782.746257782,
+   "avgMs": 55.9521649387032,
+   "grid": 1,
+   "block": 1
+  },
+  {
+   "name": "substep_c84_0_kernel_5_range_for",
+   "count": 13740,
+   "totalMs": 93.42608020221815,
+   "avgMs": 0.006799569155911073,
+   "grid": 74,
+   "block": 128
+  },
+  {
+   "name": "substep_c84_0_kernel_0_range_for",
+   "count": 13740,
+   "totalMs": 76.0621763386298,
+   "avgMs": 0.00553582069422342,
+   "grid": 74,
+   "block": 128
+  },
+  {
+   "name": "substep_c84_0_kernel_2_range_for",
+   "count": 13740,
+   "totalMs": 73.95408026990481,
+   "avgMs": 0.005382393032744163,
+   "grid": 209,
+   "block": 128
+  },
+  {
+   "name": "substep_c84_0_kernel_1_range_for",
+   "count": 13740,
+   "totalMs": 71.58716806164011,
+   "avgMs": 0.005210128679886471,
+   "grid": 141,
+   "block": 128
+  },
+  {
+   "name": "substep_c84_0_kernel_3_range_for",
+   "count": 13740,
+   "totalMs": 64.22329620830715,
+   "avgMs": 0.004674184585757434,
+   "grid": 2,
+   "block": 128
+  },
+  {
+   "name": "snode_reader_49_kernel_0_serial",
+   "count": 6,
+   "totalMs": 0.5148799978196621,
+   "avgMs": 0.08581333296994369,
+   "grid": 1,
+   "block": 1
+  },
+  {
+   "name": "matrix_to_ext_arr_c28_0_kernel_0_range_for",
+   "count": 13,
+   "totalMs": 0.06358399987220764,
+   "avgMs": 0.0048910769132467415,
+   "grid": 74,
+   "block": 128
+  },
+  {
+   "name": "matrix_to_ext_arr_c28_1_kernel_0_range_for",
+   "count": 6,
+   "totalMs": 0.027808000333607197,
+   "avgMs": 0.004634666722267866,
+   "grid": 74,
+   "block": 128
+  },
+  {
+   "name": "snode_writer_49_kernel_0_serial",
+   "count": 6,
+   "totalMs": 0.026239999569952488,
+   "avgMs": 0.004373333261658748,
+   "grid": 1,
+   "block": 1
+  }
+ ],
+ "launchLatencySec": {
+  "serial": 0.00022121559200000775,
+  "range_for": 0.00021728871499995876,
+  "29tasks": 0.002623177775000295
+ },
+ "tasksPerCall": {
+  "serial": 1.0,
+  "range_for": 1.0,
+  "29tasks": 29.0
+ },
+ "shapeLatencySec": 0.002623177775000295,
+ "estLaunchOverheadSec": 36.04246262850405,
+ "estLaunchShareOfWall": 0.04605355729496531,
+ "estTaskOverheadSec": 0.0,
+ "estTaskShareOfWall": 0.0
+}

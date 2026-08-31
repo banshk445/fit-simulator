@@ -1,0 +1,131 @@
+{
+ "mode": "serial",
+ "cell": "c100-h170-s45_M",
+ "fp": "f32",
+ "n": 9388,
+ "substeps": 229,
+ "frames": 60,
+ "arch": "Arch.cuda",
+ "initSec": 0.9813824000011664,
+ "warmupSec": 13.524805199995171,
+ "wallSec": 764.6527280999944,
+ "secPerFrame": 12.744212134999907,
+ "trail": [
+  [
+   10,
+   0.02651729275494402
+  ],
+  [
+   20,
+   0.023498002189873083
+  ],
+  [
+   30,
+   0.02299181782051681
+  ],
+  [
+   40,
+   0.030038550208173802
+  ],
+  [
+   50,
+   0.019378180332647515
+  ],
+  [
+   60,
+   0.02705761363511895
+  ]
+ ],
+ "wall": [
+  [
+   10,
+   126.69723939999676
+  ],
+  [
+   20,
+   253.7110149999935
+  ],
+  [
+   30,
+   380.95750069999485
+  ],
+  [
+   40,
+   508.90602679999574
+  ],
+  [
+   50,
+   636.7942530999935
+  ],
+  [
+   60,
+   764.6526537999962
+  ]
+ ],
+ "topLevelLoopsPerSubstep": 1,
+ "launchesProfiler": 0,
+ "launchesFromCode": 6,
+ "launchesFromCodeNote": "직렬 = step() 호출당 커널 1개(창 6회)",
+ "pyKernelCalls": 6,
+ "profilerTotalSec": 764.6252614524923,
+ "kernelMsTotal": 764625.2614524923,
+ "kernelSecTotal": 764.6252614524923,
+ "kernelShareOfWall": 0.9999640795795363,
+ "perKernel": [
+  {
+   "name": "run_c80_0_kernel_0_serial",
+   "count": 6,
+   "totalMs": 764624.6328125,
+   "avgMs": 127437.43880208333,
+   "grid": 1,
+   "block": 1
+  },
+  {
+   "name": "snode_reader_49_kernel_0_serial",
+   "count": 6,
+   "totalMs": 0.5140159912407398,
+   "avgMs": 0.08566933187345664,
+   "grid": 1,
+   "block": 1
+  },
+  {
+   "name": "matrix_to_ext_arr_c28_0_kernel_0_range_for",
+   "count": 13,
+   "totalMs": 0.05971200065687299,
+   "avgMs": 0.00459323081975946,
+   "grid": 74,
+   "block": 128
+  },
+  {
+   "name": "matrix_to_ext_arr_c28_1_kernel_0_range_for",
+   "count": 6,
+   "totalMs": 0.03027200046926737,
+   "avgMs": 0.005045333411544561,
+   "grid": 74,
+   "block": 128
+  },
+  {
+   "name": "snode_writer_49_kernel_0_serial",
+   "count": 6,
+   "totalMs": 0.024639999959617853,
+   "avgMs": 0.004106666659936309,
+   "grid": 1,
+   "block": 1
+  }
+ ],
+ "launchLatencySec": {
+  "serial": 0.00021995097200000602,
+  "range_for": 0.00021206248399998004,
+  "29tasks": 0.002577814975000001
+ },
+ "tasksPerCall": {
+  "serial": 1.0,
+  "range_for": 1.0,
+  "29tasks": 29.0
+ },
+ "shapeLatencySec": 0.00021995097200000602,
+ "estLaunchOverheadSec": 0.0013197058320000362,
+ "estLaunchShareOfWall": 1.7258891304543373e-06,
+ "estTaskOverheadSec": 0.0,
+ "estTaskShareOfWall": 0.0
+}
