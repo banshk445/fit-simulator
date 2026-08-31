@@ -91,6 +91,12 @@ const netOf = (ref: Float64Array) => {
  *      ⟹ 한 실행이 0·50·100·200·400 을 «전부 지난다»(중복 실행 0)
  * 산출 접두는 **`cellconv7-`** 로 새로 판다 — v4-02~06 산출물을 바이트 한 개도 건드리지 않는다.
  */
+/* v4-09 §1 — **산출물의 «자리와 해상도»만** 바꾼다(물리 경로 diff 0 · §0-3).
+ *   ① `PREFIX` — 출력 접두를 env 로. 기본은 `cellconv7`(v4-07/08 산출물을 덮지 않는다).
+ *   ② `trailAll` — 창 순변위 궤적을 **전량** 남긴다(기존 `trail` 필드는 «그대로» 둔다 —
+ *      회차 간 대조가 끊기지 않게). v4-08 §1-② 가 v3·v4 를 10프레임 간격으로 나란히 못 놓은 이유가
+ *      기존 `trail` 이 수렴 뒤 downsample 되기 때문이었다. */
+const PREFIX = process.env.PREFIX ?? 'cellconv7';
 const EXTRA = Number(process.env.EXTRA ?? 0);
 const SNAPS = (process.env.SNAPS ?? '0').split(',').map(Number).sort((a, b) => a - b);
 const etag = PERTURB === 0 ? '0' : PERTURB.toExponential(0).replace('e-', 'e-').replace('+', '');
@@ -107,7 +113,7 @@ const writeSnap = (off: number, fr: number, nt: number) => {
   };
   const hbb = Buffer.from(JSON.stringify(hdr), 'utf8');
   const hd = Buffer.alloc(4); hd.writeUInt32LE(hbb.length, 0);
-  const name = `cellconv7-${CELL}-${KIND}-e${etag}-x${off}`;
+  const name = `${PREFIX}-${CELL}-${KIND}-e${etag}-x${off}`;
   writeFileSync(`${OUT}/${name}.bin`,
     Buffer.concat([hd, hbb, Buffer.from(sc.s.pos.buffer), Buffer.from(sc.s.vel.buffer)]));
   writeFileSync(`${OUT}/${name}.json`, JSON.stringify(hdr, null, 1));
@@ -152,7 +158,8 @@ const sum = {
   snaps: Object.fromEntries([...snapDone].map(([k, v]) => [k, v])),
   ms, msPerFrame: ms / frame,
   trail: trail.filter((_, i) => i < 8 || i % 10 === 0 || i === trail.length - 1),
+  trailAll: trail,                                 // v4-09 — 전량(기존 trail 필드는 그대로)
 };
-writeFileSync(`${OUT}/cellconv7-${CELL}-${KIND}-e${etag}-sum.json`, JSON.stringify(sum, null, 1));
+writeFileSync(`${OUT}/${PREFIX}-${CELL}-${KIND}-e${etag}-sum.json`, JSON.stringify(sum, null, 1));
 console.log(`${CELL} ${KIND} eps=${PERTURB} n=${sc.n} 자유 ${nFree} m=${cons.length} sub=${P.SUB}`);
 console.log(`수렴 ${converged ? '**도달**' : '**미도달**'} · 수렴프레임 **${convFrame}** · 수렴시점 순변위 ${Number.isNaN(convNet) ? '-' : convNet.toExponential(6)} m · 최종프레임 ${frame} · ${ms}ms (${(ms / frame).toFixed(0)}ms/프레임)`);
