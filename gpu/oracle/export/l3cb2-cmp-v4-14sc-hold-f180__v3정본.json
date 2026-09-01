@@ -1,0 +1,16 @@
+{
+ "A": "gpu\\oracle\\export\\l3full-c100-h170-s45_M-sc-f64-cuda-hold.bin",
+ "B": "public\\v3diag\\v3-77\\settled-c100-h170-s45_M.bin",
+ "n": 9388,
+ "bytesIdentical": false,
+ "maxVertexMm": 0.09030437169295903,
+ "medVertexMm": 0.006052389828015354,
+ "p99VertexMm": 0.04831379139594261,
+ "maxCoordMm": 0.0784728934308844,
+ "maxAt": 7095,
+ "meanShiftMm": [
+  -4.9516931123532916e-05,
+  0.0001331921399279961,
+  -0.0003473636954073815
+ ]
+}
