@@ -1,8 +1,9 @@
 """v4-17 §1-① — **굽기 워커 뼈대**. 한 프로세스가 칸 «목록»을 받아 순서대로 굽는다.
 
-왜 뼈대인가(v4-16 §1-③ 실측) — 칸 하나를 굽는 데 **JIT 이 60 s 안팎**이고 그게 칸 시간의 **절반**이다.
-칸마다 프로세스를 새로 띄우면 그 60 s 가 칸마다 되풀이된다. 이 워커는 **`ti.init` 을 한 번** 하고
-칸을 이어 굽는다 — 줄어드는지 **재지 않고 말하지 않는다**(§1-①ㄹ 이 값으로 잰다).
+★★ **v4-18 재설계**(전략 세션 v4-17 §4) — v4-17 은 「`ti.init` 한 번 + 칸을 이어 굽기」였는데
+실측이 **뒤집었다**: 칸마다 필드 모양이 달라 **재컴파일**되고(JIT 10.1 → **79.2 s**) 앞 칸 자원이
+풀리지 않아 s/프레임이 **2.798 → 26.911** 로 무너졌다(총 2.83배 «증가»).
+⟹ 이 워커는 **칸마다 «자식 프로세스»를 새로 띄운다**. 부모는 «순서·PAUSE·체크포인트·로그»만 맡는다.
 
 ```
  job  = gpu/bake/jobs/<이름>.json  {name, cells:[…], fp, arch, frames?}
@@ -31,6 +32,8 @@ sys.path.insert(0, str(ROOT))
 from oracle import load  # noqa: E402
 from engine import full_sc as FS, collide as CO, seam as SE  # noqa: E402
 
+CHILD = "--child" in sys.argv
+CHILD_CELL = sys.argv[sys.argv.index("--child") + 1] if CHILD else None
 JOB = json.load(open(sys.argv[1], encoding="utf-8"))
 NAME = JOB["name"]
 CELLS = JOB["cells"]
@@ -55,12 +58,10 @@ def log(msg):
 
 
 t_init = time.perf_counter()
-ti.init(arch=ARCH_T, default_fp=fp)                      # ★ 프로세스에 «한 번»
+ti.init(arch=ARCH_T, default_fp=fp)                      # 자식 프로세스마다 «한 번»
 arch = str(ti.lang.impl.current_cfg().arch)
 assert ti.lang.impl.current_cfg().arch == ARCH_T, f"조용한 arch 폴백(v4-01 함정 1) — {arch}"
 init_s = time.perf_counter() - t_init
-log(f"job {NAME} · 칸 {len(CELLS)} · fp {FPN} · arch {arch} · ti.init {init_s:.1f}s · "
-    f"PAUSE {'있음' if PAUSE.exists() else '없음'}")
 
 
 def bake(cell):
@@ -144,22 +145,34 @@ def layer3(cell, meta):
     return json.loads((OUT / f"gate-{cell}.json").read_text(encoding="utf-8"))
 
 
+if CHILD:                                                 # ── 자식: 칸 «하나»만 굽는다 ──
+    m = bake(CHILD_CELL)
+    g = layer3(CHILD_CELL, m)
+    (OUT / f"{CHILD_CELL}.done").write_text(time.strftime("%Y-%m-%d %H:%M:%S"), encoding="utf-8")
+    log(f"{CHILD_CELL} · 정착 {'f' + str(m['convFrame']) if m['converged'] else '미도달'} · "
+        f"{m['secPerFrame']:.3f} s/프레임 · JIT {m['jitSec']:.1f}s · ti.init {init_s:.1f}s · "
+        f"vs 정본 중앙 {m['vs정본blob_mm']['중앙']:.6f} mm · pass {g['pass']}")
+    sys.exit(0)
+
+# ── 부모: 순서·PAUSE·체크포인트·로그만 맡는다(물리 0) ──
+log(f"job {NAME} · 칸 {len(CELLS)} · fp {FPN} · arch {arch} · "
+    f"PAUSE {'있음' if PAUSE.exists() else '없음'} · **칸마다 자식 프로세스**")
 t_all = time.perf_counter()
-phys_s = 0.0
+fail = []
 for cell in CELLS:
-    done = OUT / f"{cell}.done"
-    if done.exists():
+    if (OUT / f"{cell}.done").exists():
         log(f"건너뜀(체크포인트) {cell}")
         continue
     while PAUSE.exists():                                 # 다음 칸 시작 «전»에만 선다
         log(f"PAUSE — {cell} 시작 대기")
         time.sleep(10)
     t0 = time.perf_counter()
-    m = bake(cell)
-    phys_s += time.perf_counter() - t0
-    g = layer3(cell, m)
-    done.write_text(time.strftime("%Y-%m-%d %H:%M:%S"), encoding="utf-8")
-    log(f"{cell} · 정착 {'f' + str(m['convFrame']) if m['converged'] else '미도달'} · "
-        f"{m['secPerFrame']:.3f} s/프레임 · JIT {m['jitSec']:.1f}s · "
-        f"vs 정본 중앙 {m['vs정본blob_mm']['중앙']:.6f} mm · pass {g['pass']}")
-log(f"job {NAME} 끝 · 총 벽시계 {time.perf_counter() - t_all:.1f}s · 물리만 {phys_s:.1f}s")
+    r = subprocess.run([sys.executable, str(Path(__file__).resolve()), sys.argv[1],
+                        "--child", cell], cwd=str(Path.cwd()))
+    el = time.perf_counter() - t0
+    if r.returncode != 0:                                 # §0-5ㄴ — 사유 적고 다음 칸(재시도 0)
+        fail.append(cell)
+        log(f"★ 자식 실패 {cell} · returncode {r.returncode} · {el:.1f}s — 다음 칸으로(재시도 0)")
+    else:
+        log(f"칸 끝 {cell} · 자식 벽시계 {el:.1f}s")
+log(f"job {NAME} 끝 · 총 벽시계 {time.perf_counter() - t_all:.1f}s · 실패 {len(fail)}칸 {fail}")

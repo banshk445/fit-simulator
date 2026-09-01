@@ -73,11 +73,15 @@ root.traverse((o) => { nodes[o.name] = o; });
 const arms = findArmRootBones(nodes);
 if (arms.length === 0) throw new Error('팔 뿌리 뼈를 못 찾는다 — 리그가 다르다');
 const before = arms.map((a) => ({ name: a.name, dir: findArmDirection(a).toArray() }));
+/* ★ v4-18 §1-②ㄱ — **축 정정**. v4-17 은 `z × d` 를 축으로 잡아 팔이 «앞뒤»로 돌았다
+ * (팔 축 y −0.0205 → +0.0350 · z −0.011 → −0.541). 판정문이 정한 「내림」은
+ * **어깨 관절에서 «몸 앞뒤 축»(z) 둘레 회전**이다. 좌우는 **부호만** 뒤집는다(대칭).
+ * z 는 손 상수가 아니라 **씬의 축**이다 — three 의 월드 z(= 몸 앞뒤)를 그대로 쓴다. */
+const ZAX = new THREE.Vector3(0, 0, 1);
 for (const a of arms) {
   const d = findArmDirection(a);
-  const axis = new THREE.Vector3(0, 0, 1).cross(d).normalize();   // 팔을 «아래»로 내리는 회전축
-  const target = d.clone().applyAxisAngle(axis.lengthSq() > 1e-9 ? axis : new THREE.Vector3(0, 0, 1),
-                                          (d.y >= 0 ? -1 : 1) * (DEG * Math.PI) / 180).normalize();
+  const sgn = d.x >= 0 ? 1 : -1;                 // 오른팔(+x)은 −θ, 왼팔(−x)은 +θ 로 «내린다»
+  const target = d.clone().applyAxisAngle(ZAX, -sgn * (DEG * Math.PI) / 180).normalize();
   setBoneTowardWorldDirection(a, findHandBone(a), target);
 }
 root.updateMatrixWorld(true);
@@ -98,6 +102,7 @@ const meta = {
   bakeResult: { bitEqual: r.bitEqual, maxDeltaM: r.maxDeltaM, pose: r.pose, skinned: r.skinned },
   팔축_전: before, 팔축_후: after,
   높이m: ymax - ymin, ymin, ymax,
+  기대: { 'cos35(|x|)': Math.cos((DEG * Math.PI) / 180), 'sin35(|y|)': Math.sin((DEG * Math.PI) / 180) },
   겨드랑이_최소간격mm: armMin, 겨드랑이_계기: '미완 — 이 판에서 걷어냈다(§1-③ 사유 ③)', SEPmm: SEP * 1000,
 };
 writeFileSync(`${OUT}/l3ap-body-${BODY}-a${DEG}.bin`, Buffer.from(v.buffer, v.byteOffset, v.byteLength));

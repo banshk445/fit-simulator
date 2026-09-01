@@ -45,6 +45,10 @@ export type SceneConfig = {
   D_FIXED: number;
   /** 대조 전용(기본 off) — 파생 4종을 v2 값으로 «고정»한다 */
   dimsOverride?: DimsOverride;
+  /** v4-18 §1-③ — **팔 축**(좌·우 · 단위 벡터 · 월드). 조립 안에는 «뼈»가 없다(`body` 는 정점뿐)이므로
+   * **뼈를 가진 하네스가 넘긴다**. 안 넘기면 기본값 = **±x**(T포즈 실측이 x 와 1.3° 이내 · v4-17 §1-②ㄴ).
+   * ★ v3 동결 «예외 1번»(전략 세션 v4-17 §4 승인 · 조립 코드 한정 · 물리 0줄 · T포즈 비트 동일이 조건). */
+  armAxis?: { left: [number, number, number]; right: [number, number, number] };
   /** 옆 틈 G 도출이 쓰는 «가벼운» 최소 거리 계기. 계기는 하네스에 남고(§1 분류)
    * 조립은 그것을 «인자로» 받는다 — 정의가 둘로 갈리지 않게 하는 유일한 방법이다. */
   minPairDistLite: (pos: Float64Array, tris: number[]) => number;
@@ -616,14 +620,50 @@ export function createScene(cfg: SceneConfig) {
   function armProfile(x0: number, x1: number) {
     let y0 = Infinity, y1 = -Infinity, z0 = Infinity, z1 = -Infinity;
     for (let v = 0; v < prim0.pos.length / 3; v++) {
-      const px = prim0.pos[v * 3];
+      const px = axDot(prim0.pos[v * 3], prim0.pos[v * 3 + 1], prim0.pos[v * 3 + 2]);
       if (px < x0 || px >= x1) continue;
       y0 = Math.min(y0, prim0.pos[v * 3 + 1]); y1 = Math.max(y1, prim0.pos[v * 3 + 1]);
       z0 = Math.min(z0, prim0.pos[v * 3 + 2]); z1 = Math.max(z1, prim0.pos[v * 3 + 2]);
     }
     return { yc: (y0 + y1) / 2, zc: (z0 + z1) / 2 };
   }
-  /** 팔 축 — «소매 아랫절반이 놓이는» x 대역에서 잰다. 두 값 다 패턴에서 온다.
+  /* ── v4-18 §1-③ 팔 축 «하나» — 아래 다섯 자리가 전부 이 벡터를 참조한다 ─────────
+   * 기본값 = **+x**(오른팔 기준 · 왼팔은 `sgn` 으로 거울). 하네스가 `cfg.armAxis` 를 넘기면 그것을 쓴다.
+   * ★ **T포즈(+x)에서는 아래 식이 옛 식으로 «정확히» 줄어든다** — `0 + t·1 + R(c·0 + s·0) = t` ·
+   *   `yc + t·0 + R(c·1 + s·0) = yc + R·c` · `zc + t·0 + R(c·0 + s·1) = zc + R·s`.
+   *   더해지는 것이 전부 «정확한 0» 이라 **비트가 흔들리지 않는다**(§1-③ 회귀가 값으로 확인한다). */
+  const AX: [number, number, number] = cfg.armAxis
+    ? [Math.abs(cfg.armAxis.right[0]), cfg.armAxis.right[1], cfg.armAxis.right[2]]
+    : [1, 0, 0];
+  const AX_IS_X = AX[0] === 1 && AX[1] === 0 && AX[2] === 0;
+  /** 축의 직교 보완 — **+x 일 때는 정확히 (0,1,0)·(0,0,1)** 이어야 옛 식으로 줄어든다. */
+  const [AU, AV]: [[number, number, number], [number, number, number]] = AX_IS_X
+    ? [[0, 1, 0], [0, 0, 1]]
+    : (() => {
+        const n = Math.hypot(AX[0], AX[1], AX[2]);
+        const a: [number, number, number] = [AX[0] / n, AX[1] / n, AX[2] / n];
+        const t: [number, number, number] = Math.abs(a[1]) < 0.9 ? [0, 1, 0] : [0, 0, 1];
+        const u0: [number, number, number] = [
+          t[1] * a[2] - t[2] * a[1], t[2] * a[0] - t[0] * a[2], t[0] * a[1] - t[1] * a[0]];
+        const un = Math.hypot(u0[0], u0[1], u0[2]);
+        const v0: [number, number, number] = [u0[0] / un, u0[1] / un, u0[2] / un];
+        const w: [number, number, number] = [
+          a[1] * v0[2] - a[2] * v0[1], a[2] * v0[0] - a[0] * v0[2], a[0] * v0[1] - a[1] * v0[0]];
+        return [w, v0];
+      })();
+  /** 정점 하나를 **축 위 좌표**로 — `armProfile` 의 대역 가름이 이 값으로 선다. */
+  const axDot = (px: number, py: number, pz: number) => AX[0] * px + AX[1] * py + AX[2] * pz;
+  /** 축 둘레 원통 위의 점 — 중심 `(0, ARM.yc, ARM.zc)` · 축 방향 `sgn·t` · 반지름 R · 위상 ph. */
+  const axPoint = (t: number, R: number, ph: number, sgn: number): [number, number, number] => {
+    const c0 = Math.cos(ph), s0 = Math.sin(ph), tt = sgn * t;
+    return [
+      0 + tt * AX[0] + R * (c0 * AU[0] + s0 * AV[0]),
+      ARM.yc + tt * AX[1] + R * (c0 * AU[1] + s0 * AV[1]),
+      ARM.zc + tt * AX[2] + R * (c0 * AU[2] + s0 * AV[2]),
+    ];
+  };
+
+  /** 팔 축 — «소매 아랫절반이 놓이는» 축 대역에서 잰다. 두 값 다 패턴에서 온다.
    * (어깨끝부터 재면 몸통·다리 정점이 섞여 축이 y≈0.74로 내려간다.) */
   const ARM = armProfile(SW / 2 + CAP_H, SW / 2 + SLEN);
 
@@ -636,7 +676,7 @@ export function createScene(cfg: SceneConfig) {
       let min = Infinity;
       for (const [px, py] of PROBE.sleeve) {
         const ph = px / R;
-        const x = x0 + (CAP_H - py), y = ARM.yc + R * Math.cos(ph), z = ARM.zc + R * Math.sin(ph);
+        const [x, y, z] = axPoint(x0 + (CAP_H - py), R, ph, 1);
         min = Math.min(min, sampleSdf(bodyG, x, y, z));
         // 몸판(수직 기둥)과도 SEP 이상 떨어져야 한다 — 옷–옷 분리 거리다
         if (y >= Y_HEM && y <= Y_TOP) min = Math.min(min, distToSurface(x, y, z - AXIS_Z));
@@ -683,9 +723,8 @@ export function createScene(cfg: SceneConfig) {
        * 초판은 φ까지 뒤집어 왼쪽 소매의 «앞 절반이 뒤로» 갔다(암홀앞L 초기 틈 16.09cm ↔
        * 앞R 9.80cm · f=100에서 왼쪽 암홀만 98.87mm로 안 닫히고 |v| 상위 20이 전부 거기였다). */
       const ph = px / SLV_R;                            // 호길이 보존
-      out[o] = sgn * (SLV_X0 + (CAP_H - py));
-      out[o + 1] = ARM.yc + SLV_R * Math.cos(ph);
-      out[o + 2] = ARM.zc + SLV_R * Math.sin(ph);
+      const q3 = axPoint(SLV_X0 + (CAP_H - py), SLV_R, ph, sgn);
+      out[o] = q3[0]; out[o + 1] = q3[1]; out[o + 2] = q3[2];
     }
   }
 
