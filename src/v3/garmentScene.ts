@@ -635,22 +635,28 @@ export function createScene(cfg: SceneConfig) {
   const AX: [number, number, number] = cfg.armAxis
     ? [Math.abs(cfg.armAxis.right[0]), cfg.armAxis.right[1], cfg.armAxis.right[2]]
     : [1, 0, 0];
-  const AX_IS_X = AX[0] === 1 && AX[1] === 0 && AX[2] === 0;
-  /** 축의 직교 보완 — **+x 일 때는 정확히 (0,1,0)·(0,0,1)** 이어야 옛 식으로 줄어든다. */
-  const [AU, AV]: [[number, number, number], [number, number, number]] = AX_IS_X
-    ? [[0, 1, 0], [0, 0, 1]]
-    : (() => {
-        const n = Math.hypot(AX[0], AX[1], AX[2]);
-        const a: [number, number, number] = [AX[0] / n, AX[1] / n, AX[2] / n];
-        const t: [number, number, number] = Math.abs(a[1]) < 0.9 ? [0, 1, 0] : [0, 0, 1];
-        const u0: [number, number, number] = [
-          t[1] * a[2] - t[2] * a[1], t[2] * a[0] - t[0] * a[2], t[0] * a[1] - t[1] * a[0]];
-        const un = Math.hypot(u0[0], u0[1], u0[2]);
-        const v0: [number, number, number] = [u0[0] / un, u0[1] / un, u0[2] / un];
-        const w: [number, number, number] = [
-          a[1] * v0[2] - a[2] * v0[1], a[2] * v0[0] - a[0] * v0[2], a[0] * v0[1] - a[1] * v0[0]];
-        return [w, v0];
-      })();
+  /** 축의 직교 보완 — **v3 가 이미 쓰는 유도 규칙의 «벡터 일반형»**(손 벡터 0 · v4-19 §1-①).
+   * 인용 = `src/lib/bodyGeodesic.ts:281-289` 「평면 안의 정규직교 기저 — n과 «가장 덜 나란한» 축에서
+   * 만든다」 · `seed = |n.x| < 0.9 ? [1,0,0] : [0,1,0]` · `u = norm(seed × n)` · `v = n × u`.
+   * 이 파일은 같은 규칙을 축 `AX` 에 걸고, **원통의 cos/sin 자리에 맞게** 두 번 외적한다:
+   *   `w = norm(seed × a)` → `AU = a × w` → `AV = a × AU`.
+   * ★ `a = +x` 이면 seed = (0,1,0) · w = (0,0,−1) · **AU = (0,1,0) · AV = (0,0,1)** 이 «정확히» 나온다
+   *   (길이 1 로 나누고, 곱해지는 것이 0 과 ±1 뿐이라 반올림이 없다) ⟹ 옛 식으로 그대로 줄어든다.
+   *   v4-18 은 이 자리에 «손으로» 쓴 up 벡터를 두어 v3 규칙과 0.05° 어긋났다(귀책 = 전략 세션 스케치). */
+  const [AU, AV]: [[number, number, number], [number, number, number]] = (() => {
+    const n = Math.hypot(AX[0], AX[1], AX[2]) || 1;
+    const a: [number, number, number] = [AX[0] / n, AX[1] / n, AX[2] / n];
+    const cr = (p: [number, number, number], q: [number, number, number]): [number, number, number] =>
+      [p[1] * q[2] - p[2] * q[1], p[2] * q[0] - p[0] * q[2], p[0] * q[1] - p[1] * q[0]];
+    const nz = (p: [number, number, number]): [number, number, number] => {
+      const L = Math.hypot(p[0], p[1], p[2]) || 1;
+      return [p[0] / L, p[1] / L, p[2] / L];
+    };
+    const seed: [number, number, number] = Math.abs(a[0]) < 0.9 ? [1, 0, 0] : [0, 1, 0];
+    const w = nz(cr(seed, a));                       // bodyGeodesic.ts:289 `u = norm(seed × n)`
+    const u = cr(a, w);                              // 〃 `v = n × u` 의 자리 — 원통 cos 축
+    return [u, cr(a, u)];                            // sin 축 = a × u
+  })();
   /** 정점 하나를 **축 위 좌표**로 — `armProfile` 의 대역 가름이 이 값으로 선다. */
   const axDot = (px: number, py: number, pz: number) => AX[0] * px + AX[1] * py + AX[2] * pz;
   /** 축 둘레 원통 위의 점 — 중심 `(0, ARM.yc, ARM.zc)` · 축 방향 `sgn·t` · 반지름 R · 위상 ph. */
