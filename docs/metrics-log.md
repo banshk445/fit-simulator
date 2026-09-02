@@ -29311,3 +29311,45 @@ v3 표본 e0-x100 = **frame 180**(수렴 80 + 연장 100) ⟹ v4@180 과 초기 
  물리 diff 0줄 · src/ diff 0 · public/ 무변경 · pytest 40 passed · 2 xfailed · 1 xpassed (62.20 s) ·
  npx tsc -b 통과 · 신설 — worker.py 램프 단계 · gpu/bake/{rpt21.py, reg21.py} · job 3종
 ```
+
+## 2026-09-02 — v4-22 프레임 회계 사실 (갈래 C · 실행 = 회귀 1칸 · 새 굽기 0)
+
+```
+ 기계 = 2호기 · 브랜치 v4-22-frames(두 기계 · §0 선커밋 e3d8f5a · sha 기입 8fb13dc · 집행 «전»)
+ 기점 29df357 + 58ba8f2 cherry-pick · 워커 diff 0 · 물리 0줄 · src/ diff 0 · 정본·blob·문턱 0 · ecc 0/0
+```
+
+### §1-① 프레임 회계 — 갈래 **(나) 180 = 총합**(코드만 · 실행 0)
+
+```
+ scripts/v3GridRun.ts:128  let frame = 0                      ← 램프 포함 누적
+ scripts/v3GridRun.ts:132  runFrames(P, step, …, frame)       ← startFrame = 누적 프레임
+ src/v3/dressRun.ts:177    setRest(startFrame + f + 1)        ← 램프 시계가 창 재시작에도 안 되감김
+ src/v3/dressRun.ts:169-171 주석 「이어받는 프레임 번호 — 램프가 되감기지 않게」
+ scripts/v3GridRun.ts:135-136 창(N_WIN)마다 runS4Gate → s4.pass || settleNetM ≤ tol 이면 break
+                              ⟹ 첫 판정 f=10 · 램프 «중»에도 판정한다
+ scripts/v3GridRun.ts:144  stateBlob(P, frame, …)             ⟹ 헤더 frame = 누적 총 프레임
+ 정본 인덱스 public/v3diag/v3-77/index-shard-mac.json → c100-h170-s45_M = {status:편입, f:180, gate:pass}
+ ⟹ (나) 180 = 총합(램프 79 포함) · v4-21 회계(램프 포함 f=180 · 첫 판정 f=10)와 같다
+ 부수 사실(축이 다르다 · 단정 0) — 멈추는 규칙 v3 `pass || settle` ↔ v4 `settle` 뿐 ·
+   정본 인덱스가 gate: pass 이므로 v3 가 pass 로 멈췄을 가능성이 열려 있다
+```
+
+### §1-② 회계 맞춘 재실행 — 갈래 **(나)**(재실행 0 · 사전 결정 ㄴ)
+
+```
+ 총 프레임 180/180 · 판정 시작 f=10/f=10 · 램프 시계 연속/연속 ⟹ 회계는 이미 같다
+ 남은 중앙 차(③ 적용 행) — 밑단 +0.632179 · 소매 −0.139005 (문턱 0.05 초과 유지)
+ ⟹ 판정문이 든 「프레임 회계」 후보가 값으로 제거됐다 · 원인 단정 0 · 처방 0
+```
+
+### §1-③ — 착수 0(갈래 C) · 캡처 0
+
+### §2 자기검사
+
+```
+ 워커 diff 0(회계 옵션 미도입) ⟹ 3경로(정착-blob · 조립 · 조립+램프) 정의상 보존
+ 회귀 값 — 정착-blob 모드 3d8fac29f90fbfe4 비트 동일 · 조립 모드(램프 없음) 0d833601326922e2 비트 동일
+ 물리 diff 0줄 · src/ diff 0 · public/ 무변경 · pytest 40 passed · 2 xfailed · 1 xpassed (59.06 s) ·
+ npx tsc -b 통과 · 새 계기 0(이 판은 코드 «읽기»와 회귀뿐)
+```
