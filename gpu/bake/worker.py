@@ -64,27 +64,45 @@ assert ti.lang.impl.current_cfg().arch == ARCH_T, f"조용한 arch 폴백(v4-01 
 init_s = time.perf_counter() - t_init
 
 
-def bake(cell):
-    body = cell.rsplit("_", 1)[0]
-    raw = (Path("public/v3diag/v3-77") / f"settled-{cell}.bin").read_bytes()
+def _unpack(path):
+    """[u32 헤더길이][헤더 JSON][페이로드] — 정착 blob 과 조립 blob 이 «같은 포장»이다."""
+    raw = Path(path).read_bytes()
     hl = struct.unpack("<I", raw[:4])[0]
-    BH = json.loads(raw[4:4 + hl].decode("utf-8"))
-    frames = int(JOB.get("frames") or BH["frame"])
+    return json.loads(raw[4:4 + hl].decode("utf-8")), np.frombuffer(raw[4 + hl:], dtype="<f8")
+
+
+def bake(cell, asm=None, frames_in=None, cap=None):
+    """`asm` 이 있으면 **조립 입력 모드**(v4-20 §1-①) — 초기 상태를 조립 산출에서 읽는다.
+    없으면 v4-18 이 «채택»한 기존 모드 그대로다(정착 blob 에서 읽는다 · **그 경로 diff 0**)."""
+    body = cell.rsplit("_", 1)[0]
+    if asm is not None:
+        BH, state = _unpack(load.EXPORT / asm)
+        frames = int(frames_in or JOB.get("frames") or 200)
+    else:
+        raw = (Path("public/v3diag/v3-77") / f"settled-{cell}.bin").read_bytes()
+        hl = struct.unpack("<I", raw[:4])[0]
+        BH = json.loads(raw[4:4 + hl].decode("utf-8"))
+        frames = int(JOB.get("frames") or BH["frame"])
     hs, invm, ip_idx, ip_par = load.scene(cell)
     hb, bd_idx, bd_par = load.scene_bend(cell)
     hm, sm_idx, sm_rest = SE.load_seam(load.EXPORT / f"scene-seam-{cell}.bin")
     sh, sdata = CO.load_sdf(load.EXPORT / f"sdf-{body}.bin")
     n = hs["n"]
-    assert n == BH["n"], f"정점 수가 다르다 — blob {BH['n']} ≠ 조립 {n}(옛 조립 칸)"
-    head, st, _ = load.cloth(cell)
+    assert n == BH["n"], f"정점 수가 다르다 — blob {BH['n']} ≠ 조립 {n}"
+    st = state if asm is not None else load.cloth(cell)[1]
     pos0 = st[: n * 3].reshape(n, 3).astype(npfp)
     vel0 = st[n * 3:].reshape(n, 3).astype(npfp)
     blob_pos = st[: n * 3].reshape(n, 3).astype(np.float64)
     tris = np.ascontiguousarray(ip_idx.astype(np.int32))
     t0 = time.perf_counter()
+    # ★ v4-20 — 셀 용량은 **호출부에서** 준다(`engine/` 바이트 불변 · 물리 식 0줄).
+    #   조립 «직후» 상태는 정착 상태보다 한 셀에 삼각형이 몰려 기본값 64 로는 넘친다(§1-① 실측).
+    #   `slot` 은 `max_cells × cell_cap` 이라 용량을 올릴 때 셀 수를 함께 내린다(할당 폭발 방지).
+    #   넘치면 커널이 **던진다**(조용한 누락 0) — 그래서 «용량»만 올린다. 쌍 집합 정의는 그대로다.
+    sc_kw = dict(cap or {})          # 예: {"cell_cap": 192, "max_cells": 131072}
     fu = FS.FullSC(pos0, vel0, invm.astype(npfp), ip_idx, ip_par.astype(npfp), hs["k"],
                    bd_idx, bd_par.astype(npfp), hb["ke"], sm_idx, sm_rest.astype(npfp),
-                   sh, sdata, sh["THICK"], sh["MU"], fp=fp, tris=tris)
+                   sh, sdata, sh["THICK"], sh["MU"], fp=fp, tris=tris, sc_kw=sc_kw)
     build_s = time.perf_counter() - t0
     DT, G, DAMP, SUB, N_WIN = 1 / 60, 9.81, 6.0, hs["substeps"], 10
     t_jit = time.perf_counter()
@@ -117,7 +135,8 @@ def bake(cell):
     p = fu.pos.to_numpy().astype(np.float64)
     p.tofile(str(OUT / f"{cell}.bin"))
     dv = np.linalg.norm(p - blob_pos, axis=1) * 1000.0
-    meta = {"cell": cell, "fp": FPN, "arch": arch, "n": n, "substeps": SUB, "frames": frame,
+    meta = {"cell": cell, "inputMode": "assembled" if asm is not None else "settled",
+            "asm": asm, "cellCap": cap, "fp": FPN, "arch": arch, "n": n, "substeps": SUB, "frames": frame,
             "headerFrames": BH["frame"], "tol": TOL, "converged": conv, "convFrame": cf,
             "convNet": cn, "lastNet": last, "degenerate": deg, "trail": trail,
             "sec": sec, "secPerFrame": sec / max(frame, 1), "jitSec": jit_s, "buildSec": build_s,
@@ -129,9 +148,9 @@ def bake(cell):
     return meta
 
 
-def layer3(cell, meta):
+def layer3(cell, meta, report_cell=None):
     """층3 — 기존 계기를 그대로 부른다(수정 0 · 물리 0프레임)."""
-    env = dict(os.environ, PYTHONIOENCODING="utf-8", CELL=cell,
+    env = dict(os.environ, PYTHONIOENCODING="utf-8", CELL=(report_cell or cell),
                POS=str((OUT / f"{cell}.bin").relative_to(Path.cwd())).replace("\\", "/"),
                TAG=f"bake-{NAME}-{cell}")
     subprocess.run(["npx", "tsx", "scripts/v4FitReport.ts"], env=env, shell=True, check=True,
@@ -139,15 +158,23 @@ def layer3(cell, meta):
     env2 = dict(env, NET=repr(float(meta["lastNet"])))
     subprocess.run(["npx", "tsx", "scripts/v4ProductGate.ts"], env=env2, shell=True, check=True,
                    capture_output=True)
-    for src, dst in ((f"fit-{cell}-bake-{NAME}-{cell}.json", f"fit-{cell}.json"),
-                     (f"l3-gate-{cell}-bake-{NAME}-{cell}.json", f"gate-{cell}.json")):
+    rc = report_cell or cell                              # 리포트·게이트는 «옷 칸» 이름으로 난다
+    for src, dst in ((f"fit-{rc}-bake-{NAME}-{cell}.json", f"fit-{cell}.json"),
+                     (f"l3-gate-{rc}-bake-{NAME}-{cell}.json", f"gate-{cell}.json")):
         (OUT / dst).write_bytes((load.EXPORT / src).read_bytes())
     return json.loads((OUT / f"gate-{cell}.json").read_text(encoding="utf-8"))
 
 
+SPEC = {}
+for _c in CELLS:                                          # 칸은 문자열이거나 {cell, asm, …} 이다
+    if isinstance(_c, dict):
+        SPEC[_c["cell"]] = _c
+CELL_IDS = [c["cell"] if isinstance(c, dict) else c for c in CELLS]
+
 if CHILD:                                                 # ── 자식: 칸 «하나»만 굽는다 ──
-    m = bake(CHILD_CELL)
-    g = layer3(CHILD_CELL, m)
+    sp = SPEC.get(CHILD_CELL, {})
+    m = bake(CHILD_CELL, asm=sp.get("asm"), frames_in=sp.get("frames"), cap=sp.get("cellCap"))
+    g = layer3(CHILD_CELL, m, report_cell=sp.get("reportCell"))
     (OUT / f"{CHILD_CELL}.done").write_text(time.strftime("%Y-%m-%d %H:%M:%S"), encoding="utf-8")
     log(f"{CHILD_CELL} · 정착 {'f' + str(m['convFrame']) if m['converged'] else '미도달'} · "
         f"{m['secPerFrame']:.3f} s/프레임 · JIT {m['jitSec']:.1f}s · ti.init {init_s:.1f}s · "
@@ -159,7 +186,7 @@ log(f"job {NAME} · 칸 {len(CELLS)} · fp {FPN} · arch {arch} · "
     f"PAUSE {'있음' if PAUSE.exists() else '없음'} · **칸마다 자식 프로세스**")
 t_all = time.perf_counter()
 fail = []
-for cell in CELLS:
+for cell in CELL_IDS:
     if (OUT / f"{cell}.done").exists():
         log(f"건너뜀(체크포인트) {cell}")
         continue
