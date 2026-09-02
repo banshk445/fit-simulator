@@ -1,0 +1,19 @@
+{
+ "name": "v4-21-Tramp",
+ "fp": "f64",
+ "arch": "cuda",
+ "frames": 260,
+ "cells": [
+  {
+   "cell": "Tasm_M",
+   "asm": "asm-Tasm_M.bin",
+   "reportCell": "c100-h170-s45_M",
+   "frames": 260,
+   "cellCap": {
+    "cell_cap": 192,
+    "max_cells": 131072
+   },
+   "ramp": true
+  }
+ ]
+}

@@ -71,7 +71,7 @@ def _unpack(path):
     return json.loads(raw[4:4 + hl].decode("utf-8")), np.frombuffer(raw[4 + hl:], dtype="<f8")
 
 
-def bake(cell, asm=None, frames_in=None, cap=None):
+def bake(cell, asm=None, frames_in=None, cap=None, ramp=False):
     """`asm` 이 있으면 **조립 입력 모드**(v4-20 §1-①) — 초기 상태를 조립 산출에서 읽는다.
     없으면 v4-18 이 «채택»한 기존 모드 그대로다(정착 blob 에서 읽는다 · **그 경로 diff 0**)."""
     body = cell.rsplit("_", 1)[0]
@@ -111,16 +111,38 @@ def bake(cell, asm=None, frames_in=None, cap=None):
     fu.pos.from_numpy(np.ascontiguousarray(pos0, dtype=npfp))
     fu.vel.from_numpy(np.ascontiguousarray(vel0, dtype=npfp))
     ti.sync()
+    # ── v4-21 §1-① **봉제 램프**(추가 단계 · `ramp` 가 참일 때만 돈다 · 커널 식 0줄) ──
+    #   인용 dressRun.ts:111-116 · 177-178 —
+    #     rest0[k] = |pos_i − pos_j|(조립 «직후» 위치) · RAMP_N = ceil((max rest0 − SEP)/(G·DT²)) ·
+    #     프레임 f(0부터) «전»에 t = min(1, (f+1)/RAMP_N) 로 rest[k] = rest0[k] + (SEP − rest0[k])·t
+    #   ★ 커널은 `sm_rest` 를 읽기만 한다 — 이 배열을 «호출부»가 프레임마다 갱신한다.
+    ramp_meta = None
+    if ramp:
+        p0 = st[: n * 3].reshape(n, 3).astype(np.float64)
+        si = np.asarray(sm_idx, np.int64)
+        rest0 = np.linalg.norm(p0[si[:, 0]] - p0[si[:, 1]], axis=1)
+        SEPm = 2.0 * float(sh["THICK"])
+        rampN = int(np.ceil((rest0.max() - SEPm) / (G * DT * DT)))
+        ramp_meta = {"rampN": rampN, "rest0Max": float(rest0.max()), "rest0Min": float(rest0.min()),
+                     "SEP": SEPm, "mode": "dressRun.ts:111-116 선형 · setRest 는 step «앞»"}
+        log(f"  램프 — RAMP_N {rampN} · rest0 {rest0.min():.6e}~{rest0.max():.6e} · SEP {SEPm:.6e}")
+
     ref = fu.pos.to_numpy().astype(np.float64)
     trail, frame, deg = [], 0, 0
     conv, cf, cn, last = False, -1, float("nan"), float("nan")
     t0 = time.perf_counter()
     while frame < frames:
-        w = min(N_WIN, frames - frame)
+        if ramp:                                          # 프레임 단위(램프가 매 프레임 rest 를 바꾼다)
+            tt = min(1.0, (frame + 1) / rampN)
+            fu.sm_rest.from_numpy(np.ascontiguousarray(
+                rest0 + (ramp_meta["SEP"] - rest0) * tt, dtype=npfp))
+        w = 1 if ramp else min(N_WIN, frames - frame)
         _, _, d = fu.step(w, SUB, DT, G, DAMP, **FLAGS)
         deg += d
-        p = fu.pos.to_numpy().astype(np.float64)
         frame += w
+        if ramp and frame % N_WIN != 0 and frame < frames:
+            continue                                      # 창 경계에서만 잰다(순변위 식·창 정의 불변)
+        p = fu.pos.to_numpy().astype(np.float64)
         if not np.isfinite(p).all():
             log(f"  ★ 발산 — {cell} f={frame}")
             break
@@ -136,7 +158,7 @@ def bake(cell, asm=None, frames_in=None, cap=None):
     p.tofile(str(OUT / f"{cell}.bin"))
     dv = np.linalg.norm(p - blob_pos, axis=1) * 1000.0
     meta = {"cell": cell, "inputMode": "assembled" if asm is not None else "settled",
-            "asm": asm, "cellCap": cap, "fp": FPN, "arch": arch, "n": n, "substeps": SUB, "frames": frame,
+            "asm": asm, "cellCap": cap, "ramp": ramp_meta, "fp": FPN, "arch": arch, "n": n, "substeps": SUB, "frames": frame,
             "headerFrames": BH["frame"], "tol": TOL, "converged": conv, "convFrame": cf,
             "convNet": cn, "lastNet": last, "degenerate": deg, "trail": trail,
             "sec": sec, "secPerFrame": sec / max(frame, 1), "jitSec": jit_s, "buildSec": build_s,
@@ -173,7 +195,8 @@ CELL_IDS = [c["cell"] if isinstance(c, dict) else c for c in CELLS]
 
 if CHILD:                                                 # ── 자식: 칸 «하나»만 굽는다 ──
     sp = SPEC.get(CHILD_CELL, {})
-    m = bake(CHILD_CELL, asm=sp.get("asm"), frames_in=sp.get("frames"), cap=sp.get("cellCap"))
+    m = bake(CHILD_CELL, asm=sp.get("asm"), frames_in=sp.get("frames"), cap=sp.get("cellCap"),
+              ramp=bool(sp.get("ramp")))
     g = layer3(CHILD_CELL, m, report_cell=sp.get("reportCell"))
     (OUT / f"{CHILD_CELL}.done").write_text(time.strftime("%Y-%m-%d %H:%M:%S"), encoding="utf-8")
     log(f"{CHILD_CELL} · 정착 {'f' + str(m['convFrame']) if m['converged'] else '미도달'} · "
