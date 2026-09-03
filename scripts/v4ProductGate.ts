@@ -31,7 +31,9 @@ const c = cells().find((x) => x.id === CELL);
 if (!c) throw new Error(`칸 ${CELL} 이 본 그리드에 없다`);
 const gb = readFileSync('public/models/mannequin.glb');
 const glb = gb.buffer.slice(gb.byteOffset, gb.byteOffset + gb.byteLength) as ArrayBuffer;
-const bb = readFileSync(`${SRC}/body-${c.bodyId}.bin`);
+/* v4-24 §1-② — 몸 인자(기본값 그대로 ⟹ 기존 호출 바이트 불변 · 사유는 `v4FitReport.ts` 와 같다) */
+const BODY_BIN = process.env.BODY_BIN ?? `${SRC}/body-${c.bodyId}.bin`;
+const bb = readFileSync(BODY_BIN);
 const verts = new Float32Array(bb.buffer.slice(bb.byteOffset, bb.byteOffset + bb.byteLength));
 const P = prepare({ glb, fabric: FABRICS.gray, d: D, garment: garmentOf(c.size as Size),
                     bodyVerts: verts, minPairDistLite });

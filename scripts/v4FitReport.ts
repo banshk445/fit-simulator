@@ -30,7 +30,10 @@ const c = cells().find((x) => x.id === CELL);
 if (!c) throw new Error(`칸 ${CELL} 이 본 그리드에 없다`);
 const gb = readFileSync('public/models/mannequin.glb');
 const glb = gb.buffer.slice(gb.byteOffset, gb.byteOffset + gb.byteLength) as ArrayBuffer;
-const bb = readFileSync(`${SRC}/body-${c.bodyId}.bin`);
+/* v4-24 §1-② — **몸을 갈아 끼울 수 있게** 인자 하나를 연다(기본값은 «그대로» ⟹ 기존 호출 바이트 불변).
+ * 근거: A포즈 상태를 T포즈 그리드 몸으로 재면 «다른 몸»의 대역·SDF 로 재는 것이라 수가 뜻을 잃는다. */
+const BODY_BIN = process.env.BODY_BIN ?? `${SRC}/body-${c.bodyId}.bin`;
+const bb = readFileSync(BODY_BIN);
 const verts = new Float32Array(bb.buffer.slice(bb.byteOffset, bb.byteOffset + bb.byteLength));
 const P = prepare({ glb, fabric: FABRICS.gray, d: D, garment: garmentOf(c.size as Size),
                     bodyVerts: verts, minPairDistLite });
@@ -40,7 +43,9 @@ let pos: Float64Array;
 if (POS) {
   const b = readFileSync(POS);
   pos = new Float64Array(b.buffer.slice(b.byteOffset, b.byteOffset + b.byteLength), 0, n * 3);
-  if (b.byteLength < n * 3 * 8) throw new Error(`위치 파일이 짧다 — ${b.byteLength} < ${n * 3 * 8}`);
+  /* v4-24 — **길이가 «다르면» 던진다**(구 판은 짧을 때만 던져 «긴» 파일을 조용히 잘라 썼다 ·
+   * A포즈 9644 를 T포즈 9388 로 자른 사고가 이 판에서 실측됐다 — 조용한 성공 0). */
+  if (b.byteLength !== n * 3 * 8) throw new Error(`위치 파일 길이가 다르다 — ${b.byteLength} ≠ ${n * 3 * 8}(정점 ${n})`);
 } else {
   const raw = readFileSync(`${SRC}/settled-${CELL}.bin`);
   const dv = new DataView(raw.buffer, raw.byteOffset, raw.byteLength);
