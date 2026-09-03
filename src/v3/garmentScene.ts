@@ -621,12 +621,43 @@ export function createScene(cfg: SceneConfig) {
   }
 
   function armProfile(x0: number, x1: number) {
-    let y0 = Infinity, y1 = -Infinity, z0 = Infinity, z1 = -Infinity;
+    if (!AO) {                                          // ← 미전달 경로: 아래 블록은 **옛 코드 그대로**
+      let y0 = Infinity, y1 = -Infinity, z0 = Infinity, z1 = -Infinity;
+      for (let v = 0; v < prim0.pos.length / 3; v++) {
+        const px = axDot(prim0.pos[v * 3], prim0.pos[v * 3 + 1], prim0.pos[v * 3 + 2]);
+        if (px < x0 || px >= x1) continue;
+        y0 = Math.min(y0, prim0.pos[v * 3 + 1]); y1 = Math.max(y1, prim0.pos[v * 3 + 1]);
+        z0 = Math.min(z0, prim0.pos[v * 3 + 2]); z1 = Math.max(z1, prim0.pos[v * 3 + 2]);
+      }
+      return { yc: (y0 + y1) / 2, zc: (z0 + z1) / 2 };
+    }
+    /* ── v4-27 §1-① **선별 «반경» 조건**(v3 동결 예외 대장 4건째 · 전략 세션 v4-26 §4 승인) ──
+     * 왜 — 축 위 거리 조건 «하나»로는 팔을 못 고른다. 축이 아래로 기울면 대역 `[SW/2+CAP_H, SW/2+SLEN]`
+     *   안에 **몸통·다리**가 함께 들어온다(v4-26 §1-③ 실측: 정점 2,509 · y 0.3763~1.4263 m).
+     * 문턱은 **사람이 쓰지 않는다 — 몸이 자른다**(§0-4ㄱ · 손 상수 0):
+     *   후보를 **축선까지의 반경 r** 로 정렬해 **이웃 r 사이의 가장 큰 «틈»**에서 자르고, 그 «안쪽»만 남긴다.
+     *   근거 = 팔은 축선에 붙은 조밀한 군집이고, 몸통·다리는 멀리 떨어진 **다른 군집**이다.
+     * ★ 이 블록은 **전달 분기 안에서만** 돈다 — 미전달 경로는 위 `if (!AO)` 에서 이미 돌아갔다. */
+    const rs: number[] = [], ys: number[] = [], zs: number[] = [];
     for (let v = 0; v < prim0.pos.length / 3; v++) {
-      const px = axDot(prim0.pos[v * 3], prim0.pos[v * 3 + 1], prim0.pos[v * 3 + 2]);
-      if (px < x0 || px >= x1) continue;
-      y0 = Math.min(y0, prim0.pos[v * 3 + 1]); y1 = Math.max(y1, prim0.pos[v * 3 + 1]);
-      z0 = Math.min(z0, prim0.pos[v * 3 + 2]); z1 = Math.max(z1, prim0.pos[v * 3 + 2]);
+      const px0 = prim0.pos[v * 3], py0 = prim0.pos[v * 3 + 1], pz0 = prim0.pos[v * 3 + 2];
+      const t = axDot(px0, py0, pz0);
+      if (t < x0 || t >= x1) continue;
+      const dx = px0 - AO[0] - t * AX[0], dy = py0 - AO[1] - t * AX[1], dz = pz0 - AO[2] - t * AX[2];
+      rs.push(Math.hypot(dx, dy, dz)); ys.push(py0); zs.push(pz0);
+    }
+    const ord = rs.map((_, i) => i).sort((a, b) => rs[a] - rs[b]);
+    let cut = ord.length;                               // 자를 자리 = «가장 큰 틈» 뒤
+    let gap = -Infinity;
+    for (let k = 1; k < ord.length; k++) {
+      const g = rs[ord[k]] - rs[ord[k - 1]];
+      if (g > gap) { gap = g; cut = k; }
+    }
+    let y0 = Infinity, y1 = -Infinity, z0 = Infinity, z1 = -Infinity;
+    for (let k = 0; k < cut; k++) {
+      const i = ord[k];
+      y0 = Math.min(y0, ys[i]); y1 = Math.max(y1, ys[i]);
+      z0 = Math.min(z0, zs[i]); z1 = Math.max(z1, zs[i]);
     }
     return { yc: (y0 + y1) / 2, zc: (z0 + z1) / 2 };
   }

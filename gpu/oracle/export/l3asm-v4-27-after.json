@@ -1,0 +1,877 @@
+{
+ "what": "v4-18 §1-③ T포즈 108칸 조립 해시",
+ "tag": "v4-27-after",
+ "칸": 108,
+ "조립성공": 82,
+ "ms": 800141,
+ "rows": [
+  {
+   "cell": "c87.5-h155-s40_S",
+   "상태": "던짐",
+   "err": "옷 자기 간격 SEP 미달 — 최소쌍 back↔back 1.278mm — 갈래 D"
+  },
+  {
+   "cell": "c87.5-h155-s40_M",
+   "상태": "ok",
+   "n": 9082,
+   "m": 43424,
+   "sub": 254,
+   "posSha": "213d3f051081830fc6d53b17ccc95306482ba2b2d3a926262e043e4acbf5fe6a",
+   "uvSha": "1d8e722080ffb810e3a8dfc24977d30444ff1b0be2711235daaa00c53a659dc2"
+  },
+  {
+   "cell": "c87.5-h155-s40_L",
+   "상태": "ok",
+   "n": 9948,
+   "m": 47682,
+   "sub": 261,
+   "posSha": "f23d5542eb676991b5f0232a6e9c3d5235bfcb9a1c8aaea7f77f661427c745aa",
+   "uvSha": "d377608102338ce0e6090c6f6d1675980f7a8099faf95f7b2095e1b48bf34fe6"
+  },
+  {
+   "cell": "c87.5-h155-s40_XL",
+   "상태": "ok",
+   "n": 10846,
+   "m": 52100,
+   "sub": 261,
+   "posSha": "e429ed56c80ab9840e30212fe8a9b97b6116a88e1034363204f6f75cec6d3603",
+   "uvSha": "7b807e87995a2d7a05c1c5e9a56a7e875d7e39366b26bf8041885fca8e38f7f1"
+  },
+  {
+   "cell": "c87.5-h155-s45_S",
+   "상태": "ok",
+   "n": 8354,
+   "m": 39846,
+   "sub": 244,
+   "posSha": "917cc2bfd54273b5eab939e1243eb012aba9b528ac0543b126dd3e73bc43be3b",
+   "uvSha": "778debb2e6be220bf01dc72fcad7fc381a1ed23b6b7b8d4ab14b5eb3fb95d4dc"
+  },
+  {
+   "cell": "c87.5-h155-s45_M",
+   "상태": "ok",
+   "n": 9082,
+   "m": 43424,
+   "sub": 249,
+   "posSha": "2dd3c06caaec0d3f4e9932104076bdbdcf50626965f5a38e9a06f877a2eed4f4",
+   "uvSha": "64412bb9ee988c360e916d76a909eb8e094604245722c9650ffad047ce4580ae"
+  },
+  {
+   "cell": "c87.5-h155-s45_L",
+   "상태": "ok",
+   "n": 9948,
+   "m": 47682,
+   "sub": 251,
+   "posSha": "0ac25e70f93c24f731ef589434c8763410f223727b7cdf6c0027b76be674a601",
+   "uvSha": "195e56f6da8cb85a19688aef4fa5a8178272a65e936e764786408eaa0bdef7f9"
+  },
+  {
+   "cell": "c87.5-h155-s45_XL",
+   "상태": "ok",
+   "n": 10846,
+   "m": 52100,
+   "sub": 254,
+   "posSha": "a0d4f3d5de072a19b5ccfb8963f8917f6a4a6a3c193383eec08d4b54dd748ca6",
+   "uvSha": "64a4f1a7bef3f0f450365174848e3328044d7b90dd3a92e514ad4c34006e6013"
+  },
+  {
+   "cell": "c87.5-h155-s50_S",
+   "상태": "ok",
+   "n": 8354,
+   "m": 39846,
+   "sub": 240,
+   "posSha": "ce2cc0ef48d54928009ae708a06f6cce047a57094d40256529256f83be788c5d",
+   "uvSha": "48d5113c302e838c26b6a1fa9e095e82931e2075fcf72f32e7757743534acd07"
+  },
+  {
+   "cell": "c87.5-h155-s50_M",
+   "상태": "ok",
+   "n": 9082,
+   "m": 43424,
+   "sub": 240,
+   "posSha": "e3883d47b691842d8730970d14670b2f82b1d2c31c7b0bc3cc6a5c21c3d99e00",
+   "uvSha": "957c1259a91d104634ce831bad3f51a6eaed5d527aa6358b2d8137fa049604b2"
+  },
+  {
+   "cell": "c87.5-h155-s50_L",
+   "상태": "ok",
+   "n": 9948,
+   "m": 47682,
+   "sub": 247,
+   "posSha": "fafc31596b64eae02882d41dd5bf3a84774a24d49dc8e4162259d0e49bd172d6",
+   "uvSha": "8fd236b20c693e2815a4b1928068099e0d851ec82d3a7530425d1871f008a164"
+  },
+  {
+   "cell": "c87.5-h155-s50_XL",
+   "상태": "ok",
+   "n": 10948,
+   "m": 52600,
+   "sub": 247,
+   "posSha": "0486331e5355555177f3121c2150f23d64a181a084a22c6c7007f39d18570278",
+   "uvSha": "2b3c780b0d87b57ba84484e09a9997c2d0e1b386238b2bd2f29853ab747ab6f7"
+  },
+  {
+   "cell": "c87.5-h170-s40_S",
+   "상태": "던짐",
+   "err": "옷 자기 간격 SEP 미달 — 최소쌍 back↔back 1.474mm — 갈래 D"
+  },
+  {
+   "cell": "c87.5-h170-s40_M",
+   "상태": "ok",
+   "n": 9184,
+   "m": 43922,
+   "sub": 229,
+   "posSha": "6d1599397a99559f514ed288807ba2b95604df0f9c4e43d2506e535941ca2439",
+   "uvSha": "050721e3a8560f211c0d24f9724633cf8a5a97174918d6a4d49301209f9c87c7"
+  },
+  {
+   "cell": "c87.5-h170-s40_L",
+   "상태": "던짐",
+   "err": "옷 자기 간격 SEP 미달 — 최소쌍 back↔back 1.962mm — 갈래 D"
+  },
+  {
+   "cell": "c87.5-h170-s40_XL",
+   "상태": "ok",
+   "n": 10948,
+   "m": 52598,
+   "sub": 233,
+   "posSha": "c6ed30c82ae1bdba0f53a3d1c6c7026f7dab8410b1782733d3af058a331e9a14",
+   "uvSha": "b5b0788ff1535c4373cf172de14cf4667df2066b805cc71b78d49b28ce592093"
+  },
+  {
+   "cell": "c87.5-h170-s45_S",
+   "상태": "ok",
+   "n": 8558,
+   "m": 40844,
+   "sub": 230,
+   "posSha": "df9444c171ab7625c76dd09eb3fdd7c4c012068602d772bfa5f177aa34b54509",
+   "uvSha": "2602b76f8898ffa21ba7d5cf0cc7fdd2bb69740ea1d854c7afc187e879d3e1a9"
+  },
+  {
+   "cell": "c87.5-h170-s45_M",
+   "상태": "ok",
+   "n": 9184,
+   "m": 43922,
+   "sub": 230,
+   "posSha": "61cb932d85d51cfbf2ef384ef90d7bcf971abc77c300be74e80d18fef205cf59",
+   "uvSha": "605f1e9edc147c3dc14c6d88e2a909a272a306d6b61babcd3e723d77fb8f5f86"
+  },
+  {
+   "cell": "c87.5-h170-s45_L",
+   "상태": "ok",
+   "n": 10152,
+   "m": 48680,
+   "sub": 226,
+   "posSha": "d92d4a4cd1cb241293a7d1854d53f7a496a588698ea0c066696e8af243a304dc",
+   "uvSha": "2ee299105d78d7f56f95755d7102a0583623bc590674e3ada515167590f34a04"
+  },
+  {
+   "cell": "c87.5-h170-s45_XL",
+   "상태": "ok",
+   "n": 11050,
+   "m": 53098,
+   "sub": 230,
+   "posSha": "2ad6364f7d9fd0b8d6d8afb24afdfe767004fda048d46eab98f51eaebc7a9c32",
+   "uvSha": "18e8de86c4b05bf68e4288e0ea7ce683a6f337772dddf0226827898a61bbfad7"
+  },
+  {
+   "cell": "c87.5-h170-s50_S",
+   "상태": "ok",
+   "n": 8558,
+   "m": 40844,
+   "sub": 229,
+   "posSha": "ef9f8116a6d3129755edac147e1c33610a11ddc6919b0927a6419acb09c4df24",
+   "uvSha": "d4c7ba292577792957eeec5b2c298a472b621ba95aac21a02c6d410bede59379"
+  },
+  {
+   "cell": "c87.5-h170-s50_M",
+   "상태": "ok",
+   "n": 9286,
+   "m": 44422,
+   "sub": 227,
+   "posSha": "3ff8e3e3d0a4f9bc8c77b3acc77910fafa000b51e467f7e39259662ff549c092",
+   "uvSha": "2a7bdd0c71562b8b669746c65729bfaa90407f179595805f888fd61b58e06985"
+  },
+  {
+   "cell": "c87.5-h170-s50_L",
+   "상태": "ok",
+   "n": 10254,
+   "m": 49180,
+   "sub": 224,
+   "posSha": "992d87a89ecf6204f1abf8516bff5f0bda064b0190483dfcd267bccdac116cd2",
+   "uvSha": "ce0052b399e9e07d80d0c4d9c388db3dec06592ac0139586cbecb550cc230bfb"
+  },
+  {
+   "cell": "c87.5-h170-s50_XL",
+   "상태": "ok",
+   "n": 11050,
+   "m": 53098,
+   "sub": 226,
+   "posSha": "16be8ec3026bf5f228992f25c7a983056f1ec75a93651a5c1c0575b445ea3545",
+   "uvSha": "ea8795e0b8034cac70255176d87e60656a94e7b4b0bf632815af958a02e8caf3"
+  },
+  {
+   "cell": "c87.5-h185-s40_S",
+   "상태": "던짐",
+   "err": "옷 자기 간격 SEP 미달 — 최소쌍 back↔back 1.444mm — 갈래 D"
+  },
+  {
+   "cell": "c87.5-h185-s40_M",
+   "상태": "ok",
+   "n": 9388,
+   "m": 44920,
+   "sub": 227,
+   "posSha": "992371446fc7378f73bd183ac649edee2cb5714bc3849b10466dcb075fd8f065",
+   "uvSha": "848b017267f47aa28d8c7c18860879776daeb2b3ad3789e98d99ae0c7e589704"
+  },
+  {
+   "cell": "c87.5-h185-s40_L",
+   "상태": "ok",
+   "n": 10254,
+   "m": 49178,
+   "sub": 225,
+   "posSha": "be538f1ce11f6b1eccc74289633249e504b1063d11e648b2eac8711c8884f1b9",
+   "uvSha": "b33a69e8b70d53168bafbf6b171b9bad18ada900b31a5cbe16b59ee8b481af3e"
+  },
+  {
+   "cell": "c87.5-h185-s40_XL",
+   "상태": "던짐",
+   "err": "옷 자기 간격 SEP 미달 — 최소쌍 back↔back 0.003067mm — 갈래 D"
+  },
+  {
+   "cell": "c87.5-h185-s45_S",
+   "상태": "ok",
+   "n": 8762,
+   "m": 41842,
+   "sub": 228,
+   "posSha": "cc2595b567760cd3b789d907310be51f473143cc2c5996e542af6f07704201f0",
+   "uvSha": "4a8ebdd37f47e185288224c5aa776c9ba2b2cf7b16138e2ee69bf126b4821d2d"
+  },
+  {
+   "cell": "c87.5-h185-s45_M",
+   "상태": "ok",
+   "n": 9490,
+   "m": 45420,
+   "sub": 226,
+   "posSha": "ba6fea525ae0d4c2e9538c40e927e27d586c0f2324a5171df10e402080760d60",
+   "uvSha": "7ac350a4d27bf3887caf4205abc7a64235fa868dc250418b3e2ce1af402ff8c9"
+  },
+  {
+   "cell": "c87.5-h185-s45_L",
+   "상태": "ok",
+   "n": 10458,
+   "m": 50178,
+   "sub": 224,
+   "posSha": "c166c5542582fe2ec8431128dbc0d97963a60f1b1fac6b90d4e1ab5fbd246b24",
+   "uvSha": "4c270d0af0b8fb6b864cfe7f75f2f33e9ab63981db4326f2d7c05e13aebdd533"
+  },
+  {
+   "cell": "c87.5-h185-s45_XL",
+   "상태": "ok",
+   "n": 11254,
+   "m": 54096,
+   "sub": 221,
+   "posSha": "52c1cfd8edefeda9af96ff34b49ddd9bc36d2fc8a53c8c77c82ebf0d461c41dd",
+   "uvSha": "210e8f15d40bdf5f3b1b1bce15f7c25ffe9f26203c0888e7dcec28ac150c2332"
+  },
+  {
+   "cell": "c87.5-h185-s50_S",
+   "상태": "ok",
+   "n": 9068,
+   "m": 43342,
+   "sub": 227,
+   "posSha": "8c538bafc264d86ee1c68a4ee959b35488efc604f76680da2092f847bb04e213",
+   "uvSha": "ca9486c08463fedeebfa63c38524600c3689a127a07cde3008277d24687b81d3"
+  },
+  {
+   "cell": "c87.5-h185-s50_M",
+   "상태": "던짐",
+   "err": "목 밑동(벽/지붕 전이)을 못 찾는다 — 갈래 D"
+  },
+  {
+   "cell": "c87.5-h185-s50_L",
+   "상태": "ok",
+   "n": 10356,
+   "m": 49678,
+   "sub": 223,
+   "posSha": "aafc1d7de78ca9ebebbf1d7f661d92db3fe0b6a71edd958633dde16f1c4d0af1",
+   "uvSha": "cf4b96c1cab4c126a4e18780dee849c483011ecd3f6c39d911ecdbbd8ecc9e09"
+  },
+  {
+   "cell": "c87.5-h185-s50_XL",
+   "상태": "ok",
+   "n": 11458,
+   "m": 55096,
+   "sub": 220,
+   "posSha": "7ae5437b8bcb258eb05da9da4ef360c9e158a8eceeea3e5f3f89b0981026b2a9",
+   "uvSha": "6c17e5e221b39be44c3cc66c2d8bcba96592b2d6bc053083211bcd3035686a1c"
+  },
+  {
+   "cell": "c100-h155-s40_S",
+   "상태": "ok",
+   "n": 8252,
+   "m": 39344,
+   "sub": 251,
+   "posSha": "f198e9dc572f142f8cc8b80b0b4c60d55c5e029d3e6c2a49195a08ae77d3a9ba",
+   "uvSha": "0c9ac5c5558c458d8ef6869f0d2fd40240f7de519425a1a6dfbff1ce5d5bdb4f"
+  },
+  {
+   "cell": "c100-h155-s40_M",
+   "상태": "던짐",
+   "err": "옷 자기 간격 SEP 미달 — 최소쌍 front↔back 0.01233mm — 갈래 D"
+  },
+  {
+   "cell": "c100-h155-s40_L",
+   "상태": "ok",
+   "n": 9948,
+   "m": 47680,
+   "sub": 262,
+   "posSha": "a26cf03920db8e6d62b1cfd37365aca80a26011b06f0f7d6a9f0baa026aa8aba",
+   "uvSha": "9807cfb336ac74fb95a3947986dee0e40f7fb38b36484cf310bba43e42df3536"
+  },
+  {
+   "cell": "c100-h155-s40_XL",
+   "상태": "ok",
+   "n": 10846,
+   "m": 52098,
+   "sub": 268,
+   "posSha": "53db97f9acd2e7bbe74e84eb36a5593f03eaafa6165fc6101db9837e383e0abe",
+   "uvSha": "cfaf4909b6739957ce1edcf9cb4b412219b967fb710ea64c258bfacd2a17bf77"
+  },
+  {
+   "cell": "c100-h155-s45_S",
+   "상태": "ok",
+   "n": 8354,
+   "m": 39844,
+   "sub": 238,
+   "posSha": "009a439e4fd804ba40b4e17a680391e018d30c3563d3c82563e019a07610a7a8",
+   "uvSha": "cd5dd08c28aa1dbec9d4dc96d0709c6959e7ad43e909502d54a7be721feb48c4"
+  },
+  {
+   "cell": "c100-h155-s45_M",
+   "상태": "ok",
+   "n": 9082,
+   "m": 43422,
+   "sub": 246,
+   "posSha": "f0114e2ef9f9c03b4027935ebfffb956f51e447b953aa26895e77d6328dc628a",
+   "uvSha": "3fcdf21a4067137e17a9ed3b0c96780e7339952286b23be045360eda44eb44d5"
+  },
+  {
+   "cell": "c100-h155-s45_L",
+   "상태": "ok",
+   "n": 9948,
+   "m": 47680,
+   "sub": 253,
+   "posSha": "7443f9ab36ec89972ceaf3f3acba202e8cf6750ef31b65db6cefeaa76edc7330",
+   "uvSha": "90d61ee5da35d1c51ea53e9e958e3bede6544fa9c5df1c4c86c19278aa938956"
+  },
+  {
+   "cell": "c100-h155-s45_XL",
+   "상태": "ok",
+   "n": 10846,
+   "m": 52098,
+   "sub": 257,
+   "posSha": "d61afb865ea645107759022a3642245b86fc484ca0ad0ff2f641e3f9b5f3eefa",
+   "uvSha": "32e60eb83fda24f7f6df39f9114277935f784c73223c10a2bc979f0a8310a399"
+  },
+  {
+   "cell": "c100-h155-s50_S",
+   "상태": "ok",
+   "n": 8354,
+   "m": 39844,
+   "sub": 234,
+   "posSha": "47acd63167eb50b8027692d8d882ec6369b99708f8699fd4809745eeb077f8da",
+   "uvSha": "f7ac0a99df66b61f399e0ac41c3311600167e13d129945192ecbba729f722494"
+  },
+  {
+   "cell": "c100-h155-s50_M",
+   "상태": "ok",
+   "n": 9184,
+   "m": 43922,
+   "sub": 237,
+   "posSha": "dbcace29415632c8464cbf7c0ba572bcae07371d16eced32f8c73c8305d0ec2b",
+   "uvSha": "9f7634b33476e0b13d385c55d96a4c58c263710f86cd677186fb6ea0059be7b7"
+  },
+  {
+   "cell": "c100-h155-s50_L",
+   "상태": "ok",
+   "n": 10050,
+   "m": 48180,
+   "sub": 240,
+   "posSha": "9b0d77598b257af9d491c335c98bbca3c1c2332b10de4869f7db249f2caaf533",
+   "uvSha": "d4d94411fce71911771205bdf1aac3d0ffb56dfdefc46a35f1cdeb7b1519bf95"
+  },
+  {
+   "cell": "c100-h155-s50_XL",
+   "상태": "ok",
+   "n": 10948,
+   "m": 52598,
+   "sub": 247,
+   "posSha": "cfbc1933afc778d81db238e9c0957e5e012c18a88ad907cf00f42edc5b3d167f",
+   "uvSha": "d588414fa5597cbfa23bd03918b1cadb3fd355ae9a1fe70311de6d5ef9044d84"
+  },
+  {
+   "cell": "c100-h170-s40_S",
+   "상태": "ok",
+   "n": 8558,
+   "m": 40842,
+   "sub": 231,
+   "posSha": "8144a26892cbb5dedb20d4e928c52a360fa66007a37411a9772cce8333bf3ef2",
+   "uvSha": "4259298e2e2e667558e7974530f2fe9644859160fa92c1464ecae06c3ee62ef1"
+  },
+  {
+   "cell": "c100-h170-s40_M",
+   "상태": "ok",
+   "n": 9184,
+   "m": 43920,
+   "sub": 229,
+   "posSha": "13d8d679d1225564d49f1e55620878dd116a280fd78075468c79703d9f15ec7e",
+   "uvSha": "f5b79a248ecec4ca494be5e0cdbe6e7c00d80c54300680373f19d78ca58f52de"
+  },
+  {
+   "cell": "c100-h170-s40_L",
+   "상태": "ok",
+   "n": 10152,
+   "m": 48678,
+   "sub": 231,
+   "posSha": "3388fb714561838dd0dd107167b7946fe3661807466c570851f59ec6bd718373",
+   "uvSha": "5d00fbc04ceb2cf75e6e39a551a6a82e7a6594c8521b428fd362bd57838a495c"
+  },
+  {
+   "cell": "c100-h170-s40_XL",
+   "상태": "ok",
+   "n": 10948,
+   "m": 52596,
+   "sub": 236,
+   "posSha": "806c229dddbe0215edb7da11b22b5765250be7765efd8bd0a57ac089eb1f3e72",
+   "uvSha": "2d39c3ee359406f067a2aa2e32d343a49eedaa6e270674a60548b4624da9417e"
+  },
+  {
+   "cell": "c100-h170-s45_S",
+   "상태": "ok",
+   "n": 8854,
+   "m": 42300,
+   "sub": 233,
+   "posSha": "93abf7370d707b7bc59ea0eb655b16b5d2dd23e5187e96bda35ea575865f7187",
+   "uvSha": "e6ca95c06def757a879a75c21019cca9c0d8600ff412cda777997ecc1b4198f3"
+  },
+  {
+   "cell": "c100-h170-s45_M",
+   "상태": "ok",
+   "n": 9388,
+   "m": 44920,
+   "sub": 229,
+   "posSha": "75653e38e42beebce3c541dd3518cb7c1e15af6c83af731de4fcf104b1dc423b",
+   "uvSha": "415f5d2a5732c0dca6649095e5834c9e9ee5ba18f1eb7d60e3ce7ff2d6fb934e"
+  },
+  {
+   "cell": "c100-h170-s45_L",
+   "상태": "ok",
+   "n": 10254,
+   "m": 49178,
+   "sub": 227,
+   "posSha": "ce507e3b1642b13b8fabed84e715414da4718a11bbca774833674b6bcc392ee0",
+   "uvSha": "a30da6989745032dda55f7deaaf47c9ed908906c7dad082d3461a6626d941bf0"
+  },
+  {
+   "cell": "c100-h170-s45_XL",
+   "상태": "ok",
+   "n": 11050,
+   "m": 53096,
+   "sub": 227,
+   "posSha": "47254e092191bf5fa5cc194f9dc5b1ad4d3d88ce8aba63405b087435285732b8",
+   "uvSha": "ee863b27f64cd95ff50118182800c6dd9f64757cd6b4170acbf8ee5c4635e221"
+  },
+  {
+   "cell": "c100-h170-s50_S",
+   "상태": "ok",
+   "n": 9160,
+   "m": 43800,
+   "sub": 233,
+   "posSha": "fceffba02929ab4be4deb0a5dfa2c8446281625f355219a19ccbdd2ae9124c55",
+   "uvSha": "933f70f6f846b6f2b3cb11e182eda64140ca9c78e33b7b16727ab84fb542e560"
+  },
+  {
+   "cell": "c100-h170-s50_M",
+   "상태": "ok",
+   "n": 9286,
+   "m": 44420,
+   "sub": 229,
+   "posSha": "4b2573427fd646ef44f49e4f806c9555a1857f5eda8a430b95dbb3e23c1b2ff0",
+   "uvSha": "b7acff7694c1529e1b187e085886bc267bf5690e2ba893723dc52ba29e3f8f0f"
+  },
+  {
+   "cell": "c100-h170-s50_L",
+   "상태": "ok",
+   "n": 10356,
+   "m": 49678,
+   "sub": 227,
+   "posSha": "6cfb83a1cc9a672a906c3efafefad0a15415edb6a9dc2044d1aaf76fa4686fa8",
+   "uvSha": "17fab63244cac532c2a4e383f5f9484257abb0f9e535c75fadb5620080a18835"
+  },
+  {
+   "cell": "c100-h170-s50_XL",
+   "상태": "ok",
+   "n": 11152,
+   "m": 53596,
+   "sub": 224,
+   "posSha": "5118aee914fa3a14046f2bdf49d487ff6714d00186ec78e3da397b196905e23c",
+   "uvSha": "694a4125ccb8ccc5b8085a52e6ad9deb36f0c8107f015decda36d358f91437ad"
+  },
+  {
+   "cell": "c100-h185-s40_S",
+   "상태": "ok",
+   "n": 9308,
+   "m": 44526,
+   "sub": 236,
+   "posSha": "5cb66cfd5c545d5610f2d994eb25dd79eea7d6253f8448f3904779c6814bd4a5",
+   "uvSha": "d7d9e1b5ec05fc96fe9dec056390774c8fcf79a30be3cefc24f80e097e48daee"
+  },
+  {
+   "cell": "c100-h185-s40_M",
+   "상태": "ok",
+   "n": 9644,
+   "m": 46176,
+   "sub": 231,
+   "posSha": "d4aa7361687670c6699c5b06d27f2786975f491ad133773603832780a0c67526",
+   "uvSha": "8d328708d9e1d2d6c3fcad5a21d08042ed4d05b835d1941842960274be678323"
+  },
+  {
+   "cell": "c100-h185-s40_L",
+   "상태": "ok",
+   "n": 10518,
+   "m": 50474,
+   "sub": 229,
+   "posSha": "39c100eeead289e1caf0ad33cb7dc9dbe469378fffe15f4e6dbb3198ebb78768",
+   "uvSha": "a48199688e313ab38bfcd68b9f561cad7a30e2e1571534ba7c50cd6ac5e7008d"
+  },
+  {
+   "cell": "c100-h185-s40_XL",
+   "상태": "ok",
+   "n": 11322,
+   "m": 54432,
+   "sub": 226,
+   "posSha": "e8c6d4fc0835c5c1cfd8ca0fee2a188710984bc362960555e96f9a3e7523aedb",
+   "uvSha": "6087ee608e68c096fd9696cf1e76ce5ab613ca1263f891adf295b6068c583fda"
+  },
+  {
+   "cell": "c100-h185-s45_S",
+   "상태": "ok",
+   "n": 9614,
+   "m": 46026,
+   "sub": 236,
+   "posSha": "e5c81fbc26d343f2259b8759967356307ff63e548aa7d5ec604445f9867f8613",
+   "uvSha": "b1ff9bc3ffa44160b14ccece6107c4b396e5220a9b83535ae3e0cf1574068979"
+  },
+  {
+   "cell": "c100-h185-s45_M",
+   "상태": "던짐",
+   "err": "목 밑동(벽/지붕 전이)을 못 찾는다 — 갈래 D"
+  },
+  {
+   "cell": "c100-h185-s45_L",
+   "상태": "ok",
+   "n": 10518,
+   "m": 50474,
+   "sub": 229,
+   "posSha": "8a0d2ffc45d3472ed4e6316624d0a6f82d8a1fd6f899c7b5576f85e15e06b16f",
+   "uvSha": "b758224b047b05e8a504c529834d659db4c2fdb5f55c3a235b120a82703d39c2"
+  },
+  {
+   "cell": "c100-h185-s45_XL",
+   "상태": "ok",
+   "n": 11526,
+   "m": 55432,
+   "sub": 226,
+   "posSha": "a9236d09ccdcacbb5240993f9cf080351ad6ba7d24edf8346755a3d062c91af3",
+   "uvSha": "2ae00fb1251c3cb22a566cc7531f10ae3bab254b1b87c67c790cad034a6d9d36"
+  },
+  {
+   "cell": "c100-h185-s50_S",
+   "상태": "ok",
+   "n": 10022,
+   "m": 48026,
+   "sub": 236,
+   "posSha": "52a07506a09913ae3f79213feabb616bceeb2298f06e1f0c0a2576d914d4f830",
+   "uvSha": "55a1806472169f2a89fc7f23a972a9430dfc5cc6d2e46c46e8809df114c68e90"
+  },
+  {
+   "cell": "c100-h185-s50_M",
+   "상태": "ok",
+   "n": 10564,
+   "m": 50694,
+   "sub": 234,
+   "posSha": "fe8f9f2fb19dca7ae9a5e9d78c836584907a8f69fff29dc7a8192b802ee0b0e8",
+   "uvSha": "05a3567a8547969ada1acf29778c62d7ff4cc2380a3f59540071228f258dd64b"
+  },
+  {
+   "cell": "c100-h185-s50_L",
+   "상태": "ok",
+   "n": 11028,
+   "m": 52974,
+   "sub": 230,
+   "posSha": "29a3ebcc8f73a9c0badd696add296f8d28d2e410b8618b861ceabe247fb6e0a0",
+   "uvSha": "c00f5c5f17b68e7e3e8bb3e585e7785197e39fcd9ed1f88c8da22ff0a7e4200a"
+  },
+  {
+   "cell": "c100-h185-s50_XL",
+   "상태": "ok",
+   "n": 11730,
+   "m": 56432,
+   "sub": 226,
+   "posSha": "38da9da82145699389e882f9274b7d655784ca073238d7bfb87895d4f6aaa586",
+   "uvSha": "f3e921f4e7b06844dada827022893221094103dc359a1a8ed5409dfb311a9f8f"
+  },
+  {
+   "cell": "c122.5-h155-s40_S",
+   "상태": "ok",
+   "n": 8900,
+   "m": 42530,
+   "sub": 266,
+   "posSha": "6f531b5fa5853ec9d6f14337cf1c95bb78b2ea329ed0d532ffebfeec05814248",
+   "uvSha": "f28a87c86d2d8997d1e56fc8e3d46b6d8a891b68cb5ebbe88abf0890a84d27a7"
+  },
+  {
+   "cell": "c122.5-h155-s40_M",
+   "상태": "ok",
+   "n": 9544,
+   "m": 45698,
+   "sub": 263,
+   "posSha": "b33216c3cde3673ba990af5cd53277e3ac9fd9ea977d4d43d5333b9c2dd09e41",
+   "uvSha": "993d10d0858a93ca3901f54b48a94e6bcd6a3b22ca5d57e8caf06c03f55b1e9a"
+  },
+  {
+   "cell": "c122.5-h155-s40_L",
+   "상태": "ok",
+   "n": 10434,
+   "m": 50076,
+   "sub": 260,
+   "posSha": "aadc36f457769c368e633e9f43d541f87cbd0113c2d00564ae4d3e61ff00a84e",
+   "uvSha": "d213e1f5baf96c83292df0d23a3485748c5d156c50f6e4325c7ebdb987e12b87"
+  },
+  {
+   "cell": "c122.5-h155-s40_XL",
+   "상태": "던짐",
+   "err": "옷 자기 간격 SEP 미달 — 최소쌍 back↔back 0.03216mm — 갈래 D"
+  },
+  {
+   "cell": "c122.5-h155-s45_S",
+   "상태": "던짐",
+   "err": "옷 자기 간격 SEP 미달 — 최소쌍 back↔back 1.557mm — 갈래 D"
+  },
+  {
+   "cell": "c122.5-h155-s45_M",
+   "상태": "던짐",
+   "err": "옷 자기 간격 SEP 미달 — 최소쌍 back↔back 1.977mm — 갈래 D"
+  },
+  {
+   "cell": "c122.5-h155-s45_L",
+   "상태": "ok",
+   "n": 10476,
+   "m": 50280,
+   "sub": 278,
+   "posSha": "2ae549f20c12369705f858a53b0f10494da6da28553d4618c14b9e44c9e0d3be",
+   "uvSha": "822cfa2b84a204be4a7c2a2464c9a85eb2e21b0717af3f44c0cd2136bd4882da"
+  },
+  {
+   "cell": "c122.5-h155-s45_XL",
+   "상태": "ok",
+   "n": 11458,
+   "m": 55114,
+   "sub": 256,
+   "posSha": "9330b2983c22caa2714dc5f95560bf748e268a4d661f6e25315182b17d7c8040",
+   "uvSha": "1c433e0f011f3748f73b5e5fac39e2a4db0e37775c61dde2d213deb10455d02e"
+  },
+  {
+   "cell": "c122.5-h155-s50_S",
+   "상태": "던짐",
+   "err": "옷 자기 간격 SEP 미달 — 최소쌍 back↔back 1.745mm — 갈래 D"
+  },
+  {
+   "cell": "c122.5-h155-s50_M",
+   "상태": "던짐",
+   "err": "옷 자기 간격 SEP 미달 — 최소쌍 back↔back 1.886mm — 갈래 D"
+  },
+  {
+   "cell": "c122.5-h155-s50_L",
+   "상태": "던짐",
+   "err": "옷 자기 간격 SEP 미달 — 최소쌍 back↔back 1.992mm — 갈래 D"
+  },
+  {
+   "cell": "c122.5-h155-s50_XL",
+   "상태": "ok",
+   "n": 11390,
+   "m": 54778,
+   "sub": 274,
+   "posSha": "258c8c16cb7992a5ff6836d5565e6e225abc790be43f8364c4e28dfd8ecd0fa3",
+   "uvSha": "d832b0109dc096c084cbde86b322e1cf5286b8767955c58c83394cb6d4680649"
+  },
+  {
+   "cell": "c122.5-h170-s40_S",
+   "상태": "ok",
+   "n": 9308,
+   "m": 44528,
+   "sub": 262,
+   "posSha": "d42603b63665ab73d85ef37cf20fe26abd41bd47fa3d5e25333711de037811e9",
+   "uvSha": "b20ccec14b533b63a49e5c650301363ba499174c0b0d3187eecc111a105afc47"
+  },
+  {
+   "cell": "c122.5-h170-s40_M",
+   "상태": "ok",
+   "n": 9952,
+   "m": 47696,
+   "sub": 258,
+   "posSha": "07d30ed18f291342c913ec461319a66f60e83be66b3c7fdb008018523f843b3b",
+   "uvSha": "6b29f015b15d7e41c385351a9ab8c99de873c6c5f7cbd9dbcf583f63d63cf17f"
+  },
+  {
+   "cell": "c122.5-h170-s40_L",
+   "상태": "ok",
+   "n": 10578,
+   "m": 50778,
+   "sub": 274,
+   "posSha": "244c032b0eb84bf457ff97eba6f954643ac479aa64bc59923d8a6604968385ab",
+   "uvSha": "46a3d8c34bdf04a2331aa56b0b1b20c11a43bee2db75b37de28e34a64c0e55d0"
+  },
+  {
+   "cell": "c122.5-h170-s40_XL",
+   "상태": "ok",
+   "n": 11492,
+   "m": 55276,
+   "sub": 269,
+   "posSha": "5a94abeb51e4c23449c0150ce0f861579ae15ec8009b1ad48b26cc6dcda87938",
+   "uvSha": "98aaa1552f0d6a73cf31dca5bfa60b51c66ab67e787a24a7f8762a10bbaee519"
+  },
+  {
+   "cell": "c122.5-h170-s45_S",
+   "상태": "던짐",
+   "err": "옷 자기 간격 SEP 미달 — 최소쌍 back↔back 1.804mm — 갈래 D"
+  },
+  {
+   "cell": "c122.5-h170-s45_M",
+   "상태": "ok",
+   "n": 10156,
+   "m": 48696,
+   "sub": 258,
+   "posSha": "99d7ec3da17e047af1c88456229c691c4acaf71b571cb88284ae8bc885355a1e",
+   "uvSha": "01039c6a414674285225294c421eeed44a969ae1dca1095cfa5cf53a99932ca6"
+  },
+  {
+   "cell": "c122.5-h170-s45_L",
+   "상태": "ok",
+   "n": 10944,
+   "m": 52574,
+   "sub": 255,
+   "posSha": "e082ec79129a7a73d15f5af60138332daf5c1ee2a57ec1b0831cd03e8506dae8",
+   "uvSha": "1cd32c2d55ecea5797d4e91d8cc4da937aff82bc4606dae0afa78ab640ce7265"
+  },
+  {
+   "cell": "c122.5-h170-s45_XL",
+   "상태": "ok",
+   "n": 11594,
+   "m": 55776,
+   "sub": 269,
+   "posSha": "f74490d046668aac51bee4483a93adaf3dafac0e674721cdd95e4b8c5fbfb01b",
+   "uvSha": "6cec143de0ac4660114e3decb286aee06bb3d753ebc9d22dc132dafc352daaad"
+  },
+  {
+   "cell": "c122.5-h170-s50_S",
+   "상태": "던짐",
+   "err": "소매산 실수해 없음 — 암홀 반쪽 22.20cm < 소매산 반폭 22.59cm — 갈래 D"
+  },
+  {
+   "cell": "c122.5-h170-s50_M",
+   "상태": "던짐",
+   "err": "옷 자기 간격 SEP 미달 — 최소쌍 back↔back 1.371mm — 갈래 D"
+  },
+  {
+   "cell": "c122.5-h170-s50_L",
+   "상태": "ok",
+   "n": 11046,
+   "m": 53074,
+   "sub": 255,
+   "posSha": "5a7590fbb54c1288f7228716c21aa0b7de6838180ecc8a09353fe91f89e3378c",
+   "uvSha": "ff5fe2550a6b2e93240ae5f2a97f65a9e4fe74df72e072c957c8bbc64c4136b4"
+  },
+  {
+   "cell": "c122.5-h170-s50_XL",
+   "상태": "ok",
+   "n": 11968,
+   "m": 57612,
+   "sub": 251,
+   "posSha": "98d0df682f219de92ecb635110fa8ceed352bb8cebb385b06aeb17ceb3351418",
+   "uvSha": "23149ee3a3ec75ab487b69e0f56e53c8a55b1514ebde1d646553875413be7a94"
+  },
+  {
+   "cell": "c122.5-h185-s40_S",
+   "상태": "던짐",
+   "err": "소매산 실수해 없음 — 암홀 반쪽 22.20cm < 소매산 반폭 23.43cm — 갈래 D"
+  },
+  {
+   "cell": "c122.5-h185-s40_M",
+   "상태": "ok",
+   "n": 10922,
+   "m": 52452,
+   "sub": 260,
+   "posSha": "d5e04fe2c75dcd82543ae228fdb67ce55e0aac0ce0c120ec6b5d9cff9e7b91a9",
+   "uvSha": "9123a6296500df91d46ae787e3c0cb204e2bbfc79ec9fb9cded96d7cf697e78f"
+  },
+  {
+   "cell": "c122.5-h185-s40_L",
+   "상태": "ok",
+   "n": 11412,
+   "m": 54874,
+   "sub": 273,
+   "posSha": "bcb6d5ad474d35bf8e70411615c0b17c7ba76ef5916775f7d60e81be06095eba",
+   "uvSha": "c6c406d71f4094577a51885081c17088836bc07fdea02df87d9a348adae3fc03"
+  },
+  {
+   "cell": "c122.5-h185-s40_XL",
+   "상태": "ok",
+   "n": 12240,
+   "m": 58948,
+   "sub": 253,
+   "posSha": "9a25da3a89c56c2e538fe48b5ea6fd963d7b60b5085000e3ae8ff21fef3e9a6d",
+   "uvSha": "d5dfbf9e5e26092cb6623958284a3f24880992c45f14e43d0390ac9dbd85f804"
+  },
+  {
+   "cell": "c122.5-h185-s45_S",
+   "상태": "던짐",
+   "err": "소매산 실수해 없음 — 암홀 반쪽 22.20cm < 소매산 반폭 29.93cm — 갈래 D"
+  },
+  {
+   "cell": "c122.5-h185-s45_M",
+   "상태": "던짐",
+   "err": "소매산 실수해 없음 — 암홀 반쪽 22.20cm < 소매산 반폭 26.12cm — 갈래 D"
+  },
+  {
+   "cell": "c122.5-h185-s45_L",
+   "상태": "던짐",
+   "err": "소매산 실수해 없음 — 암홀 반쪽 22.20cm < 소매산 반폭 22.58cm — 갈래 D"
+  },
+  {
+   "cell": "c122.5-h185-s45_XL",
+   "상태": "던짐",
+   "err": "옷 자기 간격 SEP 미달 — 최소쌍 back↔back 1.801mm — 갈래 D"
+  },
+  {
+   "cell": "c122.5-h185-s50_S",
+   "상태": "던짐",
+   "err": "소매산 실수해 없음 — 암홀 반쪽 22.20cm < 소매산 반폭 28.37cm — 갈래 D"
+  },
+  {
+   "cell": "c122.5-h185-s50_M",
+   "상태": "던짐",
+   "err": "소매산 실수해 없음 — 암홀 반쪽 22.20cm < 소매산 반폭 29.13cm — 갈래 D"
+  },
+  {
+   "cell": "c122.5-h185-s50_L",
+   "상태": "던짐",
+   "err": "소매산 실수해 없음 — 암홀 반쪽 22.20cm < 소매산 반폭 25.42cm — 갈래 D"
+  },
+  {
+   "cell": "c122.5-h185-s50_XL",
+   "상태": "던짐",
+   "err": "소매산 실수해 없음 — 암홀 반쪽 22.20cm < 소매산 반폭 22.85cm — 갈래 D"
+  }
+ ]
+}
