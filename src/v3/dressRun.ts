@@ -34,6 +34,12 @@ export type RunInput = {
   glb: ArrayBuffer;
   /** 몸 축 비례 [x,y,z] · 기본 1/1/1 */
   bodyScale?: [number, number, number];
+  /* v4-25 §1-① — **팔 축 인자 «전달»**(v3 동결 예외 대장 2건째 · 전략 세션 v4-24 §4 승인:
+   * 「dressRun.ts 한정 · 물리 0줄 · T포즈 82칸 조립 비트 동일 조건」).
+   * 이 파일이 하는 일은 **넘겨받아 그대로 건네는 것뿐**이다 — 쓰는 자리는
+   * `garmentScene.ts:631-636`(넘기지 «않으면» 지금까지와 같은 **+x** 기본) 하나다.
+   * ⟹ **넘기지 않는 호출은 바이트가 바뀌지 않는다**(§1-① 회귀 82/82 가 그 증거다). */
+  armAxis?: { left: [number, number, number]; right: [number, number, number] };
   /** v3-70 §1 — **주입 몸 정점**[m]. 있으면 `parseGlb` 의 몸 «대신» 쓴다(`glb` 인자는 그대로 필요하다 —
    * **위상(`idx`)은 GLB 것을 쓰기 때문**이다). **규약 3항**:
    *   ① **길이 = `parseGlb(glb).prims[0].pos.length`** — 어긋나면 **던진다**(조용한 성공 0).
@@ -98,7 +104,7 @@ export function prepare(inp: RunInput) {
   const gd = inp.garment ?? DEFAULT_GARMENT;
   const d = inp.d ?? 0.011;
   const S = createScene({
-    body: prim0, bodyIdx, bodyG, sdfSpec,
+    body: prim0, bodyIdx, bodyG, sdfSpec, armAxis: inp.armAxis,
     L: gd.L, W: gd.W, SW: gd.SW, SLEN: gd.SLEN, ARM_G: gd.ARM_G,
     G, DT, THICK, SEP, KMEM: inp.fabric.k, MAT: { rho: inp.fabric.rho, B: inp.fabric.B },
     TOL_SELF, D_FIXED: d, minPairDistLite: inp.minPairDistLite,

@@ -15,6 +15,7 @@ import { prepare } from '../src/v3/dressRun.ts';
 import { FABRICS, THICK, G, DT, MU, DAMP } from '../src/v3/consts.ts';
 import { minPairDistLite } from '../src/v3/instruments.ts';
 import { garmentOf, cells, type Size } from '../src/v3/grid.ts';
+import { armAxisFromEnv } from './armAxisEnv.ts';
 
 const OUT = 'gpu/oracle/export';
 const CELL = process.env.CELL ?? 'c100-h170-s45_M';
@@ -30,7 +31,7 @@ const glb = gb.buffer.slice(gb.byteOffset, gb.byteOffset + gb.byteLength) as Arr
 const bb = readFileSync(BODY_BIN);
 const verts = new Float32Array(bb.buffer.slice(bb.byteOffset, bb.byteOffset + bb.byteLength));
 const fab = (FABRICS as Record<string, { k: number; rho: number; B: number }>)[FAB];
-const P = prepare({ glb, fabric: FABRICS.gray, d: D, garment: garmentOf(c.size as Size),
+const P = prepare({ glb, fabric: FABRICS.gray, d: D, garment: garmentOf(c.size as Size), armAxis: armAxisFromEnv(),
                     bodyVerts: verts, minPairDistLite });
 const sc = P.sc;
 type Con = Record<string, number> & { kind: string };

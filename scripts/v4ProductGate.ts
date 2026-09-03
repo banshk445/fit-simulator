@@ -21,6 +21,7 @@ import { FABRICS } from '../src/v3/consts.ts';
 import { minPairDistLite } from '../src/v3/instruments.ts';
 import { garmentOf, cells, type Size } from '../src/v3/grid.ts';
 import { runS4Gate, S4_THRESHOLD, N_WIN } from '../src/v3/s4Gate.ts';
+import { armAxisFromEnv } from './armAxisEnv.ts';
 
 const SRC = 'public/v3diag/v3-77';
 const CELL = process.env.CELL ?? 'c100-h170-s45_M';
@@ -35,7 +36,7 @@ const glb = gb.buffer.slice(gb.byteOffset, gb.byteOffset + gb.byteLength) as Arr
 const BODY_BIN = process.env.BODY_BIN ?? `${SRC}/body-${c.bodyId}.bin`;
 const bb = readFileSync(BODY_BIN);
 const verts = new Float32Array(bb.buffer.slice(bb.byteOffset, bb.byteOffset + bb.byteLength));
-const P = prepare({ glb, fabric: FABRICS.gray, d: D, garment: garmentOf(c.size as Size),
+const P = prepare({ glb, fabric: FABRICS.gray, d: D, garment: garmentOf(c.size as Size), armAxis: armAxisFromEnv(),
                     bodyVerts: verts, minPairDistLite });
 const n = P.sc.n;
 

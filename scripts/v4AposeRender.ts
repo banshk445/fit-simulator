@@ -16,6 +16,7 @@ import { minPairDistLite } from '../src/v3/instruments.ts';
 import { garmentOf, cells, type Size } from '../src/v3/grid.ts';
 import { render, VIEWS } from '../src/v3/raster.ts';
 import { writePng } from './v3Render.ts';
+import { armAxisFromEnv } from './armAxisEnv.ts';
 
 const CELL = process.env.CELL ?? 'c100-h170-s45_M';
 const OUT = process.env.OUT ?? 'docs/v4/캡처/24';
@@ -28,7 +29,7 @@ const glb = gb.buffer.slice(gb.byteOffset, gb.byteOffset + gb.byteLength) as Arr
 const bbPath = process.env.BODY_BIN ?? `public/v3diag/v3-77/body-${c.bodyId}.bin`;
 const bb = readFileSync(bbPath);
 const verts = new Float32Array(bb.buffer.slice(bb.byteOffset, bb.byteOffset + bb.byteLength));
-const P = prepare({ glb, fabric: FABRICS.gray, d: D, garment: garmentOf(c.size as Size),
+const P = prepare({ glb, fabric: FABRICS.gray, d: D, garment: garmentOf(c.size as Size), armAxis: armAxisFromEnv(),
                     bodyVerts: verts, minPairDistLite });
 const n = P.sc.n;
 let pos: Float64Array;
