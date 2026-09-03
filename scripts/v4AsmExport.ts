@@ -33,6 +33,27 @@ const verts = new Float32Array(bb.buffer.slice(bb.byteOffset, bb.byteOffset + bb
 const fab = (FABRICS as Record<string, { k: number; rho: number; B: number }>)[FAB];
 const P = prepare({ glb, fabric: FABRICS.gray, d: D, garment: garmentOf(c.size as Size), armAxis: armAxisFromEnv(),
                     bodyVerts: verts, minPairDistLite });
+
+/* ★ v4-26 §1-② **유한성 검사**(전략 세션 v4-25 §4 승인 · 함정 후보 「배치 산출의 조용한 NaN 통과」).
+ * v4-25 는 소매 1,020 정점이 NaN 인 조립 blob 을 **아무 말 없이** 내보냈다 — 굽기까지 가서야 드러난다.
+ * ⟹ 여기서 **패널별 개수와 함께 던진다**(조용한 성공 0 · 물리 0줄 · 판정 0). */
+{
+  const sc0 = P.sc as unknown as { n: number; s: { pos: Float64Array }; uv: Float64Array;
+                                   panels: { base: number; nu: number; nv: number; name: string }[] };
+  const bad: string[] = [];
+  for (const p of sc0.panels) {
+    const end = p.base + (p.nu + 1) * (p.nv + 1);
+    let bp = 0, bu = 0;
+    for (let v = p.base; v < end; v++) {
+      if (!Number.isFinite(sc0.s.pos[v * 3]) || !Number.isFinite(sc0.s.pos[v * 3 + 1])
+          || !Number.isFinite(sc0.s.pos[v * 3 + 2])) bp++;
+      if (!Number.isFinite(sc0.uv[v * 2]) || !Number.isFinite(sc0.uv[v * 2 + 1])) bu++;
+    }
+    if (bp || bu) bad.push(`${p.name}: pos ${bp} · uv ${bu} / ${end - p.base}`);
+  }
+  if (bad.length) throw new Error(`조립 산출에 NaN/Inf 가 있다 — ${bad.join(' | ')}`);
+}
+
 const sc = P.sc;
 type Con = Record<string, number> & { kind: string };
 const all = sc.cons as unknown as Con[];

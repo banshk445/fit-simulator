@@ -48,7 +48,10 @@ export type SceneConfig = {
   /** v4-18 §1-③ — **팔 축**(좌·우 · 단위 벡터 · 월드). 조립 안에는 «뼈»가 없다(`body` 는 정점뿐)이므로
    * **뼈를 가진 하네스가 넘긴다**. 안 넘기면 기본값 = **±x**(T포즈 실측이 x 와 1.3° 이내 · v4-17 §1-②ㄴ).
    * ★ v3 동결 «예외 1번»(전략 세션 v4-17 §4 승인 · 조립 코드 한정 · 물리 0줄 · T포즈 비트 동일이 조건). */
-  armAxis?: { left: [number, number, number]; right: [number, number, number] };
+  /* v4-26 §1-① — `origin` = **대역 산정 원점 C**(어깨 피벗 · 호출부가 몸에서 읽어 넘긴다).
+   * 넘기지 «않으면» 아래 `axDot`·`axPoint` 는 **옛 식 그대로**다(분기 자체를 안 탄다). */
+  armAxis?: { left: [number, number, number]; right: [number, number, number];
+              origin?: { left: [number, number, number]; right: [number, number, number] } };
   /** 옆 틈 G 도출이 쓰는 «가벼운» 최소 거리 계기. 계기는 하네스에 남고(§1 분류)
    * 조립은 그것을 «인자로» 받는다 — 정의가 둘로 갈리지 않게 하는 유일한 방법이다. */
   minPairDistLite: (pos: Float64Array, tris: number[]) => number;
@@ -657,17 +660,41 @@ export function createScene(cfg: SceneConfig) {
     const u = cr(a, w);                              // 〃 `v = n × u` 의 자리 — 원통 cos 축
     return [u, cr(a, u)];                            // sin 축 = a × u
   })();
+  /* ── v4-26 §1-① **대역 산정 «원점» 일반화**(v3 동결 예외 대장 3건째 · 전략 세션 v4-25 §4 승인) ──
+   * 승인 문언 — 「armAxis 전달 시에만 `axDot(p) = AX·(p − C)` · C = 어깨 피벗(몸에서 · 손 상수 0) ·
+   * `axPoint`(원통 중심)도 같은 원점 의미 · **미전달 경로는 분기 자체를 안 탄다**」.
+   * ★ 왜 필요한가(v4-25 §1-② 실측) — 옛 `axDot` 은 **세계 원점**에서 잰 투영인데 대역 경계
+   *   `[SW/2+CAP_H, SW/2+SLEN]` 은 **몸 중심선에서 잰 길이**다. 축이 기울면 두 뜻이 갈라져
+   *   대역이 «비고»(A포즈 실측 축에서 정점 0 · +x 에서 493) `ARM.yc/zc` 가 NaN 이 됐다.
+   * ★ 좌우 거울 — 원통은 **x 만** 뒤집는다. 옛 식의 `tt = sgn·t` 는 축이 +x 일 때만 거울과 같고,
+   *   기울면 왼팔의 y 가 «위»로 간다 ⟹ 전달 분기에서는 `sgn` 을 **x 성분에만** 건다(v4-26 §0-4ㄹ 등재). */
+  const AO: [number, number, number] | null = cfg.armAxis?.origin
+    ? [cfg.armAxis.origin.right[0], cfg.armAxis.origin.right[1], cfg.armAxis.origin.right[2]]
+    : null;
   /** 정점 하나를 **축 위 좌표**로 — `armProfile` 의 대역 가름이 이 값으로 선다. */
-  const axDot = (px: number, py: number, pz: number) => AX[0] * px + AX[1] * py + AX[2] * pz;
-  /** 축 둘레 원통 위의 점 — 중심 `(0, ARM.yc, ARM.zc)` · 축 방향 `sgn·t` · 반지름 R · 위상 ph. */
-  const axPoint = (t: number, R: number, ph: number, sgn: number): [number, number, number] => {
-    const c0 = Math.cos(ph), s0 = Math.sin(ph), tt = sgn * t;
-    return [
-      0 + tt * AX[0] + R * (c0 * AU[0] + s0 * AV[0]),
-      ARM.yc + tt * AX[1] + R * (c0 * AU[1] + s0 * AV[1]),
-      ARM.zc + tt * AX[2] + R * (c0 * AU[2] + s0 * AV[2]),
-    ];
-  };
+  const axDot = AO
+    ? (px: number, py: number, pz: number) =>
+        AX[0] * (px - AO[0]) + AX[1] * (py - AO[1]) + AX[2] * (pz - AO[2])
+    : (px: number, py: number, pz: number) => AX[0] * px + AX[1] * py + AX[2] * pz;
+  /** 축 둘레 원통 위의 점 — 중심 `(0, ARM.yc, ARM.zc)` · 축 방향 `sgn·t` · 반지름 R · 위상 ph.
+   * 전달 분기에서는 중심이 **C**(어깨 피벗)이고 `sgn` 은 **x 성분에만** 붙는다. */
+  const axPoint = AO
+    ? (t: number, R: number, ph: number, sgn: number): [number, number, number] => {
+        const c0 = Math.cos(ph), s0 = Math.sin(ph);
+        return [
+          sgn * (AO[0] + t * AX[0] + R * (c0 * AU[0] + s0 * AV[0])),
+          AO[1] + t * AX[1] + R * (c0 * AU[1] + s0 * AV[1]),
+          AO[2] + t * AX[2] + R * (c0 * AU[2] + s0 * AV[2]),
+        ];
+      }
+    : (t: number, R: number, ph: number, sgn: number): [number, number, number] => {
+        const c0 = Math.cos(ph), s0 = Math.sin(ph), tt = sgn * t;
+        return [
+          0 + tt * AX[0] + R * (c0 * AU[0] + s0 * AV[0]),
+          ARM.yc + tt * AX[1] + R * (c0 * AU[1] + s0 * AV[1]),
+          ARM.zc + tt * AX[2] + R * (c0 * AU[2] + s0 * AV[2]),
+        ];
+      };
 
   /** 팔 축 — «소매 아랫절반이 놓이는» 축 대역에서 잰다. 두 값 다 패턴에서 온다.
    * (어깨끝부터 재면 몸통·다리 정점이 섞여 축이 y≈0.74로 내려간다.) */

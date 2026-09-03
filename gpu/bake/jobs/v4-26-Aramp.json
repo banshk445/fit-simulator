@@ -1,0 +1,19 @@
+{
+ "name": "v4-26-Aramp",
+ "fp": "f64",
+ "arch": "cuda",
+ "frames": 400,
+ "cells": [
+  {
+   "cell": "Aori_M",
+   "asm": "asm-Aori_M.bin",
+   "reportCell": "c100-h170-s45_M",
+   "frames": 400,
+   "cellCap": {
+    "cell_cap": 192,
+    "max_cells": 131072
+   },
+   "ramp": true
+  }
+ ]
+}

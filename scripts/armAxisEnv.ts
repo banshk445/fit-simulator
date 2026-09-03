@@ -9,7 +9,8 @@
  */
 import { readFileSync } from 'node:fs';
 
-export type ArmAxis = { left: [number, number, number]; right: [number, number, number] };
+export type Vec3 = [number, number, number];
+export type ArmAxis = { left: Vec3; right: Vec3; origin?: { left: Vec3; right: Vec3 } };
 
 export function armAxisFromEnv(): ArmAxis | undefined {
   const p = process.env.ARM_AXIS_JSON;
@@ -22,5 +23,16 @@ export function armAxisFromEnv(): ArmAxis | undefined {
     if (!r) throw new Error(`팔 축 파일에 ${want} 뼈가 없다 — ${p}`);
     return r.dir as [number, number, number];
   };
-  return { left: pick('Left'), right: pick('Right') };
+  /* v4-26 §1-① — 대역 원점 C. `ARM_ORIGIN_JSON` 이 있으면 «중심선투영»을 실어 보낸다(§0-4ㄱ).
+   * 없으면 `origin` 자체가 없고, `garmentScene` 은 분기를 안 탄다(옛 식 그대로). */
+  const op = process.env.ARM_ORIGIN_JSON;
+  let origin: { left: Vec3; right: Vec3 } | undefined;
+  if (op) {
+    const o = JSON.parse(readFileSync(op, 'utf8')) as
+      { left?: { 중심선투영?: Vec3 }; right?: { 중심선투영?: Vec3 } };
+    const L = o.left?.중심선투영, R = o.right?.중심선투영;
+    if (!L || !R) throw new Error(`원점 파일에 «중심선투영» 이 없다 — ${op}`);
+    origin = { left: L, right: R };
+  }
+  return { left: pick('Left'), right: pick('Right'), ...(origin ? { origin } : {}) };
 }
