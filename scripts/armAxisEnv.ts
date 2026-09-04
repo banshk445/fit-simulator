@@ -10,7 +10,8 @@
 import { readFileSync } from 'node:fs';
 
 export type Vec3 = [number, number, number];
-export type ArmAxis = { left: Vec3; right: Vec3; origin?: { left: Vec3; right: Vec3 } };
+export type ArmAxis = { left: Vec3; right: Vec3; origin?: { left: Vec3; right: Vec3 };
+                        pivot?: { left: Vec3; right: Vec3 } };
 
 export function armAxisFromEnv(): ArmAxis | undefined {
   const p = process.env.ARM_AXIS_JSON;
@@ -27,12 +28,16 @@ export function armAxisFromEnv(): ArmAxis | undefined {
    * 없으면 `origin` 자체가 없고, `garmentScene` 은 분기를 안 탄다(옛 식 그대로). */
   const op = process.env.ARM_ORIGIN_JSON;
   let origin: { left: Vec3; right: Vec3 } | undefined;
+  let pivot: { left: Vec3; right: Vec3 } | undefined;
   if (op) {
     const o = JSON.parse(readFileSync(op, 'utf8')) as
-      { left?: { 중심선투영?: Vec3 }; right?: { 중심선투영?: Vec3 } };
+      { left?: { 중심선투영?: Vec3; 피벗?: Vec3 }; right?: { 중심선투영?: Vec3; 피벗?: Vec3 } };
     const L = o.left?.중심선투영, R = o.right?.중심선투영;
     if (!L || !R) throw new Error(`원점 파일에 «중심선투영» 이 없다 — ${op}`);
     origin = { left: L, right: R };
+    /* v4-29 §1-③ — 원통 «중심»은 어깨 피벗 P(투영 전)이다. 파일에 있으면 함께 싣는다. */
+    const PL = o.left?.피벗, PR2 = o.right?.피벗;
+    if (PL && PR2) pivot = { left: PL, right: PR2 };
   }
-  return { left: pick('Left'), right: pick('Right'), ...(origin ? { origin } : {}) };
+  return { left: pick('Left'), right: pick('Right'), ...(origin ? { origin } : {}), ...(pivot ? { pivot } : {}) };
 }

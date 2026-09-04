@@ -65,7 +65,12 @@ export type SceneConfig = {
   /* v4-26 §1-① — `origin` = **대역 산정 원점 C**(어깨 피벗 · 호출부가 몸에서 읽어 넘긴다).
    * 넘기지 «않으면» 아래 `axDot`·`axPoint` 는 **옛 식 그대로**다(분기 자체를 안 탄다). */
   armAxis?: { left: [number, number, number]; right: [number, number, number];
-              origin?: { left: [number, number, number]; right: [number, number, number] } };
+              origin?: { left: [number, number, number]; right: [number, number, number] };
+              /* v4-29 §1-③ — `pivot` = **원통 «중심»의 자리 P**(어깨 피벗 원좌표 · 투영 «전»).
+               * v4-26 은 대역 측정(C)과 원통 배치를 한 변수에 실었는데, 둘의 «수직 오프셋»이
+               * A포즈에서 102.0632 mm 였다(v4-29 §1-①) ⟹ 전략 세션 v4-28 §4 가 **원점 분리**를 승인했다.
+               * 넘기지 «않으면» `origin` 을 그대로 쓴다(= v4-26 거동 보존). */
+              pivot?: { left: [number, number, number]; right: [number, number, number] } };
   /** 옆 틈 G 도출이 쓰는 «가벼운» 최소 거리 계기. 계기는 하네스에 남고(§1 분류)
    * 조립은 그것을 «인자로» 받는다 — 정의가 둘로 갈리지 않게 하는 유일한 방법이다. */
   minPairDistLite: (pos: Float64Array, tris: number[]) => number;
@@ -685,6 +690,12 @@ export function createScene(cfg: SceneConfig) {
   const AO: [number, number, number] | null = cfg.armAxis?.origin
     ? [cfg.armAxis.origin.right[0], cfg.armAxis.origin.right[1], cfg.armAxis.origin.right[2]]
     : null;
+  /* v4-29 §1-③ — **원점 «분리»**(예외 대장 3건째 «정정» · 전략 세션 v4-28 §4 승인 문언):
+   *   `axDot`(대역 «길이») = **C** 기준 «유지» · `axPoint`(원통 «중심») = **P**(어깨 피벗) 기준.
+   * `pivot` 이 없으면 `AO` 로 떨어진다 ⟹ **v4-26 거동 그대로**. 미전달 분기는 애초에 이 변수를 안 본다. */
+  const AP: [number, number, number] | null = cfg.armAxis?.pivot
+    ? [Math.abs(cfg.armAxis.pivot.right[0]), cfg.armAxis.pivot.right[1], cfg.armAxis.pivot.right[2]]
+    : AO;
   /** 정점 하나를 **축 위 좌표**로 — `armProfile` 의 대역 가름이 이 값으로 선다. */
   const axDot = AO
     ? (px: number, py: number, pz: number) =>
@@ -692,13 +703,13 @@ export function createScene(cfg: SceneConfig) {
     : (px: number, py: number, pz: number) => AX[0] * px + AX[1] * py + AX[2] * pz;
   /** 축 둘레 원통 위의 점 — 중심 `(0, ARM.yc, ARM.zc)` · 축 방향 `sgn·t` · 반지름 R · 위상 ph.
    * 전달 분기에서는 중심이 **C**(어깨 피벗)이고 `sgn` 은 **x 성분에만** 붙는다. */
-  const axPoint = AO
+  const axPoint = AP
     ? (t: number, R: number, ph: number, sgn: number): [number, number, number] => {
         const c0 = Math.cos(ph), s0 = Math.sin(ph);
         return [
-          sgn * (AO[0] + t * AX[0] + R * (c0 * AU[0] + s0 * AV[0])),
-          AO[1] + t * AX[1] + R * (c0 * AU[1] + s0 * AV[1]),
-          AO[2] + t * AX[2] + R * (c0 * AU[2] + s0 * AV[2]),
+          sgn * (AP[0] + t * AX[0] + R * (c0 * AU[0] + s0 * AV[0])),
+          AP[1] + t * AX[1] + R * (c0 * AU[1] + s0 * AV[1]),
+          AP[2] + t * AX[2] + R * (c0 * AU[2] + s0 * AV[2]),
         ];
       }
     : (t: number, R: number, ph: number, sgn: number): [number, number, number] => {
