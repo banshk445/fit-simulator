@@ -27,6 +27,20 @@ export type Curve = (t: number) => Pt;
 /** 파생 치수 대조/고정용 — `undefined` 면 «몸에서 도출»한다(v3-31 §1-C). */
 export type DimsOverride = { neckHalfWidthCm: number; necklineGirthCm: number; capHeightCm: number };
 
+/* ── v4-28 §1-② **`fitSleeve` 계기**(전략 세션 v4-27 §4 「계기 인쇄만 · 로직 0줄」) ──────────
+ * ★ **값을 만들지 않는다.** 아래 기록은 `probe` 의 `Math.min` 사슬 «뒤»에서 같은 읽기를 한 번 더 해
+ *   담기만 한다 — 반환값·탐색 경로·`SLV_R` 은 켜든 끄든 **같은 수**다(§1-② 에서 값으로 확인한다).
+ * 끄면(기본) `if (sleeveTrace.on)` 한 줄을 지나갈 뿐이다. */
+export const sleeveTrace: {
+  on: boolean; all: boolean;
+  calls: { x0: number; R: number; min: number; minBody: number; minCol: number; minSelf: number;
+           argBody: [number, number, number, number, number]; argCol: [number, number, number, number, number] }[];
+  samples: { px: number; py: number; x: number; y: number; z: number; body: number; col: number }[];
+  probe?: (x0: number, R: number) => number;
+  dims?: { CAP_W: number; CAP_H: number; RMIN: number; SW: number; SLEN: number; W: number;
+           Y_ARM: number; ARM_D: number; Y_TOP: number; Y_HEM: number; L: number; AXIS_Z: number; SEP: number };
+} = { on: false, all: false, calls: [], samples: [] };
+
 export type SceneConfig = {
   /** 몸 메시 — 하네스가 GLB에서 읽어 «배열»로 넘긴다 */
   body: { pos: Float32Array };
@@ -621,43 +635,12 @@ export function createScene(cfg: SceneConfig) {
   }
 
   function armProfile(x0: number, x1: number) {
-    if (!AO) {                                          // ← 미전달 경로: 아래 블록은 **옛 코드 그대로**
-      let y0 = Infinity, y1 = -Infinity, z0 = Infinity, z1 = -Infinity;
-      for (let v = 0; v < prim0.pos.length / 3; v++) {
-        const px = axDot(prim0.pos[v * 3], prim0.pos[v * 3 + 1], prim0.pos[v * 3 + 2]);
-        if (px < x0 || px >= x1) continue;
-        y0 = Math.min(y0, prim0.pos[v * 3 + 1]); y1 = Math.max(y1, prim0.pos[v * 3 + 1]);
-        z0 = Math.min(z0, prim0.pos[v * 3 + 2]); z1 = Math.max(z1, prim0.pos[v * 3 + 2]);
-      }
-      return { yc: (y0 + y1) / 2, zc: (z0 + z1) / 2 };
-    }
-    /* ── v4-27 §1-① **선별 «반경» 조건**(v3 동결 예외 대장 4건째 · 전략 세션 v4-26 §4 승인) ──
-     * 왜 — 축 위 거리 조건 «하나»로는 팔을 못 고른다. 축이 아래로 기울면 대역 `[SW/2+CAP_H, SW/2+SLEN]`
-     *   안에 **몸통·다리**가 함께 들어온다(v4-26 §1-③ 실측: 정점 2,509 · y 0.3763~1.4263 m).
-     * 문턱은 **사람이 쓰지 않는다 — 몸이 자른다**(§0-4ㄱ · 손 상수 0):
-     *   후보를 **축선까지의 반경 r** 로 정렬해 **이웃 r 사이의 가장 큰 «틈»**에서 자르고, 그 «안쪽»만 남긴다.
-     *   근거 = 팔은 축선에 붙은 조밀한 군집이고, 몸통·다리는 멀리 떨어진 **다른 군집**이다.
-     * ★ 이 블록은 **전달 분기 안에서만** 돈다 — 미전달 경로는 위 `if (!AO)` 에서 이미 돌아갔다. */
-    const rs: number[] = [], ys: number[] = [], zs: number[] = [];
-    for (let v = 0; v < prim0.pos.length / 3; v++) {
-      const px0 = prim0.pos[v * 3], py0 = prim0.pos[v * 3 + 1], pz0 = prim0.pos[v * 3 + 2];
-      const t = axDot(px0, py0, pz0);
-      if (t < x0 || t >= x1) continue;
-      const dx = px0 - AO[0] - t * AX[0], dy = py0 - AO[1] - t * AX[1], dz = pz0 - AO[2] - t * AX[2];
-      rs.push(Math.hypot(dx, dy, dz)); ys.push(py0); zs.push(pz0);
-    }
-    const ord = rs.map((_, i) => i).sort((a, b) => rs[a] - rs[b]);
-    let cut = ord.length;                               // 자를 자리 = «가장 큰 틈» 뒤
-    let gap = -Infinity;
-    for (let k = 1; k < ord.length; k++) {
-      const g = rs[ord[k]] - rs[ord[k - 1]];
-      if (g > gap) { gap = g; cut = k; }
-    }
     let y0 = Infinity, y1 = -Infinity, z0 = Infinity, z1 = -Infinity;
-    for (let k = 0; k < cut; k++) {
-      const i = ord[k];
-      y0 = Math.min(y0, ys[i]); y1 = Math.max(y1, ys[i]);
-      z0 = Math.min(z0, zs[i]); z1 = Math.max(z1, zs[i]);
+    for (let v = 0; v < prim0.pos.length / 3; v++) {
+      const px = axDot(prim0.pos[v * 3], prim0.pos[v * 3 + 1], prim0.pos[v * 3 + 2]);
+      if (px < x0 || px >= x1) continue;
+      y0 = Math.min(y0, prim0.pos[v * 3 + 1]); y1 = Math.max(y1, prim0.pos[v * 3 + 1]);
+      z0 = Math.min(z0, prim0.pos[v * 3 + 2]); z1 = Math.max(z1, prim0.pos[v * 3 + 2]);
     }
     return { yc: (y0 + y1) / 2, zc: (z0 + z1) / 2 };
   }
@@ -755,8 +738,26 @@ export function createScene(cfg: SceneConfig) {
       for (const [px] of PROBE.sleeve) { if (px < pxMin) pxMin = px; if (px > pxMax) pxMax = px; }
       const phA = pxMin / R, phB = pxMax / R;
       min = Math.min(min, Math.hypot(R * (Math.cos(phB) - Math.cos(phA)), R * (Math.sin(phB) - Math.sin(phA))));
+      /* ── v4-28 §1-② 계기(값 0줄) — 위에서 «이미 정해진» min 을 바꾸지 않고, 같은 읽기를 되풀이해 담는다 ── */
+      if (sleeveTrace.on) {
+        let mb = Infinity, mc = Infinity;
+        let ab: [number, number, number, number, number] = [NaN, NaN, NaN, NaN, NaN];
+        let ac: [number, number, number, number, number] = [NaN, NaN, NaN, NaN, NaN];
+        for (const [px, py] of PROBE.sleeve) {
+          const ph = px / R;
+          const [x, y, z] = axPoint(x0 + (CAP_H - py), R, ph, 1);
+          const dB = sampleSdf(bodyG, x, y, z);
+          const dC = (y >= Y_HEM && y <= Y_TOP) ? distToSurface(x, y, z - AXIS_Z) : Infinity;
+          if (dB < mb) { mb = dB; ab = [x, y, z, px, py]; }
+          if (dC < mc) { mc = dC; ac = [x, y, z, px, py]; }
+          if (sleeveTrace.all) sleeveTrace.samples.push({ px, py, x, y, z, body: dB, col: dC });
+        }
+        const ms = Math.hypot(R * (Math.cos(phB) - Math.cos(phA)), R * (Math.sin(phB) - Math.sin(phA)));
+        sleeveTrace.calls.push({ x0, R, min, minBody: mb, minCol: mc, minSelf: ms, argBody: ab, argCol: ac });
+      }
       return min;
     };
+    if (sleeveTrace.on) sleeveTrace.probe = probe;     // v4-28 §1-③ 계기 손잡이(로직 0줄)
     for (let x0 = SW / 2; x0 < SW / 2 + SLEN; x0 += 0.005) {
       let lo = RMIN, hi = RMIN;
       while (probe(x0, hi) < SEP && hi < 0.30) hi *= 1.15;
@@ -770,6 +771,9 @@ export function createScene(cfg: SceneConfig) {
     throw new Error('소매를 적법하게 놓을 수 없다 — 갈래 G');
   }
   const SLV = fitSleeve();
+  /* v4-28 §1-③ — 계기가 켜져 있으면 «같은 검사»를 밖에서도 부를 수 있게 손잡이만 넘긴다(로직 0줄). */
+  if (sleeveTrace.on) sleeveTrace.dims = { CAP_W, CAP_H, RMIN: CAP_W / Math.PI, SW, SLEN, W,
+    Y_ARM, ARM_D, Y_TOP, Y_HEM, L, AXIS_Z, SEP };
   const SLV_X0 = SLV.x0, SLV_R = SLV.R;
   /** 배치 «서명» — 체크포인트가 다른 배치의 상태를 이어받지 못하게 한다(v3-21에서 실제로 발생). */
   const PLACE_SIG = [DELTA, GAP_SIDE, SLV_X0, SLV_R].map((v) => v.toFixed(6)).join('/');
