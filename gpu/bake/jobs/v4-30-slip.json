@@ -1,0 +1,13 @@
+{
+ "name": "v4-30-slip",
+ "cell": "Apiv_M",
+ "asm": "asm-Apiv_M.bin",
+ "idx": "l3slip-idx-v4-30-A.json",
+ "frames": 400,
+ "cellCap": {
+  "cell_cap": 192,
+  "max_cells": 262144
+ },
+ "ramp": true,
+ "dumpEvery": 20
+}
