@@ -118,15 +118,27 @@ export function deriveLevels(pos: Float32Array, idx: Uint32Array, axisZ: number,
   if (yB <= -1) throw new Error('몸통 고리가 사라지는 높이를 못 찾는다 — 갈래 B');
   const Y_LOW = bisect(yB + GRID_M, yB, (y) => at(y).hasTorso)[0];
 
-  /* `Y_ARM` — `Y_LOW` «위»로 올라가며 성분이 1 → >1 로 바뀌는 «첫» 전이. */
-  let yC = NaN, yPure = NaN;
+  /* `chestY`·`Y_ARM` — **팔이 몸통 고리에 «흡수»되는 높이**(= 겨드랑이).
+   * v4-39 §0-3 등재 문언 그대로다. 몸통 고리는 축점을 품는 성분이고, 겨드랑이 밑에서는 몸통만,
+   * 겨드랑이를 지나면 **같은 고리가 팔 표면까지 감싼다** ⟹ 그 둘레 `C(y)` 가 **불연속으로 뛴다**.
+   * ★ 구 규칙(성분 1 → >1 «첫» 전이 · 이력)은 실은 **팔 표면의 «최저점»** 을 집었다 —
+   *   T포즈에서만 우연히 겨드랑이 근처였고(전이 성분의 |x| 754 mm), A포즈에서는 **손끝**을 집어
+   *   `chestY` 가 `waistY` 아래로 내려갔다(v4-38 §1-③ 실측). 포즈 불변인 사건으로 바꾼다.
+   * ★ 문턱 0 — 「상대 증가가 «최대»인 전이」는 극값 규칙이고(허리의 최소와 같은 성격),
+   *   이분법 술어의 중점 `(C_lo + C_hi)/2` 도 **그 몸에서 잰 두 값**에서 뜬다(손 상수 0). */
+  const cGrid: { y: number; C: number }[] = [];
   for (let y = Y_LOW + GRID_M; y <= yTop; y += GRID_M) {
     const a = at(y);
-    if (a.nComp === 1 && a.hasTorso) { yPure = y; continue; }
-    if (a.nComp > 1) { yC = y; break; }
+    if (Number.isFinite(a.C)) cGrid.push({ y, C: a.C });
   }
-  if (!Number.isFinite(yC) || !Number.isFinite(yPure)) throw new Error('성분 1 → >1 첫 전이를 못 찾는다 — 갈래 B');
-  const [lowSide, hiSide] = bisect(yPure, yC, (y) => at(y).nComp === 1 && at(y).hasTorso);
+  let jump = -1, best = 1;
+  for (let i = 0; i + 1 < cGrid.length; i++) {
+    const r = cGrid[i + 1].C / cGrid[i].C;
+    if (r > best) { best = r; jump = i; }
+  }
+  if (jump < 0) throw new Error('팔이 몸통 고리에 흡수되는 전이를 못 찾는다 — 갈래 B');
+  const cMid = (cGrid[jump].C + cGrid[jump + 1].C) / 2;
+  const [lowSide, hiSide] = bisect(cGrid[jump].y, cGrid[jump + 1].y, (y) => at(y).C < cMid);
   const chestY = lowSide, Y_ARM = hiSide;
   const C_chest = at(chestY).C;
 
