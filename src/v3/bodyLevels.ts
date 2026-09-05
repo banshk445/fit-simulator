@@ -140,9 +140,17 @@ export function deriveLevels(pos: Float32Array, idx: Uint32Array, axisZ: number,
     })
     .sort((a, b) => a.xMin - b.xMin);
 
-  /* `waistY` — (Y_LOW, chestY) 내 C 의 «내부» 최소. v3-51 원 규칙 그대로. */
+  /* `waistY` — 몸통 고리가 «존재하는 전 구간» 안에서 C 의 «내부» 최소.
+   * v4-38 §1-② — 구 규칙의 창은 `(Y_LOW, chestY)` 였다. 그 상한은 «팔이 단면에 들어오면
+   * 몸통 판정이 흐려진다»는 우려에서 온 것인데, `at()` 는 **축점을 품는 고리**만 쓰므로
+   * 팔이 있어도 몸통 둘레는 그대로 정의된다(위 `armFirst` 가 그 사실을 인쇄해 왔다).
+   * A포즈 몸에서는 팔이 내려와 `chestY` 가 **팔 표면의 최저점**(손끝)으로 내려가고,
+   * 그 아래로 잘린 창에서는 C 가 단조 감소해 최소가 «끝»에 붙는다 — 그것이 v4-24~37 의 던짐이다.
+   * ⟹ 창의 상한을 **몸통 고리가 존재하는 높이 전부**로 넓힌다(손 상수 0 · 몸에서 유도).
+   *   T포즈에서는 chestY 위의 C 가 전부 허리 최소보다 크므로 **같은 최소·같은 이웃**을 집는다
+   *   (v4-38 §1-② 회귀에서 층3 6/6 동일로 확인). */
   const grid: { y: number; nComp: number; C: number }[] = [];
-  for (let y = Y_LOW + GRID_M; y < chestY; y += GRID_M) {
+  for (let y = Y_LOW + GRID_M; y <= yTop; y += GRID_M) {
     const a = at(y);
     if (Number.isFinite(a.C)) grid.push({ y, nComp: a.nComp, C: a.C });
   }
