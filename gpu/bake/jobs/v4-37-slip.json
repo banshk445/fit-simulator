@@ -1,0 +1,13 @@
+{
+ "name": "v4-37-slip",
+ "cell": "Aaxi_M",
+ "asm": "asm-Aaxi_M.bin",
+ "idx": "l3slip-idx-v4-30-A.json",
+ "frames": 400,
+ "cellCap": {
+  "cell_cap": 192,
+  "max_cells": 262144
+ },
+ "ramp": true,
+ "dumpEvery": 20
+}

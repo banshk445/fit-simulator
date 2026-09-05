@@ -842,6 +842,37 @@ export function createScene(cfg: SceneConfig) {
       { name: '소매밑R', a: col(slv[0], 0, 0, N_und), b: col(slv[0], nuS, 0, N_und) },
       { name: '소매밑L', a: col(slv[1], 0, 0, N_und), b: col(slv[1], nuS, 0, N_und) },
     ];
+    /* ── v4-37 §1-③ **소매 축 방향 이동**(v3 동결 예외 3건째 «최종 형태 v2» · 전략 세션 v4-36 §4 승인) ──
+     * 승인 문언 — 「전달 분기에서 소매 패널 배치 «후» 축 방향 평행이동: `p ← p + s·AX` ·
+     *   `s = (어깨 이음 봉제쌍의 암홀 쪽 중심 − 소매 쪽 중심)·AX` · 좌우 각각 · 조립 자신에서 계산 ·
+     *   수직 성분 적용 0(램프의 몫) · axDot·axPoint·fitSleeve·sgn 불변 · 미전달 분기 불변」.
+     * ★ 근거(v4-35·36) — A포즈에서 두 링 «중심 거리»가 T포즈의 2.11배(109.12 → 230.08 mm)로 벌어졌고,
+     *   축 성분만 되돌리면 65.36 mm(T보다 작다) · 봉제쌍 중앙 234.77 → 74.69 mm 로 닫힌다.
+     * ★ **미전달 분기는 이 블록을 건너뛴다**(`AO` 가 null 이면 통째로 지나간다) ⟹ T포즈 비트 불변. */
+    if (AO) {
+      slv.forEach((sp, k) => {
+        const lo = sp.base, hi = sp.base + (sp.nu + 1) * (sp.nv + 1), sg = k === 0 ? 1 : -1;
+        let bx = 0, by = 0, bz = 0, sx = 0, sy = 0, sz = 0, cnt = 0;
+        for (const sm of seams)
+          for (let q = 0; q < sm.a.length; q++) {
+            const i2 = sm.a[q], j2 = sm.b[q];
+            const iS = i2 >= lo && i2 < hi, jS = j2 >= lo && j2 < hi;
+            if (iS === jS) continue;                       // 이 소매의 암홀 쌍만 고른다
+            const sv = iS ? i2 : j2, bv = iS ? j2 : i2;
+            bx += sg * s.pos[bv * 3]; by += s.pos[bv * 3 + 1]; bz += s.pos[bv * 3 + 2];
+            sx += sg * s.pos[sv * 3]; sy += s.pos[sv * 3 + 1]; sz += s.pos[sv * 3 + 2];
+            cnt++;
+          }
+        if (!cnt) return;
+        const sAx = ((bx - sx) / cnt) * AX[0] + ((by - sy) / cnt) * AX[1] + ((bz - sz) / cnt) * AX[2];
+        for (let v = lo; v < hi; v++) {
+          s.pos[v * 3] += sg * sAx * AX[0];
+          s.pos[v * 3 + 1] += sAx * AX[1];
+          s.pos[v * 3 + 2] += sAx * AX[2];
+        }
+      });
+    }
+
     const seamCons: DistanceConstraint[] = [];
     for (const sm of seams)
       for (let k = 0; k < sm.a.length; k++)
