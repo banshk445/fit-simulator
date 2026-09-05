@@ -6,7 +6,7 @@
 |---|---|
 | 브랜치 | `v4-39-chest-armpit` |
 | 기점 | **`342b0dd`**(= v4-38 §1~§4 + 볼트 + 보고) |
-| §0 커밋 | (아래 §0-6 에 자기 기입) |
+| §0 커밋 | **`88a6ba5`**(집행 «전» · 새 규칙 문언 포함) |
 | §1~§4 커밋 | (집행 후 기입) |
 | 보고 파일 | `docs/v4/보고/39.md` |
 
@@ -88,4 +88,11 @@
 
 ### §0-6 커밋·전환 인쇄 (집행 «전»)
 
-(§0 커밋 sha 자기 기입 · 2호기 전환 인쇄는 아래에 붙인다)
+```
+ §0 선커밋 **`88a6ba5`** — 새 `chestY` 규칙(§0-3)을 **값 보기 «전»** 에 담아 push 했다
+ 2호기 $ git fetch -q origin && git checkout -q v4-39-chest-armpit && git pull -q
+        $ git branch --show-current → v4-39-chest-armpit
+        $ git log --oneline -1     → 88a6ba5 v4-39 §0 — 수령·사무 + 새 chestY 규칙 «값 보기 전» 등재
+ ★ 전환 전에 2호기의 v4-38 작업 잔재를 지웠다 — `scripts/v4Levels.ts`(미추적 사본) 삭제 ·
+   `src/v3/bodyLevels.ts` 는 `git checkout --` 로 원복(그 판본은 이미 v4-38 커밋에 있다).
+```
