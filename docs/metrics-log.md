@@ -30169,3 +30169,36 @@ v4Levels.ts:49 (전부 콘솔 인쇄) ⟹ 판정·문턱·매칭·물리·산출
 npx tsc -b 통과 · bakeGrid 본문 변경 0줄(diff 훅 위치 = import 절 @@ -32,0 · JSX 꼬리 @@ -794,0)
 Mannequin.tsx 0줄 · bodyLevels·garmentScene·dressRun·worker·gpu/engine diff 0
 pytest 미집행 — 2호기 ssh 이름 해석 실패(ssh: Could not resolve hostname desktop-ov72a46) 3회 · gpu 변경 0
+
+## 2026-09-06 v4-41 — 그리드 하네스 실패 원인·수정·1칸 드라이런 절차 (갈래 B)
+
+기계 = 에어(코드·dev 서버) + 2호기(pytest) · 브랜치 `v4-41-grid-fix` · 기점 `b20f165` · §0 선커밋 `41bdbd4`
+`src/` diff = `src/components/V4AposeGrid.tsx` +52/−8(하네스 한 파일) · 굽기 0 · 몸 생성 0 · 캡처 0
+
+### ① 원인(코드 사실)
+잔차 생산자 Mannequin.tsx:453(계산 :426-441) · lerp :387 · 계수 :357 t = 1 − 0.001^delta
+delta 1/60 ⟹ t = 0.108665 · 프레임당 잔차 배수 0.891335
+|1 − 배율| 대조 — 어깨 40/45·50/45 0.111111 · 가슴 87.5 0.125 / 112.5 0.125 ·
+  가슴 상쇄 1/1.125 = 0.888889 ⟹ 0.111111 / 1/0.875 = 1.142857 ⟹ 0.142857 · 키 155·185/170 0.088235
+관측 정체 1.13e-1 · 4e-2 대 ⟹ 초기값(또는 몇 프레임분) 정지 · 600프레임 정상 진행 시 기대 0.125×0.891335^600 ≈ 1e-31
+후보 (a) 회전이 잔차 생산 — 기각(잔차 계산에 quaternion 항 0 · A포즈 루프는 별도 useFrame :243-297 · armPoseLocked 1회성)
+후보 (b) 순서가 매 프레임 되감음 — 기각(바인드 복원·35°는 while 루프 «밖» 1회)
+성립 (c) 프레임 펌프 무동작 — stepFrames = BakeMount.tsx:69 advance(t) 한 줄 ·
+  같은 파일 :38-46 등재 「루트 없으면 advance 무동작(1,620,000회에 useFrame 0회)」 · 루트 생성은 가시화 계기 1회 요구
+v3-83 개시 시퀀스(V3Panel.tsx:401 「가시화 계기 1회 → 루트 생성 → 동기 굽기」)를 v4-40 절차서가 누락(CC 귀책 병기)
+
+### ② 수정 (하네스 파일 안 · 문턱 변경 0)
+pump() — 진행 판정 채널 mannequinPoseRef.frames · 동기 stepFrames(1) 실패 시 rAF 폴백
+kick() — scrollIntoView + resize 이벤트 + rAF 3회(가시화 계기)
+자가진단 — 3회 펌프에 스케일 루프 0회면 27칸 착수 0 · 화면 정지 메시지
+잔차 궤적 f1·f10·f50·f600 기록 + 표 열 추가
+
+### ③ 1칸 드라이런 — (나) 승혁 실행 필요
+CC 확인분 — tsc 통과 · dev 서버 VITE v8.1.3 · http://localhost:5174/ · GET /?v3=1 → 200
+브라우저 채널 미연결(Browser extension is not connected) ⟹ 클릭·콘솔 판독 불가
+절차서 3.5단계 신설 — ?v3=1&apoonly=c100-h170-s45&apodry=1 · 판정 3종(자가진단 3회 · 통과·프레임 600 미만 ·
+  잔차 궤적 자릿수 하강) · 탭 맨 앞 유지
+
+### §2
+pytest(2호기) 40 passed · 2 xfailed · 1 xpassed (66.03 s) · npx tsc -b 통과
+Mannequin.tsx·bakeGrid·garmentScene·bodyLevels·dressRun·worker·gpu/engine diff 0
