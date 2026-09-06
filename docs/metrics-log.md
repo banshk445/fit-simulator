@@ -30202,3 +30202,34 @@ CC 확인분 — tsc 통과 · dev 서버 VITE v8.1.3 · http://localhost:5174/ 
 ### §2
 pytest(2호기) 40 passed · 2 xfailed · 1 xpassed (66.03 s) · npx tsc -b 통과
 Mannequin.tsx·bakeGrid·garmentScene·bodyLevels·dressRun·worker·gpu/engine diff 0
+
+## 2026-09-06 v4-42 — 하네스 결함 2건 수정 · 실패 칸 계기 보강 (갈래 A)
+
+기계 = 에어(코드·dev) + 2호기(pytest) · 브랜치 `v4-42-grid-fix2` · 기점 `943f7ab` · §0 선커밋 `c621da6`
+`src/` diff = `src/components/V4AposeGrid.tsx` +44/−3 · `vite.config.ts` +5/−0 · 굽기 0 · 몸 생성 0
+
+### ① 색인 전송(코드 사실 + 수정)
+칸 루프 안 전송 = 몸 bin · 축 json · 원점 json 3종뿐 · 색인 전송은 루프 «뒤» 실행당 1회(v4-40 판본도 동일)
+⟹ 수신기가 받은 색인 6개 = 실행 6회(매번 27칸 실패 · bin 0) — 판정문 ㉡ 와 정합(문언은 원문 그대로 등재)
+수정 — 반출건수 = out.filter(반출 === "3").length · (!dry && 반출건수 > 0) 일 때만 색인 1회 전송
+색인은 window.__v4aposeIndex · localStorage["v4-42-apose-grid-index"] 에 항상 남는다
+
+### ② 리로드 차단
+vite.config.ts server.watch.ignored = ["**/gpu/oracle/export/**","**/gpu/bake/results/**","**/public/v3diag/**"]
+실측 — 제외 후: 산출 폴더 쓰기에 리로드/HMR 로그 0줄 · GET /?v3=1 200
+       제외 전(기점 943f7ab 설정 복원): 같은 쓰기에 리로드/HMR 로그 0줄
+       ⟹ 판정 불가(vite 는 클라이언트 연결 시에만 page reload 를 로그) · 다음 실행의 dev 로그가 재료
+절차 — 수신기 --out /tmp/grid27(저장소 밖) · 완주 뒤 cp 로 gpu/oracle/export/grid27 로 이동
+
+### ③ 실패 칸 계기
+remember(row) — console.log("[v4-42] <칸> · <결과> · 전진 · 잔차 · 궤적 · 반출 · 사유") + localStorage 누적
+stallReason() — scaleStillFrames / maxArmDeltaM / maxScaleResidual / frames 를 값과 판정문구로 인쇄
+시작 시 이전 누적 마지막 5행 재인쇄
+
+### ④ 드라이런 두 칸
+칸 이름 실측 27개(c87.5-h155-s40 … c100-h170-s45 … c122.5-h185-s50) · apoonly 는 문자열 일치 필터
+절차서 3.5단계 = 기준 칸 + 배율 칸 각 1회 · 판정 3종 유지 · copy(localStorage.getItem("v4-42-apose-grid")) 추가
+
+### §2
+pytest(2호기) 40 passed · 2 xfailed · 1 xpassed (60.60 s) · npx tsc -b 통과
+Mannequin.tsx·bakeGrid·garmentScene·bodyLevels·dressRun·worker·gpu/engine diff 0 · 문턱 변경 0
