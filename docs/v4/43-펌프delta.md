@@ -67,3 +67,121 @@
 ### §0-5 커밋·전환 인쇄 (집행 «전»)
 
 (§0 커밋 sha 자기 기입 · 2호기 전환 인쇄는 아래에 붙인다)
+
+---
+
+## §1-① delta 사실 — **(가) 자리·값 특정**
+
+### 코드 사실(설치된 패키지 소스에서 읽음 · §0-4ㄱ)
+
+| 자리 | 사실 |
+|---|---|
+| `node_modules/@react-three/fiber/dist/events-b389eeca.esm.js:16041-16043` | `function update(timestamp, state, frame) { let delta = state.clock.getDelta(); …` ⟹ **`delta` 는 `THREE.Clock` 의 «실제 경과 시간»** 이다 |
+| 같은 파일 `:16045-16050` | ```if (state.frameloop === 'never' && typeof timestamp === 'number') { delta = timestamp − clock.elapsedTime; … }``` ⟹ **`advance(t)` 의 인자는 `frameloop === "never"` 일 때만** 시계에 쓰인다 |
+| 같은 파일 `:16139-16143` | `function advance(timestamp, runGlobalEffects = true, state, frame) { … for (const root of _roots.values()) update(timestamp, root.store.getState()); … }` |
+| `src/components/BakeMount.tsx:69-72` | `export function stepFrames(n, dtMs = 1000/60) { let t = performance.now(); for (…) { t += dtMs; advance(t); } }` — **`t` 를 만들어 넘기지만** 위 조건 때문에 **무시된다** |
+| `src/components/BakeMount.tsx:75-79` | `<Canvas style={…} camera={…}>` — **`frameloop` 프로프가 없다** ⟹ 기본값 **`"always"`** ⟹ 위 분기의 「never」 조건이 **안 선다** |
+| `src/components/Mannequin.tsx:357` | `const t = 1 - Math.pow(0.001, delta);` — 그 무시된 시간이 **여기로 들어온다** |
+
+⟹ **자리 = `stepFrames` 가 넘기는 `t` 가 R3F 에서 «버려지고», 실제 `delta` 는 «advance 호출 사이의 벽시계»가 된다.**
+v4-42 까지의 펌프는 동기 tight loop 라 그 간격이 **수십~수백 μs** 였다.
+
+### 역산 대조(§0-4ㄴ · 식과 값)
+
+```
+ 관측(배율 칸 c87.5-h155-s40) — 궤적 f1 **1.42e-1** → f600 **9.452e-2** ⟹ 비 **0.665634**
+ 프레임당 비 f = 0.665^(1/600) = **0.99932028**
+ f = 1 − t = 0.001^delta   ⟹   delta = ln f / ln 0.001 = **9.843242e-05 s**(≈ 98 μs)
+ 의도값(1/60 s) — t = 1 − 0.001^(1/60) = **0.108749** ⟹ 프레임당 **0.891251**
+ ⟹ 실제 전진 시간은 의도의 **1/169**(9.84e-5 ÷ 1.667e-2) — 판정문의 역산(≈9.8e-5 s)과 **자릿수·값이 일치**한다
+ 600프레임 뒤 기대 잔차비 — 의도대로면 0.891251^600 ≈ **1e-30** · 실제 관측 **0.665**
+```
+
+★ **기준 칸이 통과한 이유도 이것으로 설명된다** — `c100-h170-s45` 는 슬라이더 목표가 전부 기본값이라
+**목표 배율이 1.0** 이고 잔차가 처음부터 0 이다 ⟹ lerp 가 돌 필요가 없다(판정문 문언과 같다).
+**배율이 걸린 26칸만** 실패한다 — 기계가 빠를수록 tight loop 간격이 짧아 더 심해지는 **속도 의존 결함**이다.
+
+## §1-② 수정 — 전진의 «시간»을 1/60 s 로(새 수 0)
+
+`src/components/V4AposeGrid.tsx` 한 파일(+42 / −6). **`BakeMount`·`Mannequin`·`bakeGrid` 0줄.**
+
+```
+ const FRAME_MS = 1000 / 60;                    // BakeMount.stepFrames 의 기본 인자와 «같은 값»을 인용
+
+ async function pump(): Promise<boolean> {
+   const before = mannequinPoseRef.frames;
+   if (document.visibilityState === "visible") {
+     await new Promise<void>((r) => requestAnimationFrame(() => r()));   // 자연 루프 = 실제 1/60 s
+     if (mannequinPoseRef.frames > before) return true;
+   }
+   await new Promise<void>((r) => setTimeout(r, FRAME_MS));              // 폴백도 «시간»을 맞춘다
+   stepFrames(1);
+   return mannequinPoseRef.frames > before;
+ }
+```
+
+**근거** — R3F 가 보는 것은 «호출 사이의 실제 시간»이므로(①), **호출 사이를 실제로 1/60 s 로 벌린다**.
+가시 탭에서는 브라우저의 rAF 가 이미 그 간격이고(자연 루프가 `useFrame` 을 돌린다), 비가시·루트 부재
+상황에서는 `setTimeout(FRAME_MS)` 로 같은 간격을 만든 뒤 동기 전진한다.
+
+### 자가진단에 «감소율 검사» 추가(판정문 조항)
+
+```
+ const r0 = …잔차…;  for (3회) await pump();  const r3 = …잔차…;
+ ratio3 = r3 / r0 ·  deltaHat = ln(ratio3^(1/3)) / ln(0.001)
+ 인쇄 — 「3프레임 비 <값>(기대 0.707946) · 역산 delta <값>s(의도 1.667e-2 s)」
+ 정지 — deltaHat < (1/60)/10 이면 **즉시 정지**(27칸 착수 0) · 사유에 값 그대로
+```
+
+**기대 0.707946 = 0.891251³** 이고 **정지 문턱은 «의도값의 1/10»** 이다 — 둘 다 `FRAME_MS` 에서 **유도**했다(새 상수 0).
+
+## §1-③ 검증 — CC 확인 가능 범위 + 절차서 갱신
+
+| 항 | 결과 |
+|---|---|
+| `npx tsc -b` | **통과**(종료 0) |
+| 산술 재유도 | 위 §1-① 블록 — 관측 비 0.665634 → delta **9.843242e-05 s** · 의도 대비 **1/169** |
+| 브라우저 실행 | ★ **CC 불가**(브라우저 채널 미연결 · v4-41 §1-③ 이후 그대로) ⟹ 값 판정은 승혁 드라이런 |
+| pytest(2호기) | **40 passed · 2 xfailed · 1 xpassed**(58.51 s) |
+
+**절차서 3.5단계 갱신**(`docs/v4/40-실행절차.md`) — 판정 표에 두 줄을 넣었다:
+
+```
+ ㉠ 콘솔 `[v4-43] 펌프 자가진단` — 3프레임 비가 **0.7 자리**(기대 0.707946) · 역산 delta **1.7e-2 s 자리**
+ ㉡ 표 «잔차 궤적» — **f50 잔차가 f1 의 1/100 이하**(정상 lerp 는 50프레임에 0.891251^50 = 3.16e-3 배)
+```
+
+---
+
+## §2 자기검사
+
+| 항 | 값 |
+|---|---|
+| `src/` diff vs 기점 `8e7e764` | **`src/components/V4AposeGrid.tsx` +42 / −6 한 파일뿐** · 물리 **0줄** |
+| `BakeMount.tsx` · `Mannequin.tsx` · `bakeGrid`(`V3Panel.tsx`) · `garmentScene` · `bodyLevels` · 워커 · `gpu/engine/` · `vite.config.ts` | **diff 0** |
+| 문턱·게이트 | **변경 0**(연속 2프레임 · 상한 600 · `POSE_SETTLE_EPS` 그대로) · 새 상수 **0**(`FRAME_MS` 는 `stepFrames` 기본 인자 인용 · 기대 0.707946·정지 문턱 1/10 은 그 값에서 유도) |
+| 굽기 · 몸 생성 · 캡처 | **0 · 0 · 0** |
+| `npx tsc -b` | **통과**(종료 0) |
+| pytest(2호기) | **40 passed · 2 xfailed · 1 xpassed**(58.51 s) |
+| 브라우저 채널 | **미연결** ⟹ 값 판정은 승혁 드라이런(배율 칸) |
+| 브랜치 인쇄 | §0 머리에 에어 · 2호기(§0-5) · §0 은 집행 **«전»** 커밋(`4069302`) |
+| ecc 에이전트 / 스킬 | **0 / 0** |
+
+## §4 회차 갈래 — **A**(①(가) + ②③ ⟹ 승혁 재실행 안내)
+
+**넘기는 것 6건**
+
+1. ★★★ **자리 확정** — R3F 는 `useFrame` 의 `delta` 를 `state.clock.getDelta()`(**실제 경과 시간**)로 만들고
+   (`events-b389eeca.esm.js:16043`), `advance(t)` 의 인자는 **`frameloop === "never"` 일 때만** 쓰인다(`:16045-16050`).
+   `BakeMount` 의 `<Canvas>` 에는 `frameloop` 프로프가 **없어** 기본 `"always"` ⟹ `stepFrames` 가 만든 `t` 는 **버려진다**.
+2. ★★★ **값 일치** — 관측 비 0.665634(600프레임)에서 역산한 `delta` = **9.843242e-05 s**,
+   판정문의 ≈9.8e-5 와 **자릿수·값이 같다**. 의도(1/60 s)의 **1/169**.
+3. ★★★ **기준 칸이 통과한 이유** — 목표 배율이 전부 1.0 이라 **잔차가 처음부터 0**(lerp 무관).
+   ⟹ 실패는 **배율이 걸린 26칸 고유**이고, 기계가 빠를수록 심해지는 **속도 의존** 결함이다.
+4. ★★ **수정은 «시간»을 벌리는 것** — 가시 탭이면 rAF(자연 1/60 s), 아니면 `setTimeout(1000/60)` 뒤 동기 전진.
+   `BakeMount`·`Mannequin` 은 0줄이고 새 상수도 0이다.
+5. ★★ **자가진단이 이제 «속도»를 본다** — 3프레임 비와 역산 delta 를 인쇄하고,
+   의도의 1/10 미만이면 **27칸 착수 0** 으로 즉시 정지한다.
+6. ★ **절차서에 판정 두 줄 추가** — 3프레임 비 0.7 자리 · **f50 ≤ f1/100**(0.891251⁵⁰ = 3.16e-3 에서 유도).
+
+**이 판이 하지 않은 판단** — 배율 칸이 실제로 통과하는지(승혁 드라이런) · 27칸 산출 품질 · 화면.

@@ -53,15 +53,31 @@ type Row = { id: string; 결과: "통과" | "실패" | "던짐"; 전진프레임
  * v4-40 의 절차서가 그 단계를 빠뜨렸고, 27칸이 «프레임 0» 인 채로 상한 600 을 태웠다.
  * ⟹ 여기서는 **프레임이 실제로 돌았는지 계수기로 확인**하고(`bakeMountFrames`),
  *   안 돌면 **브라우저의 자연 루프(rAF)** 로 한 프레임을 얻는다. 문턱·물리 0줄. */
+/** `BakeMount.stepFrames` 의 기본 인자와 «같은 값»을 인용한다(새 수 0). */
+const FRAME_MS = 1000 / 60;
+
 async function pump(): Promise<boolean> {
   /* 진행의 «판정 채널»은 `mannequinPoseRef.frames` 다 — 그 값을 올리는 것은
    * `Mannequin.tsx:454` 의 스케일 루프이고, 그것이 곧 「수렴이 진행됐는가」의 생산자다
-   * (`bakeMountFrames` 는 BakeMount 캔버스 «하나»만 세므로 보조 지표로만 인쇄한다). */
+   * (`bakeMountFrames` 는 BakeMount 캔버스 «하나»만 세므로 보조 지표로만 인쇄한다).
+   *
+   * ★ v4-43 §1-② — **전진의 «시간»을 1/60 s 로 맞춘다.** R3F 는 `useFrame` 의 `delta` 를
+   * `state.clock.getDelta()`(= **실제 경과 시간**)로 만든다
+   * (`node_modules/@react-three/fiber/dist/events-b389eeca.esm.js:16043`).
+   * `advance(t)` 의 인자는 **`frameloop === "never"` 일 때만** 시계에 쓰인다(같은 파일 `:16046-16050`) —
+   * `BakeMount` 의 `<Canvas>` 는 기본 `frameloop="always"` 라 **인자가 무시된다**.
+   * ⟹ v4-42 까지의 «동기 tight loop» 는 실제 경과가 ~0.1 ms 여서 lerp 계수
+   * `t = 1 − 0.001^delta` 가 6.8e-4 에 그쳤다(의도값 0.108749 의 1/160).
+   * 그래서 **자연 루프(rAF ≈ 1/60 s)를 먼저 쓰고**, 그것이 안 돌 때만 «1/60 s 를 기다린 뒤»
+   * 동기 전진한다 — 어느 쪽이든 `clock.getDelta()` 가 1/60 s 자리를 본다. */
   const before = mannequinPoseRef.frames;
+  if (document.visibilityState === "visible") {
+    await new Promise<void>((r) => requestAnimationFrame(() => r()));
+    if (mannequinPoseRef.frames > before) return true;     // 자연 루프가 돌았다(실제 delta ≈ 1/60 s)
+  }
+  await new Promise<void>((r) => setTimeout(r, FRAME_MS));  // 폴백도 «시간»을 맞춘다
   stepFrames(1);
-  if (mannequinPoseRef.frames > before) return true;      // 동기 전진이 먹었다(v3-83 경로)
-  await new Promise<void>((r) => requestAnimationFrame(() => r()));
-  return mannequinPoseRef.frames > before;                // 자연 루프(rAF)가 돌았는가
+  return mannequinPoseRef.frames > before;
 }
 
 /** 가시화 계기 — R3F 루트 생성 조건(v3-71 §2 ⑥). 스크롤·리사이즈로 페인트를 «유발»만 한다. */
@@ -134,11 +150,31 @@ export function V4AposeGrid() {
     /* ★ v4-41 §1-② — **펌프 자가진단**. 프레임이 안 돌면 27칸을 태우지 않고 여기서 멈춘다. */
     await kick();
     const t0 = mannequinPoseRef.frames, b0 = bakeMountFrames.current;
+    const r0 = mannequinPoseRef.maxScaleResidual;
     for (let i = 0; i < 3; i++) await pump();
     const pumped = mannequinPoseRef.frames - t0;
-    console.log(`[v4-41] 펌프 자가진단 — 3회 요청에 스케일 루프 ${pumped}회`
+    const r3 = mannequinPoseRef.maxScaleResidual;
+    /* ★ v4-43 §1-② — **전진 «시간» 검사**. 잔차가 살아 있으면 3프레임 감소율에서 delta 를 역산한다:
+     * 프레임당 비 `f = (r3/r0)^(1/3)` · `f = 0.001^delta` ⟹ `delta = ln f / ln 0.001`.
+     * 의도값은 `1/60 s`(= `FRAME_MS`) 이고 기대 3프레임 비는 `0.891251³ = 0.707946` 이다.
+     * 역산 delta 가 의도값의 **1/10 미만**이면 자릿수가 다른 것이므로 **즉시 정지**한다(새 수 0 · 전부 유도). */
+    let deltaHat = NaN, ratio3 = NaN;
+    if (r0 > POSE_SETTLE_EPS && r3 > 0 && r3 < r0) {
+      ratio3 = r3 / r0;
+      deltaHat = Math.log(Math.pow(ratio3, 1 / 3)) / Math.log(0.001);
+    }
+    console.log(`[v4-43] 펌프 자가진단 — 3회 요청에 스케일 루프 ${pumped}회`
       + ` · BakeMount useFrame ${bakeMountFrames.current - b0}회`
-      + ` · 잔차 ${mannequinPoseRef.maxScaleResidual.toExponential(2)}`);
+      + ` · 잔차 ${r0.toExponential(3)} → ${r3.toExponential(3)}`
+      + (Number.isFinite(ratio3) ? ` · 3프레임 비 ${ratio3.toFixed(6)}(기대 0.707946)`
+        + ` · 역산 delta ${deltaHat.toExponential(3)}s(의도 ${(FRAME_MS / 1000).toExponential(3)}s)` : " · 잔차가 이미 0 자리(비 판정 생략)"));
+    if (Number.isFinite(deltaHat) && deltaHat < FRAME_MS / 1000 / 10) {
+      setNow("**정지** — 전진 시간이 의도(1/60 s)의 1/10 미만이다. 콘솔 [v4-43] 줄을 보낸다.");
+      setRows([{ id: "(자가진단)", 결과: "실패", 전진프레임: pumped, 굽기잔차: r3, 높이m: NaN, sha256: "", 반출: "0",
+                 잔차궤적: `r0 ${r0.toExponential(3)} → r3 ${r3.toExponential(3)} · 비 ${ratio3.toFixed(6)}`,
+                 사유: `전진 시간 미달 — 역산 delta ${deltaHat.toExponential(3)}s < 의도 ${(FRAME_MS / 1000).toExponential(3)}s 의 1/10 · 27칸 착수 0` }]);
+      setBusy(false); return;
+    }
     if (pumped === 0) {
       setNow("**정지** — 프레임이 돌지 않는다(가시화 계기 필요). 이 탭을 맨 앞에 두고 다시 누른다.");
       setRows([{ id: "(자가진단)", 결과: "실패", 전진프레임: 0, 굽기잔차: mannequinPoseRef.maxScaleResidual,
