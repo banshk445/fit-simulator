@@ -71,6 +71,32 @@ async function kick(): Promise<void> {
   for (let i = 0; i < 3; i++) await new Promise<void>((r) => requestAnimationFrame(() => r()));
 }
 
+/* ★ v4-42 §1-③ — **증거를 화면 밖에 남긴다.** v4-41 실행에서 표가 리로드로 사라져
+ * 실패 사유가 남지 않았다(판정문 ㉢). 칸이 끝날 때마다 콘솔 한 줄 + `localStorage` 누적을 남기고,
+ * 하네스가 뜰 때 **이전 누적을 콘솔에 재인쇄**한다. 판정 채널 아님(기록 전용). */
+const LS_KEY = "v4-42-apose-grid";
+function remember(row: Row): void {
+  console.log(`[v4-42] ${row.id} · ${row.결과} · 전진 ${row.전진프레임} · 잔차 ${row.굽기잔차.toExponential(3)}`
+    + ` · 궤적 ${row.잔차궤적 ?? "—"} · 반출 ${row.반출}${row.사유 ? ` · ${row.사유}` : ""}`);
+  try {
+    const prev = JSON.parse(localStorage.getItem(LS_KEY) ?? "[]") as unknown[];
+    prev.push({ t: new Date().toISOString(), ...row });
+    localStorage.setItem(LS_KEY, JSON.stringify(prev));
+  } catch (e) { console.log(`[v4-42] localStorage 기록 실패 — ${(e as Error).message}`); }
+}
+
+/** 수렴이 «어느 항»에서 막혔는지 값으로 적는다(`poseStopped` 의 두 항 + 잔차). */
+function stallReason(): string {
+  const p = mannequinPoseRef;
+  const parts = [
+    `scaleStillFrames ${p.scaleStillFrames}${p.scaleStillFrames >= 1 ? "" : "(<1 ⟹ 스케일이 계속 움직인다)"}`,
+    `maxArmDeltaM ${p.maxArmDeltaM.toExponential(3)}${p.maxArmDeltaM <= POSE_SETTLE_EPS ? "" : `(> ${POSE_SETTLE_EPS} ⟹ 팔이 움직인다)`}`,
+    `maxScaleResidual ${p.maxScaleResidual.toExponential(3)}${p.maxScaleResidual <= POSE_SETTLE_EPS ? "" : `(> ${POSE_SETTLE_EPS} ⟹ lerp 미수렴)`}`,
+    `frames ${p.frames}`,
+  ];
+  return parts.join(" · ");
+}
+
 const sha256Hex = async (buf: ArrayBuffer) => {
   const h = await crypto.subtle.digest("SHA-256", buf);
   return [...new Uint8Array(h)].map((x) => x.toString(16).padStart(2, "0")).join("");
@@ -96,6 +122,10 @@ export function V4AposeGrid() {
     const dry = q.get("apodry") === "1";                   // 드라이런 — 반출 0(행만 만든다)
     const only = q.get("apoonly");                         // 한 칸만
     setBusy(true); setRows([]);
+    try {                                                   // v4-42 §1-③ — 이전 실행의 누적을 되살려 인쇄
+      const prev = JSON.parse(localStorage.getItem(LS_KEY) ?? "[]") as { id: string; 결과: string }[];
+      if (prev.length) console.log(`[v4-42] 이전 누적 ${prev.length}행 — 마지막 5행`, prev.slice(-5));
+    } catch { /* 기록 전용 */ }
     const glb = await (await fetch(`${import.meta.env.BASE_URL}models/mannequin.glb`)).arrayBuffer();
     const st = () => useFitStore.getState();
     st().setArmLength(FIXED.armLength); st().setLegLength(FIXED.legLength);
@@ -139,7 +169,8 @@ export function V4AposeGrid() {
       if (k >= CAP_FRAMES || !root) {
         out.push({ id, 결과: "실패", 전진프레임: k, 굽기잔차: resid, 높이m: NaN, sha256: "", 반출: "0",
                    잔차궤적: trail.join(" "),
-                   사유: !root ? "살아있는 마네킹이 없다" : `㉮ 상한 ${CAP_FRAMES} 도달` });
+                   사유: !root ? "살아있는 마네킹이 없다" : `㉮ 상한 ${CAP_FRAMES} 도달 — ${stallReason()}` });
+        remember(out[out.length - 1]);                      // v4-42 §1-③
         setRows([...out]); continue;
       }
       try {
@@ -193,6 +224,7 @@ export function V4AposeGrid() {
         out.push({ id, 결과: "던짐", 전진프레임: k, 굽기잔차: resid, 높이m: NaN, sha256: "", 반출: "0",
                    잔차궤적: trail.join(" "), 사유: (e as Error).message });
       }
+      remember(out[out.length - 1]);                        // v4-42 §1-③ 콘솔 + localStorage
       setRows([...out]);
       await new Promise((res) => setTimeout(res, 700));    // v3-83 과 같은 간격
     }
@@ -200,9 +232,18 @@ export function V4AposeGrid() {
       `${dry ? " · 드라이런(반출 0)" : ""}${only ? ` · 한 칸(${only})` : ""}` +
       ` · 게이트 ㉮상한${CAP_FRAMES} · ㉯잔차≤${POSE_SETTLE_EPS} · 문턱은 전부 인용(새 수 0)`, 행: out };
     (window as unknown as Record<string, unknown>).__v4aposeIndex = rec;
-    if (!dry) {
+    try { localStorage.setItem(`${LS_KEY}-index`, JSON.stringify(rec)); } catch { /* 기록 전용 */ }
+    /* ★ v4-42 §1-① — 색인은 **실행이 끝난 뒤 «한 번»** 만 보낸다(칸 루프 안에는 색인 전송이 «없다» —
+     * 코드 사실은 §1-① 표에 적었다). 더해서 **반출 0건인 실행은 색인도 보내지 않는다** —
+     * 실패만 한 실행이 수신기의 `--n` 카운트를 먹어 다음 실행을 굶기던 것이 판정문 ㉠ 의 실체다.
+     * 증거는 §1-③ 의 콘솔·`localStorage` 가 대신 남긴다. */
+    const 반출건수 = out.filter((x) => x.반출 === "3").length;
+    if (!dry && 반출건수 > 0) {
       try { await send(`l3ap-grid-index-a${DEG}.json`, new TextEncoder().encode(JSON.stringify(rec, null, 1))); }
-      catch (e) { console.log(`[v4-40] 색인 반출 실패 — ${(e as Error).message}`); }
+      catch (e) { console.log(`[v4-42] 색인 반출 실패 — ${(e as Error).message}`); }
+    } else {
+      console.log(`[v4-42] 색인 반출 **0** — 반출된 칸이 ${반출건수}개다(수신기 카운트 보호)`
+        + ` · 기록은 콘솔·localStorage(${LS_KEY})와 window.__v4aposeIndex 에 있다`);
     }
     setNow(`완료 — 통과 ${out.filter((x) => x.결과 === "통과").length}/${list.length}`);
     setBusy(false);
