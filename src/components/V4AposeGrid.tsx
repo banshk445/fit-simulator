@@ -33,7 +33,7 @@
 import { useCallback, useState } from "react";
 import * as THREE from "three";
 import { mannequinRootRef, mannequinPoseRef, poseStopped, POSE_SETTLE_EPS } from "../lib/mannequinRef";
-import { stepFrames } from "./BakeMount.tsx";
+import { stepFrames, bakeMountFrames } from "./BakeMount.tsx";
 import { bakeBodyVerts } from "./bodyInjectBake.ts";
 import { findArmRootBones, findHandBone, findArmDirection, setBoneTowardWorldDirection } from "../lib/boneUtils.ts";
 import { bodies, bodyIdOf, FIXED } from "../v3/grid.ts";
@@ -45,7 +45,31 @@ const CAP_FRAMES = 600;                                   // v3-83 `bakeGrid` �
 const PORT = 5199;                                        // `scripts/v3Receiver.ts` 기본 포트
 
 type Row = { id: string; 결과: "통과" | "실패" | "던짐"; 전진프레임: number; 굽기잔차: number;
-             높이m: number; sha256: string; 반출: string; 사유?: string };
+             높이m: number; sha256: string; 반출: string; 사유?: string; 잔차궤적?: string };
+
+/* ★ v4-41 §1-② — **프레임 «펌프»**. v4-40 은 `stepFrames` 만 불렀고, 그 함수는 R3F `advance(t)` 뿐이다.
+ * `BakeMount.tsx:38-46` 이 등재한 사실: **루트가 없으면 `advance` 는 조용히 아무 것도 안 한다**
+ * (advance 1,620,000회에 `useFrame` 0회). v3-83 은 그 위험을 «절차»(가시화 계기 1회)로 막았는데
+ * v4-40 의 절차서가 그 단계를 빠뜨렸고, 27칸이 «프레임 0» 인 채로 상한 600 을 태웠다.
+ * ⟹ 여기서는 **프레임이 실제로 돌았는지 계수기로 확인**하고(`bakeMountFrames`),
+ *   안 돌면 **브라우저의 자연 루프(rAF)** 로 한 프레임을 얻는다. 문턱·물리 0줄. */
+async function pump(): Promise<boolean> {
+  /* 진행의 «판정 채널»은 `mannequinPoseRef.frames` 다 — 그 값을 올리는 것은
+   * `Mannequin.tsx:454` 의 스케일 루프이고, 그것이 곧 「수렴이 진행됐는가」의 생산자다
+   * (`bakeMountFrames` 는 BakeMount 캔버스 «하나»만 세므로 보조 지표로만 인쇄한다). */
+  const before = mannequinPoseRef.frames;
+  stepFrames(1);
+  if (mannequinPoseRef.frames > before) return true;      // 동기 전진이 먹었다(v3-83 경로)
+  await new Promise<void>((r) => requestAnimationFrame(() => r()));
+  return mannequinPoseRef.frames > before;                // 자연 루프(rAF)가 돌았는가
+}
+
+/** 가시화 계기 — R3F 루트 생성 조건(v3-71 §2 ⑥). 스크롤·리사이즈로 페인트를 «유발»만 한다. */
+async function kick(): Promise<void> {
+  document.querySelector("[data-bakemount]")?.scrollIntoView({ block: "nearest" });
+  window.dispatchEvent(new Event("resize"));
+  for (let i = 0; i < 3; i++) await new Promise<void>((r) => requestAnimationFrame(() => r()));
+}
 
 const sha256Hex = async (buf: ArrayBuffer) => {
   const h = await crypto.subtle.digest("SHA-256", buf);
@@ -77,6 +101,22 @@ export function V4AposeGrid() {
     st().setArmLength(FIXED.armLength); st().setLegLength(FIXED.legLength);
     const list = bodies().filter((b) => !only || bodyIdOf(b) === only);
     const out: Row[] = [];
+    /* ★ v4-41 §1-② — **펌프 자가진단**. 프레임이 안 돌면 27칸을 태우지 않고 여기서 멈춘다. */
+    await kick();
+    const t0 = mannequinPoseRef.frames, b0 = bakeMountFrames.current;
+    for (let i = 0; i < 3; i++) await pump();
+    const pumped = mannequinPoseRef.frames - t0;
+    console.log(`[v4-41] 펌프 자가진단 — 3회 요청에 스케일 루프 ${pumped}회`
+      + ` · BakeMount useFrame ${bakeMountFrames.current - b0}회`
+      + ` · 잔차 ${mannequinPoseRef.maxScaleResidual.toExponential(2)}`);
+    if (pumped === 0) {
+      setNow("**정지** — 프레임이 돌지 않는다(가시화 계기 필요). 이 탭을 맨 앞에 두고 다시 누른다.");
+      setRows([{ id: "(자가진단)", 결과: "실패", 전진프레임: 0, 굽기잔차: mannequinPoseRef.maxScaleResidual,
+                 높이m: NaN, sha256: "", 반출: "0",
+                 사유: "펌프 정지 — 스케일 루프가 한 번도 안 돈다(R3F 루트 부재 또는 비가시 탭)."
+                   + " 27칸 착수 0 · 근거 BakeMount.tsx:38-46(루트가 없으면 advance 는 조용히 무동작)" }]);
+      setBusy(false); return;
+    }
     const ZAX = new THREE.Vector3(0, 0, 1);
 
     for (let i = 0; i < list.length; i++) {
@@ -84,10 +124,13 @@ export function V4AposeGrid() {
       setNow(`${i + 1}/${list.length} · ${id}`);
       st().setBodyChest(b.chest); st().setBodyHeight(b.height); st().setShoulderWidth(b.shoulder);
       await new Promise((r) => setTimeout(r, 0));
-      /* ㉯ 수렴 — v3-83 과 같은 절(연속 2프레임 · 상한 600). */
+      /* ㉯ 수렴 — v3-83 과 같은 절(연속 2프레임 · 상한 600) · 전진은 **펌프**로 한다(v4-41). */
       let k = 0, hit = 0;
+      const trail: string[] = [];
       while (k < CAP_FRAMES) {
-        stepFrames(1); k += 1;
+        const ok = await pump(); k += 1;
+        if (k === 1 || k === 10 || k === 50 || k === CAP_FRAMES)
+          trail.push(`f${k}:${mannequinPoseRef.maxScaleResidual.toExponential(2)}${ok ? "" : "(정지)"}`);
         if (poseStopped() && mannequinPoseRef.maxScaleResidual <= POSE_SETTLE_EPS) { hit += 1; if (hit >= 2) break; }
         else hit = 0;
       }
@@ -95,6 +138,7 @@ export function V4AposeGrid() {
       const root = mannequinRootRef.current;
       if (k >= CAP_FRAMES || !root) {
         out.push({ id, 결과: "실패", 전진프레임: k, 굽기잔차: resid, 높이m: NaN, sha256: "", 반출: "0",
+                   잔차궤적: trail.join(" "),
                    사유: !root ? "살아있는 마네킹이 없다" : `㉮ 상한 ${CAP_FRAMES} 도달` });
         setRows([...out]); continue;
       }
@@ -144,10 +188,10 @@ export function V4AposeGrid() {
           await send(`l3ap-origin-${id}-a${DEG}.json`, enc.encode(JSON.stringify(originMeta, null, 1)));
         }
         out.push({ id, 결과: "통과", 전진프레임: k, 굽기잔차: resid, 높이m: ymax - ymin, sha256: sha,
-                   반출: dry ? "드라이런(0)" : "3" });
+                   반출: dry ? "드라이런(0)" : "3", 잔차궤적: trail.join(" ") });
       } catch (e) {
         out.push({ id, 결과: "던짐", 전진프레임: k, 굽기잔차: resid, 높이m: NaN, sha256: "", 반출: "0",
-                   사유: (e as Error).message });
+                   잔차궤적: trail.join(" "), 사유: (e as Error).message });
       }
       setRows([...out]);
       await new Promise((res) => setTimeout(res, 700));    // v3-83 과 같은 간격
@@ -176,14 +220,14 @@ export function V4AposeGrid() {
       </div>
       {rows.length > 0 && (
         <table className="mt-2 w-full">
-          <thead><tr><th className="text-left">칸</th><th>결과</th><th>전진</th><th>잔차</th><th>높이 m</th><th>반출</th><th className="text-left">사유</th></tr></thead>
+          <thead><tr><th className="text-left">칸</th><th>결과</th><th>전진</th><th>잔차</th><th>높이 m</th><th>반출</th><th className="text-left">잔차 궤적</th><th className="text-left">사유</th></tr></thead>
           <tbody>
             {rows.map((r) => (
               <tr key={r.id} className={r.결과 === "통과" ? "" : "text-red-600"}>
                 <td>{r.id}</td><td className="text-center">{r.결과}</td><td className="text-center">{r.전진프레임}</td>
                 <td className="text-center">{r.굽기잔차.toExponential(2)}</td>
                 <td className="text-center">{Number.isFinite(r.높이m) ? r.높이m.toFixed(4) : "—"}</td>
-                <td className="text-center">{r.반출}</td><td>{r.사유 ?? ""}</td>
+                <td className="text-center">{r.반출}</td><td>{r.잔차궤적 ?? ""}</td><td>{r.사유 ?? ""}</td>
               </tr>
             ))}
           </tbody>
