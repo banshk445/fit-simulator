@@ -30233,3 +30233,36 @@ stallReason() — scaleStillFrames / maxArmDeltaM / maxScaleResidual / frames �
 ### §2
 pytest(2호기) 40 passed · 2 xfailed · 1 xpassed (60.60 s) · npx tsc -b 통과
 Mannequin.tsx·bakeGrid·garmentScene·bodyLevels·dressRun·worker·gpu/engine diff 0 · 문턱 변경 0
+
+## 2026-09-06 v4-43 — 펌프 전진 시간(delta) 확정·수정 (갈래 A)
+
+기계 = 에어(코드) + 2호기(pytest) · 브랜치 `v4-43-pump-delta` · 기점 `8e7e764` · §0 선커밋 `4069302`
+`src/` diff = `src/components/V4AposeGrid.tsx` +42/−6 · 굽기 0 · 몸 생성 0 · 캡처 0
+
+### ① delta 사실
+@react-three/fiber/dist/events-b389eeca.esm.js:16043  let delta = state.clock.getDelta()   ← 실제 경과 시간
+같은 파일 :16045-16050  frameloop === 'never' 일 때만 advance 인자를 시계에 반영
+같은 파일 :16139-16143  advance(timestamp, …) → 모든 루트에 update
+src/components/BakeMount.tsx:69-72  stepFrames(n, dtMs = 1000/60) { t += dtMs; advance(t); }  ← t 는 무시된다
+src/components/BakeMount.tsx:75-79  <Canvas> 에 frameloop 프로프 없음 ⟹ 기본 "always"
+src/components/Mannequin.tsx:357   const t = 1 - Math.pow(0.001, delta)
+
+역산 — 관측 궤적 f1 1.42e-1 → f600 9.452e-2 · 비 0.665634
+  프레임당 비 0.665^(1/600) = 0.99932028 · delta = ln(0.99932028)/ln(0.001) = 9.843242e-05 s
+  의도 1/60 s: t = 1 − 0.001^(1/60) = 0.108749 · 프레임당 0.891251 · 3프레임 0.707946 · 50프레임 3.1623e-03
+  실제/의도 = 9.843242e-05 / 1.666667e-02 = 1/169.3
+기준 칸(c100-h170-s45) 통과 이유 = 목표 배율 전부 1.0 ⟹ 잔차 0(lerp 무관) ⟹ 실패는 배율 칸 26개 고유
+
+### ② 수정
+FRAME_MS = 1000/60 (stepFrames 기본 인자 인용 · 새 수 0)
+pump() — visibilityState === "visible" 이면 rAF 대기(자연 루프 · 실제 1/60 s) · 아니면 setTimeout(FRAME_MS) 뒤 stepFrames(1)
+자가진단 — r0/r3 로 ratio3 · deltaHat = ln(ratio3^(1/3))/ln(0.001) 인쇄(기대 0.707946 · 의도 1.667e-2 s)
+  deltaHat < (1/60)/10 이면 즉시 정지(27칸 착수 0 · 사유에 값)
+
+### ③ 검증
+npx tsc -b 통과 · pytest(2호기) 40 passed · 2 xfailed · 1 xpassed (58.51 s)
+브라우저 채널 미연결 ⟹ 값 판정은 승혁 드라이런
+절차서 3.5단계 판정 추가 — 3프레임 비 0.7 자리 · f50 ≤ f1/100(0.891251^50 = 3.16e-3 유도)
+
+### §2
+BakeMount·Mannequin·bakeGrid·garmentScene·bodyLevels·worker·gpu/engine·vite.config diff 0 · 문턱 변경 0
