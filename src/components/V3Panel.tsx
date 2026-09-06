@@ -30,6 +30,8 @@ import { awaitMannequinSettled, mannequinPoseRef, poseStopped, POSE_SETTLE_EPS }
 import { useFitStore, DEFAULT_BODY_SIZE } from "../store/useFitStore";
 /* v3-77 §1 — 그리드 목록은 **순수 모듈**에서 온다(Node 와 같은 목록). */
 import { bodies, bodyIdOf, FIXED } from "../v3/grid.ts";
+/* v4-40 §1-② — **A포즈 그리드 하네스**(신설 파일 · 이 줄과 아래 한 줄이 배선의 전부다). */
+import { V4AposeGrid } from "./V4AposeGrid.tsx";
 
 const FABRICS = ["gray", "denim", "sweat", "swim"] as const;
 /** v3-41 §2 — C-브라우저 정착 상태(v3-38 산출). **표시 전용 · 물리 0프레임**. */
@@ -792,6 +794,8 @@ export function V3Panel() {
         <button className="rounded border px-2 py-1" onClick={bakeGrid}>그리드 몸 굽기(27칸)</button>
         <span className="opacity-60">결과는 콘솔 `[v3-71]`</span>
       </div>
+      {/* v4-40 §1-② — A포즈 그리드 몸 27칸(승혁 실행 · 절차서 `docs/v4/40-실행절차.md`). */}
+      <div className="mb-1"><V4AposeGrid /></div>
 
       {/* v3-70 §2 — **몸 주입 스모크**(계기 · 물리 0프레임). 살아있는 마네킹이 있어야 하므로
         `?v2=1&v3=1` 에서만 의미가 있다(v2 씬이 마네킹을 마운트한다). */}
