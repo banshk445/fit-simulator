@@ -30143,3 +30143,29 @@ A포즈 몸 — chestY 1.3664153099060057 m · Y_ARM 1.3664934349060056 · C_che
 ### §2
 pytest(2호기) 40 passed · 2 xfailed · 1 xpassed (58.50 s) · npx tsc -b 통과
 garmentScene·dressRun·worker·gpu/engine diff 0 · v3 기존 산출물 쓰기 0 · 굽기 0 · 캡처 0 · ecc 0
+
+## 2026-09-06 v4-40 — C_chest 소비자 사실 · A포즈 그리드 27 하네스 준비 (갈래 A · 생성 0)
+
+기계 = 에어(2호기 ssh 이름 해석 실패) · 브랜치 `v4-40-grid-prep` · 기점 `3f5e7bd` · §0 선커밋 `75c10c8`
+`src/` diff = `src/components/V3Panel.tsx` +4/−0(배선) + 신설 `src/components/V4AposeGrid.tsx` ·
+scripts 신설 `scripts/v4GridVerify.ts` · 굽기 0 · 몸 생성 0 · 캡처 0
+
+### ① C_chest 소비자 (grep 전수 · 코드 0줄)
+자리 12개 — bodyLevels.ts:11/143/179(선언·산출·반환) · fitReport.ts:38/175(선언·JSON 기록) ·
+FitReportTable.tsx:32(화면 인쇄) · v3Sensitivity.ts:72 · v3FitTable.ts:23 · v3BodyLevels.ts:23/24/29/31 ·
+v4Levels.ts:49 (전부 콘솔 인쇄) ⟹ 판정·문턱·매칭·물리·산출 파일 소비 0건
+보조 사실 — v4ProductGate.ts 의 bodyLevels 참조 0 · 리포트 대역은 chestY/waistY(높이)만 사용(fitReport.ts:107-108)
+
+### ② 하네스·검증기
+포즈 규칙 DEG 35 · 회전축 월드 z · 좌우 부호(=scripts/v4Apose.ts:79-85)
+순서 슬라이더 → 수렴 → 바인드 복원(__p27Bind) → 35° → bakeBodyVerts(…, "apose")
+수렴 게이트(인용) poseStopped() && maxScaleResidual ≤ POSE_SETTLE_EPS 연속 2프레임 · 상한 600프레임
+반출 수신기 경유(sha256 대조) · 칸당 3파일 + 색인 1 = 82
+검증기 스모크(DIR=BASEDIR=gpu/oracle/export) — 칸 27 · 통과 1 · 기준칸 c100-h170-s45
+  n 15882 · 높이 목표차 +65.05167828872804 mm · 층3 레벨 성립 ·
+  기준 sha c5ef87759711da60f3bd68066814cc706a1db245c75fe047a1fbc7e1c7786c81 · 자기대조 최대 좌표차 0 mm
+
+### §2
+npx tsc -b 통과 · bakeGrid 본문 변경 0줄(diff 훅 위치 = import 절 @@ -32,0 · JSX 꼬리 @@ -794,0)
+Mannequin.tsx 0줄 · bodyLevels·garmentScene·dressRun·worker·gpu/engine diff 0
+pytest 미집행 — 2호기 ssh 이름 해석 실패(ssh: Could not resolve hostname desktop-ov72a46) 3회 · gpu 변경 0
