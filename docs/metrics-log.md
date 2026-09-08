@@ -30387,3 +30387,32 @@ npx tsc -b 통과 · pytest(2호기) 40 passed · 2 xfailed · 1 xpassed (81.20 
 자기신고 — 조립 산출물이 T포즈 정본 30개(scene·scene-bend·scene-seam)와 sdf-<몸>.bin 27개를 덮었다
   (pytest 20 failed 로 발각) ⟹ git checkout 으로 추적분 원복 + T포즈 몸으로 SDF 재생성(25몸 성공 ·
   c122.5-h185-s45·c122.5-h185-s50 은 T포즈에서 네 사이즈 모두 옷이 던져 원래 생성 불가) ⟹ pytest 회복
+
+
+## 2026-09-08 v4-47 — 문턱 재도출(값 불변) · 108칸 재판정 · 편입 집계 (갈래 A)
+
+기계 = 2호기(계기·집계) · 브랜치 `v4-47-gate-rederive` · 기점 `08a9c5a` · §0 선커밋 `5ceaa43`
+src·워커·engine diff 0 · 재굽기 0 · 새 계기 0(v4-24 v4Armpit 재사용)
+
+### ① 도출 규칙(원문 인용)
+③a — src/v3/s4Gate.ts:48 penMaxM 5e-4 「v3-29 두께의 절반 도출분」 ·
+  00-현재상태.md v3-29 절 「최대 절대 관통 ≤ 두께×0.5 = 0.5mm · 옷 중면이 몸 표면에서 두께만큼 떨어진 곳을
+  접촉면으로 잡으므로 두께가 한계이고 절반이 여유 · 새 상수 0」 · consts.ts:6 THICK = 1e-3
+교차 — s4Gate.ts:49 crossings 0(정의 · 뽑을 분포 없음) · :143 판정문 「자기관통 교차 n ≠ 0」
+
+### ② 재도출·교차 위치
+③a 재도출값 0.5 mm(= THICK×0.5 · A포즈에서도 THICK 불변) — 값 이동 0
+A포즈 96칸 관통 최대 분포 — 중앙 0.40976730400947536 · p90 1.6509985656884503 · 최대 32.45656730295164 mm
+  문턱 아래 68칸 · 위 28칸
+교차 위치(교차 fail 49칸 · v4Armpit) — 전체 교차 합 639(중앙 12 · 최대 32) · 대역 교차 합 22 ·
+  대역 비율 0.034429 · 대역 교차>0 칸 10/49(최대 5) · 팔↔몸통 최소 간격 최소 0.9845 mm
+⟹ 「A포즈 상시 접촉(겨드랑이)」 성격 불성립 ⟹ 대역 내 허용 규칙 형식화 0 · 교차 0 유지
+
+### ③④ 재판정·편입
+편입 33 · 보류 63 · 착용불가 12(합 108) · 사이즈별 편입 S 11 · M 9 · L 6 · XL 7
+산출 — gpu/oracle/export/l3ap-index-merged-108-v4-47.json(status/f/sec/sha/gate/reason/at/host/os/node) ·
+  l3ap-provide-v4-47.json(메타 + provide 33칸) · l3ap-xloc-v4-47.json(교차 위치 49칸)
+참고 — T포즈 제공 35칸 ↔ A포즈 편입 33칸
+
+### §2
+npx tsc -b 통과 · pytest(2호기) 40 passed · 2 xfailed · 1 xpassed (60.93 s)
