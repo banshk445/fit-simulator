@@ -30441,3 +30441,33 @@ FitReportTable 아래 1줄 — 「가슴 줄은 겨드랑이 높이의 단면에
 provide.ts·match.ts·fitReport.ts·s4Gate.ts·worker·gpu diff 0 · public/v3diag/v3-77 쓰기 0
 구판 제공 목록 35칸 · A포즈 제공 33칸 · A포즈 분류 편입 33/보류 63/착용불가 12
 npx tsc -b 통과 · pytest(2호기) 40 passed · 2 xfailed · 1 xpassed (59.44 s) · 화면 판정 0(승혁 스모크 대기)
+
+
+## 2026-09-08 v4-49 — 주입 blob 형식 사실 · 재포장 (갈래 A)
+
+기계 = 2호기(재포장) + 에어(검산·파싱) · 브랜치 `v4-49-blob-format` · 기점 `9b38938` · §0 선커밋 `22a8dd3`
+src diff 0(로더 dressRun.ts 수정 금지 준수) · 굽기 0 · 신설 scripts/v4BlobParse.ts
+
+### ① 형식
+src/v3/dressRun.ts:144  need = 4 + hl + hdr.n * 3 * 8 * 2   ⟹ 48 B/정점
+src/v3/dressRun.ts:148-150  nb = n*3*8 · pos ← [4+hl, 4+hl+nb) · vel ← [4+hl+nb, 4+hl+2nb)  (블록 배치)
+교차 확인 — public/v3diag/v3-77/settled-c100-h155-s45_L.bin 헤더 {"frame":200,"n":9948,"d":0.009,"place":…}
+  본문 477504 B ÷ 9948 = 48.0 · 검산 4+hl+n*48 = 477586 = 파일 크기
+v4-48 포장은 위치만(24 B) — 수신 227,870 = 9490×24 + 헤더(CC 귀책)
+
+### ② 재포장
+33칸 · body = v4-46 산출 위치 바이트 그대로 + bytes(n*24) 속도 0 · 헤더 {"n","frame","d":0.009,"what"}
+검산 4+hl+n*48 ≠ 파일 크기 : 0건(2호기 생성 · 에어 회수 후 재검산도 0건)
+정점 수 분포 8456 ~ 9490 · 예시 settled-c100-h155-s45_S.bin n 8456 · 406,017 B
+Node 파싱 스모크(scripts/v4BlobParse.ts · 로더 식 재현) —
+  settled-c100-h170-s45_M.bin total 455649 = need 455649 · n 9490 · frame 350 · pos 비유한 0 ·
+  y 범위 0.7838821952028802 ~ 1.44574111483584 m · vel 최대 0
+속도 0 근거 — asm-*.bin 헤더 「조립 직후 상태(속도 0)」 규약 · 제품 frames:0 주입(속도 미사용) ·
+  정착 convNet ≤ 1e-4
+
+### ③ 검증
+구판 자산 불변(git status public/v3diag/v3-77 무출력) · dev 200 4종(A포즈 settled·provide · 구판 provide·settled)
+자산 settled 33 · body 27 · 정본 2 — 에어·2호기 동일
+
+### §2
+npx tsc -b 통과 · pytest(2호기) 40 passed · 2 xfailed · 1 xpassed (60.18 s) · 화면 판정 0
