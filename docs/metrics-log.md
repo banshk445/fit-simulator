@@ -30531,3 +30531,32 @@ src·자산·engine diff 0 · 굽기 0 · 신설 scripts/v4ShoulderCount.ts
 ### §2
 npx tsc -b 통과 · pytest(2호기) 40 passed · 2 xfailed · 1 xpassed (63.61 s) · 화면 판정 0
 절차 사실 — 2호기가 v4-46 자리에서 캡처 커밋(cc562fe) → push 거절 → 에어로 회수해 재커밋(40d5871)
+
+
+## 2026-09-08 v4-52 — 편입 규약에 어깨 걸림 채널 추가 · 제공 29칸 재발행 (갈래 A)
+
+기계 = 에어(산출·확인) + 2호기(동기화·pytest) · 브랜치 `v4-52-shoulder-channel` ·
+기점 858b20a(v4-51 최종 HEAD · 프롬프트 표기 40d5871 은 그 회차 캡처 커밋) · §0 선커밋 58a23f8
+src diff 0 · s4Gate.ts 불변 · 굽기 0 · blob 바이트 0 · 신설 scripts/v4Provide.ts
+
+### ① 규약
+편입 ⟺ 게이트 pass AND 어깨선 위 옷 정점 ≥ 172
+채널 정의 — (p[:,1] > Y_TOP).sum() (gpu/bake/slip_probe.py:58) · Y_TOP = P.S.Y_TOP · 좌우 합 · 정점 개수
+  위치는 제품이 읽는 주입 blob 의 위치 블록
+N 유도 — v4-51 이봉 분포의 빈 구간 중점 (1 + 343)/2 = 172 · 어느 칸의 값도 아님
+재산출 확인 — 편입 칸 최소 shoulderAbove 343 · 강등 칸 0·0·0·1 ⟹ 구간 내 어느 N 이든 같은 분류
+
+### ② 재발행
+편입 33 → 29 · 보류 63 → 67 · 착용불가 12 · 합 108
+강등 4칸(보류 + reason「어깨 걸림 미달 — 어깨선 위 옷 정점 n개 < 172」 · sha 제거 · blob 유지) —
+  c87.5-h155-s40_L 1 · c87.5-h155-s40_XL 0 · c87.5-h155-s45_M 0 · c87.5-h155-s45_XL 0
+편입 후보 전 칸에 shoulderAbove 기록 · 제공 29칸 sha 일치 29/29(v4-50 규약)
+
+### ③ 확인(제품과 같은 함수로 재현 · 코드 0)
+88/155/40 → 매칭 c87.5-h155-s40 → landing {size: null, fallback: false} ⟹
+  V3ProductV1.tsx:287-288 「이 몸에 맞는 준비된 사이즈가 아직 없습니다」 · 씬 미표시(L 폴백 소멸)
+100/170/45 → c100-h170-s40 → S(fallback true) 활성 · 122/185/50 → c122.5-h185-s40 → M 활성
+?tpose=1 구판 불변
+
+### §2
+npx tsc -b 통과 · pytest(2호기) 40 passed · 2 xfailed · 1 xpassed (59.93 s) · 화면 판정 0
