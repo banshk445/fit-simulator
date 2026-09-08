@@ -30501,3 +30501,33 @@ v4-47 색인은 results/v4-46-A108/<칸>.bin(위치만 24 B/정점) 파일 sha �
 npx tsc -b 통과 · dev 서빙 색인 sha 6b28a06080be2156…(status 편입) · settled 200 · 구판 색인 200
 구판 자산·src 불변(git status/diff 무출력) · 2호기에 색인 동기화
 pytest(2호기) 40 passed · 2 xfailed · 1 xpassed (59.81 s) · DOM 확인 불가(브라우저 채널 미연결)
+
+
+## 2026-09-08 v4-51 — 작은몸×L 대조 · 어깨 걸림 재료 · UX 등재 (갈래 A)
+
+기계 = 에어(대조·계기) + 2호기(렌더·pytest) · 브랜치 `v4-51-smoke-followup` · 기점 `8c0fa22` · §0 선커밋 `46a36ef`
+src·자산·engine diff 0 · 굽기 0 · 신설 scripts/v4ShoulderCount.ts
+
+### ① 대조 (c87.5-h155-s40_L)
+제품 blob public/v3diag/v4-a35/settled-c87.5-h155-s40_L.bin — n 10050 · frame 200
+  본문 sha 95b01d29bb6d13c7… = 색인 등재 sha(일치) · status 편입 · gate pass
+  위치 블록 sha c0a4caaa665a37a5… · 속도 블록 전부 0
+굽기 산출 gpu/bake/results/v4-46-A108/c87.5-h155-s40_L.bin — 241200 B · 정점 10050 · sha c0a4caaa665a37a5…
+⟹ 같은 바이트(갈래 가) · 캡처 docs/v4/캡처/51-1-front.png · 51-2-side.png(표준 프리셋 · 화면 판정 0)
+
+### ② 어깨선 위 옷 정점 수 (편입 33칸 · v4-30 정의 slip_probe.py:58 · Y_TOP = P.S.Y_TOP)
+분포 — 최소 0 · p25 550 · 중앙 694 · p75 773 · 최대 1129 · 평균 623 · σ 276.76 · 0인 칸 3
+하위 — c87.5-h155-s40_XL 0(최고점−어깨선 −10.03 mm · n 11050) · c87.5-h155-s45_M 0(−8.02 · 9184) ·
+  c87.5-h155-s45_XL 0(−6.18 · 10948) · c87.5-h155-s40_L 1(+1.72 · 10050)
+그 다음 — c122.5-h185-s40_S 343(+27.76 · 9966) · c122.5-h185-s40_M 398(+30.70 · 10514)
+상위 — c122.5-h155-s40_M 921(+49.21) · c122.5-h155-s50_XL 940(+49.41) · c122.5-h170-s45_XL 1129(+60.86)
+문턱 제안 0 · 게이트 5채널 변경 0(재료만)
+
+### ③ UX 등재(코드 0)
+제공 0칸 몸 — landingSize null(provide.ts:78-79) → scened false(V3ProductV1.tsx:151) ⟹ 빈 화면 ·
+  후보 「몸만 표시」(renderProduct 가 옷 빈 배열을 받는지는 미확인)
+핏맵 얼룩 — 정점 색 직접 칠 · 후보 대역 경계 스무딩/색 스케일(표시층 · 판정 채널 아님)
+
+### §2
+npx tsc -b 통과 · pytest(2호기) 40 passed · 2 xfailed · 1 xpassed (63.61 s) · 화면 판정 0
+절차 사실 — 2호기가 v4-46 자리에서 캡처 커밋(cc562fe) → push 거절 → 에어로 회수해 재커밋(40d5871)
