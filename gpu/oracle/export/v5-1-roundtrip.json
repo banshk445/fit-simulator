@@ -1,0 +1,136 @@
+{
+ "what": "v5-1 §1-②③ 실측표 왕복 + 조립 비트 대조",
+ "템플릿상수": {
+  "ARM_G": 0.4439
+ },
+ "칸": 4,
+ "왕복최대오차": 0,
+ "posSha 동일": 4,
+ "uvSha 동일": 4,
+ "rows": [
+  {
+   "size": "S",
+   "spec": {
+    "totalLength": 65,
+    "chestFlat": 48.5,
+    "shoulder": 41.5,
+    "sleeveLength": 19.25,
+    "hemFlat": 48.5
+   },
+   "왕복차": {
+    "L": 0,
+    "W": 0,
+    "SW": 0,
+    "SLEN": 0,
+    "ARM_G": 0
+   },
+   "왕복최대": 0,
+   "현행": {
+    "n": 8854,
+    "pos": "c72068a2156b6e3dbe7ea4879d1d3bc335df546bf93d22d255071ed181167fea",
+    "uv": "e005bc8ba3a4848d546e5933caf5a2c15e25355be1898498f45daefc213f612e"
+   },
+   "복원": {
+    "n": 8854,
+    "pos": "c72068a2156b6e3dbe7ea4879d1d3bc335df546bf93d22d255071ed181167fea",
+    "uv": "e005bc8ba3a4848d546e5933caf5a2c15e25355be1898498f45daefc213f612e"
+   },
+   "posSha동일": true,
+   "uvSha동일": true,
+   "n동일": true
+  },
+  {
+   "size": "M",
+   "spec": {
+    "totalLength": 68,
+    "chestFlat": 51.5,
+    "shoulder": 43,
+    "sleeveLength": 20.5,
+    "hemFlat": 51.5
+   },
+   "왕복차": {
+    "L": 0,
+    "W": 0,
+    "SW": 0,
+    "SLEN": 0,
+    "ARM_G": 0
+   },
+   "왕복최대": 0,
+   "현행": {
+    "n": 9388,
+    "pos": "15e3bb25de25734d61125c427ca869695ccaeffb189d7062ef461c477e0529bd",
+    "uv": "f0dfa1ade9ec293e957fbabb8f71c373d1b1ec1448913ad7335fd595ab72189a"
+   },
+   "복원": {
+    "n": 9388,
+    "pos": "15e3bb25de25734d61125c427ca869695ccaeffb189d7062ef461c477e0529bd",
+    "uv": "f0dfa1ade9ec293e957fbabb8f71c373d1b1ec1448913ad7335fd595ab72189a"
+   },
+   "posSha동일": true,
+   "uvSha동일": true,
+   "n동일": true
+  },
+  {
+   "size": "L",
+   "spec": {
+    "totalLength": 71,
+    "chestFlat": 54.50000000000001,
+    "shoulder": 44.5,
+    "sleeveLength": 21.75,
+    "hemFlat": 54.50000000000001
+   },
+   "왕복차": {
+    "L": 0,
+    "W": 0,
+    "SW": 0,
+    "SLEN": 0,
+    "ARM_G": 0
+   },
+   "왕복최대": 0,
+   "현행": {
+    "n": 10254,
+    "pos": "2a1e32883eb2e018aac9d4fb072c55dad1c523474a1d88ac3a544f39f1d03f64",
+    "uv": "19b10269e561d6ea432306f6798855aebc0a0f381946c96b5ad2f093371308f5"
+   },
+   "복원": {
+    "n": 10254,
+    "pos": "2a1e32883eb2e018aac9d4fb072c55dad1c523474a1d88ac3a544f39f1d03f64",
+    "uv": "19b10269e561d6ea432306f6798855aebc0a0f381946c96b5ad2f093371308f5"
+   },
+   "posSha동일": true,
+   "uvSha동일": true,
+   "n동일": true
+  },
+  {
+   "size": "XL",
+   "spec": {
+    "totalLength": 74,
+    "chestFlat": 58.5,
+    "shoulder": 46.5,
+    "sleeveLength": 22.75,
+    "hemFlat": 58.5
+   },
+   "왕복차": {
+    "L": 0,
+    "W": 0,
+    "SW": 0,
+    "SLEN": 0,
+    "ARM_G": 0
+   },
+   "왕복최대": 0,
+   "현행": {
+    "n": 11050,
+    "pos": "eb5fd480e3baf5414411b5b41ff91ea784c49de7686b7baa811840ca83b86567",
+    "uv": "b90d967c8c2b2814c0a301a1e779a11b23b2a83552bb45d3a208ab4374a78bde"
+   },
+   "복원": {
+    "n": 11050,
+    "pos": "eb5fd480e3baf5414411b5b41ff91ea784c49de7686b7baa811840ca83b86567",
+    "uv": "b90d967c8c2b2814c0a301a1e779a11b23b2a83552bb45d3a208ab4374a78bde"
+   },
+   "posSha동일": true,
+   "uvSha동일": true,
+   "n동일": true
+  }
+ ]
+}
