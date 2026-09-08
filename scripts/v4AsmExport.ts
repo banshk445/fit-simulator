@@ -15,6 +15,7 @@ import { prepare } from '../src/v3/dressRun.ts';
 import { FABRICS, THICK, G, DT, MU, DAMP } from '../src/v3/consts.ts';
 import { minPairDistLite } from '../src/v3/instruments.ts';
 import { garmentOf, cells, type Size } from '../src/v3/grid.ts';
+import { patternOfSpecName } from '../src/v5/specToPattern.ts';
 import { armAxisFromEnv } from './armAxisEnv.ts';
 
 const OUT = 'gpu/oracle/export';
@@ -24,6 +25,10 @@ const BODYTAG = TAG.replace(/_[^_]*$/, '');
 const D = Number(process.env.D_MM ?? 9) / 1000;
 const FAB = process.env.FAB ?? 'gray';
 const c = cells().find((x) => x.id === CELL)!;
+/* ★ v5-2 §1-② — **실측표 진입**(선택 인자 · 기본값 그대로 ⟹ 기존 호출은 바이트 불변).
+ * `SPEC=<이름>` 이 있으면 옷 치수를 **등재된 실측표**에서 만든다(`src/v5/specToPattern.ts`).
+ * 없으면 종전대로 `garmentOf(c.size)` 다(v4-24 의 `BODY_BIN` 처분과 같은 형태). */
+const SPEC = process.env.SPEC;
 const BODY_BIN = process.env.BODY_BIN ?? `public/v3diag/v3-77/body-${c.bodyId}.bin`;
 
 const gb = readFileSync('public/models/mannequin.glb');
@@ -31,7 +36,7 @@ const glb = gb.buffer.slice(gb.byteOffset, gb.byteOffset + gb.byteLength) as Arr
 const bb = readFileSync(BODY_BIN);
 const verts = new Float32Array(bb.buffer.slice(bb.byteOffset, bb.byteOffset + bb.byteLength));
 const fab = (FABRICS as Record<string, { k: number; rho: number; B: number }>)[FAB];
-const P = prepare({ glb, fabric: FABRICS.gray, d: D, garment: garmentOf(c.size as Size), armAxis: armAxisFromEnv(),
+const P = prepare({ glb, fabric: FABRICS.gray, d: D, garment: SPEC ? patternOfSpecName(SPEC) : garmentOf(c.size as Size), armAxis: armAxisFromEnv(),
                     bodyVerts: verts, minPairDistLite });
 
 /* ★ v4-26 §1-② **유한성 검사**(전략 세션 v4-25 §4 승인 · 함정 후보 「배치 산출의 조용한 NaN 통과」).

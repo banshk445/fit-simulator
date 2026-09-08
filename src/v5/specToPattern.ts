@@ -55,3 +55,31 @@ export function patternToSpec(p: Pattern): TeeSpec {
   return { totalLength: p.L * 100, chestFlat: p.W * 100, shoulder: p.SW * 100,
            sleeveLength: p.SLEN * 100, hemFlat: p.W * 100 };
 }
+
+/* ── v5-2 §1-① — **실물 실측표 등재(데이터)** ────────────────────────────────
+ * 코드에 수를 흩지 않고 **이름 붙은 항목**으로 둔다. 출처를 함께 적는다(손 환산 0 · 아래 식만 쓴다).
+ * 쇼핑몰 표기 「등중심~소매」(화장 `hwa`)는 **어깨 끝 기준 소매길이가 아니다** ⟹
+ * `SLEN = hwa − SW/2`(`src/v3/grid.ts:33` 의 v3-73 §0-3 도출식)로 옮긴다. */
+
+/** 쇼핑몰 표기 그대로의 한 행 — 「총장 · 어깨너비 · 가슴너비 · 등중심~소매(화장)」[cm]. */
+export type ChartRow = { totalLength: number; shoulder: number; chestFlat: number; hwa: number };
+
+/** 화장 표기 행 → 실측표 5항. **밑단단면은 옆선 직선 가정**(v5-1 종속 규칙 · 미제공 시). */
+export function rowToSpec(r: ChartRow): TeeSpec {
+  return { totalLength: r.totalLength, chestFlat: r.chestFlat, shoulder: r.shoulder,
+           sleeveLength: r.hwa - r.shoulder / 2, hemFlat: r.chestFlat };
+}
+
+/** 등재된 실물 실측표. **이름 → 행**(수는 여기에만 있다). */
+export const SPEC_LIBRARY: Record<string, { 출처: string; row: ChartRow }> = {
+  /** 유니클로 젠더리스 SUPIMA COTTON T(상품번호 455365) · 사이즈 L · 공식 제품 실측(사용자 확인). */
+  'supima-L': { 출처: '유니클로 455365 젠더리스 SUPIMA COTTON T · L · 공식 제품 실측(v5-2 판정문)',
+                row: { totalLength: 71, shoulder: 44.5, chestFlat: 54.5, hwa: 44 } },
+};
+
+/** 이름으로 패턴 상수를 얻는다 — 없는 이름이면 **던진다**(조용한 기본값 0). */
+export function patternOfSpecName(name: string): Pattern {
+  const e = SPEC_LIBRARY[name];
+  if (!e) throw new Error(`등재되지 않은 실측표 이름 — ${name}(등재: ${Object.keys(SPEC_LIBRARY).join(', ')})`);
+  return specToPattern(rowToSpec(e.row));
+}
