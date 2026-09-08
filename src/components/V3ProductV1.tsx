@@ -21,7 +21,21 @@ import { CanvasTexture, SRGBColorSpace, type Texture } from "three";
 
 /** 굽기 조건 — **오케스트레이터와 같은 값**(`scripts/v3GridRun.ts`: gray · `D_MM` 기본 9). */
 const BAKE = { fab: "gray" as const, dMm: 9 };
-const DIR = "v3diag/v3-77";
+
+/** ★ v4-48 §1-①② — **자산 갈래**(기본 = A포즈 · `?tpose=1` 이 구판).
+ *
+ * 바뀌는 것은 **어느 폴더의 어느 파일을 읽는가** 하나뿐이다 — 매칭·회색·사유·착지 규칙은
+ * `src/v3/provide.ts`(v3-79·80 정본)를 **그대로** 쓴다(분류 로직 신설 0 · §0-4ㄱ).
+ * A포즈 자산은 v4-46 굽기 산출과 v4-47 재판정을 **포장·복사**한 것이고 값 변형은 0이다
+ * (`public/v3diag/v4-a35/` — settled 33 · body 27 · 정본 2).
+ * 구판(T포즈) 경로의 파일 이름·형식은 **한 글자도 바뀌지 않았다**(회귀는 그것으로 증명한다). */
+const TPOSE = typeof window !== "undefined"
+  && new URLSearchParams(window.location.search).get("tpose") === "1";
+const DIR = TPOSE ? "v3diag/v3-77" : "v3diag/v4-a35";
+const PROVIDE_FILE = TPOSE ? "v1-provide-35.v3-91.json" : "v1-provide.json";
+const INDEX_FILE = TPOSE ? "index-merged-108.v3-91.json" : "index-merged-108.json";
+/** 표시 포즈 — 자산이 A포즈면 몸도 A포즈다(같은 폴더의 `body-<몸>.bin`). 인쇄·각주용. */
+const POSE_LABEL = TPOSE ? "T포즈(구판)" : "A포즈";
 
 /** v3-80 §1-① — 캔버스 크기. **가로는 «자산 실측»에서 나온다**: 프레이밍이 몸 높이 하나로 고정된 뒤
  * 27몸 중 최대 팔 스팬(`c122.5-h185-s50` · 2.4911m)의 투영 폭이 **834.5px** 이다(`v3FramingCheck`).
@@ -95,9 +109,9 @@ export function V3ProductV1() {
     Promise.all([
       /* v3-81 §1-② — **제공 목록 정본은 35 다**(37 은 무삭제·대조 전용).
        * 35 파일은 제외 사유를 «메타 한 줄»로 담으므로 배열이 아니라 객체다 — 둘 다 받는다. */
-      fetch(`${B}${DIR}/v1-provide-35.v3-91.json`).then((r) => r.ok ? r.json() : Promise.reject(new Error(`제공 목록 응답 ${r.status}`)))
+      fetch(`${B}${DIR}/${PROVIDE_FILE}`).then((r) => r.ok ? r.json() : Promise.reject(new Error(`제공 목록 응답 ${r.status}`)))
         .then((j) => (Array.isArray(j) ? j : j.provide)),
-      fetch(`${B}${DIR}/index-merged-108.v3-91.json`).then((r) => r.ok ? r.json() : Promise.reject(new Error(`분류 정본 응답 ${r.status}`))),
+      fetch(`${B}${DIR}/${INDEX_FILE}`).then((r) => r.ok ? r.json() : Promise.reject(new Error(`분류 정본 응답 ${r.status}`))),
     ]).then(([provide, index]) => setCanon({ provide, index }))
       .catch((e) => setCanonErr(`정본을 못 읽었다 — ${e.message}. **화면을 세운다**(폴백 0).`));
   }, []);
@@ -387,6 +401,11 @@ export function V3ProductV1() {
             </div>
             <div className="mt-2 flex flex-wrap items-center gap-2"><FitLegend fit={fit} /></div>
             <FitReportTable fit={fit} />
+            {/* ★ v4-48 §1-③ — 「가슴」 행이 «어느 높이»인지 한 줄로 알린다(v4-39 재정의 · 소비자 언어).
+              * 값·판정은 건드리지 않는다 — 표시 문구 하나다. 표시 포즈도 같은 줄에 적는다. */}
+            <div className="mt-1 opacity-70">
+              가슴 줄은 <b>겨드랑이 높이</b>의 단면에서 잽니다(옷·몸의 표시 자세: {POSE_LABEL}).
+            </div>
           </details>
         )}
       </div>
