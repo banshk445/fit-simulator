@@ -30416,3 +30416,28 @@ A포즈 96칸 관통 최대 분포 — 중앙 0.40976730400947536 · p90 1.65099
 
 ### §2
 npx tsc -b 통과 · pytest(2호기) 40 passed · 2 xfailed · 1 xpassed (60.93 s)
+
+
+## 2026-09-08 v4-48 — 제품 경로 A포즈 전환(제공 33칸 배선) (갈래 A)
+
+기계 = 2호기(자산 생성) + 에어(코드·dev 확인) · 브랜치 `v4-48-product-apose` · 기점 `47a652e` · §0 선커밋 `21c38d1`
+src diff = src/components/V3ProductV1.tsx +22/−3 · 물리 0줄 · 굽기 0
+
+### ① 배선
+자산 갈래 상수 3종 — DIR(v3diag/v4-a35 ↔ v3diag/v3-77) · PROVIDE_FILE · INDEX_FILE · POSE_LABEL
+스위치 = ?tpose=1(구판) · 기본 A포즈 · 매칭·회색·사유·착지는 src/v3/provide.ts 정본 그대로(신설 0)
+자산 — settled 33(주입 규약 [u32][JSON][f64] 로 포장 · 좌표 변형 0) · body 27(grid27 복사) · 정본 2
+  실측 settled-c100-h170-s45_M.bin 헤더 {"n": 9490, "frame": 350, "d": 0.009} · 좌표 227760 바이트 = 9490 정점
+  총 62파일 13 MB · public/v3diag/v4-a35/ · git 밖 로컬 관행(v3-77 과 같은 취급)
+
+### ② 표시 몸
+몸 정점 경로가 같은 DIR 을 쓰므로 몸·옷이 항상 같은 포즈
+dev 서버(에어) 응답 — v4-a35 provide/index/settled/body 200 · v3-77 구판 provide 200
+
+### ③ 각주
+FitReportTable 아래 1줄 — 「가슴 줄은 겨드랑이 높이의 단면에서 잽니다(옷·몸의 표시 자세: A포즈/T포즈(구판))」
+
+### §2
+provide.ts·match.ts·fitReport.ts·s4Gate.ts·worker·gpu diff 0 · public/v3diag/v3-77 쓰기 0
+구판 제공 목록 35칸 · A포즈 제공 33칸 · A포즈 분류 편입 33/보류 63/착용불가 12
+npx tsc -b 통과 · pytest(2호기) 40 passed · 2 xfailed · 1 xpassed (59.44 s) · 화면 판정 0(승혁 스모크 대기)
