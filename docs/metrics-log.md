@@ -30560,3 +30560,30 @@ N 유도 — v4-51 이봉 분포의 빈 구간 중점 (1 + 343)/2 = 172 · 어�
 
 ### §2
 npx tsc -b 통과 · pytest(2호기) 40 passed · 2 xfailed · 1 xpassed (59.93 s) · 화면 판정 0
+
+
+## 2026-09-08 v5-1 — 실측표 표현 · 재현 비트 대조 (갈래 A · v5 트랙 개시)
+
+기계 = 에어(집행) + 2호기(pytest) · 브랜치 `v5-1-spec-extract` · 기점 `74a13a1` · §0 선커밋 `5d34614`
+기존 src 파일 diff 0 · 신설 src/v5/specToPattern.ts · scripts/v5SpecRoundtrip.ts · 굽기 0 · 자산 0
+
+### ① 자유도(조립 입력) 5개 — garmentScene.ts:80
+L(총장) · W(몸판 폭 = 가슴단면) · SW(어깨너비) · SLEN(소매길이) · ARM_G(암홀 둘레)
+차트 grid.ts:11-20 {L, SW, W, hwa} · garmentOf grid.ts:31-34 (SLEN = hwa − SW/2) · ARM_G grid.ts:28 = 0.4439
+[cm] S 65/41.5/48.5/19.25 · M 68/43/51.5/20.5 · L 71/44.5/54.5/21.75 · XL 74/46.5/58.5/22.75
+도출량(몸에서) — Y_TOP :177-186 · NECK_A/NECK_G :234-239 · CAP_W :250-263 · ARM_D :305 · CAP_H :311 ·
+  NECK_B :316 · ARM_A = (W − SW)/2 :299 · Y_ARM/SH_LEN/SLEEVE_UNDER :318-320 · Y_HEM :443
+
+### ② 사상·왕복
+specToPattern — L = totalLength/100 · W = chestFlat/100 · SW = shoulder/100 · SLEN = sleeveLength/100 ·
+  ARM_G = TEE_TEMPLATE.ARM_G (0.4439)
+hemFlat 은 종속(옆선 직선 garmentScene.ts:422) · chestFlat 과 다르면 throw(조용한 무시 0)
+왕복(garmentOf → patternToSpec → specToPattern) 5항 차 전부 0 · 왕복 최대 오차 0
+표시 사실 — L 가슴단면이 54.50000000000001 로 찍히는 것은 m→cm 이진 표현(패턴 상수 차는 0)
+
+### ③ 재현 대조(T포즈 기본 몸 · gray · d 9mm · 굽기 0)
+posSha 동일 4/4 · uvSha 동일 4/4 · n S 8854 · M 9388 · L 10254 · XL 11050
+산출 gpu/oracle/export/v5-1-roundtrip.json
+
+### §2
+npx tsc -b 통과 · pytest(2호기) 40 passed · 2 xfailed · 1 xpassed (66.32 s) · public·gpu diff 0
