@@ -30471,3 +30471,33 @@ Node 파싱 스모크(scripts/v4BlobParse.ts · 로더 식 재현) —
 
 ### §2
 npx tsc -b 통과 · pytest(2호기) 40 passed · 2 xfailed · 1 xpassed (60.18 s) · 화면 판정 0
+
+
+## 2026-09-08 v4-50 — 제품 3D 렌더 미마운트 사실·수정 (갈래 A)
+
+기계 = 에어(진단·정정) + 2호기(동기화·pytest) · 브랜치 `v4-50-render-mount` · 기점 `74a9291` · §0 선커밋 `14de759`
+src diff 0 · blob 바이트 0 · 굽기 0
+
+### ① 마운트 사실
+V3ProductV1.tsx:414  <canvas ref={cvRef} hidden={!scened} …>   ← 요소는 DOM 에 있고 hidden 이었다
+V3ProductV1.tsx:101/151  scened useState(false) · 칸이 바뀌면 setScened(false)
+V3ProductV1.tsx:177-178  워커 done 끝에서만 sceneRef 설정 + setScened(true)
+V3ProductV1.tsx:172-176  그 직전 정본 sha 대조 — 실패 시 setErr 후 return(콘솔 출력 없음)
+V3ProductV1.tsx:169-171  대조 hex = blob 에서 헤더(4+hl) 뗀 본문의 sha256
+
+규약 검증(T포즈 정본 c100-h155-s45_L) —
+  등재 sha            757d9c9a92d8e15f4b842035bf554fda88ad6629631b1cbf684349537766c8f3
+  본문(헤더 제외) sha  757d9c9a92d8e15f4b842035bf554fda88ad6629631b1cbf684349537766c8f3  ← 일치
+  파일 전체 sha        aa46cc16f88a701bbdf89a79f1b10916e7c02e22aad11a6fc2db906f361fd86f
+  위치만 sha           98d82a73ddba83e303cd70e2973781b48203764fc36055e10891565f2114c57b
+v4-47 색인은 results/v4-46-A108/<칸>.bin(위치만 24 B/정점) 파일 sha 를 기록 ⟹ 33칸 전부 대조 실패
+
+### ② 수정
+색인 public/v3diag/v4-a35/index-merged-108.json 의 sha 33개를 sha256(blob[4+hl:]) 로 재계산(값 창작 0)
+예시 c100-h170-s45_M → 6b28a06080be2156…
+대조 재현(화면과 같은 식) — 제공 칸 33 · 일치 33 · 불일치 0
+
+### ③ 검증
+npx tsc -b 통과 · dev 서빙 색인 sha 6b28a06080be2156…(status 편입) · settled 200 · 구판 색인 200
+구판 자산·src 불변(git status/diff 무출력) · 2호기에 색인 동기화
+pytest(2호기) 40 passed · 2 xfailed · 1 xpassed (59.81 s) · DOM 확인 불가(브라우저 채널 미연결)
