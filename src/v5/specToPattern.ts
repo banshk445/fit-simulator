@@ -83,6 +83,11 @@ export const SPEC_LIBRARY: Record<string, SpecEntry> = {
    * 밑단단면 미제공 ⟹ 옆선 직선 가정(v5-1 종속 규칙 · v5-3 §0 등재). */
   'mst-over-L': { 출처: '무신사 스탠다드 오버사이즈 T · L 급 공개 실측(v5-3 판정문)',
                   spec: { totalLength: 74, chestFlat: 60, shoulder: 52, sleeveLength: 24, hemFlat: 60 } },
+  /** ★ v5-4 §1-① **가상 실험**(실물 아님 · 인과 확정용) — `mst-over-L` 에서 **어깨너비만** 자사 XL(46.5)로
+   * 줄이고 나머지는 그대로. 「어깨가 몸보다 넓어 걸리지 않는다」가 흘러내림의 원인인지 값으로 가른다.
+   * **제공 목록·제품에 쓰지 않는다.** */
+  'mst-over-L-sw465': { 출처: 'v5-4 §1-① 가상 실험(실물 아님) — mst-over-L 에서 어깨너비만 46.5cm(자사 XL)로',
+                        spec: { totalLength: 74, chestFlat: 60, shoulder: 46.5, sleeveLength: 24, hemFlat: 60 } },
 };
 
 /** 등재 항목 → 실측표 5항. 어느 형식이든 **같은 자리**로 모은다. */
