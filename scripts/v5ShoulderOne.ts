@@ -6,7 +6,7 @@ import { patternOfSpecName } from '../src/v5/specToPattern.ts';
 const gb = readFileSync('public/models/mannequin.glb');
 const glb = gb.buffer.slice(gb.byteOffset, gb.byteOffset + gb.byteLength) as ArrayBuffer;
 const bb = readFileSync('gpu/oracle/export/grid27/l3ap-body-c100-h170-s45-a35.bin');
-const P = prepare({ glb, fabric: FABRICS.gray, d: 0.009, garment: patternOfSpecName('supima-L'),
+const P = prepare({ glb, fabric: FABRICS.gray, d: 0.009, garment: patternOfSpecName(process.env.SPEC ?? 'supima-L'),
   bodyVerts: new Float32Array(bb.buffer.slice(bb.byteOffset, bb.byteOffset + bb.byteLength)), minPairDistLite });
 const yTop = (P.S as unknown as { Y_TOP: number }).Y_TOP;
 const raw = readFileSync(process.env.POS ?? 'gpu/bake/results/v5-2-supima/supimaL_L.bin');

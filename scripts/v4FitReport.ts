@@ -15,6 +15,7 @@ import { prepare } from '../src/v3/dressRun.ts';
 import { FABRICS } from '../src/v3/consts.ts';
 import { minPairDistLite } from '../src/v3/instruments.ts';
 import { garmentOf, cells, type Size } from '../src/v3/grid.ts';
+import { patternOfSpecName } from '../src/v5/specToPattern.ts';
 import { deriveLevels } from '../src/v3/bodyLevels.ts';
 import { buildFitReport } from '../src/v3/fitReport.ts';
 
@@ -27,6 +28,11 @@ const D = Number(process.env.D_MM ?? 9) / 1000;
 if (!existsSync(OUT)) mkdirSync(OUT, { recursive: true });
 
 const c = cells().find((x) => x.id === CELL);
+/* ★ v5-3 §1-② — **실측표 진입**(선택 인자 · 기본값 그대로 ⟹ 기존 호출은 바이트 불변).
+ * `SPEC=<이름>` 이면 옷 치수를 등재된 실측표에서 만든다(`src/v5/specToPattern.ts`) —
+ * v4-46 의 굽기 산출은 차트 사이즈로 만든 옷이지만, v5 의 산출은 «실측표 옷»이라
+ * 계기가 같은 치수로 장면을 세우지 못하면 정점 수가 달라 던진다(v5-3 실측: 12,144 ↔ XL 11,152). */
+const SPEC = process.env.SPEC;
 if (!c) throw new Error(`칸 ${CELL} 이 본 그리드에 없다`);
 const gb = readFileSync('public/models/mannequin.glb');
 const glb = gb.buffer.slice(gb.byteOffset, gb.byteOffset + gb.byteLength) as ArrayBuffer;
@@ -35,7 +41,7 @@ const glb = gb.buffer.slice(gb.byteOffset, gb.byteOffset + gb.byteLength) as Arr
 const BODY_BIN = process.env.BODY_BIN ?? `${SRC}/body-${c.bodyId}.bin`;
 const bb = readFileSync(BODY_BIN);
 const verts = new Float32Array(bb.buffer.slice(bb.byteOffset, bb.byteOffset + bb.byteLength));
-const P = prepare({ glb, fabric: FABRICS.gray, d: D, garment: garmentOf(c.size as Size),
+const P = prepare({ glb, fabric: FABRICS.gray, d: D, garment: SPEC ? patternOfSpecName(SPEC) : garmentOf(c.size as Size),
                     bodyVerts: verts, minPairDistLite });
 const n = P.sc.n;
 
