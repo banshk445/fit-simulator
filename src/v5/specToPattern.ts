@@ -70,16 +70,29 @@ export function rowToSpec(r: ChartRow): TeeSpec {
            sleeveLength: r.hwa - r.shoulder / 2, hemFlat: r.chestFlat };
 }
 
-/** 등재된 실물 실측표. **이름 → 행**(수는 여기에만 있다). */
-export const SPEC_LIBRARY: Record<string, { 출처: string; row: ChartRow }> = {
+/** 등재 한 항목 — 쇼핑몰이 **화장(`hwa`)** 을 주면 `row`, **소매길이**를 주면 `spec` 이다.
+ * ★ v5-3 §0-2 — 두 형식을 **자료형으로** 가른다. 한쪽을 손으로 다른 쪽으로 바꾸지 않는다(손 환산 0). */
+export type SpecEntry = { 출처: string; row: ChartRow } | { 출처: string; spec: TeeSpec };
+
+/** 등재된 실물 실측표. **이름 → 항목**(수는 여기에만 있다). */
+export const SPEC_LIBRARY: Record<string, SpecEntry> = {
   /** 유니클로 젠더리스 SUPIMA COTTON T(상품번호 455365) · 사이즈 L · 공식 제품 실측(사용자 확인). */
   'supima-L': { 출처: '유니클로 455365 젠더리스 SUPIMA COTTON T · L · 공식 제품 실측(v5-2 판정문)',
                 row: { totalLength: 71, shoulder: 44.5, chestFlat: 54.5, hwa: 44 } },
+  /** 무신사 스탠다드 오버사이즈 T · L 급 공개 실측(v5-3 판정문) — **소매길이를 직접 준다**(화장 아님).
+   * 밑단단면 미제공 ⟹ 옆선 직선 가정(v5-1 종속 규칙 · v5-3 §0 등재). */
+  'mst-over-L': { 출처: '무신사 스탠다드 오버사이즈 T · L 급 공개 실측(v5-3 판정문)',
+                  spec: { totalLength: 74, chestFlat: 60, shoulder: 52, sleeveLength: 24, hemFlat: 60 } },
 };
+
+/** 등재 항목 → 실측표 5항. 어느 형식이든 **같은 자리**로 모은다. */
+export function specOfEntry(e: SpecEntry): TeeSpec {
+  return 'spec' in e ? e.spec : rowToSpec(e.row);
+}
 
 /** 이름으로 패턴 상수를 얻는다 — 없는 이름이면 **던진다**(조용한 기본값 0). */
 export function patternOfSpecName(name: string): Pattern {
   const e = SPEC_LIBRARY[name];
   if (!e) throw new Error(`등재되지 않은 실측표 이름 — ${name}(등재: ${Object.keys(SPEC_LIBRARY).join(', ')})`);
-  return specToPattern(rowToSpec(e.row));
+  return specToPattern(specOfEntry(e));
 }
