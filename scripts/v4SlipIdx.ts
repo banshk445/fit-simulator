@@ -13,6 +13,7 @@ import { prepare } from '../src/v3/dressRun.ts';
 import { FABRICS } from '../src/v3/consts.ts';
 import { minPairDistLite } from '../src/v3/instruments.ts';
 import { garmentOf, cells, type Size } from '../src/v3/grid.ts';
+import { patternOfSpecName } from '../src/v5/specToPattern.ts';
 import { armAxisFromEnv } from './armAxisEnv.ts';
 
 const CELL = process.env.CELL ?? 'c100-h170-s45_M';
@@ -21,12 +22,14 @@ const OUT = 'gpu/oracle/export';
 const D = Number(process.env.D_MM ?? 9) / 1000;
 const c = cells().find((x) => x.id === CELL);
 if (!c) throw new Error(`칸 ${CELL} 이 본 그리드에 없다`);
+/* ★ v5-5 §1-① — 실측표 진입(선택 인자 · 기본값 그대로 ⟹ 기존 호출 불변). */
+const SPEC = process.env.SPEC;
 const gb = readFileSync('public/models/mannequin.glb');
 const glb = gb.buffer.slice(gb.byteOffset, gb.byteOffset + gb.byteLength) as ArrayBuffer;
 const bbPath = process.env.BODY_BIN ?? `public/v3diag/v3-77/body-${c.bodyId}.bin`;
 const bb = readFileSync(bbPath);
 const verts = new Float32Array(bb.buffer.slice(bb.byteOffset, bb.byteOffset + bb.byteLength));
-const P = prepare({ glb, fabric: FABRICS.gray, d: D, garment: garmentOf(c.size as Size),
+const P = prepare({ glb, fabric: FABRICS.gray, d: D, garment: SPEC ? patternOfSpecName(SPEC) : garmentOf(c.size as Size),
                     bodyVerts: verts, minPairDistLite, armAxis: armAxisFromEnv() });
 
 type Pan = { base: number; nu: number; nv: number; name: string };

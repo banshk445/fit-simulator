@@ -88,6 +88,13 @@ export const SPEC_LIBRARY: Record<string, SpecEntry> = {
    * **제공 목록·제품에 쓰지 않는다.** */
   'mst-over-L-sw465': { 출처: 'v5-4 §1-① 가상 실험(실물 아님) — mst-over-L 에서 어깨너비만 46.5cm(자사 XL)로',
                         spec: { totalLength: 74, chestFlat: 60, shoulder: 46.5, sleeveLength: 24, hemFlat: 60 } },
+  /** ★ v5-5 §1-② **가상 실험**(실물 아님) — `mst-over-L` 에서 **가슴·밑단단면만** 바꾼 두 점.
+   * 자리는 supima-L(54.5) ↔ mst-over-L(60) 사이를 셋으로 나눈 **≈1/3·2/3**(56 · 58) 이고
+   * 어느 칸의 값도 아니다(§0-4ㄴ). 나머지 치수는 mst-over-L 그대로. **제공·제품 사용 0.** */
+  'mst-over-L-w56': { 출처: 'v5-5 §1-② 가상 실험(실물 아님) — mst-over-L 에서 가슴·밑단단면만 56cm',
+                      spec: { totalLength: 74, chestFlat: 56, shoulder: 52, sleeveLength: 24, hemFlat: 56 } },
+  'mst-over-L-w58': { 출처: 'v5-5 §1-② 가상 실험(실물 아님) — mst-over-L 에서 가슴·밑단단면만 58cm',
+                      spec: { totalLength: 74, chestFlat: 58, shoulder: 52, sleeveLength: 24, hemFlat: 58 } },
 };
 
 /** 등재 항목 → 실측표 5항. 어느 형식이든 **같은 자리**로 모은다. */
