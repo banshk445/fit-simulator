@@ -1,0 +1,32 @@
+{
+  "patternHash": "9f7ba80b3497",
+  "fixtureHash": "9e8b2bf13925",
+  "garmentDims": {
+    "lengthM": 0.7,
+    "widthM": 0.55,
+    "shoulderWidthM": 0.449995105850059,
+    "sleeveLengthM": 0.22,
+    "sleeveWidthM": 0.18
+  },
+  "panelCounts": [
+    2134,
+    2162,
+    474,
+    474
+  ],
+  "triangles": 9846,
+  "meshEdges": 15086,
+  "seamCounts": {
+    "shoulder": 38,
+    "side": 62,
+    "armhole": 124,
+    "sleeveUnder": 16
+  },
+  "selfCollisionMinDistMm": 3.212,
+  "dims": {
+    "neckHalfWidthCm": 8.12,
+    "armholeGirthCm": 44.39,
+    "capHeightCm": 12.31,
+    "necklineGirthCm": 48.27
+  }
+}

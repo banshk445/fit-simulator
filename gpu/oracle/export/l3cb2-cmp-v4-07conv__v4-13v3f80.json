@@ -1,0 +1,16 @@
+{
+ "A": "gpu\\oracle\\export\\cellconv7-c100-h170-s45_M-all-e0-x0.bin",
+ "B": "gpu\\oracle\\export\\l3conv-v3-c100-h170-s45_M-f80.bin",
+ "n": 9388,
+ "bytesIdentical": true,
+ "maxVertexMm": 0.0,
+ "medVertexMm": 0.0,
+ "p99VertexMm": 0.0,
+ "maxCoordMm": 0.0,
+ "maxAt": 0,
+ "meanShiftMm": [
+  0.0,
+  0.0,
+  0.0
+ ]
+}

@@ -176,7 +176,16 @@ const check = (ok: boolean, label: string, detail = "") => {
 {
   const dir = "scripts/fixtures";
   for (const name of readdirSync(dir).filter((f) => f.endsWith(".json"))) {
-    const pos: number[] = JSON.parse(readFileSync(`${dir}/${name}`, "utf8")).collision?.position ?? [];
+    const parsed = JSON.parse(readFileSync(`${dir}/${name}`, "utf8")) as { collision?: { position?: number[] } };
+    // v2: fixtures/에 **몸 스냅샷이 아닌** fixture도 산다(pattern-meta.json =
+    // 옷 정의 해시 스냅샷, 함정 8). 좌표 검사 대상이 아니므로 건너뛰되
+    // **건너뛴 사실을 출력**한다 — 조용히 건너뛰면 진짜 몸 fixture가 깨져도
+    // 통과해 버린다.
+    if (!Array.isArray(parsed.collision?.position)) {
+      console.log(`SKIP fixture ${name} — collision.position 없음(몸 스냅샷 아님)`);
+      continue;
+    }
+    const pos = parsed.collision.position;
     let bad = 0;
     for (const v of pos) if (!Number.isFinite(v) || Math.abs(v) > 1e6) bad++;
     check(pos.length > 0 && bad === 0, `fixture ${name} 좌표 정상`, bad ? `비정상 ${bad}개` : `${pos.length / 3}정점`);

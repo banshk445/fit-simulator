@@ -1,0 +1,664 @@
+// v2 Stage 2a (1) — 티셔츠 패턴 제도(2D). v2-design §3.1.
+//
+// 패널 = 이름 있는 경계 세그먼트의 닫힌 루프. 세그먼트는 해석적 정의
+// (직선/3차 베지에)이고, 솔버·시접·렌더는 **호장 등간격 표본**만 본다.
+//
+// ## 좌표계
+// 패턴 공간 2D, 단위 m. x = 가로(몸판은 0 = 중심선, 소매는 0 = 소매산 정점),
+// y = **아래로 증가**(0 = 어깨선). 몸판은 x ≥ 0 절반만 정의하고 삼각화 후
+// 미러로 복제한다(§3.2 — `enforceLeftRightSymmetry` 이식을 위한 미러 쌍).
+//
+// ## 치수의 출처 (규범 1 — v1 격자 상수 승계 금지)
+// 몸: `bodyMeasure.ts`(단면 둘레·어깨 능선 상면·목 최소). 옷: 사용자 슬라이더
+// 5개(총장/품/어깨너비/소매길이/소매통). v1의 `necklineRise/Lift`·
+// `SHOULDER_PIN_*`·`ARMHOLE_ROW_FRACTION`·`SLEEVE_RING_*`는 **하나도 쓰지
+// 않는다** — 그 값들은 44×28 격자와 핀 프로파일에 묶여 있고, 스파이크에서
+// v1 어깨 핀 좌표를 목 폭 출처로 썼다가 목구멍이 어깨선을 다 먹는 사고를
+// 실측으로 잡은 전례가 있다(metrics-log 2a-thin 계기 결함 4번).
+//
+// ## 재단 상수 (전부 **추정** — Stage 2a/2b 실측 확정. 근거를 각 상수에 병기)
+// 표준 상의 원형 제도의 관계식을 쓴다. 이 관계식 자체가 도출 근거이고,
+// 값은 이 저장소의 실측으로 확정된 것이 아니므로 전부 (추정)이다.
+import type { ArmSectionMeasure, BodyMeasure } from "./bodyMeasure";
+
+// 목선 둘레 = **목밑둘레 + 여유**. 목선이 앉는 자리는 목 기둥이 아니라 목밑
+// (어깨 뿌리)이다 — 9회차까지는 `body.neckGirthM`(목 기둥 최소 단면
+// 32.38cm@y148.04)을 넣었는데 목밑 폐곡선은 46.27cm(y145.23, 표면+옷 오프셋)라
+// 제도가 23% 작았고 배치가 원리적으로 불가능했다(링을 패턴 길이로 맞추면 목선
+// 정점이 몸 안 6~9cm, 표면에 올리면 링 56cm — 9회차 실측).
+//
+// 목너비는 관계식이 아니라 **이분법**으로 푼다(소매산 "walking the sleeve"와
+// 같은 방식). 표준 관계식 목너비 = 둘레/6 + 0.5cm를 목밑둘레에 그대로 쓰면
+// 그린 곡선의 실제 호장이 목표를 3% 밑돌아(실측 44.96 vs 46.27) 하한 검사를
+// 구조적으로 못 넘긴다 — 관계식은 근사이고 여기서는 호장이 규범이다.
+// 여유 2cm — 목선은 목밑에 얹히되 조이지 않아야 한다. (추정, Stage 2b 화면 V1)
+const NECKLINE_EASE_M = 0.020;
+// 앞목깊이 = 목너비 + 1cm. §3.1의 "앞>뒤 목선 깊이"를 **구조적으로** 보장한다
+// (뒤목깊이가 2cm 고정이므로 목너비가 1cm 이상이면 항상 앞>뒤). (추정)
+const FRONT_NECK_EXTRA_M = 0.010;
+// 뒤목깊이 — **도출한다**(표준값 2cm 고정을 버렸다). 총 둘레만 맞추고 앞/뒤
+// 배분을 고정 상수로 두면 이 마네킹에서 목선 앞 29.45 / 뒤 18.82cm vs 몸 목밑
+// 앞 25.98 / 뒤 20.29cm로 어긋나고(실측), 배치에서 앞은 남고 뒤는 모자라
+// 이분법이 한쪽만 포화한다. 앞/뒤 각각을 몸의 목밑 앞/뒤 호장에 맞춘다.
+// 진동깊이 = 가슴둘레/4. 표준 상의 원형의 대표 관계식(교재별로 B/4 · B/6+7 ·
+// B/8+7.5가 있고 B=84cm에서 21.0/21.0/18.0cm로 모여 B/4를 대표로 택했다).
+// 정찰 교차검증: 이 마네킹의 팔 제외 최대폭 슬라이스(=흉위 대역)가 어깨
+// 관절에서 19.4cm 아래였고 B/4 = 21.0cm와 1.6cm 안에서 일치. (추정)
+const ARMHOLE_DEPTH_CHEST_DIVISOR = 4;
+// 티셔츠 진동 여유 3cm — 원형은 밀착 기준이고 티셔츠는 낙낙하다. (추정)
+const ARMHOLE_DEPTH_EASE_M = 0.030;
+// 소매산 이즈 3cm — pattern-redesign 1번 조사의 채택값 그대로 승계
+// (우븐 1.5~2.5 / 니트 0.5~1.5 / 핏된 소매 3~4.5 중 우븐 평균). 원단별
+// 분기는 이 단계 범위 밖. (추정, 조사 근거 있음)
+export const SLEEVE_CAP_EASE_M = 0.030;
+// 암홀 둘레 하한 = 팔 둘레 + 이 값(팔이 통과할 최소 여유). (추정)
+export const ARMHOLE_ARM_CLEARANCE_M = 0.020;
+// 암홀 곡선 형상 — 어깨점에서 **어깨선에 수직**으로 출발(암홀은 어깨
+// 이음선과 직각으로 만난다)하고 겨드랑이에서 **옆선에 접**한다(C¹). 두
+// 계수는 그 접선 방향으로 뻗는 제어점 거리를 현 길이 대비로 준 것. (추정)
+const ARMHOLE_TANGENT_SHOULDER = 0.35;
+const ARMHOLE_TANGENT_UNDERARM = 0.55;
+// 소매산 S곡선 형상 — 정점에서 수평 접선(어깨를 매끄럽게 넘는다), 겨드랑이
+// 에서 수직 접선(소매 옆선에 접한다). (추정)
+const CAP_TANGENT_APEX = 0.55;
+const CAP_TANGENT_UNDERARM = 0.45;
+// 4분 타원의 3차 베지에 근사 계수(kappa) — 기하 상수, 추정 아님.
+const KAPPA = 0.5522847498;
+
+export interface Vec2 { x: number; y: number }
+
+export type CurveDef =
+  | { kind: "line"; a: Vec2; b: Vec2 }
+  | { kind: "cubic"; p0: Vec2; c0: Vec2; c1: Vec2; p1: Vec2 };
+
+export interface PatternSegment {
+  name: string;
+  curve: CurveDef;
+  // 경계 대역 refinement 대상(목선·암홀·어깨선·소매산). 직선 경계(옆선·
+  // 밑단·중심선·커프)는 내부 밀도(§1.4.1).
+  refined: boolean;
+  lengthM: number;
+  // 호장 등간격 표본(끝점 포함). 표본 수는 시접 짝과 맞춰 확정된다.
+  samples: Vec2[];
+}
+
+// P18 §3 — **값 추가만.** 기존 셋의 의미는 그대로다. 아래 셋은 다음 판(커프 밴드·셔츠)이
+// 쓸 자리이고 **지금은 아무도 만들지 않는다** — 이름을 미리 여는 이유는 소비자 쪽
+// `Record<PanelName, …>`가 이름을 늘릴 때마다 깨지지 않게 하려는 것이고, 그 결합은
+// 같은 판에서 Map으로 풀었다(`patternGarment`의 `meshByPanel`/`panelIndexByName`).
+export type PanelName = "front" | "back" | "sleeve" | "cuff" | "placket" | "collar";
+
+export interface PatternPanel {
+  name: PanelName;
+  // 닫힌 루프 순서. 인접 세그먼트는 끝점을 공유한다.
+  segments: PatternSegment[];
+  // 몸판: x ≥ 0 절반만 정의 → 삼각화 후 미러. 소매: 전체.
+  halfWithMirrorAxis: boolean;
+}
+
+export interface SeamSpec {
+  // P18 §3 — 값 추가만(기존 4종 의미 불변). 뒤 셋은 다음 판 몫이고 지금은 생성되지 않는다.
+  kind: "shoulder" | "side" | "armhole" | "sleeveUnder" | "cuff" | "placket" | "collar";
+  a: { panel: PanelName; segment: string };
+  b: { panel: PanelName; segment: string };
+  // b 쪽 표본을 역순으로 짝지을지(루프 진행 방향이 반대인 경우).
+  reverseB: boolean;
+}
+
+export interface PatternDraft {
+  panels: PatternPanel[];
+  seams: SeamSpec[];
+  dims: {
+    // 몸 실측 유래
+    chestGirthM: number; neckGirthM: number;
+    neckBaseGirthM: number; neckBaseY: number; neckBaseFrontM: number; neckBaseBackM: number;
+    shoulderPassGirthM: number;
+    ridgeAnchorY: number; shoulderSlope: number;
+    // 옷 슬라이더 유래
+    lengthM: number; halfWidthM: number; shoulderHalfM: number;
+    sleeveLengthM: number; sleeveHalfWidthM: number;
+    // 도출된 패턴 수치
+    neckHalfWidthM: number; frontNeckDropM: number; backNeckDropM: number;
+    shoulderDropM: number; shoulderSeamM: number;
+    armholeDepthM: number; armholeGirthM: number;
+    capHeightM: number; capHeightTriangleM: number; capGirthM: number;
+    underSleeveM: number; necklineGirthM: number;
+    armGirthM: number; sleeveTubeRadiusM: number;
+    /** P12 — 소맷부리 반폭(테이퍼 도착점). 팔 실측이 없으면 `sleeveHalfWidthM`과 같다(직통 원통). */
+    cuffHalfWidthM: number;
+    /** P12 — 그 자리의 팔 단면 둘레(도출 근거). 산출 불가면 null. */
+    cuffArmGirthM: number | null;
+    /** P19 — 소맷부리(=밴드가 있으면 밴드 «윗변») 패턴 y. 밴드가 없으면 `sleeveLengthM`과 같다. */
+    cuffYM: number;
+    /** P19 — 커프 밴드 높이(m). 0이면 밴드 없음. */
+    cuffBandM: number;
+    /** P13 — 소맷부리 여유 = 2·base − 캡 자리 팔 둘레(하한 `ARMHOLE_ARM_CLEARANCE_M`). 산출 불가면 null. */
+    cuffEaseM: number | null;
+    /** P13 — 캡 높이 자리의 팔 축 단면 둘레(여유 도출의 출처). 산출 불가면 null. */
+    capArmGirthM: number | null;
+  };
+}
+
+// ── 곡선 ────────────────────────────────────────────────────────────────
+export function evalCurve(c: CurveDef, t: number): Vec2 {
+  if (c.kind === "line") return { x: c.a.x + (c.b.x - c.a.x) * t, y: c.a.y + (c.b.y - c.a.y) * t };
+  const u = 1 - t;
+  const w0 = u * u * u, w1 = 3 * u * u * t, w2 = 3 * u * t * t, w3 = t * t * t;
+  return {
+    x: w0 * c.p0.x + w1 * c.c0.x + w2 * c.c1.x + w3 * c.p1.x,
+    y: w0 * c.p0.y + w1 * c.c0.y + w2 * c.c1.y + w3 * c.p1.y,
+  };
+}
+
+// 호장 표: 세분 폴리라인의 누적 길이. 직선은 2점으로 끝난다.
+const ARC_STEPS = 256;
+function arcTable(c: CurveDef, forceSteps?: number): { pts: Vec2[]; cum: number[] } {
+  const steps = forceSteps ?? (c.kind === "line" ? 1 : ARC_STEPS);
+  const pts: Vec2[] = [];
+  const cum: number[] = [0];
+  for (let i = 0; i <= steps; i++) pts.push(evalCurve(c, i / steps));
+  for (let i = 1; i <= steps; i++) cum.push(cum[i - 1] + Math.hypot(pts[i].x - pts[i - 1].x, pts[i].y - pts[i - 1].y));
+  return { pts, cum };
+}
+
+export function curveLength(c: CurveDef): number {
+  const { cum } = arcTable(c);
+  return cum[cum.length - 1];
+}
+
+// 호장 등간격 표본 count개(양 끝 포함). 표본이 프레임마다 흔들리면 계기의
+// 대상이 흔들리므로(§3.1 대안 기각) 여기서 한 번 뽑아 고정한다.
+export function sampleArcEqual(c: CurveDef, count: number): Vec2[] {
+  if (count < 2) throw new Error(`sampleArcEqual: count ${count} < 2`);
+  const { pts, cum } = arcTable(c);
+  const total = cum[cum.length - 1];
+  const out: Vec2[] = [];
+  let seg = 0;
+  for (let i = 0; i < count; i++) {
+    const target = (total * i) / (count - 1);
+    while (seg < cum.length - 2 && cum[seg + 1] < target) seg++;
+    const span = cum[seg + 1] - cum[seg];
+    const t = span > 1e-12 ? (target - cum[seg]) / span : 0;
+    out.push({ x: pts[seg].x + (pts[seg + 1].x - pts[seg].x) * t, y: pts[seg].y + (pts[seg + 1].y - pts[seg].y) * t });
+  }
+  return out;
+}
+
+// 크기장 밀도로 표본화 — **직선 경계 전용**. 곡선 경계(refined)는 균일
+// 8mm이지만, 직선 경계(옆선·밑단·중심선·커프)는 한쪽 끝이 경계 대역 안에
+// 들어간다(예: 옆선 위쪽 3cm는 암홀 대역). 균일 16mm로 뽑으면 그 구간에서
+// 엣지가 크기장의 2배가 되어 삼각화 품질 게이트(±30%)가 원리적으로 통과
+// 불가능해진다 — 첫 실행에서 이탈 71.6%가 정확히 그 지점(중심선 y7.7cm,
+// 소매 옆선 y8.3cm)에서 나왔다.
+export function sampleBySizeField(c: CurveDef, h: (x: number, y: number) => number): Vec2[] {
+  // 직선도 반드시 잘게 쪼갠다 — `arcTable`의 기본값은 직선을 2점으로 끝내므로
+  // 크기장을 중점 한 곳에서만 읽게 되고, 그러면 밀도가 균일해져 이 함수가
+  // 아무 일도 하지 않는다(첫 시도에서 실제로 그렇게 조용히 무효화됐다).
+  const { pts, cum } = arcTable(c, ARC_STEPS);
+  const sizeCum: number[] = [0];
+  for (let i = 1; i < pts.length; i++) {
+    const mx = (pts[i].x + pts[i - 1].x) / 2, my = (pts[i].y + pts[i - 1].y) / 2;
+    sizeCum.push(sizeCum[i - 1] + (cum[i] - cum[i - 1]) / h(mx, my));
+  }
+  const total = sizeCum[sizeCum.length - 1];
+  const count = Math.max(2, Math.round(total) + 1);
+  const out: Vec2[] = [];
+  let seg = 0;
+  for (let i = 0; i < count; i++) {
+    const target = (total * i) / (count - 1);
+    while (seg < sizeCum.length - 2 && sizeCum[seg + 1] < target) seg++;
+    const span = sizeCum[seg + 1] - sizeCum[seg];
+    const t = span > 1e-12 ? (target - sizeCum[seg]) / span : 0;
+    out.push({ x: pts[seg].x + (pts[seg + 1].x - pts[seg].x) * t, y: pts[seg].y + (pts[seg + 1].y - pts[seg].y) * t });
+  }
+  return out;
+}
+
+const seg = (name: string, curve: CurveDef, refined: boolean): PatternSegment =>
+  ({ name, curve, refined, lengthM: curveLength(curve), samples: [] });
+
+/**
+ * P12 §1 — 팔 축 호장 `sM`에서의 단면 둘레(m). 표본 사이는 선형 보간,
+ * **정의역 밖은 끝값**(외삽하지 않는다). 긴팔 소매(58cm)는 팔 폴리라인(47.1cm)보다
+ * 길어 반드시 정의역을 벗어나므로, 그 자리의 값은 P11이 정의한 「손목 = 손 직전」이다.
+ */
+export function girthAtArc(a: ArmSectionMeasure, sM: number): number | null {
+  const p = a.profile;
+  if (!p.length) return null;
+  if (sM <= p[0].sM) return p[0].girthM;
+  if (sM >= p[p.length - 1].sM) return p[p.length - 1].girthM;
+  for (let i = 0; i + 1 < p.length; i++) {
+    const q = p[i], r = p[i + 1];
+    if (sM >= q.sM && sM <= r.sM) return q.girthM + ((r.girthM - q.girthM) * (sM - q.sM)) / (r.sM - q.sM);
+  }
+  return null;
+}
+
+// ── 제도 ────────────────────────────────────────────────────────────────
+// ── **치수 규약(정본 · P3 §1 확정)** ─────────────────────────────────────────
+// 이 저장소의 옷 치수는 전부 **평면 실측(반둘레)**이다 — 옷을 눕혀 잰 값이고,
+// 완성 «둘레»는 그 2배다. 이미 이 파일과 store가 그 규약으로 쓰고 있었고
+// (`sleeveWidthM` 주석 · `useFitStore` 기본값 주석 「가슴단면(품)은 가슴둘레의
+//  절반 안팎」), P3이 그것을 정본으로 확정한다. UI 라벨 「품 55cm」 =
+// **몸판 1매 평면 폭 55cm = 완성 폐둘레 110cm**다.
+// **알려진 불일치 1건**: v1 미리보기 원통 `FitCanvas.tsx:48`은 `width/(2π)`로
+// 품을 «폐둘레»로 읽는다(반지름이 절반이 된다). v1 렌더 전용이고 이 판의
+// 정의역 밖이라 고치지 않았다 — P3 보고서 §6에 남긴다.
+export interface GarmentDims {
+  lengthM: number;        // 총장 — 목점(HPS)에서 밑단
+  widthM: number;         // 품(가슴단면) = 몸판 1매의 평면 폭 → 완성 폐둘레 = 2×이 값
+  shoulderWidthM: number; // 어깨너비 — 옷 어깨점 사이(둘레 아님 · 직선 거리)
+  sleeveLengthM: number;  // 소매길이 — 어깨점에서 소맷부리(직선 거리)
+  sleeveWidthM: number;   // 소매통(평면 실측) → 소매 둘레 = 2×이 값
+  /**
+   * P19 §2 — 커프 «밴드» 높이(m). **0이면 밴드를 만들지 않는다**(기본).
+   * 밴드는 소매길이 «안»에 든다 — 소매 원통이 `sleeveLength − band`까지 가고 밴드가
+   * 그 아래를 채운다. 그래서 슬라이더 「소매길이」의 뜻이 안 바뀐다(어깨~소맷부리 끝).
+   * **이 값은 도출이 아니다** — 저장소 안에 밴드 «높이»의 근거가 될 실측이 없다
+   * (손목 둘레도 소매통도 높이를 주지 못한다). 그래서 상수로 박지 않고 **슬라이더로** 낸다.
+   */
+  cuffBandM?: number;
+}
+
+export function draftTshirtPattern(body: BodyMeasure, g: GarmentDims): PatternDraft {
+  // ── 104 §2 1단계 — **항등 재표현**. 몸판 반폭을 「절대값」이 아니라 «몸에서» 낸다.
+  // 형식은 **같은 파일이 이미 채택한 교재 계열 그대로**다(:47 `ARMHOLE_DEPTH_CHEST_DIVISOR = 4` ·
+  // :258 진동깊이 = `B/4 + 여유`). 한 제도 안에서 폭만 다른 계열을 쓸 이유가 없다(103 §5 후보 D).
+  // B = `body.chestGirthM`(`measureBody` · 팔 제외 볼록껍질). 103 §8 ㄴ이 이 채널을 확정했다 —
+  // `garmentFitLimits`의 119.4는 «슬라이더 가슴둘레»이지 메시 실측이 아니고, 그것을 쓰면
+  // 한 제도 안에서 두 몸을 섞는다.
+  //
+  // `WIDTH_EASE_M`은 **기준선 A에서 현행값과 «항등»이 되도록 역산한 값**이다(104 §2 · 실측):
+  //   B = 0.84008920495327033 · 현행 halfWidth = 0.27500000000000002(= 0.55/2)
+  //   e = halfWidth − B/4 = **0.06497769876168244 m**  ⟹ `B/4 + e`가 현행값과 **비트 동일**
+  // 자릿수를 줄이면 항등이 깨진다 — 그래서 반올림하지 않았다.
+  //
+  // **이 회차는 e를 사전 고정으로만 둔다**(함정14 §경계선 — 결과가 나쁘면 값을 바꾸지 말고
+  // 실패로 기록). 문헌 대표값으로의 교체 여부는 §3이 판단한다.
+  //
+  // **부수 사실(등재분)**: 이 줄이 바뀌면 슬라이더 `garmentSize.width`의 의미가 «절대 폭»에서
+  // 「도출 입력 아님」으로 갈린다 — 새 경로는 `g.widthM`을 읽지 않는다. UI 라벨은 그대로다.
+  // 103 §4(d)가 등재한 「한 슬라이더 두 규약」과 **같은 자리**에 붙는 불일치다.
+  const WIDTH_CHEST_DIVISOR = 4;
+  // ── 104 §3 2단계 — **e를 사전 고정으로 채택**(함정14 §경계선).
+  // 출처 = **같은 파일 · 같은 옷 · 같은 계열**: `:49 ARMHOLE_DEPTH_EASE_M = 0.030`
+  // 「티셔츠 진동 여유 3cm — 원형은 밀착 기준이고 티셔츠는 낙낙하다」.
+  // 그 줄이 이미 「원형(밀착) 관계식 + 티셔츠 여유 3cm」를 채택했고 폭도 같은 원형
+  // 관계식(B/4)을 쓰므로 **여유도 같은 값을 쓴다**. 새 손 상수 0.
+  // 기각한 대안 = 1단계의 역산값 6.4978cm — 그것은 «항등을 위한 역산»이지 출처가 없다.
+  // **결과가 나쁘면 이 값을 바꾸지 않고 실패로 기록한다**(§경계선 조건 ②).
+  // **104 §3 결과 — 갈래 C(실패) · 원복분.** e = 0.030(3cm)을 사전 고정으로 채택해 집행했으나
+  // 배치 단계에서 **34게이트(배치 rest 보존) 위반**으로 던졌다(몸판 신장비 0.067~22.669 ·
+  // 문턱 1.000±3.33e-5 · 신장총 14841.6cm). **함정14 §경계선 조건 ②대로 값을 바꾸지 않고
+  // 실패로 기록하고 되돌린다** — 아래 값은 1단계의 «항등 역산값»이다(기준선 A 복원).
+  const WIDTH_EASE_M = 0.06497769876168244;
+  // ── P3 §1 — **품 슬라이더를 살린다**(104의 몸 도출 형식을 되돌린다).
+  //
+  // 104의 형식(`B/4 + e`)은 슬라이더를 죽였다 — 이 줄이 `g.widthM`을 안 읽으므로
+  // 「품 55cm」를 움직여도 제도가 그대로였다(P1 ①). 되돌리는 근거:
+  //  ① 104 §2는 스스로를 «항등 재표현»이라 적었고, e를 실제로 바꾼 §3 2단계는
+  //     34게이트 위반으로 **실패·원복**했다 ⟹ 몸 도출 형식이 «다른 값»을 낸 적이 없다.
+  //  ② 이 제품은 핏 «시뮬레이터»다. 옷 치수는 옷의 것이고 몸을 따라 자동으로
+  //     커지면 「이 옷이 이 몸에 맞는가」라는 질문 자체가 사라진다.
+  //  ③ 아래 값은 `0.55/2`와 **비트 동일**이다(위 104 주석의 역산이 그 항등이다).
+  //     기본 슬라이더 55cm에서 기준선 A가 그대로 나온다.
+  // **몸은 폭 말고 전부에 여전히 관여한다** — 진동깊이(`B/4 + 3cm`) · 목선(목밑둘레) ·
+  // 능선 앵커 · 외곽선. 폭만 슬라이더가 정한다.
+  // 몸이 커져 옷이 안 맞는 경우는 «착용 불가»로 보여야 할 것이고(P1 ⑤ wearable 게이트)
+  // 제도를 몰래 키워 가리는 것이 아니다.
+  void WIDTH_CHEST_DIVISOR; void WIDTH_EASE_M;
+  // 규약: `widthM` = 몸판 1매의 **평면 폭**(= 완성 폐둘레의 1/2). `GarmentDims` 주석 참고.
+  const halfWidthM = g.widthM / 2;
+  const shoulderHalfM = g.shoulderWidthM / 2;
+
+  // 목 — 목선 둘레가 목밑둘레 + 여유가 되도록 목너비를 이분법으로 푼다.
+  // 목선 곡선(중심 원점의 4분 타원)은 목너비 w와 깊이만으로 정해지고, 앞깊이는
+  // w + 1cm이므로 둘레는 w에 대해 단조 증가한다.
+  const necklineCurveFor = (w: number, dropM: number): CurveDef => ({
+    kind: "cubic",
+    p0: { x: 0, y: dropM },
+    c0: { x: KAPPA * w, y: dropM },
+    c1: { x: w, y: KAPPA * dropM },
+    p1: { x: w, y: 0 },
+  });
+  // 여유는 앞/뒤에 **호장 비율대로** 나눠 붙인다(한쪽에 몰면 배분이 다시 깨진다).
+  const easeScale = 1 + NECKLINE_EASE_M / body.neckBaseGirthM;
+  const bisect = (f: (v: number) => number, target: number): number => {
+    let lo = 1e-4, hi = 0.5;
+    for (let i = 0; i < 60; i++) {
+      const mid = (lo + hi) / 2;
+      if (f(mid) < target) lo = mid; else hi = mid;
+    }
+    return (lo + hi) / 2;
+  };
+  // 앞: 깊이가 목너비에 묶여 있으므로(앞목깊이 = 목너비 + 1cm) 목너비가 미지수.
+  const neckHalfWidthM = bisect(
+    (w) => 2 * curveLength(necklineCurveFor(w, w + FRONT_NECK_EXTRA_M)),
+    body.neckBaseFrontM * easeScale,
+  );
+  const frontNeckDropM = neckHalfWidthM + FRONT_NECK_EXTRA_M;
+  // 뒤: 목너비는 이미 정해졌으므로 깊이가 미지수.
+  const backNeckDropM = bisect(
+    (b) => 2 * curveLength(necklineCurveFor(neckHalfWidthM, b)),
+    body.neckBaseBackM * easeScale,
+  );
+
+  // 어깨 경사 — 몸 능선 상면의 실제 기울기를 목점~어깨 관절 구간에서 재고,
+  // 옷 어깨너비까지 **선형 연장**한다(옷 어깨점은 몸 관절보다 바깥일 수
+  // 있다 — 품 55/어깨 45 조합에서 실제로 4.5cm 바깥).
+  const ridgeAnchorY = body.ridgeTopYAt(neckHalfWidthM);
+  const bodyShoulderHalfM = body.shoulderSpanM / 2;
+  const shoulderSlope =
+    (ridgeAnchorY - body.ridgeTopYAt(bodyShoulderHalfM)) / Math.max(1e-6, bodyShoulderHalfM - neckHalfWidthM);
+  const shoulderDropM = shoulderSlope * (shoulderHalfM - neckHalfWidthM);
+
+  // 진동깊이 — 몸 가슴둘레에서 도출 + 티셔츠 여유.
+  const armholeDepthM = body.chestGirthM / ARMHOLE_DEPTH_CHEST_DIVISOR + ARMHOLE_DEPTH_EASE_M;
+
+  const neckPoint: Vec2 = { x: neckHalfWidthM, y: 0 };
+  const shoulderPoint: Vec2 = { x: shoulderHalfM, y: shoulderDropM };
+  const underarmPoint: Vec2 = { x: halfWidthM, y: armholeDepthM };
+  const hemOut: Vec2 = { x: halfWidthM, y: g.lengthM };
+  const hemCenter: Vec2 = { x: 0, y: g.lengthM };
+
+  // 암홀 곡선 — 어깨선 수직 출발 + 옆선 접선 도착(위 상수 주석).
+  const armholeCurve = (): CurveDef => {
+    const dx = shoulderPoint.x - neckPoint.x, dy = shoulderPoint.y - neckPoint.y;
+    const sl = Math.hypot(dx, dy) || 1;
+    // 어깨선에 수직이면서 패널 안쪽(아래)을 향하는 단위벡터.
+    const nx = -dy / sl, ny = dx / sl;
+    const chord = Math.hypot(underarmPoint.x - shoulderPoint.x, underarmPoint.y - shoulderPoint.y);
+    return {
+      kind: "cubic",
+      p0: shoulderPoint,
+      c0: { x: shoulderPoint.x + nx * ARMHOLE_TANGENT_SHOULDER * chord, y: shoulderPoint.y + ny * ARMHOLE_TANGENT_SHOULDER * chord },
+      c1: { x: underarmPoint.x, y: underarmPoint.y - ARMHOLE_TANGENT_UNDERARM * chord },
+      p1: underarmPoint,
+    };
+  };
+
+  // 목선 곡선 — 중심(0,0)을 중심으로 하는 4분 타원(반축 목너비 × 목깊이).
+  const necklineCurve = (dropM: number): CurveDef => necklineCurveFor(neckHalfWidthM, dropM);
+
+  const torsoPanel = (name: "front" | "back", dropM: number): PatternPanel => ({
+    name,
+    halfWithMirrorAxis: true,
+    segments: [
+      seg("neck", necklineCurve(dropM), true),
+      seg("shoulder", { kind: "line", a: neckPoint, b: shoulderPoint }, true),
+      seg("armhole", armholeCurve(), true),
+      seg("side", { kind: "line", a: underarmPoint, b: hemOut }, false),
+      seg("hem", { kind: "line", a: hemOut, b: hemCenter }, false),
+      seg("center", { kind: "line", a: hemCenter, b: { x: 0, y: dropM } }, false),
+    ],
+  });
+
+  const front = torsoPanel("front", frontNeckDropM);
+  const back = torsoPanel("back", backNeckDropM);
+
+  // 암홀 둘레(한쪽) = 앞 암홀 + 뒤 암홀. 두 곡선은 형상 상수가 같아 길이도
+  // 같다(앞뒤 암홀 차등은 이 단계 범위 밖 — §3.1은 목선 깊이 차만 요구).
+  const armholeGirthM =
+    front.segments[2].lengthM + back.segments[2].lengthM;
+
+  // ── 소매산: "walking the sleeve". 표준 삼각 공식은 **직선** 대각을 주므로
+  // 실제로 그린 S곡선의 호장은 그보다 길다. 삼각 공식값을 초깃값으로 두고,
+  // 그린 곡선의 총 호장이 (암홀 둘레 + 이즈)와 같아지도록 캡 높이를 이분법
+  // 으로 내린다 — 실제 패턴 작업의 "소매 걷기" 보정 그대로.
+  const base = g.sleeveWidthM;
+  const hyp = (armholeGirthM + SLEEVE_CAP_EASE_M) / 2;
+  const capHeightTriangleM = hyp > base ? Math.sqrt(hyp * hyp - base * base) : NaN;
+  const capCurveFor = (ch: number): CurveDef => ({
+    kind: "cubic",
+    p0: { x: 0, y: 0 },
+    c0: { x: CAP_TANGENT_APEX * base, y: 0 },
+    c1: { x: base, y: ch - CAP_TANGENT_UNDERARM * ch },
+    p1: { x: base, y: ch },
+  });
+  const capHalfTarget = (armholeGirthM + SLEEVE_CAP_EASE_M) / 2;
+  let lo = 1e-4, hi = Math.max(hyp, base) * 2;
+  for (let i = 0; i < 60; i++) {
+    const mid = (lo + hi) / 2;
+    if (curveLength(capCurveFor(mid)) < capHalfTarget) lo = mid; else hi = mid;
+  }
+  const capHeightM = (lo + hi) / 2;
+  const capFront = capCurveFor(capHeightM);
+  const capGirthM = 2 * curveLength(capFront);
+  // P19 §2 — 밴드는 소매길이 **안**에 든다. 원통은 `sleeveLength − band`까지만 간다.
+  const cuffBandM = Math.max(0, g.cuffBandM ?? 0);
+  const underSleeveM = g.sleeveLengthM - capHeightM - cuffBandM;
+
+  const cuffY = capHeightM + underSleeveM;
+  // ── P12 §1 — **소맷부리 테이퍼.** 소맷부리 둘레를 팔 실측에서 도출한다(새 손 상수 0).
+  //
+  //   커프 반폭 = (팔 축 수직 단면 둘레(호장 = cuffY) + ARMHOLE_ARM_CLEARANCE_M) / 2
+  //   소매 반폭(y) = base + (커프반폭 − base)·(y − capHeight)/(cuffY − capHeight)   ← **직선**
+  //
+  // · ~~여유는 `ARMHOLE_ARM_CLEARANCE_M`(2.00cm)를 재사용한다~~ → **P13이 교체했다**(아래).
+  // · 호장은 **패턴 y 그대로**다 — 배치가 `trueShoulder + d·y`로 놓으므로(`patternGarment`
+  //   소매 절) 패턴 y가 곧 팔 축 거리다. 그래서 **타입 분기가 없다**: 반팔은 y=22cm(위팔),
+  //   긴팔은 y=58cm(정의역 밖 → 끝값 = 손목)를 각자 알아서 집는다.
+  // · **직선인 이유**(「팔을 따라가는 것이 기본」 조항에 대한 답): 캡 쪽 끝은 암홀↔소매산
+  //   이즈 이분법이 `base`로 못박고 있어 프로파일 값(반폭 14.62cm)으로 내릴 수 없다.
+  //   즉 이 구간은 팔을 «따라가는» 곡선이 아니라 **두 구속 사이의 전이**다. 직선이
+  //   프로파일 추종보다 항상 «느슨한» 쪽이고(반폭 최대 +3.41cm@y12.3), 실측 최소 여유가
+  //   반팔 2.11cm@y21.8 · 긴팔 2.08cm@y57.8로 **전 구간에서 여유 이상**이다(끼임 0).
+  // · 팔 실측이 없으면(P10 이전 커밋 fixture · 전신 인덱스 없음) `base` 그대로 = **직통 원통**
+  //   이고 그 경로는 **비트 동일**이다. ⟹ Node 하네스는 종전 옷을 계속 돈다(P12 §4에 등재).
+  // ── P13 §1 — **소맷부리 «여유»의 도출을 교체한다.**
+  //
+  //   소맷부리 여유 = 2·base − (capHeight 자리 팔 축 단면 둘레)      ← 소매산이 «이미 가진» 여유
+  //   커프 반폭     = (cuffY 자리 팔 둘레 + 위 여유) / 2
+  //
+  // **왜 바꾸나**: P12는 `ARMHOLE_ARM_CLEARANCE_M`을 썼는데 그 상수는 「**암홀** ≥ 팔 + 여유」의
+  // **통과 여유**다. 소맷부리는 통과 제약이 아니라 **드레이프 요소**이고, 같은 상수를 다른
+  // 목적에 쓰면 한 이름이 두 규약을 지게 된다(함정 13 계열). 실제 후퇴도 났다 —
+  // 여유가 상수로 고정되니 **소매통 슬라이더가 소맷부리에 도달하지 못했다**(P12가 라벨을
+  // 「소매통(위)」로 바꾼 것이 그 증상이다).
+  //
+  // 새 식은 **소매산에서 옷이 이미 갖고 있는 여유를 소맷부리까지 유지**한다.
+  // ⟹ 슬라이더(=`base`)가 소맷부리를 **1:1로 지배**한다(둘레 기준 d(소맷부리)/d(2·base) = 1).
+  // **새 상수 0 · 타입 분기 0 · 새 규칙 0**(정의역 밖 끝값 규칙은 P12 §1-2 그대로).
+  //
+  // **하한**: 여유가 음수가 될 수 있다(슬라이더 최소 10cm ⟹ 2·base = 20cm < 캡 자리 팔 27.2cm).
+  // 그때는 `ARMHOLE_ARM_CLEARANCE_M`을 하한으로 쓴다 — **그 상수의 본래 용도**(팔이 통과할
+  // 최소 여유)에 정확히 해당하는 자리다.
+  const cuffGirthM = body.armSection ? girthAtArc(body.armSection, cuffY) : null;
+  const capArmGirthM = body.armSection ? girthAtArc(body.armSection, capHeightM) : null;
+  const cuffEaseM = capArmGirthM === null ? null : Math.max(2 * base - capArmGirthM, ARMHOLE_ARM_CLEARANCE_M);
+  const cuffHalfM = cuffGirthM === null || cuffEaseM === null ? base : (cuffGirthM + cuffEaseM) / 2;
+  const sleeve: PatternPanel = {
+    name: "sleeve",
+    halfWithMirrorAxis: false,
+    segments: [
+      seg("capFront", capFront, true),
+      seg("underFront", { kind: "line", a: { x: base, y: capHeightM }, b: { x: cuffHalfM, y: cuffY } }, false),
+      seg("cuff", { kind: "line", a: { x: cuffHalfM, y: cuffY }, b: { x: -cuffHalfM, y: cuffY } }, false),
+      seg("underBack", { kind: "line", a: { x: -cuffHalfM, y: cuffY }, b: { x: -base, y: capHeightM } }, false),
+      // capFront의 x 반전 + 방향 반전(겨드랑이 → 정점).
+      seg("capBack", {
+        kind: "cubic",
+        p0: { x: -base, y: capHeightM },
+        c0: { x: -base, y: capHeightM - CAP_TANGENT_UNDERARM * capHeightM },
+        c1: { x: -CAP_TANGENT_APEX * base, y: 0 },
+        p1: { x: 0, y: 0 },
+      }, true),
+    ],
+  };
+
+  const necklineGirthM = 2 * (front.segments[0].lengthM + back.segments[0].lengthM);
+
+  // ── P19 §2 — **커프 밴드 패널**(단층). 접어 박는 이중층은 만들지 않는다 —
+  // 접힘은 양안정이라 물리로 강제할 층이 따로 필요하고, 위상도 한 단계 더 복잡해진다.
+  // 단층 밴드로 「소맷부리가 마감된다」는 목적은 달성된다.
+  // 둘레는 **소맷부리 둘레 그대로**다(P13 도출식 · 새 상수 0). 높이만 슬라이더에서 온다.
+  const bandPanel: PatternPanel | null = cuffBandM > 0 ? {
+    name: "cuff",
+    halfWithMirrorAxis: false,
+    segments: [
+      // 윗변 — 소매의 `cuff` 세그먼트와 **같은 방향**(+x → −x)이라 시접이 정방향으로 짝난다.
+      seg("bandTop", { kind: "line", a: { x: cuffHalfM, y: cuffY }, b: { x: -cuffHalfM, y: cuffY } }, false),
+      seg("bandLeft", { kind: "line", a: { x: -cuffHalfM, y: cuffY }, b: { x: -cuffHalfM, y: cuffY + cuffBandM } }, false),
+      seg("bandBottom", { kind: "line", a: { x: -cuffHalfM, y: cuffY + cuffBandM }, b: { x: cuffHalfM, y: cuffY + cuffBandM } }, false),
+      seg("bandRight", { kind: "line", a: { x: cuffHalfM, y: cuffY + cuffBandM }, b: { x: cuffHalfM, y: cuffY } }, false),
+    ],
+  } : null;
+
+  const seams: SeamSpec[] = [
+    { kind: "shoulder", a: { panel: "front", segment: "shoulder" }, b: { panel: "back", segment: "shoulder" }, reverseB: false },
+    { kind: "side", a: { panel: "front", segment: "side" }, b: { panel: "back", segment: "side" }, reverseB: false },
+    // 앞 암홀(어깨점→겨드랑이) ↔ 소매산 앞(정점→겨드랑이): 같은 방향.
+    { kind: "armhole", a: { panel: "front", segment: "armhole" }, b: { panel: "sleeve", segment: "capFront" }, reverseB: false },
+    // 뒤 암홀(어깨점→겨드랑이) ↔ 소매산 뒤(겨드랑이→정점): 반대 방향.
+    { kind: "armhole", a: { panel: "back", segment: "armhole" }, b: { panel: "sleeve", segment: "capBack" }, reverseB: true },
+    // 소매 안쪽 시접(통 닫기): underFront(위→아래) ↔ underBack(아래→위).
+    { kind: "sleeveUnder", a: { panel: "sleeve", segment: "underFront" }, b: { panel: "sleeve", segment: "underBack" }, reverseB: true },
+    // P19 §2 — 밴드 시접 2벌. 시접 규칙은 **기존 그대로**(rest 6.00mm · limitStrain 1.2 · 새 문턱 0).
+    //  ① 소매 소맷부리 ↔ 밴드 윗변(같은 방향)
+    //  ② 밴드 통 닫기: 오른변(아래→위) ↔ 왼변(위→아래) — `sleeveUnder`와 같은 형태
+    ...(bandPanel ? [
+      { kind: "cuff", a: { panel: "sleeve", segment: "cuff" }, b: { panel: "cuff", segment: "bandTop" }, reverseB: false },
+      { kind: "cuff", a: { panel: "cuff", segment: "bandRight" }, b: { panel: "cuff", segment: "bandLeft" }, reverseB: true },
+    ] as SeamSpec[] : []),
+  ];
+
+  return {
+    panels: bandPanel ? [front, back, sleeve, bandPanel] : [front, back, sleeve],
+    seams,
+    dims: {
+      chestGirthM: body.chestGirthM, neckGirthM: body.neckGirthM,
+      neckBaseGirthM: body.neckBaseGirthM, neckBaseY: body.neckBaseY,
+      neckBaseFrontM: body.neckBaseFrontM, neckBaseBackM: body.neckBaseBackM,
+      shoulderPassGirthM: body.shoulderPassGirthM,
+      ridgeAnchorY, shoulderSlope,
+      lengthM: g.lengthM, halfWidthM, shoulderHalfM,
+      sleeveLengthM: g.sleeveLengthM, sleeveHalfWidthM: base,
+      neckHalfWidthM, frontNeckDropM, backNeckDropM,
+      shoulderDropM, shoulderSeamM: front.segments[1].lengthM,
+      armholeDepthM, armholeGirthM,
+      capHeightM, capHeightTriangleM, capGirthM,
+      underSleeveM, necklineGirthM,
+      // 팔 둘레·소매 튜브 반경 — 소매 여유 판정용. 튜브 반경은 v1
+      // `computeArmTubeRadius`(= 소매통/π)와 **같은 식**이라 소매 둘레가
+      // 2×소매통이라는 규약이 여기서도 동일하다.
+      //
+      // P11 §2 — `armGirthM`은 **하드코딩 0이었다**. 이제 팔 축 수직 단면의 **최대** 둘레를
+      // 싣는다(`bodyMeasure.measureArmSection` · 표면 교선 포락선). 최대인 이유: 이 값의
+      // 용도(`checkDraft`의 암홀 통과·소매통 게이트)에서 구속하는 것은 중간값이 아니라
+      // 가장 굵은 자리다. 팔꿈치·손 좌표가 없는 fixture(P10 이전 판본)에서는 산출 불가라
+      // **0 그대로**다 — 그 경로는 비트 동일이다.
+      armGirthM: body.armSection?.maxSectionGirthM ?? 0,
+      sleeveTubeRadiusM: g.sleeveWidthM / Math.PI,
+      cuffHalfWidthM: cuffHalfM, cuffArmGirthM: cuffGirthM,
+      cuffYM: cuffY, cuffBandM,
+      cuffEaseM, capArmGirthM,
+    },
+  };
+}
+
+// ── 패턴 수치 자기검사 (2a 정지 조건: 기하 모순이면 여기서 멈춘다) ──────
+export interface DraftCheck {
+  name: string;
+  ok: boolean;
+  detail: string;
+}
+
+export function checkDraft(d: PatternDraft, armGirthM: number): DraftCheck[] {
+  const cm = (v: number): string => (v * 100).toFixed(2);
+  const front = d.panels[0], back = d.panels[1];
+  const out: DraftCheck[] = [];
+  const push = (name: string, ok: boolean, detail: string): void => { out.push({ name, ok, detail }); };
+
+  const sf = front.segments[1].lengthM, sb = back.segments[1].lengthM;
+  push("어깨선 길이 앞=뒤", Math.abs(sf - sb) < 1e-9, `앞 ${cm(sf)}cm / 뒤 ${cm(sb)}cm / 차 ${((sf - sb) * 1000).toFixed(6)}mm`);
+
+  const ease = d.dims.capGirthM - d.dims.armholeGirthM;
+  push(
+    "암홀 둘레 vs 소매산 둘레(이즈 명시)",
+    Math.abs(ease - 0.03) < 1e-4,
+    `암홀 ${cm(d.dims.armholeGirthM)}cm / 소매산 ${cm(d.dims.capGirthM)}cm / 이즈 ${cm(ease)}cm(목표 3.00cm)`,
+  );
+
+  // 하한은 **목밑**이어야 한다 — 목선이 넘어가는 곳은 목 기둥이 아니라 목밑이고,
+  // 목 기둥 기준으로는 통과하면서 목밑에서 23% 모자란 상태가 9회차까지의 배치
+  // 불가능 원인이었다. 목 기둥 값은 참고로 병기한다.
+  push(
+    "목선 둘레 하한(몸 목밑 폐곡선)",
+    d.dims.necklineGirthM > d.dims.neckBaseGirthM,
+    `목선 ${cm(d.dims.necklineGirthM)}cm > 몸 목밑 ${cm(d.dims.neckBaseGirthM)}cm@y${cm(d.dims.neckBaseY)} (여유 ${cm(d.dims.necklineGirthM - d.dims.neckBaseGirthM)}cm) · [참고] 목 기둥 최소 단면 ${cm(d.dims.neckGirthM)}cm`,
+  );
+  push(
+    "목선 둘레 상한(어깨 통과 단면 — v1 96.2<106.7 재도출)",
+    d.dims.necklineGirthM < d.dims.shoulderPassGirthM,
+    `목선 ${cm(d.dims.necklineGirthM)}cm < 어깨 통과 ${cm(d.dims.shoulderPassGirthM)}cm (필요 신장 ${(((d.dims.shoulderPassGirthM / d.dims.necklineGirthM) - 1) * 100).toFixed(1)}%)`,
+  );
+
+  // 앞/뒤 **배분** — 총 둘레가 맞아도 배분이 어긋나면 목선이 몸의 목밑을 한쪽만
+  // 파고든다. 배치의 반곡선 이분법이 한쪽만 포화하는 것이 그 증상이다.
+  {
+    const fp = 2 * front.segments[0].lengthM, bp = 2 * back.segments[0].lengthM;
+    const fb = d.dims.neckBaseFrontM, bb = d.dims.neckBaseBackM;
+    // 여유는 앞/뒤에 비례 배분되므로 절대 길이가 아니라 **몫**을 본다.
+    const share = fp / (fp + bp), bodyShare = fb / (fb + bb);
+    push(
+      "목선 앞/뒤 배분 = 몸 목밑 앞/뒤 배분",
+      Math.abs(share - bodyShare) <= 0.02,
+      `목선 앞 ${cm(fp)} / 뒤 ${cm(bp)}cm (앞 몫 ${(share * 100).toFixed(2)}%) vs 몸 목밑 앞 ${cm(fb)} / 뒤 ${cm(bb)}cm (앞 몫 ${(bodyShare * 100).toFixed(2)}%) · 차 ${((share - bodyShare) * 100).toFixed(2)}pp (허용 2.00pp) · 뒤목깊이 ${cm(d.dims.backNeckDropM)}cm(도출)`,
+    );
+  }
+
+  push(
+    "앞목깊이 > 뒤목깊이",
+    d.dims.frontNeckDropM > d.dims.backNeckDropM,
+    `앞 ${cm(d.dims.frontNeckDropM)}cm / 뒤 ${cm(d.dims.backNeckDropM)}cm`,
+  );
+
+  push(
+    "암홀 둘레 ≥ 팔 둘레 + 여유",
+    d.dims.armholeGirthM >= armGirthM + ARMHOLE_ARM_CLEARANCE_M,
+    `암홀 ${cm(d.dims.armholeGirthM)}cm vs 팔 ${cm(armGirthM)}cm + ${cm(ARMHOLE_ARM_CLEARANCE_M)}cm`,
+  );
+
+  push(
+    "소매길이 > 소매산 높이(소매 하부 > 0)",
+    d.dims.underSleeveM > 0,
+    `소매길이 ${cm(d.dims.sleeveLengthM)}cm − 캡 ${cm(d.dims.capHeightM)}cm = 하부 ${cm(d.dims.underSleeveM)}cm (삼각공식 초깃값 ${cm(d.dims.capHeightTriangleM)}cm, 곡선 보정 −${cm(d.dims.capHeightTriangleM - d.dims.capHeightM)}cm)`,
+  );
+
+  push(
+    "몸판 반폭 ≥ 어깨 반폭",
+    d.dims.halfWidthM >= d.dims.shoulderHalfM,
+    `반폭 ${cm(d.dims.halfWidthM)}cm / 어깨 반폭 ${cm(d.dims.shoulderHalfM)}cm`,
+  );
+  push(
+    "목너비 < 어깨 반폭",
+    d.dims.neckHalfWidthM < d.dims.shoulderHalfM,
+    `목너비 ${cm(d.dims.neckHalfWidthM)}cm / 어깨 반폭 ${cm(d.dims.shoulderHalfM)}cm`,
+  );
+  // P12 §2 — 테이퍼 뒤로 「소매 둘레」가 한 수가 아니다. `sleeveHalfWidthM`은
+  // **소매산 쪽**(암홀에 붙는 끝)이고 이 게이트가 보는 것도 그쪽이다 — 팔이 소매에
+  // «들어가는» 자리이므로 게이트의 의미는 그대로 유효하다. 이름만 정확히 하고,
+  // 소맷부리 값은 **참고로 병기**한다(문턱 추가 0 · 판정 대상 불변).
+  push(
+    "소매산 쪽 소매 둘레 > 팔 둘레",
+    2 * d.dims.sleeveHalfWidthM > armGirthM,
+    `소매산 쪽 ${cm(2 * d.dims.sleeveHalfWidthM)}cm / 팔 둘레 ${cm(armGirthM)}cm` +
+    ` · [참고] 소맷부리 ${cm(2 * d.dims.cuffHalfWidthM)}cm vs 그 자리 팔 ${d.dims.cuffArmGirthM === null ? "산출불가" : cm(d.dims.cuffArmGirthM) + "cm"}` +
+    ` · 소맷부리 여유 ${d.dims.cuffEaseM === null ? "산출불가" : cm(d.dims.cuffEaseM) + "cm"}(캡 자리 팔 ${d.dims.capArmGirthM === null ? "산출불가" : cm(d.dims.capArmGirthM) + "cm"})`,
+  );
+
+  // 루프 닫힘 — 인접 세그먼트 끝점이 실제로 같은 점인가(제도 버그 탐지).
+  for (const p of d.panels) {
+    let maxGap = 0;
+    for (let i = 0; i < p.segments.length; i++) {
+      const cur = p.segments[i].curve;
+      const nxt = p.segments[(i + 1) % p.segments.length].curve;
+      const e = cur.kind === "line" ? cur.b : cur.p1;
+      const s = nxt.kind === "line" ? nxt.a : nxt.p0;
+      maxGap = Math.max(maxGap, Math.hypot(e.x - s.x, e.y - s.y));
+    }
+    push(`루프 닫힘(${p.name})`, maxGap < 1e-12, `최대 끝점 간극 ${(maxGap * 1000).toFixed(9)}mm`);
+  }
+
+  return out;
+}

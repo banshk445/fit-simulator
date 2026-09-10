@@ -1,0 +1,16 @@
+{
+ "A": "gpu\\oracle\\export\\l3cb2-c100-h170-s45_M-all-f64-cuda-conv.bin",
+ "B": "gpu\\oracle\\export\\l3conv-v3-c100-h170-s45_M-f80.bin",
+ "n": 9388,
+ "bytesIdentical": false,
+ "maxVertexMm": 4.186408662971511,
+ "medVertexMm": 0.011973804451071003,
+ "p99VertexMm": 0.43946862040177526,
+ "maxCoordMm": 4.088414964200468,
+ "maxAt": 7693,
+ "meanShiftMm": [
+  0.00042737916514726346,
+  -0.0044666982314542185,
+  0.004057207790007535
+ ]
+}

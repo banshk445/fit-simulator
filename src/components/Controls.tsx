@@ -4,6 +4,13 @@ import { useFitStore } from "../store/useFitStore";
 import { FABRIC_PRESETS, type FabricType } from "../lib/fabricPresets";
 import { cropToGarmentRegion } from "../lib/garmentSegmentation";
 import { checkGarmentFit } from "../lib/garmentFitLimits";
+import { mannequinBonesRef } from "../lib/mannequinRef";
+import { PIN_MIN_CLEARANCE } from "../lib/shoulderPin";
+import * as THREE from "three";
+
+// P15 §1 — 어깨 관절 좌표 조회용 스크래치(할당 0).
+const pinProbeL = new THREE.Vector3();
+const pinProbeR = new THREE.Vector3();
 
 function Slider({
   label,
@@ -57,6 +64,7 @@ export function Controls() {
   const setGarmentShoulderWidth = useFitStore((s) => s.setGarmentShoulderWidth);
   const setGarmentSleeveLength = useFitStore((s) => s.setGarmentSleeveLength);
   const setGarmentSleeveWidth = useFitStore((s) => s.setGarmentSleeveWidth);
+  const setGarmentCuffBand = useFitStore((s) => s.setGarmentCuffBand);
   const garmentImage = useFitStore((s) => s.garmentImage);
   const setGarmentImage = useFitStore((s) => s.setGarmentImage);
   const fabric = useFitStore((s) => s.fabric);
@@ -96,8 +104,10 @@ export function Controls() {
       // 모델이 옷을 입고 찍은 라이프스타일 사진이면 배경/얼굴을 걷어내고
       // 옷 영역 위주로 잘라낸다(플랫레이 상품샷은 자를 배경이 없어 그대로
       // 반환됨) — garmentSegmentation.ts 참고.
-      const url = await cropToGarmentRegion(file);
-      setGarmentImage(url);
+      // P32 §1 — 옷 박스를 함께 받아 store에 싣는다. null이면 프린트 배치가
+      // 종전 상수 경로로 떨어진다(폴백의 폴백).
+      const { url, garment } = await cropToGarmentRegion(file);
+      setGarmentImage(url, garment);
     } catch {
       // 세그멘테이션이 실패해도 원본 이미지는 그대로 쓸 수 있게 폴백한다.
       setGarmentImage(URL.createObjectURL(file));
@@ -119,8 +129,9 @@ export function Controls() {
         <Slider label="가슴둘레" value={bodySize.chest} min={70} max={140} onChange={setBodyChest} />
         <Slider label="팔 길이" value={bodySize.armLength} min={40} max={80} onChange={setArmLength} />
         <Slider label="다리 길이" value={bodySize.legLength} min={60} max={110} onChange={setLegLength} />
+        {/* P15 §2 — 옷 쪽에도 「어깨너비」가 있어 화면에서 구별이 안 됐다. 둘 다 꼬리표를 단다. */}
         <Slider
-          label="어깨너비"
+          label="어깨너비(몸)"
           value={bodySize.shoulderWidth}
           min={35}
           max={55}
@@ -195,13 +206,35 @@ export function Controls() {
 
         <Slider label="총장" value={garmentSize.length} min={40} max={120} onChange={setGarmentLength} />
         <Slider label="품" value={garmentSize.width} min={35} max={90} onChange={setGarmentWidth} />
+        {/* P15 §2 — 「어깨너비(옷)」. 규약: 품·소매통과 달리 **반둘레가 아니라 어깨점 사이
+            직선 거리 전체**다(`patternDraft.ts` `shoulderWidthM` 주석). 45cm = 어깨점 간격 45cm. */}
         <Slider
-          label="어깨너비"
+          label="어깨너비(옷)"
           value={garmentSize.shoulderWidth}
           min={30}
           max={70}
           onChange={setGarmentShoulderWidth}
         />
+        {/* P15 §1 — **하한 클램프를 화면에 드러낸다.** 어깨 핀은 몸 어깨 «관절» 안으로
+            들어갈 수 없어(`computeShoulderPin`의 `PIN_MIN_CLEARANCE`) 그보다 좁은 입력은
+            조용히 삼켜진다. 실측: 몸 어깨 45cm에서 하한 37.99cm ⟹ 30~38cm 구간이 죽어 있었다.
+            **물리는 한 줄도 안 바꾼다** — 이미 일어나던 일을 «보이게» 할 뿐이다. */}
+        {(() => {
+          const b = mannequinBonesRef.current;
+          if (!b.left || !b.right) return null;
+          b.left.updateWorldMatrix(true, false);
+          b.right.updateWorldMatrix(true, false);
+          b.left.getWorldPosition(pinProbeL);
+          b.right.getWorldPosition(pinProbeR);
+          const floorCm = 100 * (pinProbeL.distanceTo(pinProbeR) + 2 * PIN_MIN_CLEARANCE);
+          if (!(garmentSize.shoulderWidth < floorCm - 1e-6)) return null;
+          return (
+            <div className="-mt-3 mb-4 text-xs text-amber-300">
+              실제 적용 <b>{floorCm.toFixed(1)}cm</b> — 이보다 좁게는 못 준다(어깨 관절 + 여유 1cm).
+              더 좁히려면 «어깨너비(몸)»을 줄이세요.
+            </div>
+          );
+        })()}
 
         <div className="mb-1 text-sm text-slate-300">소매</div>
         <div className="mb-4 grid grid-cols-2 gap-1.5">
@@ -236,6 +269,10 @@ export function Controls() {
           max={sleeveType === "short" ? 35 : 75}
           onChange={setGarmentSleeveLength}
         />
+        {/* P13 §2 — 라벨을 「소매통」으로 **되돌린다**. P12는 여유가 상수라 슬라이더가
+            소맷부리에 도달하지 못해 「(위)」를 달았는데, P13이 여유를 «2·base − 캡 자리 팔»로
+            바꾸면서 슬라이더가 소맷부리를 1:1로 지배한다(실측: 10cm→26.36 / 18cm→33.19 /
+            35cm→64.34). 다시 소매 전체를 지배하므로 「소매통」이 정확한 이름이다. */}
         <Slider
           label="소매통"
           value={garmentSize.sleeveWidth}
@@ -243,6 +280,21 @@ export function Controls() {
           max={35}
           onChange={setGarmentSleeveWidth}
         />
+
+        {/* P19 §2 — **커프 밴드.** 0이면 밴드가 없다(기본). 소매 타입으로 «가르지 않는다» —
+            분기가 아니라 옵션이다(P13이 지킨 「타입 분기 0」과 같은 계열).
+            높이는 **도출값이 아니다** — 저장소 안에 근거가 될 실측이 없어 치수로 낸다.
+            밴드는 소매길이 «안»에 든다(소매길이 22cm의 뜻이 안 바뀐다). */}
+        <Slider
+          label="커프 밴드"
+          value={garmentSize.cuffBand}
+          min={0}
+          max={10}
+          onChange={setGarmentCuffBand}
+        />
+        {garmentSize.cuffBand === 0 && (
+          <div className="-mt-3 mb-4 text-xs text-slate-400">0 = 밴드 없음 · 소맷부리가 열린 채로 끝난다</div>
+        )}
 
         <div className="mb-1 text-sm text-slate-300">원단</div>
         <div className="grid grid-cols-4 gap-1.5">
@@ -273,24 +325,34 @@ export function Controls() {
           />
           <span>핏 맵</span>
         </label>
+        {/* P17 §2 — 범례를 **실제 경계에 맞춘다.** 옛 문구(관통/타이트/적정/헐렁)는 v1의
+            0/1/3cm 눈대중 스케일이었고 v2 화면에는 그 색이 아예 안 입혀지고 있었다.
+            지금 색은 핏 리포트와 **같은 술어·같은 경계**(흡착 margin 15.0mm)를 쓴다 —
+            표와 색이 다른 것을 말하지 않는다. 회색은 «부호거리 산출 불가»이고
+            **없는 값을 색으로 지어내지 않는다**는 뜻이다. */}
         {showFitMap && (
-          <div className="mt-3 flex flex-wrap gap-x-4 gap-y-1.5 text-xs text-slate-300">
-            <span className="flex items-center gap-1.5">
-              <span className="h-3 w-3 rounded-full" style={{ backgroundColor: "#8c00d9" }} />
-              관통(디버그)
-            </span>
-            <span className="flex items-center gap-1.5">
-              <span className="h-3 w-3 rounded-full" style={{ backgroundColor: "#d92626" }} />
-              타이트
-            </span>
-            <span className="flex items-center gap-1.5">
-              <span className="h-3 w-3 rounded-full" style={{ backgroundColor: "#f2d91a" }} />
-              적정
-            </span>
-            <span className="flex items-center gap-1.5">
-              <span className="h-3 w-3 rounded-full" style={{ backgroundColor: "#2673f2" }} />
-              헐렁
-            </span>
+          <div className="mt-3 space-y-1.5 text-xs text-slate-300">
+            <div className="flex flex-wrap gap-x-4 gap-y-1.5">
+              <span className="flex items-center gap-1.5">
+                <span className="h-3 w-3 rounded-full" style={{ backgroundColor: "#e64047" }} />
+                눌림 (≤ 0mm)
+              </span>
+              <span className="flex items-center gap-1.5">
+                <span className="h-3 w-3 rounded-full" style={{ backgroundColor: "#f2c733" }} />
+                밀착 (≤ 15.0mm)
+              </span>
+              <span className="flex items-center gap-1.5">
+                <span className="h-3 w-3 rounded-full" style={{ backgroundColor: "#478ceb" }} />
+                여유 (&gt; 15.0mm)
+              </span>
+              <span className="flex items-center gap-1.5">
+                <span className="h-3 w-3 rounded-full" style={{ backgroundColor: "#8c8c94" }} />
+                산출 불가
+              </span>
+            </div>
+            <div className="text-slate-400">
+              옷↔몸 간극 · 경계는 핏 리포트와 같다(흡착 margin). <b>«착장하기»를 눌러야 색이 입혀진다.</b>
+            </div>
           </div>
         )}
       </section>

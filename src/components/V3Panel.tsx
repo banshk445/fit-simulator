@@ -1,0 +1,916 @@
+/* v3-35 §1·§3 — v3 착장의 «별도 진입». `?v3=1` 일 때만 뜬다.
+ *
+ * 제품 기본 경로는 **여전히 v2**다(회차 프롬프트 금지 조항). 이 패널은 v3 코어를
+ * 워커에서 돌려 결과를 그리고, §3 UX 4요건(진행률 · 취소 · 백그라운드 완주 · 실패 고지)을
+ * 값으로 확인할 수 있게 한다. 물리·조립은 한 줄도 여기 없다.
+ */
+import { useCallback, useEffect, useRef, useState } from "react";
+import { render as rasterize, VIEWS, type Mesh } from "../v3/raster.ts";
+import { renderProduct, PRODUCT_VIEWS } from "../v3/productView.ts";
+import { withBridge } from "../v3/seamBridge.ts";
+/* v3-52 §1-4 — 핏 리포트 «표시»만 한다(계산은 워커의 `fitReport.ts`). */
+import type { FitReportResult } from "../v3/fitReport.ts";
+/* v3-67 §1 — 표·범례 마크업은 «공유»한다(제품 화면과 두 벌 쓰지 않는다). */
+import { FitLegend, FitReportTable } from "./FitReportTable.tsx";
+/* v3-59 §3 — 프린트 UV(정규화 층)와 패널 분리 렌더. **표시 전용 · 물리 0프레임.** */
+import { buildPrintUv, type PrintUv } from "../v3/printUv.ts";
+import { CanvasTexture, SRGBColorSpace, type Object3D, type Texture } from "three";
+/* v3-60 §1 — 프린트 «합성 층»(대표색 + 가슴 프린트). v2 계약 문언 준거 · 코드 임포트 0. */
+import { compositePrint, type CompositeResult } from "../v3/printComposite.ts";
+/* v3-70 §1-③ — **몸 주입 연결부**(계기). ★ **G1 경계 «명시»**: 이 임포트는 `src/lib/mannequinRef`
+ * (v2 자산)를 «참조»한다. 살아있는 마네킹은 v2 씬에만 있고, 본 스케일 재구현은 §0-B ① 이 기각했다.
+ * **V3Panel 자체가 «하네스·플래그 전용»**(v3-67 §0-3 분류)이므로 «제품 경로»는 오염되지 않는다 —
+ * **제품 경로(`src/v3/**` · `V3Product` · `FitReportTable`)의 v2 임포트는 여전히 0건**이고,
+ * 그 사실을 §2-㉱ 가 값으로 확인한다. **정의역을 조용히 넓히지 않는다 — 이 줄이 등재다.** */
+import { mannequinRootRef } from "../lib/mannequinRef";
+import { bakeBodyVerts, type BakePose } from "./bodyInjectBake.ts";
+/* v3-71 §1 — 전용 «베이크 마운트»(하네스 층). v2 화면 수정 0줄 · 제품 화면 노출 0. */
+import { BakeMount, bakeMountFrames, BAKE_MOUNT_PX, stepFrames } from "./BakeMount.tsx";
+import { awaitMannequinSettled, mannequinPoseRef, poseStopped, POSE_SETTLE_EPS } from "../lib/mannequinRef";
+import { useFitStore, DEFAULT_BODY_SIZE } from "../store/useFitStore";
+/* v3-77 §1 — 그리드 목록은 **순수 모듈**에서 온다(Node 와 같은 목록). */
+import { bodies, bodyIdOf, FIXED } from "../v3/grid.ts";
+/* v4-40 §1-② — **A포즈 그리드 하네스**(신설 파일 · 이 줄과 아래 한 줄이 배선의 전부다). */
+import { V4AposeGrid } from "./V4AposeGrid.tsx";
+
+const FABRICS = ["gray", "denim", "sweat", "swim"] as const;
+/** v3-41 §2 — C-브라우저 정착 상태(v3-38 산출). **표시 전용 · 물리 0프레임**. */
+const SETTLED = [
+  { label: "gray d9 정본 (정착 220)", fab: "gray", d: 9, frame: 220, url: "/v3diag/settled-gray-d9.bin" },
+  { label: "swim d10 (전 정본 · 정착 180)", fab: "swim", d: 10, frame: 180, url: "/v3diag/settled-swim-d10.bin" },
+  { label: "sweat d9 (전 정본 · 정착 190)", fab: "sweat", d: 9, frame: 190, url: "/v3diag/settled-sweat-d9.bin" },
+  /* v3-49 — 사용자 화면 합격 + 전략 세션 3/5 종결 선언으로 «정본» 승격. 전 정본 2종은 위에 무삭제. */
+  { label: "swim d9 정본 (정착 260)", fab: "swim", d: 9, frame: 260, url: "/v3diag/settled-swim-d9-new.bin" },
+  { label: "sweat d8 정본 (정착 330)", fab: "sweat", d: 8, frame: 330, url: "/v3diag/settled-sweat-d8-new.bin" },
+  /* v3-74 §5 — **측정 전용 칸**(v3-70 §0-C · **정본 아님**). 몸·옷을 함께 실어야 조립이 같아진다. */
+  { label: "v3-74 기준칸 T포즈 (GARMENT_V1 · 측정 전용)", fab: "gray", d: 9, frame: 0,
+    url: "/v3diag/v3-74/settled-base.bin", vertsUrl: "/v3diag/v3-74/body-tpose-chest100.bin",
+    garment: { L: 0.71, W: 0.51, SW: 0.44, SLEN: 0.20, ARM_G: 0.4439 } },
+  /* v3-75 §1 — 민감도 «칸» 6종(정착 도달분 + height140 미도달분). **측정 전용 · 정본 아님.** */
+  { label: "v3-75 chest70 (측정 전용)", fab: "gray", d: 9, frame: 0,
+    url: "/v3diag/v3-75/settled-chest70.bin", vertsUrl: "/v3diag/v3-75/v3-75-body-chest70.bin",
+    garment: { L: 0.71, W: 0.51, SW: 0.44, SLEN: 0.20, ARM_G: 0.4439 } },
+  { label: "v3-75 shoulder35 (측정 전용)", fab: "gray", d: 9, frame: 0,
+    url: "/v3diag/v3-75/settled-shoulder35.bin", vertsUrl: "/v3diag/v3-75/v3-75-body-shoulder35.bin",
+    garment: { L: 0.71, W: 0.51, SW: 0.44, SLEN: 0.20, ARM_G: 0.4439 } },
+  { label: "v3-75 shoulder55 (측정 전용)", fab: "gray", d: 9, frame: 0,
+    url: "/v3diag/v3-75/settled-shoulder55.bin", vertsUrl: "/v3diag/v3-75/v3-75-body-shoulder55.bin",
+    garment: { L: 0.71, W: 0.51, SW: 0.44, SLEN: 0.20, ARM_G: 0.4439 } },
+  { label: "v3-75 height140 (측정 전용)", fab: "gray", d: 9, frame: 0,
+    url: "/v3diag/v3-75/settled-height140.bin", vertsUrl: "/v3diag/v3-75/v3-75-body-height140.bin",
+    garment: { L: 0.71, W: 0.51, SW: 0.44, SLEN: 0.20, ARM_G: 0.4439 } },
+  { label: "v3-75 arm80 (측정 전용)", fab: "gray", d: 9, frame: 0,
+    url: "/v3diag/v3-75/settled-arm80.bin", vertsUrl: "/v3diag/v3-75/v3-75-body-arm80.bin",
+    garment: { L: 0.71, W: 0.51, SW: 0.44, SLEN: 0.20, ARM_G: 0.4439 } },
+  { label: "v3-75 leg60 (측정 전용)", fab: "gray", d: 9, frame: 0,
+    url: "/v3diag/v3-75/settled-leg60.bin", vertsUrl: "/v3diag/v3-75/v3-75-body-leg60.bin",
+    garment: { L: 0.71, W: 0.51, SW: 0.44, SLEN: 0.20, ARM_G: 0.4439 } },
+] as const;
+
+type Phase = "idle" | "prep" | "run" | "done" | "error" | "cancelled";
+
+type Ready = {
+  n: number; tris: number; sub: number; rampN: number; placeSig: string; prepMs: number;
+  dims: { neckHalfWidthCm: number; necklineGirthCm: number; capHeightCm: number; armholeDepthCm: number };
+};
+
+export function V3Panel() {
+  const [phase, setPhase] = useState<Phase>("idle");
+  const [ready, setReady] = useState<Ready | null>(null);
+  const [prog, setProg] = useState<{ frame: number; frames: number; netMm: number; elapsedMs: number } | null>(null);
+  const [msg, setMsg] = useState<string>("");
+  const [fabric, setFabric] = useState<string>("gray");
+  const [frames, setFrames] = useState<number>(86);
+  const [dMm, setDMm] = useState<number>(11);
+  const [hidden, setHidden] = useState<number>(0);        // 백그라운드에서 받은 진행 수
+  const workerRef = useRef<Worker | null>(null);
+  const blobRef = useRef<Uint8Array | null>(null);
+  /* v3-41 §1 — 표시 전용. 물리에 관여하지 않는다. */
+  const sceneRef = useRef<{ pos: Float32Array; idx: Uint32Array; bodyPos: Float32Array; bodyIdx: Uint32Array; bridgeIdx?: Uint32Array } | null>(null);
+  const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const [viewIx, setViewIx] = useState(0);
+  const [shaHex, setShaHex] = useState<string>("");
+  const [capFrame, setCapFrame] = useState<number | null>(null);
+  /* v3-43 §2 — 제품급 표시 층. 진단 래스터와 «별도»이고 그것을 대체하지 않는다. */
+  const pCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  const [pViewIx, setPViewIx] = useState(1);        // 기본 side-p (불합격 지목 구도)
+  const [mode, setMode] = useState<"diag" | "prod">("prod");
+  /* v3-45 — 시접 브리지. **표시 전용**(정점 0 추가 · 상태 무변조). 진단 래스터에서는 «벌»이고
+   * **off 가 등재 기준**이다. 제품 씬은 기본 on(모델이 지고 있는 두께를 그린다). */
+  const [bridge, setBridge] = useState(true);
+  const [uxLog, setUxLog] = useState<string[]>([]);
+
+  useEffect(() => () => workerRef.current?.terminate(), []);
+  /* v3-41 ㉠ — 진행 로그를 «계기 채널»로 노출한다(판정 자동화용 · 물리 무관) */
+  useEffect(() => { (window as unknown as Record<string, unknown>).__v3ux = uxLog; }, [uxLog]);
+  /* v3-43 §3 — «무변조» 확인 채널. 표시 전후로 불러 sha 를 대조한다.
+   * payload = 주입 blob 의 헤더 제외분 · pos = 화면이 실제로 읽는 옷 정점 배열. */
+  useEffect(() => {
+    const sha = async (b: ArrayBuffer) =>
+      [...new Uint8Array(await crypto.subtle.digest("SHA-256", b))]
+        .map((x) => x.toString(16).padStart(2, "0")).join("");
+    (window as unknown as Record<string, unknown>).__v3state = async () => {
+      const blob = blobRef.current, S = sceneRef.current;
+      if (!blob || !S) return null;
+      const hl = new DataView(blob.slice().buffer).getUint32(0, true);
+      return { payload: await sha(blob.slice(4 + hl).buffer), pos: await sha(S.pos.slice().buffer) };
+    };
+  }, []);
+
+  const start = useCallback(() => {
+    workerRef.current?.terminate();
+    setReady(null); setProg(null); setMsg(""); setHidden(0); blobRef.current = null;
+    setPhase("prep");
+    const w = new Worker(new URL("../workers/v3DressWorker.ts", import.meta.url), { type: "module" });
+    workerRef.current = w;
+    w.onmessage = (e) => {
+      const m = e.data;
+      if (m.kind === "ready") { setReady(m); setPhase("run"); return; }
+      if (m.kind === "progress") {
+        setProg(m);
+        setUxLog((L) => [...L, `f=${m.frame}/${m.frames} net=${m.netMm.toFixed(4)}mm hidden=${document.hidden ? 1 : 0}`]);
+        if (document.hidden) setHidden((h) => h + 1);      // ㉣③ 백그라운드 완주 확인용
+        return;
+      }
+      /* v3-46 ㉣ — 워커가 내는 S4 게이트 결과를 계기 채널로 노출한다(표시·판정 자동화용). */
+      if (m.kind === "s4") {
+        (window as unknown as Record<string, unknown>).__v3s4 = m.s4;
+        console.log(`[v3] s4 ${JSON.stringify(m.s4)}`);
+        return;
+      }
+      /* v3-52 §1-4 — 5행 핏 리포트. **표시 전용 · 물리 0프레임.** */
+      if (m.kind === "uv") { setPrintUv(buildPrintUv(m.uv, m.panels)); return; }
+      if (m.kind === "fit") {
+        if (m.fit) { setFit(m.fit); setFitErr(""); (window as unknown as Record<string, unknown>).__v3fit = m.fit; }
+        else { setFit(null); setFitErr(m.fitError ?? "산출 불가"); }
+        return;
+      }
+      if (m.kind === "done") {
+        blobRef.current = m.blob;
+        sceneRef.current = { pos: m.pos, idx: m.idx, bodyPos: m.bodyPos, bodyIdx: m.bodyIdx, bridgeIdx: m.bridgeIdx };
+        // §2 자동 대조 채널 — CC가 콘솔·window로 읽는다. 바이트를 옮기지 않고 해시로 본다.
+        void (async () => {
+          const h = await crypto.subtle.digest("SHA-256", m.blob.slice().buffer);
+          const hex = [...new Uint8Array(h)].map((b) => b.toString(16).padStart(2, "0")).join("");
+          (window as unknown as Record<string, unknown>).__v3 = {
+            frame: m.frame, diverged: m.diverged, stopped: m.stopped,
+            elapsedMs: m.elapsedMs, bytes: m.blob.byteLength, sha256: hex,
+            hiddenTicks: hidden, blob: m.blob,
+          };
+          setShaHex(hex);
+          console.log(`[v3] sha256=${hex} bytes=${m.blob.byteLength} frame=${m.frame}`);
+        })();
+        setPhase(m.stopped ? "cancelled" : "done");
+        setMsg(`프레임 ${m.frame} · ${(m.elapsedMs / 1000).toFixed(1)}초 · 발산 ${m.diverged ? "있음" : "0"}`);
+        // 콘솔에도 남긴다 — 자동 대조가 읽는 채널이다
+        console.log(`[v3] done frame=${m.frame} diverged=${m.diverged} stopped=${m.stopped} ms=${Math.round(m.elapsedMs)} hiddenTicks=${hidden}`);
+        return;
+      }
+      if (m.kind === "error") {
+        setPhase("error");
+        setMsg(m.message);                                  // 관측 사실만 · 원인 단정 0
+        console.log(`[v3] error ${m.message}`);
+      }
+    };
+    w.postMessage({
+      kind: "start",
+      glbUrl: `${import.meta.env.BASE_URL}models/mannequin.glb`,
+      fabric, d: dMm / 1000, frames,
+    });
+  }, [fabric, frames, hidden, dMm]);
+
+  const cancel = useCallback(() => workerRef.current?.postMessage({ kind: "cancel" }), []);
+
+  /** v3-41 §2 — 정착 상태를 «주입»해 표시만 한다(프레임 0 · 물리 0). */
+  const [fit, setFit] = useState<FitReportResult | null>(null);
+  /* v3-54 ㉢ — 핏 맵 색 on/off. **표시 전용**(물리·상태 무관). */
+  const [fitColor, setFitColor] = useState(true);
+  /* v3-59 — **프린트 모드**. 핏 색과 «동시 적용하지 않는다»(둘 중 하나만 렌더에 넘긴다). */
+  const [printOn, setPrintOn] = useState(false);
+  const [printUv, setPrintUv] = useState<PrintUv | null>(null);
+  const [tex, setTex] = useState<Texture | null>(null);
+  const [comp, setComp] = useState<CompositeResult | null>(null);
+  const uMax = printUv?.panels.find((p) => p.name === "front")?.uMax ?? 1;
+  useEffect(() => {
+    /* 프린트 원본 = **v2 경로가 쓰는 기존 자산 파일**(데이터 읽기이지 코드 임포트가 아니다 · v3-13).
+     * v3-60 — 원본을 «그대로» 붙이지 않고 **합성 층**을 거친다(대표색 + 가슴 프린트). */
+    const im = new Image();
+    im.onload = () => {
+      const r = compositePrint(im, im.naturalWidth, im.naturalHeight, uMax);
+      const t = new CanvasTexture(r.canvas);
+      t.colorSpace = SRGBColorSpace;
+      setComp(r); setTex(t);
+      console.log(`[v3-60 합성] 대표색 rgb(${r.color.r.toFixed(0)}, ${r.color.g.toFixed(0)}, ${r.color.b.toFixed(0)})`
+        + ` · 프린트 bbox ${r.printBox ? `${r.printBox.w.toFixed(0)}×${r.printBox.h.toFixed(0)}@(${r.printBox.x.toFixed(0)},${r.printBox.y.toFixed(0)})` : "없음"}`
+        + ` · 프레임 문턱 ${r.maxFrameFired ? "**발동**(프린트 버림)" : "미발동"}`
+        + ` · 재스캔 ${r.rescan ? `성분 ${r.rescan.components}개 중 경계접촉 ${r.rescan.excluded}개 제외` : "미실행(1패스 통과)"}`
+        + ` · 하단 축소 ${r.shrunk ? r.shrunk.toFixed(4) : "없음"} · uMax ${uMax.toFixed(4)}`);
+    };
+    /* v3-60 — 자산 선택은 «값으로» 했다(§2-1 실측):
+     `print-tee.png`      → 프레임 문턱 **발동**(bbox 100% · 재스캔 경계접촉 0 제외) ⟹ 프린트 버림
+     `print-tee-white.webp` → bbox **40%×43%** · **미발동**(재스캔 경계접촉 1 제외) ⟹ **계약 전제 충족**
+   ⟹ (v3-60 당시) 후자를 썼다. 전자는 «검정 옷의 하이라이트»가 대표색과 거리 55 를 넘어 프레임 전역에
+   퍼지는 자산이고, 그것은 **v2 계약이 이미 등재한 한계**다(색으로는 못 가른다 · v2 :203-206).
+   **v3-64 갱신(위 이력 무삭제)**: 사용자가 **그래픽 전용 자산**을 제공했다 —
+     `print-graphic.png` 1200×1200 RGBA · α<250 **74.1%** · 불투명 bbox **61.8%×68.0%** ·
+     테두리 불투명 **0.0%** ⟹ **v3-62 §0-3a 규칙 ㉠㉡㉢ 전부 통과**(적합 1건 · 면적비 최소).
+   ⟹ **이 자산을 쓴다.** 앞의 둘은 **「옷 사진」**이라 규칙 ㉡ 에 걸렸다(대조용으로 저장소에 남는다). */
+    im.src = `${import.meta.env.BASE_URL}v3print/print-graphic.png`;
+  }, [uMax]);
+  const [fitErr, setFitErr] = useState<string>("");
+  const [settledIx, setSettledIx] = useState(0);
+  const showSettled = useCallback(async () => {
+    const S = SETTLED[settledIx];
+    workerRef.current?.terminate();
+    setReady(null); setProg(null); setMsg(""); blobRef.current = null; sceneRef.current = null;
+    setPhase("prep"); setFabric(S.fab); setDMm(S.d); setCapFrame(null); setFit(null); setFitErr("");
+    const w = new Worker(new URL("../workers/v3DressWorker.ts", import.meta.url), { type: "module" });
+    workerRef.current = w;
+    w.onmessage = async (e) => {
+      const m = e.data;
+      if (m.kind === "ready") { setReady(m); return; }
+      if (m.kind === "error") { setPhase("error"); setMsg(m.message); return; }
+      if (m.kind === "uv") { setPrintUv(buildPrintUv(m.uv, m.panels)); return; }
+      if (m.kind === "fit") {
+        if (m.fit) { setFit(m.fit); setFitErr(""); (window as unknown as Record<string, unknown>).__v3fit = m.fit; }
+        else { setFit(null); setFitErr(m.fitError ?? "산출 불가"); }
+        return;
+      }
+      if (m.kind !== "done") return;
+      blobRef.current = m.blob;
+      sceneRef.current = { pos: m.pos, idx: m.idx, bodyPos: m.bodyPos, bodyIdx: m.bodyIdx, bridgeIdx: m.bridgeIdx };
+      /* 파일명·표시에 쓰는 sha 는 «상태 페이로드»(헤더 제외)다 — 헤더의 frame 은 재발행으로 바뀐다 */
+      const dv = new DataView(m.blob.slice().buffer);
+      const hl = dv.getUint32(0, true);
+      const h = await crypto.subtle.digest("SHA-256", m.blob.slice(4 + hl).buffer);
+      const hex = [...new Uint8Array(h)].map((b) => b.toString(16).padStart(2, "0")).join("");
+      setShaHex(hex); setCapFrame(S.frame);
+      setPhase("done"); setMsg(`정착 상태 표시 — 정착 프레임 ${S.frame} · 물리 0프레임 · 상태 페이로드 sha`);
+      console.log(`[v3] settled sha256=${hex}`);
+    };
+    /* v3-74 §5 — **측정 전용 칸 배선**(최소). 칸의 몸은 «구운 마네킹 체계»라
+     * `vertsUrl`(주입 몸 정점)과 `garment`(GARMENT_V1)를 **함께** 실어야 조립이 같아진다.
+     * **정본 3종에는 두 필드가 «없다»** ⟹ 기존 경로는 **한 글자도 바뀌지 않는다**(분기 1개). */
+    const S2 = S as unknown as { vertsUrl?: string; garment?: { L: number; W: number; SW: number; SLEN: number; ARM_G: number } };
+    const extra = S2.vertsUrl
+      ? await fetch(`${import.meta.env.BASE_URL}${S2.vertsUrl.replace(/^\//, "")}`)
+          .then((r) => r.arrayBuffer())
+          .then((b) => ({ bodyVerts: new Float32Array(b), garment: S2.garment }))
+      : {};
+    w.postMessage({
+      kind: "start", glbUrl: `${import.meta.env.BASE_URL}models/mannequin.glb`,
+      fabric: S.fab, d: S.d / 1000, frames: 0, injectStateUrl: S.url, ...extra,
+    });
+  }, [settledIx]);
+
+  /* v3-70 §2 — **주입 경로 스모크**. `frames: 0` 이라 **물리 0프레임**이고, 워커가 돌려주는
+   * `derived` 를 그대로 찍는다. `useLive=false` 면 «기본 몸»(마네킹 없이 `parseGlb` 항등)을 주입해
+   * ㉮(경로 등가)를, `true` 면 «현 슬라이더 몸»을 구워 ㉯(도출 스모크)를 낸다. */
+  /* v3-71 §2-㉠ — **백화 «판별»**. 3값만 찍는다(원인 단정 0 · 위치만 좁힌다). */
+  const bakeProbe = useCallback(() => {
+    const cv = document.querySelector<HTMLCanvasElement>("[data-bakemount] canvas");
+    console.log(`[v3-71 판별] 마네킹 ref **${mannequinRootRef.current ? "생존" : "사망(null)"}**`
+      + ` · 캔버스 실측 ${cv ? `${cv.width}×${cv.height}(css ${cv.clientWidth}×${cv.clientHeight})` : "**없음**"}`
+      + ` · 지정값 ${BAKE_MOUNT_PX.w}×${BAKE_MOUNT_PX.h}`
+      + ` · useFrame 프레임 **${bakeMountFrames.current}**`
+      + ` · 스케일 잔차 ${mannequinPoseRef.maxScaleResidual.toExponential(2)}`);
+  }, []);
+
+  /* v3-71 §3 — **정착 «후»에만 굽는다**(§0-5 · 조용한 조기 굽기 0).
+   * 정착 판정은 `awaitMannequinSettled`(P23 §1 조항)를 **그대로 재사용**한다 — 새 문턱 0. */
+  const bakeAndRun = useCallback(async (chestCm: number | null, sync = false,
+                                      pose: BakePose = "tpose") => {
+    if (chestCm !== null) useFitStore.getState().setBodyChest(chestCm);
+    let tag: string;
+    if (sync) {
+      /* v3-72 §2 — **동기 정착**. rAF 를 기다리지 않고 `advance` 로 프레임을 «민다».
+       * 판정은 기존 채널 그대로(`poseStopped` ∧ 잔차 ≤ `POSE_SETTLE_EPS`) — **새 문턱 0**.
+       * 상한 600프레임(=10초 상당)에 걸리면 **굽되 그 사실을 남긴다**(말없는 실패 금지 · 함정 25). */
+      /* ★ 조기 종료 «정정»(같은 판 안에서 값으로 잡았다):
+       *   ① 스토어를 바꿔도 React 재렌더가 «비동기»라, 바로 `advance` 하면 `useFrame` 이
+       *      **옛 `bodySize` 클로저**를 본다 ⟹ 새 target 이 반영되지 않는다. **한 번 양보한다.**
+       *   ② `maxScaleResidual` 은 «직전 프레임» 값이라 변경 직후엔 **낡은 0**이다 ⟹
+       *      **연속 2프레임** 충족을 요구한다(P26 의 「target 이 직전 프레임과 같을 것」과 같은 성질). */
+      await new Promise((r) => setTimeout(r, 0));
+      let k = 0, hit = 0;
+      const CAP = 600;
+      while (k < CAP) {
+        stepFrames(1); k += 1;
+        if (poseStopped() && mannequinPoseRef.maxScaleResidual <= POSE_SETTLE_EPS) {
+          hit += 1; if (hit >= 2) break;
+        } else hit = 0;
+      }
+      const ok = k < CAP;
+      tag = `**동기** · 정착 **${ok ? "성립" : "**상한 초과**(굽되 사실 남김)"}** · 전진 ${k}프레임`
+          + ` · 잔차 ${mannequinPoseRef.maxScaleResidual.toExponential(3)}`;
+    } else {
+      const st = await awaitMannequinSettled();
+      tag = `**rAF** · 정착 **${st.ok ? "성립" : "**상한 초과**(굽되 사실 남김)"}** · 프레임 ${st.frames}`
+          + ` · 잔차 ${st.residual.toExponential(3)}`;
+    }
+    console.log(`[v3-72 굽기] 가슴 ${chestCm ?? useFitStore.getState().bodySize.chest}cm · ${tag}`);
+    const url = `${import.meta.env.BASE_URL}models/mannequin.glb`;
+    const glb = await (await fetch(url)).arrayBuffer();
+    let b;
+    try { b = bakeBodyVerts(glb, mannequinRootRef.current, pose); }
+    catch (e) { console.log(`[v3-72 굽기] **던짐** — ${(e as Error).message}`); return; }
+    if (b.poseDelta.length) {
+      const top = [...b.poseDelta].sort((x, y) => y.deg - x.deg).slice(0, 6);
+      console.log(`[v3-74 자세] 모드 **${b.pose}** · 바인드 대비 회전 잰 본 **${b.poseDelta.length}개**`
+        + ` · 최대 **${Math.max(...b.poseDelta.map((d) => d.deg)).toFixed(4)}°**`
+        + ` · 상위 ${top.map((d) => `${d.name} ${d.deg.toFixed(3)}°`).join(" / ")}`);
+    } else console.log(`[v3-74 자세] 모드 **${b.pose}** — 되돌린 본 0개(A포즈 경로)`);
+    console.log(`[v3-72 굽기] **skinned:${b.skinned}**(실통과 확인) · 정점 ${b.n}`
+      + ` · parseGlb 배열과 **비트 ${b.bitEqual ? "동일" : "상이"}**`
+      + ` · **max|Δ| ${(b.maxDeltaM * 1000).toExponential(4)}mm**`);
+    /* 산출 배열을 파일로 내린다 — Node 계기가 «둘레 배율»을 정밀하게 재기 위함. */
+    const blob = new Blob([b.verts.buffer as ArrayBuffer], { type: "application/octet-stream" });
+    const bu = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = bu; a.download = `v3-72-body-${sync ? "sync" : "raf"}-chest${Math.round(chestCm ?? useFitStore.getState().bodySize.chest)}.bin`;
+    document.body.appendChild(a); a.click(); a.remove();
+    URL.revokeObjectURL(bu);
+    workerRef.current?.terminate();
+    const w = new Worker(new URL("../workers/v3DressWorker.ts", import.meta.url), { type: "module" });
+    workerRef.current = w;
+    w.onmessage = (e) => {
+      const m = e.data;
+      if (m.kind === "error") { console.log(`[v3-72 굽기] **조립 오류** — ${m.message}`); return; }
+      if (m.kind !== "ready") return;
+      const D = m.derived;
+      console.log(`[v3-72 도출] 가슴 ${chestCm ?? "기본"}(${sync ? "동기" : "rAF"}) —`
+        + ` BEXT [${D.bextM.map((v: number) => v.toFixed(6)).join(", ")}]m`
+        + ` · h **${D.hMm.toFixed(6)}mm** · band **${D.bandMm.toFixed(6)}mm**`
+        + ` · ③b 문턱 **${D.gate3bThMm.toFixed(6)}mm**`
+        + ` · Y_TOP **${D.yTopCm.toFixed(4)}cm** · Y_NECK **${D.yNeckCm.toFixed(4)}cm**`
+        + ` · AXIS_Z **${D.axisZCm.toFixed(4)}cm** · 목선둘레 ${m.dims.necklineGirthCm.toFixed(4)}cm`
+        + ` · 조립 정점 ${m.n}`);
+      w.terminate();
+    };
+    w.postMessage({ kind: "start", glbUrl: url, fabric, d: dMm / 1000, frames: 0, bodyVerts: b.verts });
+  }, [fabric, dMm]);
+
+  /* v3-75 §1 — **민감도 «세트» 굽기**(하네스 · 물리 0프레임 · 굽기만).
+   * 축 끝값은 **`Controls.tsx:128-137` 등재 min/max 그대로**(창작 0). 축은 **하나씩 단독**으로 바꾸고
+   * 굽기 «뒤에» 기본값으로 되돌린다(칸 간 오염 0). 정착·T포즈 복원은 기존 경로를 그대로 부른다. */
+  const bakeSet = useCallback(async () => {
+    const D = DEFAULT_BODY_SIZE;
+    const cells: { tag: string; apply: () => void; reset: () => void }[] = [];
+    const st = () => useFitStore.getState();
+    const push = (tag: string, set: (v: number) => void, v: number, back: number) =>
+      cells.push({ tag, apply: () => set(v), reset: () => set(back) });
+    push("chest70", (v) => st().setBodyChest(v), 70, D.chest);
+    push("chest140", (v) => st().setBodyChest(v), 140, D.chest);
+    push("shoulder35", (v) => st().setShoulderWidth(v), 35, D.shoulderWidth);
+    push("shoulder55", (v) => st().setShoulderWidth(v), 55, D.shoulderWidth);
+    push("height140", (v) => st().setBodyHeight(v), 140, D.height);
+    push("height200", (v) => st().setBodyHeight(v), 200, D.height);
+    push("arm40", (v) => st().setArmLength(v), 40, D.armLength);
+    push("arm80", (v) => st().setArmLength(v), 80, D.armLength);
+    push("leg60", (v) => st().setLegLength(v), 60, D.legLength);
+    push("leg110", (v) => st().setLegLength(v), 110, D.legLength);
+    const url = `${import.meta.env.BASE_URL}models/mannequin.glb`;
+    const glb = await (await fetch(url)).arrayBuffer();
+    for (const c of cells) {
+      c.apply();
+      await new Promise((r) => setTimeout(r, 0));
+      let k = 0, hit = 0;
+      while (k < 600) {
+        stepFrames(1); k += 1;
+        if (poseStopped() && mannequinPoseRef.maxScaleResidual <= POSE_SETTLE_EPS) { hit += 1; if (hit >= 2) break; }
+        else hit = 0;
+      }
+      let b;
+      try { b = bakeBodyVerts(glb, mannequinRootRef.current, "tpose"); }
+      catch (e) { console.log(`[v3-75 세트] ${c.tag} **던짐** — ${(e as Error).message}`); c.reset(); continue; }
+      const bl = new Blob([b.verts.buffer as ArrayBuffer], { type: "application/octet-stream" });
+      const u = URL.createObjectURL(bl);
+      const a = document.createElement("a");
+      a.href = u; a.download = `v3-75-body-${c.tag}.bin`;
+      document.body.appendChild(a); a.click(); a.remove();
+      URL.revokeObjectURL(u);
+      console.log(`[v3-75 세트] **${c.tag}** · 전진 ${k}프레임 · 잔차 ${mannequinPoseRef.maxScaleResidual.toExponential(2)}`
+        + ` · 자세 되돌린 본 ${b.poseDelta.length} · 최대 ${b.poseDelta.length ? Math.max(...b.poseDelta.map((d) => d.deg)).toFixed(3) : "—"}°`
+        + ` · parseGlb 대비 max|Δ| ${(b.maxDeltaM * 1000).toFixed(4)}mm`);
+      c.reset();
+      await new Promise((r) => setTimeout(r, 900));
+    }
+    console.log(`[v3-75 세트] **완료** — 칸 ${cells.length}개`);
+  }, []);
+
+  /* v3-77 §1 — **본 그리드 몸 굽기**(27칸 · 하네스 · 굽기만 · 물리 0프레임).
+   * 목록은 **순수 모듈 `src/v3/grid.ts`** 가 준다(Node 오케스트레이터와 «같은» 목록 · #65 계열).
+   * 개시 시퀀스(v3-73 §0-2) 준수: **가시화 계기 1회 → 루트 생성 → 동기 굽기 «반복»**.
+   * 축은 셋만 움직이고 **팔·다리는 `FIXED` 기본값으로 되돌린다**(칸 간 오염 0). */
+  /* v3-83 §1-②③ — **순서 교란 플래그 · 게이트 · 생산 시점 기록**.
+   *
+   * 순서(§0-2): **기본 순서는 바뀌지 않는다**. `?bakeorder=rev`(또는 `VITE_BAKE_ORDER=rev`)일 때만
+   *   목록을 뒤집는다 — **측정 전용**이고 자산 생산에는 쓰지 않는다.
+   * 게이트(§0-4 ③ · **새 수 0**):
+   *   ㉮ 상한 600 도달 = **몸 굽기 실패** ⟹ blob **저장 0** · 실패 행 기록 · **재시도 1회**(순회 «끝»)
+   *   ㉯ 통과 문턱 = `POSE_SETTLE_EPS`(기존 상수) · ㉰ 높이 |실측 − 목표| ≤ `HEIGHT_TOL_M`
+   *      (= v3-82 `body-index-27.json` 등재 문턱 **인용** · 이 파일이 새로 정한 수 0)
+   * 드라이런: `?bakedry=1` ⟹ **다운로드 0**(blob 도 기록 파일도 내려받지 않는다 · 행만 만든다).
+   */
+  const bakeGrid = useCallback(async () => {
+    const q = new URLSearchParams(window.location.search);
+    const rev = (q.get("bakeorder") ?? import.meta.env.VITE_BAKE_ORDER) === "rev";
+    const dry = q.get("bakedry") === "1";
+    /* v3-85 §0-3 — **검출력 증명 플래그**. v3-84 ① 을 «임시로» 되돌린 상태를 만든다:
+     * 굽기 직전에 GLTF 씬 배율을 1 로 덮어 「unitScale 이 안 실린 몸」을 재현한다.
+     * **`Mannequin.tsx` 는 건드리지 않는다**(§0-4) — 주입은 여기서만 하고 기본값은 불변이다. */
+    const legacy = q.get("unitscale") === "legacy";
+    /* v3-85 §0-5 ㄱ — **한 칸만 저장**. 「그 몸 «하나»만 저장(나머지 26 blob 은 쓰기 0)」 조항을
+     * 코드로 잠근다. 지정이 없으면 종전대로 통과 칸 전부 저장한다(기본 불변). */
+    const only = q.get("bakeonly");
+    /** v3-82 §1-③ 등재 높이 범위[m] — **기록 열 전용**이다. v3-85 부터 **게이트가 아니다**(㉰ → ㉰′). */
+    const HEIGHT_TOL_M = 0.0020;
+    const st = () => useFitStore.getState();
+    st().setArmLength(FIXED.armLength); st().setLegLength(FIXED.legLength);
+    const url = `${import.meta.env.BASE_URL}models/mannequin.glb`;
+    const glb = await (await fetch(url)).arrayBuffer();
+    const base = bodies();
+    const list = rev ? [...base].reverse() : base;
+    const rows: Record<string, unknown>[] = [];
+    const retry: typeof list = [];
+    console.log(`[v3-83 그리드] 몸 ${list.length}칸 · 순서 ${rev ? "**rev(측정 전용)**" : "기본"}`
+      + ` · ${dry ? "**드라이런(다운로드 0)**" : "저장"} · 팔 ${FIXED.armLength} · 다리 ${FIXED.legLength}`);
+
+    const bakeOne = async (b: ReturnType<typeof bodies>[number], pos: number, isRetry: boolean) => {
+      const id = bodyIdOf(b);
+      st().setBodyChest(b.chest); st().setBodyHeight(b.height); st().setShoulderWidth(b.shoulder);
+      await new Promise((r) => setTimeout(r, 0));
+      let k = 0, hit = 0;
+      while (k < 600) {
+        stepFrames(1); k += 1;
+        if (poseStopped() && mannequinPoseRef.maxScaleResidual <= POSE_SETTLE_EPS) { hit += 1; if (hit >= 2) break; }
+        else hit = 0;
+      }
+      const resid = mannequinPoseRef.maxScaleResidual;
+      const capped = k >= 600;                                   // ㉮
+      /* v3-85 검출력 증명 — `?unitscale=legacy` 에서만. 정착 «뒤» 굽기 «직전»에
+       * GLTF 씬 배율을 1 로 덮어 v3-84 이전 상태를 재현한다. **기본 경로 0줄.** */
+      if (legacy) {
+        let gs: Object3D | null = null;
+        mannequinRootRef.current?.traverse((o) => { if (!gs && o.name === "Scene") gs = o; });
+        (gs as Object3D | null)?.scale.setScalar(1);
+        mannequinRootRef.current?.updateMatrixWorld(true);
+      }
+      let r;
+      try { r = bakeBodyVerts(glb, mannequinRootRef.current, "tpose"); }
+      catch (e) {
+        rows.push({ id, 순회위치: pos, 재시도: isRetry, 결과: "던짐", 사유: (e as Error).message });
+        console.log(`[v3-83 그리드] ${id} **던짐** — ${(e as Error).message}`);
+        return false;
+      }
+      /* 높이 실측 — 구운 정점에서 «직접» 잰다(따로 세지 않는다 · 함정 12). */
+      let mn = Infinity, mx = -Infinity;
+      for (let i = 1; i < r.verts.length; i += 3) { const y = r.verts[i]; if (y < mn) mn = y; if (y > mx) mx = y; }
+      const measured = mx - mn, target = b.height / 100, dh = measured - target;
+      /* v3-85 — 높이는 **기록 열**로만 남는다(게이트 0 · §0-2). 판정은 ㉮ · ㉯ · **㉰′** 셋이다. */
+      const tallInRange = Math.abs(dh) <= HEIGHT_TOL_M;
+      /* ★ v3-84 §1-③ **계기 정정**: 옛 코드는 `root.parent` 를 읽었는데 그것은 **R3F 루트 씬**이라
+       * 언제나 1 이다(= v3-83 이 「Scene.scale.x = 1」로 읽은 그 노드 · 잘못 겨눈 계기).
+       * `unitScale` 이 실제로 걸리는 곳은 **GLTF 씬**이다 — 마네킹 아래에서 찾아 «그것»을 읽는다.
+       * ★ v3-85 ㉰′ 는 «이 노드»를 잰다(§0-2 · 오독 재발 금지). */
+      let gltfScene: Object3D | null = null;
+      mannequinRootRef.current?.traverse((o) => { if (!gltfScene && o.name === "Scene") gltfScene = o; });
+      const sceneScale = (gltfScene as Object3D | null)?.scale.x ?? NaN;
+      /* ★ v3-85 §0-2 — **㉰′ = |씬 배율 − unitScale_geom|**. 「몸이 몇 cm 인가」가 아니라
+       * **「정규화가 씬에 실렸는가」**를 «직접» 잰다 ⟹ 통과/실패가 **표본 분포에 의존하지 않는다**.
+       * `unitScale_geom` 은 v3-84 ① 과 **같은 경로**(지오메트리 bbox · 배율 무관)로 다시 뜬다. */
+      let gmn = Infinity, gmx = -Infinity;
+      mannequinRootRef.current?.traverse((o) => {
+        const g = (o as unknown as { geometry?: { boundingBox?: { min: { y: number }; max: { y: number } } | null;
+          computeBoundingBox?: () => void } }).geometry;
+        if (!g) return;
+        if (!g.boundingBox && g.computeBoundingBox) g.computeBoundingBox();
+        if (g.boundingBox) { if (g.boundingBox.min.y < gmn) gmn = g.boundingBox.min.y;
+                             if (g.boundingBox.max.y > gmx) gmx = g.boundingBox.max.y; }
+      });
+      const geomH = gmx - gmn;
+      const unitGeom = geomH > 0.001 ? (DEFAULT_BODY_SIZE.height / 100) / geomH : 1;
+      const dPrime = Math.abs(sceneScale - unitGeom);
+      const scaleOk = dPrime <= POSE_SETTLE_EPS;               // ㉰′
+      const pass = !capped && resid <= POSE_SETTLE_EPS && scaleOk;
+      let sha = "";
+      if (pass || dry) {
+        const h0 = await crypto.subtle.digest("SHA-256", r.verts.buffer as ArrayBuffer);
+        sha = [...new Uint8Array(h0)].map((x) => x.toString(16).padStart(2, "0")).join("");
+      }
+      if (pass && !dry && (!only || id === only)) {
+        /* v3-86 §1-⑤ — **수신기로 보낸다**(동봉 방식 폐기 · v3-85 의 임시 수단이었다).
+         * 브라우저 자동 다운로드는 막히므로 바이트는 `scripts/v3Receiver.ts` 가 받는다.
+         * **sha 는 여기서 계산해 함께 보내고**, 수신기가 **대조한 뒤에만** 저장한다. */
+        const u8 = new Uint8Array(r.verts.buffer as ArrayBuffer);
+        try {
+          await fetch(`http://127.0.0.1:5199/put?name=body-${id}.bin&sha256=${sha}`,
+                      { method: "POST", body: u8 });
+          console.log(`[v3-86 반출] ${id} → 수신기(${u8.length} bytes · sha ${sha.slice(0, 16)}…)`);
+        } catch (e) {
+          console.log(`[v3-86 반출] ${id} **실패** — 수신기가 안 떠 있다(${(e as Error).message})`);
+        }
+      }
+      rows.push({ id, 목표높이_m: +target.toFixed(4), 실측높이_m: +measured.toFixed(4), 잔차_m: +dh.toFixed(4),
+        높이_등재범위_안: tallInRange,                         // 기록 열(게이트 아님)
+        전진프레임: k, 굽기잔차: resid, sha256: sha,
+        unitScale실측: +Number(sceneScale).toFixed(6), unitScale_geom: +unitGeom.toFixed(6),
+        "㉰′": dPrime, 순회위치: pos, 재시도: isRetry,
+        결과: pass ? "통과" : "실패",
+        실패사유: pass ? null : [capped ? "㉮ 상한 600 도달" : null,
+          resid > POSE_SETTLE_EPS ? `㉯ 굽기 잔차 ${resid.toExponential(2)} > ${POSE_SETTLE_EPS}` : null,
+          scaleOk ? null : `㉰′ |씬 배율 − unitScale_geom| ${dPrime.toExponential(3)} > ${POSE_SETTLE_EPS}`
+          ].filter(Boolean).join(" · ") });
+      console.log(`[v3-83 그리드] **${id}**${isRetry ? "(재시도)" : ""} · 전진 ${k} · 잔차 ${resid.toExponential(2)}`
+        + ` · 높이 ${measured.toFixed(4)}m(목표 ${target.toFixed(2)} · Δ${dh.toFixed(4)})`
+        + ` · 씬배율 ${Number(sceneScale).toFixed(6)} · ㉰′ ${dPrime.toExponential(2)}`
+        + ` · **${pass ? "통과" : "실패"}**`
+        + (pass ? "" : ` — ${rows[rows.length - 1].실패사유}`));
+      await new Promise((res) => setTimeout(res, 700));
+      return pass;
+    };
+
+    for (let i = 0; i < list.length; i++) {
+      const ok = await bakeOne(list[i], i, false);
+      if (!ok) retry.push(list[i]);                              // ㉮ 재시도 1회 · 순회 «끝»에
+    }
+    for (const b of retry) await bakeOne(b, -1, true);
+
+    const 통과 = rows.filter((x) => x.결과 === "통과" && !x.재시도).length
+      + rows.filter((x) => x.결과 === "통과" && x.재시도).length;
+    const rec = { 메타: `v3-85 §1 몸 굽기 «생산 시점» 기록. 순서 ${rev ? "rev(측정 전용)" : "기본"}`
+      + ` · ${dry ? "드라이런(blob 다운로드 0)" : "저장"}`
+      + ` · 게이트 ㉮상한600 · ㉯굽기잔차≤${POSE_SETTLE_EPS}`
+      + ` · **㉰′ |씬 배율 − unitScale_geom| ≤ ${POSE_SETTLE_EPS}**`
+      + ` · 높이는 **기록 열**(게이트 아님 · 등재 범위 ±${HEIGHT_TOL_M}m 는 참고)`
+      + `${legacy ? " · **legacy 주입(검출력 증명 · 씬 배율 1 로 덮음)**" : ""}`
+      + `${only ? ` · **저장 대상 «${only}» 한 칸뿐**(나머지 blob 쓰기 0)` : ""}`
+      + " · 문턱은 전부 «인용»이고 이 판이 새로 정한 수는 0이다.", 행: rows };
+    (window as unknown as Record<string, unknown>).__v3bodyIndex = rec;
+    {
+      /* v3-84 §1-③ — **기록 파일은 드라이런에서도 내려받는다**(blob 다운로드는 여전히 0).
+       * v3-83 은 드라이런에서 기록도 막았고, 그 결과 sha 를 «옮기는» 경로가 64자를 잘랐다
+       * (v3-83 §4-2 ㉣ 한계). 판정문 조항 「**sha 64자**」를 지키려면 파일이 나와야 한다. */
+      const bl = new Blob([JSON.stringify(rec, null, 1)], { type: "application/json" });
+      const u = URL.createObjectURL(bl);
+      const a = document.createElement("a");
+      a.href = u; a.download = `body-index-${new Date().toISOString().slice(0, 10)}.json`;
+      document.body.appendChild(a); a.click(); a.remove();
+      URL.revokeObjectURL(u);
+    }
+    console.log(`[v3-83 그리드] **완료** — 행 ${rows.length} · 통과 ${통과} · 실패 ${rows.length - 통과}`
+      + ` · 재시도 ${retry.length}칸 · 기록은 window.__v3bodyIndex`);
+  }, []);
+
+  const injectSmoke = useCallback(async (useLive: boolean) => {
+    const url = `${import.meta.env.BASE_URL}models/mannequin.glb`;
+    const glb = await (await fetch(url)).arrayBuffer();
+    const root = useLive ? mannequinRootRef.current : null;
+    const b = bakeBodyVerts(glb, root);
+    console.log(`[v3-70] 굽기 — 살아있는 마네킹 ${root ? "**있다**" : "**없다**"}`
+      + ` · 스킨드 메시 ${b.skinned ? "찾음" : "**못 찾음**"} · 정점 ${b.n}`
+      + ` · parseGlb 배열과 **비트 ${b.bitEqual ? "동일" : "상이"}**`
+      + (b.bitEqual ? "" : ` · 최대 편차 ${(b.maxDeltaM * 1000).toExponential(3)}mm`));
+    workerRef.current?.terminate();
+    const w = new Worker(new URL("../workers/v3DressWorker.ts", import.meta.url), { type: "module" });
+    workerRef.current = w;
+    w.onmessage = (e) => {
+      const m = e.data;
+      if (m.kind === "error") { console.log(`[v3-70] 오류 — ${m.message}`); return; }
+      if (m.kind !== "ready") return;
+      const D = m.derived;
+      console.log(`[v3-70] 도출(주입 ${D.injected ? "**예**" : "아니오"}) —`
+        + ` BEXT [${D.bextM.map((v: number) => v.toFixed(4)).join(", ")}]m`
+        + ` · h **${D.hMm.toFixed(4)}mm** · band **${D.bandMm.toFixed(4)}mm**`
+        + ` · ③b 문턱 **${D.gate3bThMm.toFixed(4)}mm**`
+        + ` · Y_TOP **${D.yTopCm.toFixed(3)}cm** · Y_NECK **${D.yNeckCm.toFixed(3)}cm**`
+        + ` · AXIS_Z **${D.axisZCm.toFixed(4)}cm** · 목선둘레 ${m.dims.necklineGirthCm.toFixed(3)}cm`
+        + ` · 정점 ${m.n}`);
+      w.terminate();
+    };
+    w.postMessage({ kind: "start", glbUrl: url, fabric, d: dMm / 1000, frames: 0,
+                    bodyVerts: b.verts });
+  }, [fabric, dMm]);
+
+  const save = useCallback(() => {
+    const b = blobRef.current;
+    if (!b) return;
+    const url = URL.createObjectURL(new Blob([b as unknown as BlobPart], { type: "application/octet-stream" }));
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `v3-browser-${fabric}-${frames}.bin`;
+    a.click();
+    URL.revokeObjectURL(url);
+  }, [fabric, frames]);
+
+  /* v3-41 §2 — **읽기 전용 표시**. 상태 배열을 «읽기»만 하고 한 바이트도 쓰지 않는다.
+   * 구도는 `src/v3/raster.ts` 의 등재 3뷰 프리셋(front · sideXplus · back) 그대로다. */
+  /* 표시용 인덱스 — 브리지가 켜져 있고 워커가 실어 보냈을 때만 이어 붙인다. 원본 불변. */
+  const dIdx = useCallback((S: { idx: Uint32Array; bridgeIdx?: Uint32Array }) =>
+    bridge && S.bridgeIdx && S.bridgeIdx.length ? withBridge(S.idx, S.bridgeIdx) : S.idx, [bridge]);
+  const draw = useCallback((vi: number) => {
+    const S = sceneRef.current, cv = canvasRef.current;
+    if (!S || !cv) return;
+    const lo: [number, number, number] = [Infinity, Infinity, Infinity];
+    const hi: [number, number, number] = [-Infinity, -Infinity, -Infinity];
+    for (const P of [S.bodyPos, S.pos])
+      for (let i = 0; i < P.length; i += 3)
+        for (let c = 0; c < 3; c++) { lo[c] = Math.min(lo[c], P[i + c]); hi[c] = Math.max(hi[c], P[i + c]); }
+    const meshes: Mesh[] = [
+      { pos: S.bodyPos, idx: S.bodyIdx, color: [190, 185, 178] },
+      { pos: S.pos, idx: dIdx(S), color: [40, 90, 200] },
+    ];
+    const W = cv.width, H = cv.height;
+    const rgb = rasterize(meshes, VIEWS[vi], { lo, hi }, W, H);
+    const g = cv.getContext("2d");
+    if (!g) return;
+    const img = g.createImageData(W, H);
+    for (let i = 0, j = 0; i < W * H; i++, j += 3) {
+      img.data[i * 4] = rgb[j]; img.data[i * 4 + 1] = rgb[j + 1];
+      img.data[i * 4 + 2] = rgb[j + 2]; img.data[i * 4 + 3] = 255;
+    }
+    g.putImageData(img, 0, 0);
+  }, [dIdx]);
+
+  useEffect(() => { if (sceneRef.current) draw(viewIx); }, [viewIx, draw, phase]);
+
+  /* v3-43 §2 — 제품 씬. **상태 배열을 읽기만 한다**(productView 가 사본으로 지오메트리를 만든다). */
+  const drawProd = useCallback((vi: number, scale?: number) => {
+    const S = sceneRef.current, cv = pCanvasRef.current;
+    if (!S || !cv) return;
+    /* 화면은 devicePixelRatio, **캡처는 CAP_SCALE 배**로 그린다. 이 기계의 dPR 은 1 이라
+     * 그대로 두면 캡처가 진단 래스터와 같은 300×420 이 되어 «제품급»이 성립하지 않는다.
+     * 표시 층 파라미터이고 물리·문턱 채널이 아니다. */
+    renderProduct(cv, { pos: S.bodyPos, idx: S.bodyIdx },
+                  { pos: S.pos, idx: dIdx(S),
+                    vcol: !printOn && fitColor && fit ? fit.color.rgb : undefined,
+                    print: printOn && printUv ? { uv: printUv.uv, panels: printUv.panels, tex, printPanel: "front",
+                      solid: comp ? ((Math.round(comp.color.r) << 16) | (Math.round(comp.color.g) << 8) | Math.round(comp.color.b)) : undefined,
+                      bridgeIdx: bridge && S.bridgeIdx && S.bridgeIdx.length ? S.bridgeIdx : null } : null },
+                  PRODUCT_VIEWS[vi], 300, 420, scale);
+  }, [dIdx, fitColor, fit, printOn, printUv, tex, comp, bridge]);
+  const CAP_SCALE = 3;
+  useEffect(() => { if (mode === "prod" && sceneRef.current) drawProd(pViewIx); }, [pViewIx, drawProd, phase, mode]);
+
+  const nameOf = useCallback((v: string) =>
+    `v3-45-${fabric}-d${Math.round(dMm)}-f${capFrame ?? prog?.frame ?? frames}-${shaHex.slice(0, 8)}-${v}.png`,
+    [fabric, dMm, capFrame, prog, frames, shaHex]);
+  const dl = useCallback((b: Blob | null, name: string) => {
+    if (!b) return;
+    const url = URL.createObjectURL(b);
+    const a = document.createElement("a");
+    a.href = url; a.download = name;
+    document.body.appendChild(a); a.click(); a.remove();
+    URL.revokeObjectURL(url);
+  }, []);
+
+  /** 제품 캡처 3장 — front-p · side-p · back-p */
+  const captureProd = useCallback(async () => {
+    const cv = pCanvasRef.current;
+    if (!cv || !sceneRef.current) return;
+    /* **순차**로 돈다. `toBlob` 이 비동기라 forEach 로 돌리면 콜백이 뜰 때쯤
+     * 캔버스가 이미 «다음 뷰»로 덮여 있고, 연속 다운로드도 막힌다(1차 실패 관측: 3장 중 1장). */
+    for (let i = 0; i < PRODUCT_VIEWS.length; i++) {
+      drawProd(i, CAP_SCALE);
+      const b = await new Promise<Blob | null>((r) => cv.toBlob(r, "image/png"));
+      dl(b, nameOf(PRODUCT_VIEWS[i].name));
+      await new Promise((r) => setTimeout(r, 700));
+    }
+    drawProd(pViewIx);
+  }, [drawProd, dl, nameOf, pViewIx]);
+
+  /** 대조 1장 — 왼쪽 제품 side-p · 오른쪽 «같은 상태»의 진단 래스터 sideXplus.
+   *  **판정 자료가 아니라 편의**다(v3-43 §0-4). */
+  const captureCompare = useCallback(async () => {
+    const S = sceneRef.current, cv = pCanvasRef.current;
+    if (!S || !cv) return;
+    const si = VIEWS.findIndex((v) => v.name === "sideXplus");
+    drawProd(PRODUCT_VIEWS.findIndex((v) => v.name === "side-p"), CAP_SCALE);
+    const H = cv.height, Wp = cv.width, Wd = Math.round((300 / 420) * H);
+    const out = document.createElement("canvas");
+    out.width = Wp + Wd; out.height = H;
+    const g = out.getContext("2d");
+    if (!g) return;
+    g.fillStyle = "#fff"; g.fillRect(0, 0, out.width, out.height);
+    g.drawImage(cv, 0, 0);
+    /* 진단 래스터를 «같은 상태»로 다시 낸다 — 등재 프리셋·등재 해상도 그대로 확대만 한다 */
+    const lo: [number, number, number] = [Infinity, Infinity, Infinity];
+    const hi: [number, number, number] = [-Infinity, -Infinity, -Infinity];
+    for (const A of [S.bodyPos, S.pos])
+      for (let i = 0; i < A.length; i += 3)
+        for (let c = 0; c < 3; c++) { lo[c] = Math.min(lo[c], A[i + c]); hi[c] = Math.max(hi[c], A[i + c]); }
+    const rgb = rasterize([{ pos: S.bodyPos, idx: S.bodyIdx, color: [190, 185, 178] },
+                           { pos: S.pos, idx: dIdx(S), color: [40, 90, 200] }],
+                          VIEWS[si], { lo, hi }, 300, 420);
+    const tmp = document.createElement("canvas");
+    tmp.width = 300; tmp.height = 420;
+    const tg = tmp.getContext("2d");
+    if (!tg) return;
+    const img = tg.createImageData(300, 420);
+    for (let i = 0, j = 0; i < 300 * 420; i++, j += 3) {
+      img.data[i * 4] = rgb[j]; img.data[i * 4 + 1] = rgb[j + 1];
+      img.data[i * 4 + 2] = rgb[j + 2]; img.data[i * 4 + 3] = 255;
+    }
+    tg.putImageData(img, 0, 0);
+    g.imageSmoothingEnabled = false;
+    g.drawImage(tmp, Wp, 0, Wd, H);
+    g.fillStyle = "#111"; g.font = `${Math.round(H / 30)}px sans-serif`;
+    g.fillText("제품 표시 side-p", 8, H - 8);
+    g.fillText("진단 래스터 sideXplus", Wp + 8, H - 8);
+    const cb = await new Promise<Blob | null>((r) => out.toBlob(r, "image/png"));
+    dl(cb, nameOf("compare-side"));
+    drawProd(pViewIx);
+  }, [drawProd, dl, nameOf, pViewIx]);
+
+
+  const capture = useCallback(() => {
+    const cv = canvasRef.current, S = sceneRef.current;
+    if (!cv || !S) return;
+    VIEWS.forEach((v, i) => {
+      draw(i);
+      cv.toBlob((b) => {
+        if (!b) return;
+        const url = URL.createObjectURL(b);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = `v3-41-${fabric}-d${Math.round(dMm)}-f${capFrame ?? prog?.frame ?? frames}-${shaHex.slice(0, 8)}-${v.name}.png`;
+        document.body.appendChild(a); a.click(); a.remove();
+        URL.revokeObjectURL(url);
+      }, "image/png");
+    });
+    setTimeout(() => draw(viewIx), 50);
+  }, [draw, fabric, frames, prog, shaHex, viewIx, dMm, capFrame]);
+
+  const pct = prog ? Math.round((prog.frame / prog.frames) * 100) : 0;
+
+  return (
+    <div className="absolute right-3 top-3 z-50 w-[320px] rounded-lg bg-white/95 p-3 text-sm shadow-lg ring-1 ring-black/10">
+      <div className="mb-2 font-semibold">v3 착장 하네스 (별도 진입 · 제품 기본은 v1 화면 · 정본 3종 = ?canon=1 · v2 = ?v2=1)</div>
+      <div className="mb-2 flex items-center gap-2">
+        <select className="rounded border px-1 py-0.5" value={fabric} onChange={(e) => setFabric(e.target.value)}
+                disabled={phase === "prep" || phase === "run"}>
+          {FABRICS.map((f) => <option key={f} value={f}>{f}</option>)}
+        </select>
+        <label className="flex items-center gap-1">프레임
+          <input className="w-20 rounded border px-1 py-0.5" type="number" value={frames}
+                 onChange={(e) => setFrames(Number(e.target.value))}
+                 disabled={phase === "prep" || phase === "run"} />
+        </label>
+        <label className="flex items-center gap-1">d
+          <input className="w-14 rounded border px-1 py-0.5" type="number" value={dMm}
+                 onChange={(e) => setDMm(Number(e.target.value))}
+                 disabled={phase === "prep" || phase === "run"} />mm
+        </label>
+      </div>
+      <div className="mb-2 flex gap-2">
+        <button className="rounded bg-black px-2 py-1 text-white disabled:opacity-40"
+                onClick={start} disabled={phase === "prep" || phase === "run"}>실행</button>
+        <button className="rounded border px-2 py-1 disabled:opacity-40"
+                onClick={cancel} disabled={phase !== "run"}>취소</button>
+        <button className="rounded border px-2 py-1 disabled:opacity-40"
+                onClick={save} disabled={!blobRef.current}>상태 저장</button>
+      </div>
+      <div className="mb-2 flex items-center gap-2 text-xs">
+        <select className="rounded border px-1 py-0.5" value={settledIx}
+                onChange={(e) => setSettledIx(Number(e.target.value))}
+                disabled={phase === "prep" || phase === "run"}>
+          {SETTLED.map((s2, i) => <option key={s2.url} value={i}>{s2.label}</option>)}
+        </select>
+        <button className="rounded bg-slate-700 px-2 py-1 text-white disabled:opacity-40"
+                onClick={showSettled} disabled={phase === "prep" || phase === "run"}>정착 상태 표시</button>
+      </div>
+
+      {/* v3-71 §1 — **베이크 마운트**(하네스). 크기를 픽셀로 못박은 전용 캔버스다. */}
+      <div data-bakemount className="mb-1 inline-block border border-white/20">
+        <BakeMount />
+      </div>
+      <div className="mb-1 flex flex-wrap items-center gap-1">
+        <button className="rounded border px-2 py-1" onClick={bakeProbe}>㉠ 판별(3값)</button>
+        <button className="rounded border px-2 py-1" onClick={() => bakeAndRun(null)}>㉮″ rAF 기본</button>
+        <button className="rounded border px-2 py-1" onClick={() => bakeAndRun(null, true, "apose")}>A포즈 기본</button>
+        <button className="rounded border px-2 py-1" onClick={() => bakeAndRun(null, true, "tpose")}>T포즈 기본</button>
+        <button className="rounded border px-2 py-1" onClick={() => bakeAndRun(110, true, "tpose")}>T포즈 가슴110</button>
+        <button className="rounded border px-2 py-1" onClick={bakeSet}>민감도 세트 굽기(10칸)</button>
+        <button className="rounded border px-2 py-1" onClick={bakeGrid}>그리드 몸 굽기(27칸)</button>
+        <span className="opacity-60">결과는 콘솔 `[v3-71]`</span>
+      </div>
+      {/* v4-40 §1-② — A포즈 그리드 몸 27칸(승혁 실행 · 절차서 `docs/v4/40-실행절차.md`). */}
+      <div className="mb-1"><V4AposeGrid /></div>
+
+      {/* v3-70 §2 — **몸 주입 스모크**(계기 · 물리 0프레임). 살아있는 마네킹이 있어야 하므로
+        `?v2=1&v3=1` 에서만 의미가 있다(v2 씬이 마네킹을 마운트한다). */}
+      <div className="mb-1 flex flex-wrap items-center gap-1">
+        <button className="rounded border px-2 py-1 disabled:opacity-40"
+                onClick={() => injectSmoke(false)} disabled={phase === "prep" || phase === "run"}>
+          몸 주입 스모크(기본 몸)</button>
+        <button className="rounded border px-2 py-1 disabled:opacity-40"
+                onClick={() => injectSmoke(true)} disabled={phase === "prep" || phase === "run"}>
+          몸 주입 스모크(현 슬라이더)</button>
+        <span className="opacity-60">결과는 콘솔 `[v3-70]`</span>
+      </div>
+
+      {phase === "prep" && <div className="text-gray-600">장면 조립·SDF 굽는 중…</div>}
+      {ready && (
+        <div className="mb-1 text-xs text-gray-700">
+          정점 {ready.n} · 삼각형 {ready.tris} · 서브스텝 {ready.sub} · 램프 {ready.rampN}<br />
+          목선 {ready.dims.neckHalfWidthCm.toFixed(2)}/{ready.dims.necklineGirthCm.toFixed(2)}cm ·
+          소매산 {ready.dims.capHeightCm.toFixed(2)}cm · 암홀깊이 {ready.dims.armholeDepthCm.toFixed(3)}cm<br />
+          조립 {(ready.prepMs / 1000).toFixed(1)}초
+        </div>
+      )}
+      {prog && (
+        <div className="mb-1">
+          <div className="h-2 w-full overflow-hidden rounded bg-gray-200">
+            <div className="h-2 bg-black" style={{ width: `${pct}%` }} />
+          </div>
+          <div className="mt-1 text-xs text-gray-700">
+            {prog.frame} / {prog.frames} 프레임 ({pct}%) · 창 순변위 {prog.netMm.toFixed(3)}mm ·
+            {(prog.elapsedMs / 1000).toFixed(0)}초 · 백그라운드 수신 {hidden}
+          </div>
+        </div>
+      )}
+      {msg && <div className={phase === "error" ? "text-red-700" : "text-gray-800"}>{msg}</div>}
+
+      {/* v3-43 §2 — 제품급 표시 층(기본) ↔ v3-41 진단 래스터(등재 3뷰 프리셋 · 무변경) */}
+      <div className="mt-2 flex gap-1 text-xs">
+        <button onClick={() => setMode("prod")}
+                className={`rounded border px-1.5 py-0.5 ${mode === "prod" ? "bg-black text-white" : ""}`}>제품 표시</button>
+        <button onClick={() => setMode("diag")}
+                className={`rounded border px-1.5 py-0.5 ${mode === "diag" ? "bg-black text-white" : ""}`}>진단 래스터</button>
+        <label className="ml-1 flex items-center gap-1">
+          <input type="checkbox" checked={bridge} onChange={(e) => setBridge(e.target.checked)} />
+          시접 브리지
+        </label>
+      </div>
+
+      <div className={mode === "prod" ? "mt-2" : "hidden"}>
+        <div className="mb-1 flex flex-wrap items-center gap-1 text-xs">
+          {PRODUCT_VIEWS.map((v, i) => (
+            <button key={v.name} onClick={() => setPViewIx(i)}
+                    className={`rounded border px-1.5 py-0.5 ${i === pViewIx ? "bg-black text-white" : ""}`}>
+              {v.name}
+            </button>
+          ))}
+          <button className="rounded border px-1.5 py-0.5 disabled:opacity-40"
+                  onClick={captureProd} disabled={!sceneRef.current}>캡처 3장</button>
+          <button className="rounded border px-1.5 py-0.5 disabled:opacity-40"
+                  onClick={captureCompare} disabled={!sceneRef.current}>대조 1장</button>
+        </div>
+        <canvas ref={pCanvasRef} className="w-full rounded border" style={{ aspectRatio: "300 / 420" }} />
+        {/* v3-52 §1-4 — **핏 리포트 5행**. G5(경계 자기 공개) · G6(자기검사 표시)를 화면이 진다. */}
+        {fitErr && <div className="mt-2 text-rose-600">핏 리포트 산출 불가 — {fitErr}</div>}
+        {fit && (
+          <div className="mt-1 flex flex-wrap items-center gap-2 text-[11px]">
+            <label className="flex items-center gap-1">
+              <input type="checkbox" checked={fitColor} disabled={printOn}
+                     onChange={(e) => setFitColor(e.target.checked)} />
+              <span className={printOn ? "opacity-50" : ""}>핏 맵 색</span>
+            </label>
+            <label className="flex items-center gap-1">
+              <input type="checkbox" checked={printOn} onChange={(e) => setPrintOn(e.target.checked)} />
+              <span>프린트</span>
+            </label>
+            {printUv && (
+              <span className="opacity-70">
+                UV 축척 <b>{(printUv.scaleM * 100).toFixed(2)}cm</b> = uv 1.0 · 앞판 uMax{" "}
+                <b>{printUv.panels.find((p) => p.name === "front")?.uMax.toFixed(4)}</b>
+                {comp && <> · 대표색 <b>rgb({comp.color.r.toFixed(0)},{comp.color.g.toFixed(0)},{comp.color.b.toFixed(0)})</b>
+                  {comp.printBox ? <> · 프린트 <b>{comp.printBox.w.toFixed(0)}×{comp.printBox.h.toFixed(0)}px</b></> : <> · <b>무지</b></>}
+                  {comp.shrunk && <b className="text-amber-600"> · 하단 축소 {comp.shrunk.toFixed(3)}</b>}</>}
+                {!tex && <b className="text-rose-600"> · 텍스처 미로드</b>}
+              </span>
+            )}
+            {/* G5 — 범례가 «분기점 값»을 스스로 밝힌다. **v3-67 §1: 마크업을 `FitReportTable.tsx` 로
+              «옮겨» 제품 화면과 공유한다 — 렌더 결과 동일 · 계산 채널 0줄.** */}
+            <FitLegend fit={fit} />
+          </div>
+        )}
+        {fit && <FitReportTable fit={fit} />}
+      </div>
+
+      {/* v3-41 §2 — 읽기 전용 표시. 등재 3뷰 프리셋. */}
+      <div className={mode === "diag" ? "mt-2" : "hidden"}>
+        <div className="mb-1 flex items-center gap-2 text-xs">
+          {VIEWS.map((v, i) => (
+            <button key={v.name} onClick={() => setViewIx(i)}
+                    className={`rounded border px-1.5 py-0.5 ${i === viewIx ? "bg-black text-white" : ""}`}>
+              {v.name}
+            </button>
+          ))}
+          <button className="rounded border px-1.5 py-0.5 disabled:opacity-40"
+                  onClick={capture} disabled={!sceneRef.current}>캡처 3장</button>
+        </div>
+        <canvas ref={canvasRef} width={300} height={420}
+                className="w-full rounded border bg-white" />
+        {shaHex && <div className="mt-1 break-all text-[10px] text-gray-500">sha256 {shaHex}</div>}
+      </div>
+    </div>
+  );
+}
+
+/** `?v3=1` 일 때만 그린다 */
+export function V3PanelGate() {
+  const on = typeof window !== "undefined" &&
+    new URLSearchParams(window.location.search).get("v3") === "1";
+  return on ? <V3Panel /> : null;
+}

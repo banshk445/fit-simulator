@@ -1,0 +1,18 @@
+{
+ "name": "v4-20-Tasm",
+ "fp": "f64",
+ "arch": "cuda",
+ "frames": 200,
+ "cells": [
+  {
+   "cell": "Tasm_M",
+   "asm": "asm-Tasm_M.bin",
+   "reportCell": "c100-h170-s45_M",
+   "frames": 200,
+   "cellCap": {
+    "cell_cap": 192,
+    "max_cells": 131072
+   }
+  }
+ ]
+}

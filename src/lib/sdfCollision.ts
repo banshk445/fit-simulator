@@ -11,6 +11,7 @@
 // 굽기 비용은 rebuildCollision(200ms 디바운스, 워커) 때 한 번뿐이고,
 // 조회는 트라이리니어 보간이라 O(1) — BVH 트리 탐색보다 훨씬 싸다.
 import { nearestOnSegments, type Segment } from "./bodySkeleton";
+import { SDF_FAR, SDF_VOXEL } from "./clothConfig";
 
 export interface SdfField {
   originX: number;
@@ -85,6 +86,51 @@ export function makeSkeletonSignedSampler(
 }
 
 // sample: 월드 좌표의 부호거리(몸 안쪽 음수). null이면 탐지 반경 밖.
+// ── P2b(b) — **v2 패턴 마찰 SDF 굽기 글루**. `dressPattern.ts`에 있던
+// 「bbox 산출 → 부호 샘플러 선택 → `bakeSdf`」 3단을 그대로 옮긴 것이고 **거동 무변경**이다
+// (항등 리팩터 · 값 변경 0 · 물리 수정 0).
+//
+// 브라우저 워커가 «같은» 필드를 구워야 한다 — 굽기 상자·패딩·부호 기준이 갈리면
+// 마찰이 갈리고 그것은 물리 차이다. **기본값을 여기 한 곳에 둔다**:
+//   `padM` 기본 **0.08** · `skeletonSign` 기본 **false**(62회차 S3는 `SKELSIGN=1` 진단 전용)
+//   y 상하한은 `topY + 0.1` / `hemY − 0.15`(기존 리터럴 그대로)
+// `box`를 함께 반환하는 이유: 스크립트의 `SLEEVESIGN` 오라클이 같은 중심을 써야 한다.
+export interface PatternSdfBox {
+  minX: number; maxX: number; minZ: number; maxZ: number; yTop: number; yBot: number;
+}
+
+export function bakePatternFrictionSdf(
+  mesh: { closestPointUnsigned(px: number, py: number, pz: number, r: number): { x: number; y: number; z: number; distance: number } | null },
+  skeletonSegments: readonly Segment[],
+  position: Float32Array,
+  topY: number,
+  hemY: number,
+  opts: { skeletonSign?: boolean; padM?: number } = {},
+): { field: SdfField; box: PatternSdfBox } {
+  const padM = opts.padM ?? 0.08;
+  const yTop = topY + 0.1;
+  const yBot = hemY - 0.15;
+  let minX = Infinity, maxX = -Infinity, minZ = Infinity, maxZ = -Infinity;
+  for (let i = 0; i < position.length; i += 3) {
+    const y = position[i + 1];
+    if (y < yBot || y > yTop) continue;
+    if (position[i] < minX) minX = position[i];
+    if (position[i] > maxX) maxX = position[i];
+    if (position[i + 2] < minZ) minZ = position[i + 2];
+    if (position[i + 2] > maxZ) maxZ = position[i + 2];
+  }
+  const box: PatternSdfBox = { minX, maxX, minZ, maxZ, yTop, yBot };
+  const field = bakeSdf(
+    opts.skeletonSign
+      ? makeSkeletonSignedSampler(mesh, skeletonSegments, SDF_FAR, SDF_FAR)
+      : makeRadialSignedSampler(mesh, (minX + maxX) / 2, (minZ + maxZ) / 2, SDF_FAR, SDF_FAR),
+    { x: minX - padM, y: yBot, z: minZ - padM },
+    { x: maxX + padM, y: yTop, z: maxZ + padM },
+    SDF_VOXEL, SDF_FAR,
+  );
+  return { field, box };
+}
+
 export function bakeSdf(
   sample: (x: number, y: number, z: number) => number | null,
   min: { x: number; y: number; z: number },

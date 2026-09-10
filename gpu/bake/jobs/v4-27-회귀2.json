@@ -1,0 +1,18 @@
+{
+ "name": "v4-27-회귀2",
+ "fp": "f64",
+ "arch": "cuda",
+ "cells": [
+  {
+   "cell": "Tasm_M",
+   "asm": "asm-Tasm_M.bin",
+   "reportCell": "c100-h170-s45_M",
+   "frames": 200,
+   "cellCap": {
+    "cell_cap": 192,
+    "max_cells": 131072
+   }
+  }
+ ],
+ "frames": 200
+}

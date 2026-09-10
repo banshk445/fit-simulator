@@ -26,6 +26,12 @@ const scratchRay = new THREE.Ray();
 // 작은 조각으로 쪼그라듦). selfCollision.ts와 같은 under-relaxation 패턴을
 // 적용해, 한 호출당 목표 지점까지 일부만 이동시키고 나머지는 이후 반복에서
 // 구조 제약과 번갈아 가며 서서히 수렴하게 한다.
+// ── 101 §2(1) — 탐지 실패(`closestPointToPoint`가 `null`) 누적 카운터.
+// **읽기 전용 진단**이고 물리에 되먹이지 않는다(값을 쓰는 코드 0곳).
+let resolverMissCount = 0;
+export const getResolverMissCount = (): number => resolverMissCount;
+export const resetResolverMissCount = (): void => { resolverMissCount = 0; };
+
 const PUSH_RELAXATION = 0.4;
 
 // meshCollision.ts의 MannequinCollisionMesh가 메인 스레드(살아있는 Object3D
@@ -207,6 +213,16 @@ export class ArrayBvhCollision {
     skipLocalEndExclusive?: number,
     columnRange?: ColumnRange,
     penetrationAxis?: { enabled: boolean; x: number; z: number },
+    // ── 53회차 축① (v2 전용 · **미전달이면 기존 경로 그대로**) ──────────────
+    // 이동량은 `Δ·n = margin − d`이므로 **국면이 셋**이다(52회차 §0-가):
+    //   국면1 d > margin   → 안쪽으로 끌어당김 = **자석분**
+    //   국면2 0 < d ≤ margin → 껍질 안착(밖으로 밀어냄 · 관통 아님)
+    //   국면3 d ≤ 0        → 관통 해소
+    // `d`는 **이미 계산된 값들로 복원된다**(새 BVH 질의 0 · 새 상수 0):
+    //   d = (p − hit.point)·n  ← 밀어내는 그 법선과 **같은 법선**이라 자기정합이다.
+    // `w`는 **국면1에만** 곱한다 — 국면2·3은 불변.
+    // w ≡ 1이면 기존 경로와 **계산 동치**여야 한다(축① 무변화 실증의 근거).
+    magnet?: { w: (ny: number) => number },
   ): CollisionResolver {
     return (positions, pinned, n) => {
       const bvh = this.bvh;
@@ -223,7 +239,11 @@ export class ArrayBvhCollision {
         const ix = i * 3;
         scratchPoint.set(positions[ix], positions[ix + 1], positions[ix + 2]);
         const hit = bvh.closestPointToPoint(scratchPoint, this.hitInfo, 0, detectionRadius);
-        if (!hit) continue;
+        // ── 101 §2(1) — **말없는 실패 경로 계수**(98회차 등재 · 함정 25).
+        // 탐지 반경 밖이면 그 정점은 그 프레임에 **아무 처리도 안 된다**. 로그도 카운터도
+        // 없어서 「몇 개가 무처리였나」가 원리적으로 산출 불가였다. margin·반경을 건드리면
+        // 이 수가 판정을 왜곡하므로 세기만 한다 — **거동 0줄**(카운터 증가뿐).
+        if (!hit) { resolverMissCount++; continue; }
         if (penetrationAxis?.enabled) {
           const px = positions[ix];
           const py = positions[ix + 1];
@@ -239,9 +259,16 @@ export class ArrayBvhCollision {
         const targetX = hit.point.x + scratchNormal.x * margin;
         const targetY = hit.point.y + scratchNormal.y * margin;
         const targetZ = hit.point.z + scratchNormal.z * margin;
-        positions[ix] += (targetX - positions[ix]) * PUSH_RELAXATION;
-        positions[ix + 1] += (targetY - positions[ix + 1]) * PUSH_RELAXATION;
-        positions[ix + 2] += (targetZ - positions[ix + 2]) * PUSH_RELAXATION;
+        let relax = PUSH_RELAXATION;
+        if (magnet) {
+          // 국면 판정 — `d`를 **밀어내는 그 법선**으로 복원한다(새 질의 0 · 새 상수 0 · 자기정합).
+          const qx = positions[ix] - hit.point.x, qy = positions[ix + 1] - hit.point.y, qz = positions[ix + 2] - hit.point.z;
+          const d = qx * scratchNormal.x + qy * scratchNormal.y + qz * scratchNormal.z;
+          if (d > margin) relax *= magnet.w(scratchNormal.y); // **국면1(자석분)에만**
+        }
+        positions[ix] += (targetX - positions[ix]) * relax;
+        positions[ix + 1] += (targetY - positions[ix + 1]) * relax;
+        positions[ix + 2] += (targetZ - positions[ix + 2]) * relax;
       }
     };
   }

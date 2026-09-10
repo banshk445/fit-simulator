@@ -8,6 +8,16 @@ import { CHEST_HEIGHT_RATIO } from "../constants";
 import { Mannequin } from "./Mannequin";
 import { Garment } from "./Garment";
 import { ArmCapsuleDebug } from "./ArmCapsuleDebug";
+import { lazy } from "react";
+import { CAPTURE_VIEWS } from "../lib/captureViews";
+
+// v2 패턴 경로 — `?patterncore=1`에서만 «마운트»된다.
+// **P9 §3 정정**: 예전에는 `import.meta.env.DEV &&` 삼항으로 감싸 프로덕션 번들에서
+// import 자체를 잘랐다(fixture 1.8MB를 dist에서 빼려던 것). 그러면 배포본에 v2가
+// 아예 없어서 데모 URL이 성립하지 않는다. 이제 **동적 import**로 남기고 마운트만
+// 파라미터로 가른다 — 파라미터 없는 진입에서는 이 청크를 **받지도 않는다**(코드 분할).
+// 기본 거동은 무변경(v1).
+const PatternPreview = lazy(async () => ({ default: (await import("./PatternPreview")).PatternPreview }));
 
 // 단위 원기둥(반지름 1, 높이 1)을 scale로 늘려 부드럽게 보간(lerp)한다.
 function useLerpedScale(targetScale: THREE.Vector3Tuple, targetPositionY: number) {
@@ -55,15 +65,6 @@ function GarmentMesh() {
   );
 }
 
-// 판정용 고정 시점. 값은 기본 카메라(0,1.3,3 / fov45 / target 0,1,0)에서
-// 출발해 목·소매만 당긴 것이다.
-const CAPTURE_VIEWS: Record<string, { pos: [number, number, number]; target: [number, number, number]; fov?: number }> = {
-  front: { pos: [0, 1.3, 3], target: [0, 1, 0] },
-  back: { pos: [0, 1.3, -3], target: [0, 1, 0] },
-  neck: { pos: [0, 1.5, 1.0], target: [0, 1.38, 0], fov: 35 },
-  neckback: { pos: [0, 1.5, -1.0], target: [0, 1.38, 0], fov: 35 },
-  cuff: { pos: [0, 1.25, 1.6], target: [0, 1.15, 0], fov: 35 },
-};
 
 export function FitCanvas() {
   const garmentImage = useFitStore((s) => s.garmentImage);
@@ -78,8 +79,20 @@ export function FitCanvas() {
   // DEV: ?view=front|back|neck|cuff 로 카메라를 고정 시점에 놓는다.
   // 판정용 캡처(npm run capture)가 사람 손 없이 같은 구도를 다시 잡기
   // 위한 것 — 눈대중으로 돌린 각도는 전후 대조가 안 된다.
-  const view = new URLSearchParams(window.location.search).get("view");
+  const query = new URLSearchParams(window.location.search);
+  const view = query.get("view");
   const shot = view ? CAPTURE_VIEWS[view] : undefined;
+  // v2 patternCore — 켜면 v1 옷 대신 패턴 정적 배치만 그린다(물리 없음).
+  const patternCore = query.get("patterncore") === "1";
+  // **68회차 정정**: 이 문장은 원래 "사진이 화면에 안 나온다"였고 그건 그때까지 참이었다
+  // (v2 렌더러가 store를 안 봤다). 68회차가 `PatternPreview`에 배선을 넣어 **v2도 사진을 그린다**.
+  // 경고를 지우지 않고 내용을 바꾼다 — 두 경로의 화면이 서로 다르므로(아래) 지금 무엇을
+  // 보고 있는지는 여전히 알려야 한다.
+  if (patternCore && garmentImage) {
+    console.warn(
+      "[fit] ?patterncore=1 — v2 경로가 업로드 사진을 그린다(68회차 배선). 단 패널 UV가 겹쳐 있어 앞/뒤/소매가 같은 그림을 반복한다(69회차). v1 렌더를 보려면 patterncore 파라미터를 뺄 것(http://localhost:5173/).",
+    );
+  }
 
   return (
     <Canvas camera={{ position: shot?.pos ?? [0, 1.3, 3], fov: shot?.fov ?? 45 }}>
@@ -88,8 +101,13 @@ export function FitCanvas() {
       <Suspense fallback={null}>
         <Mannequin />
       </Suspense>
-      {(!garmentImage || !wearable) && <GarmentMesh />}
-      {garmentImage && wearable && (
+      {patternCore && PatternPreview && (
+        <Suspense fallback={null}>
+          <PatternPreview />
+        </Suspense>
+      )}
+      {!patternCore && (!garmentImage || !wearable) && <GarmentMesh />}
+      {!patternCore && garmentImage && wearable && (
         <Suspense fallback={null}>
           <Garment imageUrl={garmentImage} />
         </Suspense>

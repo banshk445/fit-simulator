@@ -126,27 +126,41 @@ interface PrintBox {
 
 // 대표색과 충분히 다른 픽셀들의 바운딩 박스를 원본 이미지 픽셀 좌표로
 // 구한다 — 없으면(무지 옷) null.
+// P34 §1 — 반환을 `{box, parts}`로 넓혔다. `box`는 **종전과 비트 동일**하고,
+// `parts`는 **경계에 안 닿는 8-연결 성분들의 개별 bbox**다(78회차 재스캔이 쓰는
+// 것과 «같은 집합» — 새 규칙 0). 성분 분리는 이제 항상 돌지만 `box` 산출 경로에는
+// 관여하지 않는다(재스캔 발동 조건·`onRescan` 발화 시점도 종전 그대로).
+interface PrintScan {
+  box: PrintBox | null;
+  parts: PrintBox[];
+}
+
 function findPrintBoundingBox(
   image: HTMLImageElement,
   srcW: number,
   srcH: number,
   color: { r: number; g: number; b: number },
-): PrintBox | null {
+  onOversize?: (box: PrintBox) => void,
+  onRescan?: (d: { components: number; excluded: number; box: PrintBox | null }) => void,
+): PrintScan {
   const scanCanvas = document.createElement("canvas");
   scanCanvas.width = SCAN_SIZE;
   scanCanvas.height = SCAN_SIZE;
   const ctx = scanCanvas.getContext("2d");
-  if (!ctx) return null;
+  if (!ctx) return { box: null, parts: [] };
   ctx.drawImage(image, 0, 0, SCAN_SIZE, SCAN_SIZE);
   let data: Uint8ClampedArray;
   try {
     data = ctx.getImageData(0, 0, SCAN_SIZE, SCAN_SIZE).data;
   } catch {
-    return null; // cross-origin 오염 등 — 안전하게 "프린트 없음"으로 취급.
+    return { box: null, parts: [] }; // cross-origin 오염 등 — 안전하게 "프린트 없음"으로 취급.
   }
 
   const { r: r0, g: g0, b: b0 } = color;
 
+  // 78회차 — 후보 화소를 **마스크로도 남긴다**(bbox 산출식은 그대로).
+  // 문턱에 걸렸을 때만 쓰는 재스캔(G2′)의 입력이고, 미발동 경로에서는 읽히지 않는다.
+  const mask = new Uint8Array(SCAN_SIZE * SCAN_SIZE);
   let minX = SCAN_SIZE;
   let minY = SCAN_SIZE;
   let maxX = -1;
@@ -159,6 +173,7 @@ function findPrintBoundingBox(
       const dg = data[i + 1] - g0;
       const db = data[i + 2] - b0;
       if (Math.sqrt(dr * dr + dg * dg + db * db) < PRINT_COLOR_DIST_THRESHOLD) continue;
+      mask[y * SCAN_SIZE + x] = 1;
       if (x < minX) minX = x;
       if (x > maxX) maxX = x;
       if (y < minY) minY = y;
@@ -166,7 +181,7 @@ function findPrintBoundingBox(
     }
   }
 
-  if (maxX < 0) return null;
+  if (maxX < 0) return { box: null, parts: [] };
 
   const scaleX = srcW / SCAN_SIZE;
   const scaleY = srcH / SCAN_SIZE;
@@ -176,13 +191,112 @@ function findPrintBoundingBox(
     w: (maxX - minX + 1) * scaleX,
     h: (maxY - minY + 1) * scaleY,
   };
-  if (box.w >= srcW * PRINT_MAX_FRAME_FRACTION || box.h >= srcH * PRINT_MAX_FRAME_FRACTION) return null;
-  return box;
+  // 71회차 — 문턱 발동을 **밖에서 구분할 수 있게** 상자를 함께 넘긴다.
+  // (이전에는 "프린트 없음"과 "프레임 초과"가 둘 다 null이라 판별자가 못 갈랐다.)
+  const oversized = (b: PrintBox): boolean =>
+    b.w >= srcW * PRINT_MAX_FRAME_FRACTION || b.h >= srcH * PRINT_MAX_FRAME_FRACTION;
+
+  // ── 78회차 처방 **G2′**의 성분 분리 — P34에서 «항상» 돌린다. ────────────────
+  // 알파 없는 흰 배경 자산에서는 배경이 통째로 "프린트"로 잡혀 bbox가 프레임 전체가
+  // 된다(76·77회차 실측: 100%×100%). 색으로는 못 가른다 — 배경을 완벽히 지워도
+  // **실루엣 1픽셀 후광 링**이 남고 그 밝기가 프린트와 겹친다(후광 min 64 vs 프린트 med 113).
+  // 그래서 색이 아니라 **위상**을 쓴다: 후보 화소를 8-연결 성분으로 나누고
+  // **프레임 경계에 닿는 성분을 제외**한다(배경은 정의상 경계에 닿는다).
+  // **새 상수 0**(문턱도 근백색 술어도 안 쓴다) · **1패스 미발동 자산은 여기 오지 않으므로
+  // 경로가 정의상 동일**하다 → v1 거동 불변(게이트 불요).
+  // 재스캔 후에도 걸리면 기존대로 프린트를 버린다.
+  const label = new Int32Array(SCAN_SIZE * SCAN_SIZE).fill(-1);
+  const stack: number[] = [];
+  let nComp = 0, nExcluded = 0;
+  const parts: PrintBox[] = [];
+  let rMinX = SCAN_SIZE, rMinY = SCAN_SIZE, rMaxX = -1, rMaxY = -1;
+  for (let start = 0; start < mask.length; start++) {
+    if (mask[start] === 0 || label[start] !== -1) continue;
+    const id = nComp++;
+    let touchesEdge = false;
+    let cMinX = SCAN_SIZE, cMinY = SCAN_SIZE, cMaxX = -1, cMaxY = -1;
+    label[start] = id;
+    stack.length = 0;
+    stack.push(start);
+    while (stack.length > 0) {
+      const cur = stack.pop() as number;
+      const cx = cur % SCAN_SIZE, cy = (cur / SCAN_SIZE) | 0;
+      if (cx === 0 || cy === 0 || cx === SCAN_SIZE - 1 || cy === SCAN_SIZE - 1) touchesEdge = true;
+      if (cx < cMinX) cMinX = cx;
+      if (cx > cMaxX) cMaxX = cx;
+      if (cy < cMinY) cMinY = cy;
+      if (cy > cMaxY) cMaxY = cy;
+      for (let dy = -1; dy <= 1; dy++) {
+        for (let dx = -1; dx <= 1; dx++) {
+          if (dx === 0 && dy === 0) continue;
+          const nx = cx + dx, ny = cy + dy;
+          if (nx < 0 || ny < 0 || nx >= SCAN_SIZE || ny >= SCAN_SIZE) continue;
+          const ni = ny * SCAN_SIZE + nx;
+          if (mask[ni] === 0 || label[ni] !== -1) continue;
+          label[ni] = id;
+          stack.push(ni);
+        }
+      }
+    }
+    if (touchesEdge) { nExcluded++; continue; }
+    // P34 — 성분 «개별» bbox. 합집합(rescanBox)은 아래에서 종전대로 따로 낸다.
+    parts.push({
+      x: cMinX * scaleX, y: cMinY * scaleY,
+      w: (cMaxX - cMinX + 1) * scaleX, h: (cMaxY - cMinY + 1) * scaleY,
+    });
+    if (cMinX < rMinX) rMinX = cMinX;
+    if (cMaxX > rMaxX) rMaxX = cMaxX;
+    if (cMinY < rMinY) rMinY = cMinY;
+    if (cMaxY > rMaxY) rMaxY = cMaxY;
+  }
+
+  // 1패스가 문턱을 안 넘으면 종전대로 여기서 끝난다 — `onRescan`은 발화하지 않는다
+  // (「재스캔 미실행」이라는 판별자의 뜻을 P34가 바꾸지 않는다).
+  if (!oversized(box)) return { box, parts };
+
+  const rescanBox: PrintBox | null = rMaxX < 0 ? null : {
+    x: rMinX * scaleX, y: rMinY * scaleY,
+    w: (rMaxX - rMinX + 1) * scaleX, h: (rMaxY - rMinY + 1) * scaleY,
+  };
+  if (onRescan) onRescan({ components: nComp, excluded: nExcluded, box: rescanBox });
+  if (rescanBox && !oversized(rescanBox)) return { box: rescanBox, parts };
+  if (onOversize) onOversize(box);
+  return { box: null, parts };
+}
+
+// ── 71회차 v2 적응 (선택 인자 · **미전달이면 v1과 계산 동치**) ────────────────
+// v1 몸판은 UV u∈[0,1] 전체를 쓰지만 v2 패널은 자기 bbox만 쓴다(69·70회차 실측:
+// 몸판 u∈[0, 55/70 = 0.7857]). 프린트 폭·중심을 그 **`uMax`에서 재도출**한다 —
+// **새 상수 0**이고 `uMax=1`이면 아래 두 식이 기존 값과 정확히 같아진다.
+// `onDiag`는 71회차 §3 거짓-갈래 판별자다(대표색·프린트 bbox·프레임 비율·
+// PRINT_MAX_FRAME_FRACTION 발동 여부). **인쇄만 하고 계산에 관여하지 않는다.**
+export interface CompositeOptions {
+  uMax?: number;
+  // P32 §1 — 원본 프레임 «안»에서 옷이 차지하는 픽셀 박스. 주어지면 프린트의
+  // 위치·상대 폭을 이 박스 기준으로 읽어 캔버스의 «같은 상대 자리»에 싣는다.
+  // 미전달(또는 null)이면 종전 상수 배치 그대로다 — **v1은 이 인자를 안 넘기므로
+  // 계산이 종전과 비트 동일**하다(`Garment.tsx:341`).
+  garmentRegion?: { x: number; y: number; w: number; h: number } | null;
+  onDiag?: (d: {
+    color: { r: number; g: number; b: number };
+    printBox: PrintBox | null;
+    frameFracW: number;
+    frameFracH: number;
+    maxFrameFired: boolean;
+    corner00: { r: number; g: number; b: number } | null;
+    // 78회차 G2′ — 재스캔이 돌았는지, 경계 접촉 성분을 몇 개 뺐는지, 그 결과 bbox.
+    // 재스캔이 안 돌면 null이다(1패스 미발동 = 경로 불변의 직접 증거).
+    rescan: { components: number; excluded: number; box: PrintBox | null } | null;
+    // P34 — 경계에 안 닿는 성분들의 «개별» bbox. 성분별 배치가 실제로 몇 개를
+    // 옮겼는지 밖에서 셀 수 있어야 한다(빈 배열이면 상수 폴백으로 떨어진 것).
+    parts: PrintBox[];
+  }) => void;
 }
 
 // 몸판 전체를 대표색(테두리 기반)으로 칠하고, 실제 프린트 영역(있다면)만
 // 원본 비율 그대로 가슴 중앙에 합성한 캔버스를 반환한다.
-export function compositeGarmentTexture(image: HTMLImageElement): HTMLCanvasElement {
+export function compositeGarmentTexture(image: HTMLImageElement, opts?: CompositeOptions): HTMLCanvasElement {
+  const uMax = opts?.uMax ?? 1;
   const representativeColor = borderRepresentativeColor(image);
   const canvas = document.createElement("canvas");
   canvas.width = OUTPUT_SIZE;
@@ -198,14 +312,102 @@ export function compositeGarmentTexture(image: HTMLImageElement): HTMLCanvasElem
   const srcH = image.naturalHeight || image.height;
   if (!srcW || !srcH) return canvas;
 
-  const printBox = findPrintBoundingBox(image, srcW, srcH, representativeColor);
+  let oversize: PrintBox | null = null;
+  let rescan: { components: number; excluded: number; box: PrintBox | null } | null = null;
+  const scan = findPrintBoundingBox(
+    image, srcW, srcH, representativeColor,
+    (b) => { oversize = b; },
+    (d) => { rescan = d; },
+  );
+  const printBox = scan.box;
+  if (opts?.onDiag) {
+    // 판별자 — 문턱 전 상자(`printBox ?? oversize`)로 프레임 비율을 낸다.
+    // `maxFrameFired`는 **문턱이 실제로 걸렸을 때만** 참이다(프린트 없음과 구분된다).
+    const raw: PrintBox | null = printBox ?? oversize;
+    let corner00: { r: number; g: number; b: number } | null = null;
+    try {
+      const d = ctx.getImageData(0, 0, 1, 1).data;
+      corner00 = { r: d[0], g: d[1], b: d[2] };
+    } catch { corner00 = null; }
+    opts.onDiag({
+      color: representativeColor,
+      printBox: raw,
+      frameFracW: raw ? raw.w / srcW : 0,
+      frameFracH: raw ? raw.h / srcH : 0,
+      maxFrameFired: oversize !== null,
+      corner00,
+      rescan,
+      parts: scan.parts,
+    });
+  }
   if (!printBox) return canvas;
 
   const printAspect = printBox.w / printBox.h;
-  const destW = OUTPUT_SIZE * PRINT_WIDTH_FRACTION;
-  const destH = destW / printAspect;
-  const destX = (OUTPUT_SIZE - destW) / 2;
-  const destY = OUTPUT_SIZE * PRINT_TOP_FRACTION;
+  // v2 적응: 패널이 쓰는 u 대역 [0, uMax]를 기준으로 폭·중심을 잡는다.
+  // uMax=1이면 `OUTPUT_SIZE*PRINT_WIDTH_FRACTION` / `(OUTPUT_SIZE-destW)/2`로 환원된다.
+  const panelW = OUTPUT_SIZE * uMax;
+
+  // ── P32 §1 — 원본 위치·크기 승계 ──────────────────────────────────────────
+  // 캔버스 세로 [0, OUTPUT_SIZE]가 패널 v[1, 0](어깨선→밑단) 전체이고,
+  // 가로 [0, panelW]가 패널 u[0, uMax] 전체다(P31 §1-2 실측). 그래서 옷 박스
+  // 안에서의 상대 좌표를 그대로 곱하면 «같은 자리»가 된다. 새 상수 0.
+  const gr = opts?.garmentRegion;
+
+  // ── P34 §1 — **성분별 개별 배치**. ────────────────────────────────────────
+  // 종전에는 후보 화소 «전량»의 단일 bbox 하나를 옮겼다. 그래서 목 리브/라벨
+  // (69px)이 프린트 본체(866px)와 한 상자에 묶여 상단을 끌어올렸다(P33 §1-3).
+  // 성분을 각자 «자기» 상대 자리에 옮기면 그 묶임이 원리적으로 사라진다 —
+  // **선택 규칙이 없으므로 새 문턱도 반례도 없다**(「최대 성분만」의 반례였던
+  // 가슴+소매 2프린트도 둘 다 제자리로 간다).
+  // 집합은 재스캔 G2′가 쓰는 것과 «같다» — 경계에 닿는 성분 제외(새 규칙 0).
+  // 잡음 성분이 옷 전역에 흩어져 있으면 **원본과 같은 자리**에 그대로 찍힌다.
+  // `garmentRegion`이 없으면(v1 · ?autofit=1 · 크롭 실패) 아래 상수 폴백 그대로다.
+  if (gr && gr.w > 0 && gr.h > 0 && scan.parts.length > 0) {
+    for (const part of scan.parts) {
+      const pw = panelW * (part.w / gr.w);
+      const ph = pw / (part.w / part.h);
+      ctx.drawImage(
+        image, part.x, part.y, part.w, part.h,
+        panelW * ((part.x - gr.x) / gr.w), OUTPUT_SIZE * ((part.y - gr.y) / gr.h), pw, ph,
+      );
+    }
+    return canvas;
+  }
+
+
+  let destW: number;
+  let destH: number;
+  let destX: number;
+  let destY: number;
+  if (gr && gr.w > 0 && gr.h > 0) {
+    destW = panelW * (printBox.w / gr.w);
+    destH = destW / printAspect;
+    destX = panelW * ((printBox.x - gr.x) / gr.w);
+    destY = OUTPUT_SIZE * ((printBox.y - gr.y) / gr.h);
+  } else {
+    // 폴백 — 상대 좌표를 못 얻었다(크롭 분석 실패 · v1 경로 · ?autofit=1).
+    // 눈대중 상수 2개는 **이 경로 전용**으로 남는다(P32 §1 · 삭제 0).
+    destW = panelW * PRINT_WIDTH_FRACTION;
+    destH = destW / printAspect;
+    destX = (panelW - destW) / 2;
+    destY = OUTPUT_SIZE * PRINT_TOP_FRACTION;
+    // 캔버스 하단 초과 금지 — `destH`에 상한이 없어 종횡비 0.5면 밑단 3cm
+    // 앞까지 내려간다(P31 §2-3). 종횡비를 지키려 폭도 같은 비율로 줄이고,
+    // **잘렸다는 사실을 조용히 넘기지 않는다**(P15 클램프-고지 선례).
+    const maxH = OUTPUT_SIZE - destY;
+    if (destH > maxH) {
+      const shrink = maxH / destH;
+      console.warn(
+        `[P32 폴백 클램프] 프린트 세로가 캔버스를 넘어 축소했다 — ` +
+        `종횡비 ${printAspect.toFixed(3)} · destH ${destH.toFixed(1)}px → ${maxH.toFixed(1)}px ` +
+        `(×${shrink.toFixed(3)}) · destW ${destW.toFixed(1)}px → ${(destW * shrink).toFixed(1)}px. ` +
+        `상대 좌표(garmentRegion) 없이 상수 배치로 떨어진 경로다.`,
+      );
+      destH = maxH;
+      destW *= shrink;
+      destX = (panelW - destW) / 2;
+    }
+  }
   ctx.drawImage(image, printBox.x, printBox.y, printBox.w, printBox.h, destX, destY, destW, destH);
 
   return canvas;

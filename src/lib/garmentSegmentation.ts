@@ -103,15 +103,41 @@ interface Box {
   right: number;
 }
 
+/**
+ * 출력 프레임 «안»에서 옷이 실제로 차지하는 픽셀 박스(P32 §1).
+ * `null`이면 옷 영역을 특정하지 못한 것이고, 프린트 상대 좌표를 낼 근거가 없다.
+ *
+ * **주의(정의역)**: 이 박스는 사진 속 옷의 «외곽»이라 반팔이면 소매를 포함한다.
+ * 앞판 패널 폭(품)보다 넓으므로 가로 상대 크기는 그만큼 작게 잡힌다 — P32 §1-3 한계.
+ */
+export interface GarmentRegion {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+
+export interface CropResult {
+  url: string;
+  /** 출력 프레임 기준 옷 박스. null = 상대 좌표 산출 불가(폴백) */
+  garment: GarmentRegion | null;
+}
+
 // 업로드된 옷 이미지 파일을 받아, 배경/얼굴-피부 영역을 제외한 옷 영역
 // 위주로 크롭한 새 이미지의 blob URL을 돌려준다. 크롭할 게 마땅치
 // 않다고 판단되면(플랫레이 등) 원본 그대로 URL을 만들어 돌려준다.
-export async function cropToGarmentRegion(file: File): Promise<string> {
+//
+// P32 §1 — 반환 계약을 `{url, garment}`로 넓혔다. 종전에는 «크롭 성공»과
+// «분석 실패»가 둘 다 원본 URL 문자열이라 호출자가 구분할 수 없었다(9곳이
+// 같은 값을 돌려준다). 프린트 상대 배치는 「프레임이 곧 옷인가」를 알아야
+// 성립하므로 그 사실을 값으로 내보낸다. **url 자체는 종전과 비트 동일.**
+export async function cropToGarmentRegion(file: File): Promise<CropResult> {
   const { img, revoke } = await loadImage(file);
+  const raw = (): CropResult => ({ url: URL.createObjectURL(file), garment: null });
   try {
     const fullW = img.naturalWidth;
     const fullH = img.naturalHeight;
-    if (fullW < 4 || fullH < 4) return URL.createObjectURL(file);
+    if (fullW < 4 || fullH < 4) return raw();
 
     const scale = ANALYSIS_LONG_SIDE / Math.max(fullW, fullH);
     const aw = Math.max(1, Math.round(fullW * scale));
@@ -121,7 +147,7 @@ export async function cropToGarmentRegion(file: File): Promise<string> {
     analysisCanvas.width = aw;
     analysisCanvas.height = ah;
     const actx = analysisCanvas.getContext("2d");
-    if (!actx) return URL.createObjectURL(file);
+    if (!actx) return raw();
     actx.drawImage(img, 0, 0, aw, ah);
 
     let data: Uint8ClampedArray;
@@ -129,7 +155,7 @@ export async function cropToGarmentRegion(file: File): Promise<string> {
       data = actx.getImageData(0, 0, aw, ah).data;
     } catch {
       // 캔버스 오염(cross-origin) — 분석 불가, 원본을 그대로 쓴다.
-      return URL.createObjectURL(file);
+      return raw();
     }
 
     const at = (x: number, y: number) => {
@@ -179,7 +205,7 @@ export async function cropToGarmentRegion(file: File): Promise<string> {
           break;
         }
       }
-      if (!hasOpaquePixel) return URL.createObjectURL(file); // 완전히 빈 이미지 — 분석 불가
+      if (!hasOpaquePixel) return raw(); // 완전히 빈 이미지 — 분석 불가
     }
 
     const isBackground = (r: number, g: number, b: number) => {
@@ -230,18 +256,32 @@ export async function cropToGarmentRegion(file: File): Promise<string> {
       }
     }
 
-    if (top === -1 || left === -1) return URL.createObjectURL(file); // 전경을 못 찾음(거의 단색 이미지 등)
+    if (top === -1 || left === -1) return raw(); // 전경을 못 찾음(거의 단색 이미지 등)
 
     const fullFgBox: Box = { top, bottom, left, right };
     const fgArea = (bottom - top + 1) * (right - left + 1);
     if (fgArea / (aw * ah) > FULL_FRAME_SKIP_FRACTION) {
       // 배경 여백이 거의 없는 플랫레이류 — 자를 필요 없음.
-      return URL.createObjectURL(file);
+      // **P32 §1**: 자르지 않았을 뿐 «전경 bbox = 옷»은 특정돼 있다. 이 경로는
+      // 폴백이 아니라 유효분이므로 옷 박스를 원본 해상도로 환산해 함께 낸다
+      // (분석 해상도 aw×ah → 원본 fullW×fullH).
+      return {
+        url: URL.createObjectURL(file),
+        garment: {
+          x: (left * fullW) / aw,
+          y: (top * fullH) / ah,
+          w: ((right - left + 1) * fullW) / aw,
+          h: ((bottom - top + 1) * fullH) / ah,
+        },
+      };
     }
 
     // 위에서부터 훑으며 "피부 비율이 높은 구간(얼굴/목)"을 지나 다시
     // 낮아지는 지점을 찾는다 — 그 지점부터가 옷(어깨선) 시작점이라고 본다.
     let sawSkinBand = false;
+    // P33 §1 — 띠가 «어느 행에서» 걸렸는지. 진짜 얼굴은 전경 상단에서 걸리고
+    // 프린트 오탐은 옷 한복판에서 걸린다 — 그 차이를 값으로 남긴다(판정용 아님).
+    let skinEnterRow = -1;
     let garmentTop = top;
     for (let y = top; y <= bottom; y++) {
       let winFg = 0;
@@ -257,6 +297,7 @@ export async function cropToGarmentRegion(file: File): Promise<string> {
       const frac = winFg > 0 ? winSkin / winFg : 0;
       if (!sawSkinBand && frac > SKIN_ROW_ENTER_FRACTION) {
         sawSkinBand = true;
+        skinEnterRow = y;
       } else if (sawSkinBand && frac < SKIN_ROW_EXIT_FRACTION) {
         garmentTop = y;
         break;
@@ -266,6 +307,13 @@ export async function cropToGarmentRegion(file: File): Promise<string> {
     // 전경 bbox의 top을 그대로 쓴다(위 루프가 break 없이 끝나면 garmentTop은
     // top으로 남아 있다).
     if (!sawSkinBand) garmentTop = top;
+    // P33 §1 판별자 — 크롭이 «무엇을 근거로» 옷 상단을 정했는지. 분석 해상도(aw×ah)
+    // 좌표다. 원본 환산은 ×(fullH/ah). 인쇄만 하고 계산에 관여하지 않는다.
+    console.log(
+      `[P33계기·크롭 판별자] 분석 ${aw}×${ah} · 전경 bbox y[${top}, ${bottom}] x[${left}, ${right}]` +
+      ` · 피부띠 ${sawSkinBand ? `**걸림** enter y=${skinEnterRow}(전경상단에서 +${skinEnterRow - top}행 · 전경높이의 ${(((skinEnterRow - top) / Math.max(1, bottom - top + 1)) * 100).toFixed(1)}%)` : "미발동"}` +
+      ` · garmentTop ${garmentTop}(트리밍 ${garmentTop - top}행)`,
+    );
 
     // 얼굴 구간을 뺀 나머지(옷 후보) 범위에서 "전경이면서 피부가 아닌"
     // 픽셀만으로 좌/우 경계를 다시 좁혀, 옆으로 노출된 손/팔뚝도 어느
@@ -304,7 +352,7 @@ export async function cropToGarmentRegion(file: File): Promise<string> {
       // 너무 작게 잘리면(휴리스틱이 잘못 판단했을 가능성) 얼굴 트리밍 없는
       // 원래 전경 bbox로 완화하고, 그것도 너무 작으면 원본을 그대로 쓴다.
       const fullArea = (fullFgBox.bottom - fullFgBox.top + 1) * (fullFgBox.right - fullFgBox.left + 1);
-      if (fullArea / (aw * ah) < MIN_CROP_AREA_FRACTION) return URL.createObjectURL(file);
+      if (fullArea / (aw * ah) < MIN_CROP_AREA_FRACTION) return raw();
       box = fullFgBox;
     }
 
@@ -334,7 +382,7 @@ export async function cropToGarmentRegion(file: File): Promise<string> {
     outCanvas.width = sw;
     outCanvas.height = sh;
     const octx = outCanvas.getContext("2d");
-    if (!octx) return URL.createObjectURL(file);
+    if (!octx) return raw();
     octx.drawImage(img, sx, sy, sw, sh, 0, 0, sw, sh);
 
     // 크롭된 최종 이미지에 남아있는 피부색 픽셀(옆으로 노출된 팔뚝/손 등)을
@@ -357,8 +405,19 @@ export async function cropToGarmentRegion(file: File): Promise<string> {
     }
 
     const blob = await new Promise<Blob | null>((resolve) => octx.canvas.toBlob(resolve, "image/png"));
-    if (!blob) return URL.createObjectURL(file);
-    return URL.createObjectURL(blob);
+    if (!blob) return raw();
+    // **P32 §1**: 출력 프레임은 옷 박스 «+ 패딩»(PADDING_FRACTION 4% · 이미지
+    // 가장자리에서는 잘려 비대칭)이다. 상대 좌표를 프레임 기준으로 내면 그
+    // 패딩만큼 어긋나므로, 옷 박스를 출력 원점(sx, sy) 기준으로 환산해 낸다.
+    return {
+      url: URL.createObjectURL(blob),
+      garment: {
+        x: box.left * scaleX - sx,
+        y: box.top * scaleY - sy,
+        w: (box.right - box.left + 1) * scaleX,
+        h: (box.bottom - box.top + 1) * scaleY,
+      },
+    };
   } finally {
     revoke();
   }

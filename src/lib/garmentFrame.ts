@@ -28,8 +28,15 @@ import { enforceLeftRightSymmetry } from "./garmentStitch";
 import {
   ARM_COLLISION_RADIUS,
   ARMHOLE_ROW_FRACTION,
+  COLLISION_EVERY,
   COLLISION_MARGIN,
   COLS,
+  FRICTION_CONTACT_BAND,
+  FRICTION_MU_ITER,
+  FRICTION_MU_KINETIC,
+  FRICTION_MU_STATIC,
+  LOCAL_MU_GAIN,
+  MAX_DISPLACEMENT_PER_SUBSTEP,
   MAX_SUBSTEPS,
   PANEL_BACK,
   PANEL_FRONT,
@@ -42,11 +49,17 @@ import {
   SUBSTEP_DT,
 } from "./clothConfig";
 import type { Vec3Like } from "./clothProtocol";
+import { createCachedSdfIterationFriction, createSdfFrictionPass } from "./sdfCollision";
+import type { SdfField } from "./sdfCollision";
 
 export interface ArmShape {
   dir: Vec3Like;
   trueShoulder: Vec3Like;
   length: number;
+  // P10 §1 — 팔꿈치·손 월드 좌표(몸 뼈대에서 뜬다, 새 상수 0). **선택**이다:
+  // 주지 않으면 종전 직선 캡슐 그대로다(v1 워커·하네스·커밋 fixture 경로).
+  elbow?: Vec3Like;
+  hand?: Vec3Like;
 }
 
 export interface FrameLayout {
@@ -70,6 +83,38 @@ export interface FramePose {
 export function buildArmCapsules(shape: ArmShape): Capsule[] {
   const midLength = shape.length * 0.55;
   const endLength = shape.length * 1.25;
+  // P10 §1 — **소매가 팔꿈치를 넘어갈 때만**(긴팔) 캡슐을 꺾는다: 어깨→팔꿈치 /
+  // 팔꿈치→손 두 세그먼트. 조건은 옷 실측(`length`) vs 몸 실측(위팔 길이)에서
+  // 나온다 — 새 상수 0. 반팔은 소매가 위팔 안에서 끝나고 종전 식이 이미 위팔 축
+  // (`findShortSleeveDirection`)을 따르므로 그대로 둔다 → **기준선 B 비트 동일**.
+  // (1.25배 오버슛까지로 조건을 잡으면 반팔도 꺾여 기준선 B가 갈린다 — 실측:
+  //  f 260→319 · 자기교차 2143→2070 · 밑단 합 114.04→112.84cm.)
+  // 전완 캡슐은 **손에서 끊는다**. 종전 1.25배 오버슛을 호장으로 유지해 손 너머까지
+  // 늘리는 변형을 실측했더니 **ABORT**였다(긴팔 S1 정체 f=1212 · seamGap 7.7mm ·
+  // 60프레임 무개선). 오버슛은 직선 축 근사의 보정이었고, 축이 팔을 따르면 근거가 없다.
+  if (shape.elbow && shape.hand) {
+    const upperLen = Math.hypot(
+      shape.elbow.x - shape.trueShoulder.x, shape.elbow.y - shape.trueShoulder.y, shape.elbow.z - shape.trueShoulder.z,
+    );
+    const foreLen = Math.hypot(
+      shape.hand.x - shape.elbow.x, shape.hand.y - shape.elbow.y, shape.hand.z - shape.elbow.z,
+    );
+    if (upperLen > 1e-6 && foreLen > 1e-6 && shape.length > upperLen) {
+      const t = Math.min(endLength - upperLen, foreLen) / foreLen;
+      return [
+        { top: shape.trueShoulder, bottom: shape.elbow, radius: ARM_COLLISION_RADIUS },
+        {
+          top: shape.elbow,
+          bottom: {
+            x: shape.elbow.x + (shape.hand.x - shape.elbow.x) * t,
+            y: shape.elbow.y + (shape.hand.y - shape.elbow.y) * t,
+            z: shape.elbow.z + (shape.hand.z - shape.elbow.z) * t,
+          },
+          radius: ARM_COLLISION_RADIUS,
+        },
+      ];
+    }
+  }
   const mid = {
     x: shape.trueShoulder.x + shape.dir.x * midLength,
     y: shape.trueShoulder.y + shape.dir.y * midLength,
@@ -121,6 +166,119 @@ export function createPanelSplitResolver(resolvers: readonly (CollisionResolver 
       }
       offset += count;
     }
+  };
+}
+
+// ── P2b(a) — **v2 패턴 착장의 통합 리졸버**. `dressPattern.ts`에 있던 `unified` 클로저를
+// 그대로 옮긴 것이고 **거동 무변경**이다(항등 리팩터 · 값 변경 0 · 물리 수정 0).
+//
+// 왜 여기로 옮기는가: v2 브라우저 워커가 «같은» 리졸버를 써야 한다. v1이 이미 같은 이유로
+// `createUnifiedResolver`를 이 파일로 이사시켰다(M0 · `garmentWorker.ts:151` 「워커는
+// 살아있는 상태 객체만 관리한다」). 복제하면 v1/v2에 이어 **세 번째 경로**가 생기고,
+// 92 §4-1이 이중 경로 때문에 처방을 집행 금지로 막은 전례가 있다.
+//
+// **기본값은 여기 한 곳에만 둔다** — 스크립트와 브라우저가 갈릴 수 없게.
+//   `torsoCap`  기본 **false** — 45회차 승격(몸통 캡슐 전면 제거가 새 기준선)
+//   `armCap`    기본 **true**  — 94회차 절제 스위치의 기본 on
+//   `singleDeepest` 기본 **true** — 42회차 처방 A(정점당 가장 깊이 파묻힌 캡슐 1개만)
+//   `armMarginM` 기본 **0.006** — `dressPattern.ts`가 쓰던 리터럴 그대로
+// `torsoPanels`는 호출부가 넘긴다(패널 인덱스 정본은 `patternGarment.ts`이고
+// 이 파일이 그것을 import하면 순환이 된다).
+export interface PatternUnifiedOpts {
+  torsoCap?: boolean;
+  armCap?: boolean;
+  singleDeepest?: boolean;
+  torsoMarginM?: number;
+  armMarginM?: number;
+  torsoPanels?: readonly number[];
+}
+
+// ── P2b(c) — **v2 패턴 착장 세션 env 조립**. `dressPattern.ts`에 있던 조립을
+// 그대로 옮긴 것이고 거동 무변경(항등 리팩터 · 값 변경 0).
+//
+// 여기 담긴 것은 **어느 소비자든 같아야 하는 물리 배선**이다:
+//   · v1 후처리 12종 전량 off(order/스무딩/softPull/hug/sleevePull/yAlign/symmetry)
+//     — v2 패턴 패널에는 COLS·ROWS 격자 규약이 없어 의미 자체가 없다(:765 핀 주석과 같은 이유)
+//   · `pinCorners: false` — v1 하드 핀은 패턴 패널에 인덱스가 안 맞는다
+//   · `clampInSubstep: true` / `clampAfterPost: false` — 워커 위치
+//   · 마찰 2종(서브스텝 말미 `friction` · 반복 내 `frictionIteration`)의 상수 배분
+//     — 중복 감쇠를 피하려고 μ를 갈라 쓴다(STATIC/KINETIC vs MU_ITER+LOCAL_MU_GAIN)
+// 브라우저 워커가 이 조립을 다시 손으로 적으면 한 줄만 어긋나도 물리가 갈린다.
+//
+// **가변 항 2개는 호출자가 env를 직접 고쳐 쓴다**(기존 그대로):
+//   `collarStrainLimit`(링 상한 램프 · 매 프레임) · `pinStrength`(앵커 램프).
+// 그래서 이 함수는 **그 env 객체 자체**를 돌려준다.
+export interface PatternSessionEnvOpts {
+  collisionResolver: CollisionResolver;
+  selfCollision: CollisionResolver | null;
+  sdfField: () => SdfField | null;
+  anchors?: () => { i: number; x: number; y: number; z: number }[];
+  /** 초기값. 이후 램프는 호출자가 env.collarStrainLimit를 갱신한다. */
+  collarStrainLimit?: number;
+  /** 초기값. 이후 램프는 호출자가 env.pinStrength를 갱신한다. */
+  pinStrength?: number;
+  /** 계기 — 위치를 건드리면 안 된다. */
+  probe?: (label: string) => void;
+  /** 계기 — 발화 카운트. */
+  onCollarFired?: (count: number) => void;
+}
+
+export function makePatternSessionEnv(o: PatternSessionEnvOpts): GarmentFrameEnv {
+  const cachedFriction = createCachedSdfIterationFriction(o.sdfField, {
+    contactBand: FRICTION_CONTACT_BAND, muStatic: FRICTION_MU_ITER, muKinetic: FRICTION_MU_ITER, localMuGain: LOCAL_MU_GAIN,
+  });
+  const env: GarmentFrameEnv = {
+    probe: o.probe,
+    collisionResolver: o.collisionResolver,
+    collisionEvery: COLLISION_EVERY,
+    selfCollision: o.selfCollision,
+    orderColumn: false, orderRow: false, clampInSubstep: true, smoothing: false, postOrder: false,
+    armSoftPull: false, necklineHug: false, sleeveArmPull: false, yAlign: false, symmetry: false,
+    clampAfterPost: false,
+    maxDisplacement: MAX_DISPLACEMENT_PER_SUBSTEP,
+    friction: createSdfFrictionPass(o.sdfField, {
+      contactBand: FRICTION_CONTACT_BAND, muStatic: FRICTION_MU_STATIC, muKinetic: FRICTION_MU_KINETIC,
+    }),
+    frictionIteration: (pos, prev, pinned, n) => { cachedFriction.apply(pos, prev, pinned, n); o.probe?.("1b.반복내 마찰"); },
+    frictionIterationReset: cachedFriction.reset,
+    collarStrainLimit: o.collarStrainLimit,
+    onCollarFired: o.onCollarFired,
+    pinCorners: false,
+    anchors: o.anchors,
+    pinContinuous: true,
+    pinStrength: o.pinStrength,
+    anchorSyncPrev: true,
+  };
+  return env;
+}
+
+export function createPatternUnifiedResolver(
+  meshResolver: CollisionResolver,
+  panelCounts: readonly number[],
+  torsoCapsules: readonly Capsule[],
+  armCapsules: readonly Capsule[],
+  opts: PatternUnifiedOpts = {},
+): CollisionResolver {
+  const torsoCap = opts.torsoCap ?? false;
+  const armCap = opts.armCap ?? true;
+  const singleDeepest = opts.singleDeepest ?? true;
+  const torsoMarginM = opts.torsoMarginM ?? COLLISION_MARGIN;
+  const armMarginM = opts.armMarginM ?? 0.006;
+  const torsoPanels = opts.torsoPanels ?? [0, 1];
+  return (positions, pinned, n) => {
+    meshResolver(positions, pinned, n);
+    let offset = 0;
+    for (let p = 0; p < panelCounts.length; p++) {
+      const count = panelCounts[p];
+      const pos = positions.subarray(offset * 3, (offset + count) * 3);
+      const pin = pinned.subarray(offset, offset + count);
+      if (torsoCap && torsoPanels.includes(p)) {
+        applyCapsuleCollision(pos, pin, count, torsoCapsules, torsoMarginM, undefined, undefined, singleDeepest);
+      }
+      if (armCap) applyCapsuleCollision(pos, pin, count, armCapsules, armMarginM);
+      offset += count;
+    }
+    void n;
   };
 }
 
@@ -187,6 +345,9 @@ export function defaultSmoothing(newCore: boolean): boolean {
 }
 
 export interface GarmentFrameEnv {
+  // **읽기 전용 프로브**(31회차 계기). 서브스텝 안 각 위치 수정 패스의 경계에서
+  // 호출된다. 위치를 건드리면 안 된다 — 계기 전용. 미설정이면 빈 호출도 없다.
+  probe?: (label: string) => void;
   // step() 내부에서 collisionEvery 주기로 도는 충돌 리졸버.
   collisionResolver: CollisionResolver;
   collisionEvery: number;
@@ -324,6 +485,7 @@ export function createGarmentSession(sim: ClothSimulation, env: GarmentFrameEnv)
         // 반복 안 마찰 캐시 — 적분 직전 위치 기준(적분 한 스텝 오차는
         // 변위 클램프 이하, 법선장 연속이라 허용 — 동등성 실측으로 검증).
         env.frictionIterationReset?.(sim.positions, sim.pinned, sim.positions.length / 3);
+        env.probe?.("0.서브스텝 시작");
         sim.step(
           SUBSTEP_DT,
           gravity,
@@ -334,23 +496,30 @@ export function createGarmentSession(sim: ClothSimulation, env: GarmentFrameEnv)
           env.maxDisplacement,
           iterExtra,
         );
+        env.probe?.("1.sim.step(적분+거리제약×n+충돌+iterExtra)");
         // M2: 마찰 — 충돌이 법선 방향을 푼 직후, 그 접촉의 접선 성분을
         // 감쇠/정지시킨다(자체충돌·순서 보정 이전).
         env.friction?.(sim.positions, sim.prevPositions, sim.pinned, sim.positions.length / 3);
+        env.probe?.("2.friction(SDF 마찰)");
         if (env.selfCollision) {
           env.selfCollision(sim.positions, sim.pinned, sim.positions.length / 3);
           // 자체충돌이 흐트러뜨린 순서를 한 번 더 정리 — 이중 안전장치(워커 원본 주석).
         }
+        env.probe?.("3.selfCollision");
         if (anyOrder) torsoOrderExtra(sim.positions, sim.pinned, sim.positions.length / 3);
+        env.probe?.("4.order");
         if (env.clampInSubstep) sim.clampOverstretchedConstraints();
+        env.probe?.("5.limitStrain(1.2)");
         if (env.collarStrainLimit) {
           const fired = sim.limitCollarStrain(env.collarStrainLimit);
           if (fired > 0) env.onCollarFired?.(fired);
         }
+        env.probe?.("6.limitCollarStrain(1.02)");
         // M1(용접): alias 파티클을 canon 최신 위치로 동기화 — 후처리(sleeve
         // ArmPull의 row0 링 중심 등)가 alias를 읽기 전에 반영돼야 한다.
         // 용접 없는 구 코어에선 빈 루프(비트 동일).
         sim.syncWeldedPositions();
+        env.probe?.("7.syncWelded(서브스텝 끝)");
         accumulator -= SUBSTEP_DT;
       }
 

@@ -68,6 +68,15 @@ export interface DressingHooks {
   maxSeamGapM: () => number;
   maxDelta20Mm: () => number;
   onFrame?: (frame: number, state: DressingState) => void;
+  // 스텝 **직전** 훅 — 상태·프레임에 의존하는 파라미터를 프레임마다 갱신하는
+  // 자리다(예: 링 상한 스케줄). onFrame은 스텝 뒤라 한 프레임 늦는다.
+  beforeStep?: (frame: number, state: DressingState) => void;
+  // 상태 전이 로그에 병기할 한 줄 — 스케줄 상태를 전이와 같은 줄에서 읽게 한다.
+  stateNote?: () => string;
+  // 앵커 하드 핀 on/off(§4 S1). 봉합 해제창 **밖**(아직 열림)에서 위치를
+  // 고정하고, 창에 들어오면 풀어 아래 강도 램프가 이어받는다. 구현하지 않은
+  // 호출자(2a-thin 스파이크)는 기존 소프트 앵커 그대로 동작한다.
+  setAnchorHard?: (hard: boolean) => void;
 }
 
 // smoothstep — §4 S1 "램프는 연속 함수로만"(함정 7: 불리언 전환이 M2-7
@@ -109,13 +118,16 @@ export function runDressing(
   let settleRun = 0;
   let bestGap = Infinity;
   let stallFrame = 0;
+  // S2 연속 램프아웃의 시작값 — S1이 마지막으로 쓴 강도.
+  let anchorAtS2Entry = 0;
 
   // TS는 클로저 안의 대입을 CFA에 반영하지 않아 `state`가 "S0"로 좁혀진다.
   // 선언 타입으로 되읽는 접근자 하나로 우회한다(런타임 동작 무관).
   const cur = (): DressingState => state;
 
   const transition = (to: DressingState, reason: string): void => {
-    log.push({ frame, elapsedMs: Math.round(performance.now() - t0), from: cur(), to, reason, retry });
+    const note = hooks.stateNote?.();
+    log.push({ frame, elapsedMs: Math.round(performance.now() - t0), from: cur(), to, reason: note ? `${reason} · ${note}` : reason, retry });
     state = to;
     stateFrame = 0;
   };
@@ -153,7 +165,7 @@ export function runDressing(
     startRest = snapshotRest(sim, seams);
     log.push({
       frame, elapsedMs: Math.round(performance.now() - t0), from: "S0", to: "S0",
-      reason: `배치 관통 정점 ${pen} (오프셋 배수 ${scale.toFixed(2)})`, retry,
+      reason: `배치 관통 정점 ${pen} (오프셋 배수 ${scale.toFixed(2)})${hooks.stateNote ? ` · ${hooks.stateNote()}` : ""}`, retry,
     });
     transition("S1", pen === 0 ? "배치 관통 0" : `관통 ${pen} 잔여 — 교정 소진, 그대로 진행`);
   };
@@ -165,12 +177,46 @@ export function runDressing(
     // 해소 자체는 sim.step의 매 반복이 한다.
     if (cur() === "S1") {
       setRest(sim, seams, startRest, smoothstep(stateFrame / rampFrames));
-      setAnchorStrength(1 - smoothstep(stateFrame / rampFrames));
+      // **앵커 강도는 시간이 아니라 봉합 진행에서 도출한다**(2b 3회차 확정).
+      // 시간 램프였을 때 앵커는 f=120에 소멸하는데 그 시점 seamGap이 45mm로
+      // 아직 열려 있었고, 옷은 그 뒤 57cm 내려앉아 두 목점이 승모근을 끼고
+      // 마주 서는 위치에서 굳었다(중점이 몸 안쪽 22.8mm = 시접이 파라미터로
+      // 닫을 수 없는 교착). RETRY가 램프를 2·3배로 늘렸을 때만 낙하가 멈춘
+      // 것이 그 인과의 대조군이었다.
+      //
+      // 문턱은 **상태기계가 이미 쓰는 "봉합됨" 정의**를 그대로 쓴다
+      // (S1→S2 전이 조건 = target + seamSlack) — 새 상수를 만들지 않는다.
+      // 강도는 그 창 안에서 연속으로 빠진다(§4 "램프는 연속 함수로만").
+      const closeThresh = maxTarget(seams) + cfg.seamSlackM;
+      const span = Math.max(1e-9, closeThresh - maxTarget(seams));
+      const closure = Math.min(1, Math.max(0, (closeThresh - hooks.maxSeamGapM()) / span));
+      // 해제창 **밖**(closure=0, 아직 열림) = 하드 핀. 창에 들어오는 순간
+      // 핀을 풀고 같은 closure로 강도를 1→0 램프아웃한다 — 해제 문턱과
+      // 램프 폭이 하나의 양(봉합 진행)에서 나오므로 새 상수가 없다.
+      hooks.setAnchorHard?.(closure <= 0);
+      anchorAtS2Entry = 1 - smoothstep(closure);
+      setAnchorStrength(anchorAtS2Entry);
+    } else if (cur() === "S2") {
+      setRest(sim, seams, startRest, 1);
+      // **S2 진입의 즉시 해제는 §4 "램프는 연속 함수로만" 위반이었다**(함정 7).
+      // 22회차 실측: f=120 전이(seamGap 10.0mm) 다음 프레임에 앵커가 0.380 → 0
+      // 으로 떨어지며 앞판 목점이 목표에서 **8.87cm 튕겼고**(핀 잔차 88.70mm)
+      // 그 목점이 곧 최대 갭 시접이 되어 S2 봉합 이탈(25.6mm)로 이어졌다.
+      // 여기서는 S2 진입 시점 강도에서 0까지 **연속으로** 뺀다 — 길이는 기존
+      // rampFrames, 곡선은 같은 smoothstep이고 새 상수는 없다.
+      const k = anchorAtS2Entry * (1 - smoothstep(stateFrame / rampFrames));
+      setAnchorStrength(k);
+      // pinned는 강도보다 먼저 풀리지 않는다. S1의 해제창에서 이미 풀려 있고
+      // (closure > 0 → hard=false), 여기서 다시 잡지 않는다 — 강도>0인데
+      // pinned가 토글되면 같은 계단이 되돌아온다.
+      hooks.setAnchorHard?.(false);
     } else {
       setRest(sim, seams, startRest, 1);
+      hooks.setAnchorHard?.(false);
       setAnchorStrength(0);
     }
 
+    hooks.beforeStep?.(frame, state);
     const { dt, gravity, preset, layout, pose } = stepArgs();
     session.step(dt, gravity, { ...preset, iterations: preset.iterations + iterationBoost }, layout, pose);
     frame++;

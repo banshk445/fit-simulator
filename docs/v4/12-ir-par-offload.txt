@@ -1,0 +1,40 @@
+v4-12 1-3-g — full_par.FullPar.substep_par 최종 IR 의 offloaded 태스크 전량
+정본 로그 = logs/v4-12/par-probe-ir.log (덤프 [substep_par_c86_0] Simplified III · 그 파일 1024593~1033596 줄)
+
+pass::make_pass_printer::<lambda_b5dc94c71d9bad0c444dfc65a8994c53>::operator ()@993] [substep_par_c86_0] Simplified III:
+
+1024595: $0 = offloaded range_for(0, 9388) grid_dim=768 block_dim=128
+1024621: $23 = offloaded range_for(0, 18016) grid_dim=768 block_dim=128
+1024629: $29 = offloaded range_for(0, 26648) grid_dim=768 block_dim=128
+1024636: $34 = offloaded range_for(0, 256) grid_dim=768 block_dim=128
+1024643: $39 = offloaded range_for(0, 2978) grid_dim=768 block_dim=128
+1024976: $366 = offloaded range_for(2978, 5930) grid_dim=768 block_dim=128
+1025309: $693 = offloaded range_for(5930, 8840) grid_dim=768 block_dim=128
+1025642: $1020 = offloaded range_for(8840, 11712) grid_dim=768 block_dim=128
+1025975: $1347 = offloaded range_for(11712, 14538) grid_dim=768 block_dim=128
+1026308: $1674 = offloaded range_for(14538, 17278) grid_dim=768 block_dim=128
+1026641: $2001 = offloaded range_for(17278, 17728) grid_dim=768 block_dim=128
+1026974: $2328 = offloaded range_for(17728, 18016) grid_dim=768 block_dim=128
+1027307: $2655 = offloaded range_for(0, 2252) grid_dim=768 block_dim=128
+1027676: $3014 = offloaded range_for(2252, 4504) grid_dim=768 block_dim=128
+1028045: $3373 = offloaded range_for(4504, 6756) grid_dim=768 block_dim=128
+1028414: $3732 = offloaded range_for(6756, 9008) grid_dim=768 block_dim=128
+1028783: $4091 = offloaded range_for(9008, 11260) grid_dim=768 block_dim=128
+1029152: $4450 = offloaded range_for(11260, 13512) grid_dim=768 block_dim=128
+1029521: $4809 = offloaded range_for(13512, 15764) grid_dim=768 block_dim=128
+1029890: $5168 = offloaded range_for(15764, 17958) grid_dim=768 block_dim=128
+1030259: $5527 = offloaded range_for(17958, 20164) grid_dim=768 block_dim=128
+1030628: $5886 = offloaded range_for(20164, 22332) grid_dim=768 block_dim=128
+1030997: $6245 = offloaded range_for(22332, 24442) grid_dim=768 block_dim=128
+1031366: $6604 = offloaded range_for(24442, 26510) grid_dim=768 block_dim=128
+1031735: $6963 = offloaded range_for(26510, 26590) grid_dim=768 block_dim=128
+1032104: $7322 = offloaded range_for(26590, 26648) grid_dim=768 block_dim=128
+1032473: $7681 = offloaded
+1032546: $7749 = offloaded range_for(0, 9388) grid_dim=768 block_dim=128
+1033595: $8715 = offloaded range_for(0, 9388) grid_dim=768 block_dim=128
+
+offloaded 태스크 수 = 29   (코드에서 «센» 수 29 · v4-12 §0-4ㄹ)
+  range_for = 28 · range_for 아님(= 봉제 ti.loop_config(serialize=True)) = 1
+  늘어남 8색 구간 합 = 18,016 (제약 수와 일치) · 굽힘 14색 구간 합 = 26,648 (일치)
+  대조 — v4-11 의 full.py:run 최종 IR 은 offloaded 1개 · range_for 없음 · grid/block 표기 없음
+        (docs/v4/11-ir-run-offload.txt)

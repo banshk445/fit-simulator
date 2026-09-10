@@ -1,0 +1,33 @@
+# v4-11 §1-② — engine/full.py:run 컴파일 IR 발췌 (계기 gpu/ir_probe.py · 물리 0스텝)
+# 원본 로그 logs/v4-11/ir_probe.log (528,700줄 · 25MB · *.log 는 .gitignore)
+# Taichi 1.7.4 · llvm 15.0.1 · arch cuda · GTX 1660 Ti
+
+## (1) 최종 패스의 run 커널 — offloaded 태스크가 «하나»이고 grid_dim/block_dim 이 «없다» = serial
+[I 08/31/26 17:10:48.850 13872] [ir_printer.cpp:taichi::lang::irpass::make_pass_printer::<lambda_b5dc94c71d9bad0c444dfc65a8994c53>::operator ()@993] [run_c80_0] Scalarized:
+kernel {
+  $0 = offloaded  
+  body {
+    <f32> $1 = const 79
+    <f32> $2 = const 455
+    <f32> $3 = const 458
+    <f32> $4 = const -0.122162975
+    <f32> $5 = const 0.12977281
+    <f32> $6 = const -0.0124146165
+    <f32> $7 = const 0.02002445
+    <f32> $8 = const -0.8694238
+    <f32> $9 = const 0.87703365
+    <f32> $10 = const 262.8178
+    <f32> $11 = const 0.5
+...
+# 이 블록(2,155줄) 안의 '= offloaded' 수 = 1 · 'grid_dim' 언급 수 = 0
+
+## (2) 대조 — 같은 로그의 «병렬» 태스크는 range_for/struct_for + grid_dim/block_dim 을 달고 나온다
+  $4 = offloaded struct_for(S1dense) grid_dim=768 block_dim=128 bls=none 
+  $0 = offloaded range_for(0, 9388) grid_dim=768 block_dim=128 
+
+## (3) 첫 등장(Offloaded 패스) 헤더
+  }
+}
+[I 08/31/26 17:10:44.965 18300] [ir_printer.cpp:taichi::lang::irpass::make_pass_printer::<lambda_b5dc94c71d9bad0c444dfc65a8994c53>::operator ()@993] [run_c80_0] Offloaded:
+kernel {
+  $0 = offloaded  

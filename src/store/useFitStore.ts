@@ -1,5 +1,6 @@
 import { create } from "zustand";
 import type { FabricType } from "../lib/fabricPresets";
+import type { GarmentRegion } from "../lib/garmentSegmentation";
 import { DEFAULT_NEW_CORE } from "../lib/clothConfig";
 
 interface BodySize {
@@ -21,6 +22,9 @@ interface GarmentSize {
   length: number; // cm (총장)
   width: number; // cm (품 = 가슴단면)
   shoulderWidth: number; // cm (어깨너비 — 몸 어깨너비와 별개인 옷 자체의 치수)
+  // P19 §2 — 커프 밴드 높이(cm). **0이면 밴드 없음(기본)**. 이 값은 «도출이 아니다» —
+  // 저장소 안에 밴드 높이의 근거가 될 몸/옷 실측이 없어서 상수로 박지 않고 치수로 낸다.
+  cuffBand: number;
   sleeveLength: number; // cm (소매길이 — 반팔/긴팔 공통, 몸 팔길이와 무관)
   sleeveWidth: number; // cm (소매통 — 소매 둘레의 평면 실측, 반지름=이 값/2)
 }
@@ -31,6 +35,9 @@ interface FitState {
   bodySize: BodySize;
   garmentSize: GarmentSize;
   garmentImage: string | null;
+  // P32 §1 — 업로드 프레임 «안»에서 옷이 차지하는 픽셀 박스. null이면 상대
+  // 좌표를 낼 근거가 없어 프린트 배치가 종전 상수 경로로 떨어진다.
+  garmentRegion: GarmentRegion | null;
   fabric: FabricType;
   sleeveType: SleeveType;
   // 47번(디버그 전용): garmentWorker가 실제로 충돌 계산에 쓰는 팔 캡슐을
@@ -86,9 +93,10 @@ interface FitState {
   setGarmentLength: (length: number) => void;
   setGarmentWidth: (width: number) => void;
   setGarmentShoulderWidth: (shoulderWidth: number) => void;
+  setGarmentCuffBand: (cuffBand: number) => void;
   setGarmentSleeveLength: (sleeveLength: number) => void;
   setGarmentSleeveWidth: (sleeveWidth: number) => void;
-  setGarmentImage: (url: string | null) => void;
+  setGarmentImage: (url: string | null, region?: GarmentRegion | null) => void;
   setSleeveType: (sleeveType: SleeveType) => void;
 }
 
@@ -130,8 +138,11 @@ export const useFitStore = create<FitState>((set) => ({
     shoulderWidth: 45,
     sleeveLength: DEFAULT_SLEEVE_LENGTH_SHORT,
     sleeveWidth: 18,
+    // P19 §2 — **기본 0 = 밴드 없음.** 기준선 B-2·긴팔 P13 값이 그대로 유지된다.
+    cuffBand: 0,
   },
   garmentImage: null,
+  garmentRegion: null,
   fabric: "cotton",
   sleeveType: "short",
   showArmCapsules: false,
@@ -167,11 +178,13 @@ export const useFitStore = create<FitState>((set) => ({
   setGarmentWidth: (width) => set((state) => ({ garmentSize: { ...state.garmentSize, width } })),
   setGarmentShoulderWidth: (shoulderWidth) =>
     set((state) => ({ garmentSize: { ...state.garmentSize, shoulderWidth } })),
+  setGarmentCuffBand: (cuffBand) =>
+    set((state) => ({ garmentSize: { ...state.garmentSize, cuffBand } })),
   setGarmentSleeveLength: (sleeveLength) =>
     set((state) => ({ garmentSize: { ...state.garmentSize, sleeveLength } })),
   setGarmentSleeveWidth: (sleeveWidth) =>
     set((state) => ({ garmentSize: { ...state.garmentSize, sleeveWidth } })),
-  setGarmentImage: (garmentImage) => set({ garmentImage }),
+  setGarmentImage: (garmentImage, garmentRegion = null) => set({ garmentImage, garmentRegion }),
   setSleeveType: (sleeveType) =>
     set((state) => {
       const len = state.garmentSize.sleeveLength;
@@ -201,13 +214,17 @@ if (import.meta.env.DEV) {
 //   localhost:5173/?autofit=1&newcore=1&friction=0  (마찰 A/B)
 {
   const q = new URLSearchParams(window.location.search);
-  if (q.get("autofit") === "1") {
+  // 83회차 — `autofit=<6자리 hex>` 로 단색을 지정할 수 있다. `autofit=1`은 그대로
+  // #3a6ea5(기존 캡처 회귀 0). 80회차 마젠타 대비 캡처는 **업로드**로 만들어서
+  // 재현이 사람 손에 묶여 있었다 — 같은 색(#ff00c8)을 URL로 낼 수 있게만 한다.
+  const autofit = q.get("autofit");
+  if (autofit) {
     const canvas = document.createElement("canvas");
     canvas.width = 400;
     canvas.height = 400;
     const g = canvas.getContext("2d");
     if (g) {
-      g.fillStyle = "#3a6ea5";
+      g.fillStyle = /^[0-9a-fA-F]{6}$/.test(autofit) ? `#${autofit}` : "#3a6ea5";
       g.fillRect(0, 0, 400, 400);
       useFitStore.getState().setGarmentImage(canvas.toDataURL());
     }

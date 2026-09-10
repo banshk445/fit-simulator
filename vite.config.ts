@@ -10,5 +10,10 @@ export default defineConfig({
   // 한다. 웹 배포(base='/')에는 영향 없다(개발 서버는 base 설정과 무관하게
   // 항상 정상 동작).
   base: "./",
+  /* ★ v4-42 §1-② — **굽기 산출 폴더를 감시에서 뺀다**(개발 서버 «전용» 설정 · 빌드 영향 0).
+   * 근거: v4-41 27칸 실행에서 수신기가 `gpu/oracle/export/grid27` 로 파일을 떨구자 vite 가
+   * 그것을 «소스 변경»으로 보고 페이지를 리로드해 하네스가 중간에 죽었다(판정문 ㉢).
+   * 이 경로들은 **소스가 아니라 산출물**이다 — HMR 대상이 아니다. */
+  server: { watch: { ignored: ["**/gpu/oracle/export/**", "**/gpu/bake/results/**", "**/public/v3diag/**"] } },
   plugins: [react(), tailwindcss()],
 });

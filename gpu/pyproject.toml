@@ -1,0 +1,9 @@
+[project]
+name = "fit-simulator-gpu"
+version = "0.1.0"
+description = "v4 GPU 이식(Python + Taichi). v3 는 정답지이고 이 패키지는 v3 를 «읽기만» 한다."
+requires-python = ">=3.10"
+dependencies = ["taichi>=1.7", "numpy>=1.26", "pytest>=8"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

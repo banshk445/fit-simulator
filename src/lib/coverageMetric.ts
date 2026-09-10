@@ -44,6 +44,18 @@ export interface CoverageResult {
   // 그대로 노출한다(천 행 인덱스로 대역을 재정의하면 비교 불가 —
   // 이번 세션 2회 재발한 함정).
   hits: { bucket: string; hoverMm: number; x: number; y: number; z: number }[];
+  // 83회차 — 버킷별 「관통을 피복으로 센」 건수(옷 면법선·레이 내적 < 0).
+  // 히트가 없는 버킷은 키가 없다.
+  penetrationHits: Record<string, number>;
+  // ── 84회차 — 샘플 단위 원자료. **표본을 다시 만들지 않고** 샘플에 다른 채널을
+  // 물리기 위한 것이다(함정 12). 셋 다 길이 = samples이고 같은 순서다.
+  //   vertexIndexes  샘플 → 몸 정점 인덱스
+  //   sampleNormals  샘플의 **와인딩 법선**(`orientOutward` 적용 **전**, 정규화됨)
+  //   exposedFlags   1 = 노출(레이가 옷을 못 맞힘) · 0 = 피복
+  vertexIndexes: Int32Array;
+  samplePoints: Float32Array;
+  sampleNormals: Float32Array;
+  exposedFlags: Uint8Array;
 }
 
 // ── §9-1 어깨/삼각근(deltoid) 대역 ──────────────────────────────────────
@@ -128,6 +140,9 @@ interface BodySamples {
   points: Float32Array; // xyz
   normals: Float32Array; // xyz(정규화)
   count: number;
+  // 84회차 — 샘플별 **몸 정점 인덱스**. 계기가 표본을 다시 만들지 않고
+  // 「이 샘플이 어느 정점인가」를 물을 수 있어야 한다(함정 12).
+  vertexIndexes: Int32Array;
 }
 
 function collectBandSamples(
@@ -174,6 +189,7 @@ function collectBandSamples(
   }
   const pts: number[] = [];
   const nrms: number[] = [];
+  const vids: number[] = [];
   const exclR2 = excludeRadius * excludeRadius;
   for (let i = 0; i < n; i++) {
     if (!used[i]) continue;
@@ -193,8 +209,14 @@ function collectBandSamples(
     if (len < 1e-9) continue;
     pts.push(x, y, z);
     nrms.push(nx / len, ny / len, nz / len);
+    vids.push(i);
   }
-  return { points: Float32Array.from(pts), normals: Float32Array.from(nrms), count: pts.length / 3 };
+  return {
+    points: Float32Array.from(pts),
+    normals: Float32Array.from(nrms),
+    count: pts.length / 3,
+    vertexIndexes: Int32Array.from(vids),
+  };
 }
 
 // 천 삼각형(그리드 셀당 2개)을 패널들에서 평탄 배열로 뽑는다.
@@ -243,9 +265,15 @@ function rayNearestHit(
   tris: Float32Array,
   tMin: number,
   tMax: number,
+  nearSign?: boolean,
+  // 83회차 — 채택된 히트의 **부호**(옷 면법선 · 레이 방향 내적)를 밖으로 낸다.
+  // 값 도입 0: 판정식은 아래 `nearSign` 블록이 이미 쓰던 것과 같고 문턱은 0이다.
+  // 미전달이면 반환값·`best` 갱신 경로가 전부 그대로다(회귀 0).
+  signOut?: { v: number },
 ): number {
   const EPS = 1e-9;
   let best = -1;
+  let bestSign = 0;
   for (let t = 0; t < tris.length; t += 9) {
     const ax = tris[t], ay = tris[t + 1], az = tris[t + 2];
     const e1x = tris[t + 3] - ax, e1y = tris[t + 4] - ay, e1z = tris[t + 5] - az;
@@ -265,8 +293,28 @@ function rayNearestHit(
     const v = (dx * qx + dy * qy + dz * qz) * invDet;
     if (v < 0 || u + v > 1) continue;
     const hitT = (e2x * qx + e2y * qy + e2z * qz) * invDet;
-    if (hitT >= tMin && hitT <= tMax && (best < 0 || hitT < best)) best = hitT;
+    if (hitT > tMax || (best >= 0 && hitT >= best)) continue;
+    // 면법선·레이 내적 — 아래 `nearSign` 블록이 쓰던 식을 위로 끌어올렸을 뿐이다.
+    // `best` 갱신 조건에는 관여하지 않으므로 부동소수 결과가 바뀌지 않는다.
+    const fnx = e1y * e2z - e1z * e2y;
+    const fny = e1z * e2x - e1x * e2z;
+    const fnz = e1x * e2y - e1y * e2x;
+    const fd = fnx * dx + fny * dy + fnz * dz;
+    if (hitT >= tMin) { best = hitT; bestSign = fd; continue; }
+    // ── 80회차 결함 ① 수리(`nearSign` 전달 시에만) ────────────────────────────
+    // `tMin`(5mm)은 「두께 0의 몸 메시 자기 자신을 안 맞히도록」이라 적혀 있었으나
+    // 이 레이가 쏘는 `tris`는 **옷 삼각형뿐이고 몸 메시가 들어 있지 않다**
+    // → 이 하한이 버리는 것은 전부 **실제 옷 히트**다(79회차 등재 · 함정 19).
+    // 문턱을 그냥 낮추면 관통을 피복으로 센다(함정 11) — 그래서 **부호**로 가른다.
+    // 80회차 §3 실측: tMin 5→0mm 구간 130건 중 top 95건이
+    // **근접 피복 93(97.9%) / 관통 1(1.1%) / 부호 모호 1(1.1%)** → 사전 등록 문턱 3개 통과.
+    // 판정식: 옷 면법선과 레이 방향의 내적이 양수면 「옷 바깥면이 레이를 향한다」
+    // = 근접 피복. 음수면 옷 바깥면이 몸을 향하므로 관통으로 보고 **버린다**(기존과 같다).
+    // **새 상수 0** — `nearSign`은 켜고 끄는 스위치일 뿐 값이 아니다.
+    if (!nearSign || hitT < 0) continue;
+    if (fd > 0) { best = hitT; bestSign = fd; }
   }
+  if (signOut) signOut.v = bestSign;
   return best;
 }
 
@@ -320,6 +368,19 @@ export interface CoverageParams {
   probeReverseMax?: number;
   // 샘플 정점 마스크 — collectBandSamples의 mask 주석 참고.
   sampleMask?: Uint8Array;
+  // 80회차 — `rayMin` 미만 히트를 **부호로** 살린다(위 rayNearestHit 주석).
+  // 기본 off라 미전달이면 25~78회차와 비트 동일이다(병기용).
+  nearSign?: boolean;
+  // 83회차 결함 ③-b 병기 — `orientOutward`(참조축 근사)를 **건너뛰고**
+  // `collectBandSamples`가 누적한 와인딩 법선을 그대로 레이 방향으로 쓴다.
+  // 기본 off · 미전달이면 값이 안 바뀐다.
+  // **제한**: 절단 시트(`[frontIdx, backIdx]`)에는 물리지 말 것 — 절단선
+  // 정점이 한쪽 삼각형만 받아 법선이 기운다(:140-143 주석). covShoulder 전용.
+  // **해석 제한**: 이 법선은 「진리」가 아니라 **와인딩 법선**이다. 이 메시는
+  // 일부 영역 와인딩이 뒤집혀 있고(아래 orientOutward 주석의 mid-back 93~96%)
+  // 그것이 `orientOutward`의 존재 이유다 — old/new와 갈릴 때 그 차이가
+  // 「참조축 편향」인지 「와인딩 결함」인지 **이 채널 하나로는 못 가른다**.
+  rawNormal?: boolean;
 }
 
 export function computeBodyCoverage(
@@ -328,17 +389,26 @@ export function computeBodyCoverage(
   sim: GridView,
   clothPanels: readonly ClothPanelRange[],
   params: CoverageParams,
+  // v2(patternCore): 비정형 메시는 격자 셀에서 삼각형을 뽑을 수 없다 —
+  // 호출자가 실제 삼각형(평탄 xyz 3개×3)을 직접 넘긴다. 없으면 기존
+  // 격자 경로 그대로이므로 v1은 비트 동일.
+  clothTrisOverride?: Float32Array,
 ): CoverageResult {
   const rayMin = params.rayMin ?? 0.005;
   const rayMax = params.rayMax ?? 0.25;
   const body = collectBandSamples(bodyPosition, bodyIndexes, params.yMin, params.yMax, params.neckCenter, params.neckRadius, params.sampleMask);
-  const tris = clothTriangles(sim, clothPanels);
+  const tris = clothTrisOverride ?? clothTriangles(sim, clothPanels);
 
   const buckets: Record<string, CoverageBucket> = {};
   const exposedExamples: { x: number; y: number; z: number }[] = [];
   const hits: { bucket: string; hoverMm: number; x: number; y: number; z: number }[] = [];
   let exposed = 0;
   let reverseHits = 0;
+  // 83회차 — 「피복」으로 센 히트 중 옷 바깥면이 **몸을 향한** 것(= 관통을
+  // 피복으로 오분류). 버킷별 건수. 문턱은 0(부호)이고 새 상수는 없다.
+  const penetrationHits: Record<string, number> = {};
+  const exposedFlags = new Uint8Array(body.count);
+  const sgn = { v: 0 };
   const bandH = (params.yMax - params.yMin) / 3;
   for (let i = 0; i < body.count; i++) {
     const x = body.points[i * 3];
@@ -359,13 +429,16 @@ export function computeBodyCoverage(
     } else {
       [refX, refY, refZ] = torsoOutwardRef(x, z, params.centerX, params.centerZ);
     }
-    const [nx, ny, nz] = orientOutward(
-      body.normals[i * 3], body.normals[i * 3 + 1], body.normals[i * 3 + 2],
-      refX, refY, refZ,
-    );
-    const hitT = rayNearestHit(x, y, z, nx, ny, nz, tris, rayMin, rayMax);
+    const [nx, ny, nz] = params.rawNormal
+      ? [body.normals[i * 3], body.normals[i * 3 + 1], body.normals[i * 3 + 2]]
+      : orientOutward(
+        body.normals[i * 3], body.normals[i * 3 + 1], body.normals[i * 3 + 2],
+        refX, refY, refZ,
+      );
+    const hitT = rayNearestHit(x, y, z, nx, ny, nz, tris, rayMin, rayMax, params.nearSign, sgn);
     const hit = hitT >= 0;
     if (hit) {
+      if (sgn.v < 0) penetrationHits[key] = (penetrationHits[key] ?? 0) + 1;
       const mm = hitT * 1000;
       hits.push({ bucket: key, hoverMm: Number(mm.toFixed(2)), x: Number(x.toFixed(4)), y: Number(y.toFixed(4)), z: Number(z.toFixed(4)) });
       bucket.hoverSumMm += mm;
@@ -376,6 +449,7 @@ export function computeBodyCoverage(
     }
     if (!hit) {
       exposed++;
+      exposedFlags[i] = 1;
       bucket.exposed++;
       if (params.probeReverse && rayNearestHit(x, y, z, -nx, -ny, -nz, tris, rayMin, params.probeReverseMax ?? 0.02) >= 0) reverseHits++;
       // 전체 노출 좌표를 담는다(수백 개 수준) — 신구 대조 시 "새로 노출된
@@ -391,5 +465,10 @@ export function computeBodyCoverage(
     exposedExamples,
     hits,
     reverseHits,
+    penetrationHits,
+    vertexIndexes: body.vertexIndexes,
+    samplePoints: body.points,
+    sampleNormals: body.normals,
+    exposedFlags,
   };
 }

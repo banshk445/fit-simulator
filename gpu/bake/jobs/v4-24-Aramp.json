@@ -1,0 +1,16 @@
+{
+ "name": "v4-24-Aramp",
+ "fp": "f64",
+ "arch": "cuda",
+ "frames": 400,
+ "cells": [
+  {
+   "cell": "Aasm_M",
+   "asm": "asm-Aasm_M.bin",
+   "reportCell": "c100-h170-s45_M",
+   "frames": 400,
+   "cellCap": { "cell_cap": 192, "max_cells": 131072 },
+   "ramp": true
+  }
+ ]
+}
