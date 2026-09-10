@@ -86,7 +86,20 @@ for (let f = 0; f <= FMAX; f += STEP) {
               '어깨 대역 접촉': contact, '어깨선 위 정점': above,
               '어깨 봉제 y중앙(trail)': f in trail ? trail[f] : null });
 }
-const out = { what: 'v5-7a §1-③ 궤적 채널(측정만 · ㉣ 는 trail 에서 읽어 옮김)', spec: SPEC ?? `차트 ${c.size}`,
+/* v5-7b §0-5ㄱ — **진입 인자 기록 규약**(신설 · 7a 함정 후보 「계기 산출에 진입 인자를 적지 않으면
+ * 재현이 안 된다」 대응). v5-7a 는 v5-6 표를 재현하려고 몸·축·원점 **조합 8회**를 돌려야 했다.
+ * 값은 «읽어 옮기기»만 한다 — 새 수 0. */
+const _args = {
+  BODY_BIN: process.env.BODY_BIN ?? null,
+  ARM_AXIS_JSON: process.env.ARM_AXIS_JSON ?? null,
+  ARM_ORIGIN_JSON: process.env.ARM_ORIGIN_JSON ?? null,
+  SPEC: process.env.SPEC ?? null,
+  TAG: process.env.PREFIX ?? null,
+  CELL: process.env.CELL ?? null,
+  D_MM: process.env.D_MM ?? null,
+  계기: import.meta.url.split('/').pop(),
+};
+const out = { what: 'v5-7a §1-③ 궤적 채널(측정만 · ㉣ 는 trail 에서 읽어 옮김)', _args, spec: SPEC ?? `차트 ${c.size}`,
               cell: CELL, dumps: DUMPS, prefix: PREFIX, step: STEP,
               'Y_TOP m': S.Y_TOP, 'ARM_D m': S.ARM_D, 'RAMP_N(인용식)': RAMP_N, 'SEP mm': SEP * 1000,
               'trail 파일': existsSync(trailPath) ? trailPath : null, '덤프 없는 프레임': missing, rows };
