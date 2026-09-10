@@ -30757,3 +30757,33 @@ docs/v5/캡처/5-1-supima-f040-{1-front,2-side}.png · 5-2-mstover-f040-{1-front
 ### §2
 npx tsc -b 통과 · pytest(2호기) 40 passed · 2 xfailed · 1 xpassed (65.97 s) · 화면 판정 0
 절차 사실 — 궤적 재굽기 중 ssh 끊김(산출은 정상) · f30 스냅은 덤프 간격 20 이라 f40 으로 대체
+
+
+## 2026-09-10 v5-6 — 경계 양쪽 측정(마찰 코드 사실 · f0 채널) (갈래 B · 처방 0)
+
+기계 = 에어 단독(2호기 46회 무응답 · 12:10~13:37) · 브랜치 `v5-6-boundary-probe` · 기점 `e385f64` ·
+§0 선커밋 `7a135a5` · 굽기 0칸 · src/v3·worker·gpu/engine·public diff 0 · 신설 scripts/v5BoundaryProbe.ts
+
+### ① 마찰 코드 사실
+src/v3/consts.ts:9-10  「마찰계수 — v3-16(출처 미확보 #23 이월)」 MU = 0.3
+gpu/engine/collide.py:1  v3 격자 SDF 질의 + 밀어내기 + 쿨롱 마찰 이식
+gpu/engine/collide.py:12-13  t = (pos − prev) 의 접선 성분 · k = min(1, μ·depth/|t|) · pos −= t·k · |t| > 1e-15
+gpu/engine/collide.py:14-15  THICK 1e-3 · MU 0.3 · dressRun.prepare 가 collision.mu 로 전달
+⟹ 접선 구속 존재 · 크기는 μ·depth 상한(접촉 없으면 마찰 ≈ 0)
+
+### ② 경계 양쪽(불가 · 갈래 나)
+mst-over-L-w545(W 54.5 · SW 52) 조립 던짐 — garmentScene.ts:922 「옷 자기 간격 SEP 미달 — 최소쌍
+  back↔sleeveL 0.8876mm — 갈래 D」 ⟹ W 만 내려 경계 아래 점을 만들 수 없다(W 단독 반례 재료)
+2호기 무응답으로 slip_probe 0칸 · v5-5 덤프 접근 불가
+f0 채널(에어 · scripts/v5BoundaryProbe.ts · 어깨 대역 = Y_TOP 아래 ARM_D 띠 · 몸 거리 ≤ SEP) —
+  supima-L(54.5) ARM_D 0.2149 · RAMP_N 77 · 어깨접촉 174 · 어깨위 44 · 간극중앙 0.571 · 최대 2.72
+  w56 ARM_D 0.2208 · RAMP_N 81 · 어깨접촉 144 · 어깨위 84 · 간극중앙 0.755 · 최대 2.70
+  w58 ARM_D 0.2194 · RAMP_N 86 · 어깨접촉 137 · 어깨위 78 · 간극중앙 0.715 · 최대 2.70
+  mst-over-L(60) ARM_D 0.2175 · RAMP_N 89 · 어깨접촉 138 · 어깨위 74 · 간극중앙 0.656 · 최대 2.72
+⟹ f0 로는 갈리지 않는다(갈림은 램프 중 f20~f30 · v5-5)
+
+### ③ 다음 판 측정 형태(처방 0)
+성립하는 경계 짝(W×SW) · 궤적 4종(2호기 전제) · MU 가상 실험 · μ·depth 소멸 확인
+
+### §2
+npx tsc -b 통과 · pytest 미집행(2호기 부재 · gpu 변경 0) · 화면 판정 0
