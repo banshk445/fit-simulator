@@ -30787,3 +30787,46 @@ f0 채널(에어 · scripts/v5BoundaryProbe.ts · 어깨 대역 = Y_TOP 아래 A
 
 ### §2
 npx tsc -b 통과 · pytest 미집행(2호기 부재 · gpu 변경 0) · 화면 판정 0
+
+
+## 2026-09-10 v5-7a — 준비판(MU 경로 · 경계 재정의 조립 · 궤적 계기) (갈래 A · 처방 0)
+
+기계 = 에어 단독(2호기 부재) · **별도 워크트리** `~/projects/fit-simulator-7a`(다른 세션이 본체에서 `v5-chronicle` 집행 중) ·
+브랜치 `v5-7a-prep` · 기점 `8e58c66` · §0 선커밋 `7a06eb4` · 굽기 0칸 · src/v3·engine·worker·public diff 0 ·
+신설 scripts/v5DiagSdfMu.ts · scripts/v5TrajProbe.ts · 잡 6개 gpu/bake/jobs/v5-7b-*.json
+
+### ① MU 오버라이드 경로 = 자산 헤더(코드 0줄)
+consts.ts:10 MU 0.3 → v4AsmExport.ts:101-102 (sdf-<BODYTAG>.bin 헤더 JSON 에 MU 기록)
+  → worker.py:89,105 sh["MU"] → collide.py:47,55,114,119 · slip_probe.py:81 도 같은 헤더
+잡 json 키 = name·cells·fp·arch·frames(셀별 cell·asm·reportCell·frames·cellCap·ramp) — MU 키 없음
+worker.py:175 os.environ 전달 = PYTHONIOENCODING·CELL — MU 환경변수 없음
+v5DiagSdfMu 스모크(가짜 sdf) — MU 전 0.3 후 0.6 · 본문 바이트 64 동일 true · 헤더 101 → 188 ·
+  가드 2건 발화(「OUT 이름에 «diag» 가 없다」 · 「OUT 이 이미 있다」)
+
+### ② 경계 재정의(어깨 SW 44.5 고정) — 조립 f0 · 던짐 0
+진입 인자(v5-6 재현 확정분) — BODY_BIN gpu/oracle/export/grid27/l3ap-body-c100-h170-s45-a35.bin ·
+  ARM_AXIS_JSON grid27/l3ap-body-c100-h170-s45-a35.json · ARM_ORIGIN_JSON grid27/l3ap-origin-c100-h170-s45-a35.json ·
+  CELL supima계열 c100-h170-s45_L / mst계열 _XL · D_MM 9
+재현 대조 — supima-L RAMP_N 77 · 접촉 174 · 어깨위 44 · 간극중앙 0.5714512535549208 mm (v5-6 기록 77/174/44/0.571)
+           mst-over-L RAMP_N 89 · 접촉 138 · 어깨위 74 · 간극중앙 0.6557 (v5-6 기록 89/138/74/0.656)
+신규 2종 —
+  supima-L-w56 (총장 71 · 어깨 44.5 · 가슴 56 · 화장 44) ARM_D 0.2126619854786823 · RAMP_N 84 ·
+    어깨접촉 177 · 어깨위 36 · 간극중앙 0.4836 · 최대 2.707
+  supima-L-w58 (총장 71 · 어깨 44.5 · 가슴 58 · 화장 44) ARM_D 0.20909569668035827 · RAMP_N 87 ·
+    어깨접촉 177 · 어깨위 34 · 간극중앙 0.4186 · 최대 2.6974
+⟹ SW 44.5 줄 접촉 174/177/177 · 어깨위 44/36/34 ↔ SW 52 줄 접촉 144/137/138 · 어깨위 84/78/74
+   (f0 는 W 가 아니라 SW 로 갈린다 · 굽기 전 값 · 판단 0)
+오염 없는 경로 — 오답 인자(최상위 l3ap-origin-…-a35.json)로는 같은 Y_TOP·RAMP_N 인데 접촉 7 · 어깨위 262 ·
+  간극중앙 1.3751876409366233 (2회 비트 동일 — 갈린 것은 입력)
+
+### ③ 궤적 계기(v5TrajProbe) — 작성 완료 · 맥 실행 0
+덤프 형식 = slip_probe.py:112-113 p.tofile ⟹ 헤더 없는 n×3 f64 · 길이 가드 발화
+  (Error: 덤프 길이가 다르다 — 7a-smoke-f020.bin · 231456 ≠ 248544)
+trail 병합 확인 — v4-30-slip/Apiv_M-trail.json 의 어깨봉제y중앙 1.4570403099060059 를 읽어 붙임
+f0 스모크 — RAMP_N 77 · 접촉 174 · 어깨위 44 · 간극중앙 0.5714512535549208(§1-② supima 행과 동일)
+
+### §2
+npx tsc -b 통과 · pytest 미집행(2호기 부재 · v5-6 분 이월 · gpu 변경 0) · 화면 판정 0 · ecc 0
+절차 자기신고 — 첫 커밋 e5edd30 에서 git add -A 가 추적 자산 7건(gpu/oracle/export/l3ap-*)을 심링크로
+  형식 변경 → 9ff9ca7 에서 원본 복원(추적본 ↔ 심링크 대상 sha 7/7 동일 · 측정값 영향 0) ·
+  측정 산출 json 17건은 추적 밖으로(디스크 보존)
