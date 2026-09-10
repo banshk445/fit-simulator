@@ -99,6 +99,13 @@ export const SPEC_LIBRARY: Record<string, SpecEntry> = {
    * v5-5 의 `-w56` 과 짝을 이루어 «같은 옷의 W 만 다른» 두 점을 만든다(§0-4ㄱ). **제공·제품 사용 0.** */
   'mst-over-L-w545': { 출처: 'v5-6 §1-② 가상 실험(실물 아님) — mst-over-L 에서 가슴·밑단단면만 54.5cm',
                        spec: { totalLength: 74, chestFlat: 54.5, shoulder: 52, sleeveLength: 24, hemFlat: 54.5 } },
+  /** ★ v5-7a §1-② **가상 실험**(실물 아님) — 경계를 **어깨 고정(SW 44.5)** 으로 다시 정의한다.
+   * `supima-L`(걸림 · W 54.5) 에서 **가슴·밑단단면만** 56 · 58 로 넓힌다. 총장 71 · 어깨 44.5 · 화장 44 는 그대로.
+   * 근거 — v5-7 판정문의 정정(v5-5 의 54.5 행은 supima 라 「W 단독」 판독은 철회됐다). **제공·제품 사용 0.** */
+  'supima-L-w56': { 출처: 'v5-7a §1-② 가상 실험(실물 아님) — supima-L 에서 가슴·밑단단면만 56cm',
+                    row: { totalLength: 71, shoulder: 44.5, chestFlat: 56, hwa: 44 } },
+  'supima-L-w58': { 출처: 'v5-7a §1-② 가상 실험(실물 아님) — supima-L 에서 가슴·밑단단면만 58cm',
+                    row: { totalLength: 71, shoulder: 44.5, chestFlat: 58, hwa: 44 } },
 };
 
 /** 등재 항목 → 실측표 5항. 어느 형식이든 **같은 자리**로 모은다. */

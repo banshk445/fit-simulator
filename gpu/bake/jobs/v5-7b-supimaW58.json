@@ -1,0 +1,19 @@
+{
+ "name": "v5-7b-supimaW58",
+ "fp": "f64",
+ "arch": "cuda",
+ "frames": 400,
+ "cells": [
+  {
+   "cell": "supimaW58_L",
+   "asm": "asm-supimaW58_L.bin",
+   "reportCell": "c100-h170-s45_L",
+   "frames": 400,
+   "cellCap": {
+    "cell_cap": 192,
+    "max_cells": 262144
+   },
+   "ramp": true
+  }
+ ]
+}
