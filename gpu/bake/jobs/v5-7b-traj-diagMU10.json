@@ -1,0 +1,13 @@
+{
+ "name": "v5-7b-traj-diagMU10",
+ "cell": "mstoverDiagMU10_XL",
+ "asm": "asm-mstoverDiagMU10_XL.bin",
+ "idx": "l3slip-idx-v5-7-mstover_XL.json",
+ "frames": 200,
+ "cellCap": {
+  "cell_cap": 192,
+  "max_cells": 262144
+ },
+ "ramp": true,
+ "dumpEvery": 10
+}
