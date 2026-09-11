@@ -26,7 +26,8 @@ import { patternOfSpecName } from '../src/v5/specToPattern.ts';
 import { armAxisFromEnv } from './armAxisEnv.ts';
 
 const ASM2 = process.env.ASM2 === '1';
-const FIX = (process.env.ASM2FIX === 'A' || process.env.ASM2FIX === 'B') ? process.env.ASM2FIX : undefined;
+const OKFIX = ['A', 'B', 'AB', 'ABI', 'BLEND'] as const;
+const FIX = (OKFIX as readonly string[]).includes(process.env.ASM2FIX ?? '') ? (process.env.ASM2FIX as typeof OKFIX[number]) : undefined;
 const SPEC = process.env.SPEC;
 const CELL = process.env.CELL ?? 'c100-h170-s45_XL';
 const D = Number(process.env.D_MM ?? 9) / 1000;

@@ -81,7 +81,7 @@ export type SceneConfig = {
   /** ★ v5-15 — **S4 붕괴 처방 «하위 플래그»**(진단 전용 · 기본 `undefined` = v5-14 거동).
    * `'A'` = S4 걸음 상한(`THICK`) + 봉제선→아래 **행 순서** 훑기 · `'B'` = **표면 추종 S3**.
    * `asm2` 가 꺼져 있으면 이 값은 읽히지 않는다(정본 off 비트 불변). */
-  asm2Fix?: 'A' | 'B';
+  asm2Fix?: 'A' | 'B' | 'AB' | 'ABI' | 'BLEND';
 };
 
 /** ★ v5-12 — **어깨 경사 낙차 `SH_DROP` [m]**(조립 2세대 템플릿 상수 · 이름·값·출처 공개).
@@ -104,7 +104,15 @@ export function createScene(cfg: SceneConfig) {
   const ASM2 = cfg.asm2 === true;
   /* v5-15 신설 · ★ v5-16 — **(A) 를 기본값으로 올린다**(전략 세션 v5-15 §4 「(A) 걸음 상한 THICK 채택」) ·
    * `'B'`(표면 추종)는 **보류**로 코드에 남긴다(삭제 0 · 열 간격 항이 생기면 다시 시험한다). */
-  const FIX = ASM2 ? (cfg.asm2Fix ?? 'A') : undefined;                  // v5-12 — 플래그(기본 false ⟹ 아래 분기 전부 죽는다)
+  const FIX = ASM2 ? (cfg.asm2Fix ?? 'A') : undefined;
+  /* ★ v5-17 — 후보 조합 해석(§0-4 형식화 그대로 · 새 상수 0):
+   *   (ㄱ) `'AB'`   = 표면 추종 S3 + 걸음 상한·행 순서 S4
+   *   (ㄴ) `'ABI'`  = (ㄱ) + **열 간격 항**(같은 행 `i↔i+1` 거리를 2D 패턴 거리로 투영)
+   *   (ㄷ) `'BLEND'`= 튜브(오늘 통과하는 배치) ↔ 드레이프의 **행 비율 보간** + `SEP` 사영 · S4 는 잔여만 */
+  const S3SURF = FIX === 'B' || FIX === 'AB' || FIX === 'ABI' || FIX === 'BLEND';
+  const S4CAP = FIX === 'A' || FIX === 'AB' || FIX === 'ABI' || FIX === 'BLEND';
+  const S3INTERVAL = FIX === 'ABI';
+  const S3BLEND = FIX === 'BLEND';                  // v5-12 — 플래그(기본 false ⟹ 아래 분기 전부 죽는다)
   const SH_DROP = ASM2 ? ASM2_SH_DROP : 0;         // off 면 0 ⟹ 제도식이 «수평 직선» 그대로다
   const V2DIMS = cfg.dimsOverride !== undefined;
   const V2REF = cfg.dimsOverride ?? { neckHalfWidthCm: 0, necklineGirthCm: 0, capHeightCm: 0 };
@@ -867,7 +875,10 @@ export function createScene(cfg: SceneConfig) {
    *   S5 소매 → **손대지 않는다**(전략 세션 v5-11 검수 승인 · v5-9 「소매 관 무죄」)
    * ★ 인쇄 전용 훅 `__asm2Probe` — 있으면 값을 넘긴다(없으면 아무 일도 없다 · 동작 0). */
   function redrapeAsm2(B: ReturnType<typeof build>, pos: Float64Array): void {
-    const { front, back, N_sh, N_nk, nuB, nvB } = B;
+    const { front, back, N_sh, N_nk, N_side, nuB, nvB } = B;
+    /* ★ v5-17 (ㄷ) — **튜브 위치 스냅숏**. `place()` 가 놓은 그 배치가 «오늘 자기검사를 통과하는»
+     * 결 보존 배치다(판정문 「메시 결 보존 + 몸 밖」) ⟹ 블렌드의 한쪽 재료로 쓴다. */
+    const tube = S3BLEND ? Float64Array.from(pos) : null;
     const ringAt = (y: number) => boundaryOf(supportAt(y, SLAB), DELTA, 1);
     const nkPts = ringAt(Y_NECK);
     const nkF = arcOn(nkPts, false), nkB = arcOn(nkPts, true);
@@ -981,7 +992,7 @@ export function createScene(cfg: SceneConfig) {
           const vt = at(pan, i, j + 1), vb = at(pan, i, j);
           const [ax, ay] = uvAt(pan, i, j + 1), [bx2, by2] = uvAt(pan, i, j);
           const len = Math.hypot(ax - bx2, ay - by2);
-          if (FIX === 'B') {
+          if (S3SURF) {
             const px2 = pos[vt * 3], py2 = pos[vt * 3 + 1], pz2 = pos[vt * 3 + 2];
             const d = fallDir(nHat(px2, py2, pz2));
             const q = pushOut([px2 + d[0] * len, py2 + d[1] * len, pz2 + d[2] * len]);
@@ -993,15 +1004,66 @@ export function createScene(cfg: SceneConfig) {
           }
         }
     }
+    /* ★ v5-17 (ㄷ) — **블렌드**: `j ∈ (N_side, nvB]` 에서 `w = (j − N_side)/(nvB − N_side)` 로
+     * 튜브(w=0)와 드레이프(w=1)를 섞고 `SEP` 등위면으로 사영한다 · `j ≤ N_side` 는 **튜브 그대로**. */
+    if (S3BLEND && tube) {
+      const span = Math.max(1, nvB - N_side);
+      for (const pan of [front, back])
+        for (let i = 0; i <= pan.nu; i++)
+          for (let j = 0; j <= nvB; j++) {
+            const v = at(pan, i, j);
+            if (j <= N_side) {
+              pos[v * 3] = tube[v * 3]; pos[v * 3 + 1] = tube[v * 3 + 1]; pos[v * 3 + 2] = tube[v * 3 + 2];
+              continue;
+            }
+            const w = Math.min(1, (j - N_side) / span);
+            const q: [number, number, number] = [
+              tube[v * 3] * (1 - w) + pos[v * 3] * w,
+              tube[v * 3 + 1] * (1 - w) + pos[v * 3 + 1] * w,
+              tube[v * 3 + 2] * (1 - w) + pos[v * 3 + 2] * w];
+            const r = pushOut(q);
+            pos[v * 3] = r[0]; pos[v * 3 + 1] = r[1]; pos[v * 3 + 2] = r[2];
+          }
+    }
+    /* ★ v5-17 (ㄴ) — **열 간격 항**: 같은 행의 이웃 열 거리를 2D 패턴 거리로 투영한다(중점 대칭 이동) ·
+     * 수렴 `TOL_SELF` · 상한 `NY`(등재 값) · 그 뒤 `SEP` 밀어냄. 새 상수 0. */
+    if (S3INTERVAL) {
+      for (let it = 0; it < NY; it++) {
+        let mx = 0;
+        for (const pan of [front, back])
+          for (let j = 0; j <= nvB; j++)
+            for (let i = 0; i < pan.nu; i++) {
+              const a = at(pan, i, j), b = at(pan, i + 1, j);
+              const ka = (j * (pan.nu + 1) + i) * 2, kb = (j * (pan.nu + 1) + i + 1) * 2;
+              const L2 = Math.hypot(pan.uv[ka] - pan.uv[kb], pan.uv[ka + 1] - pan.uv[kb + 1]);
+              const dx = pos[b * 3] - pos[a * 3], dy = pos[b * 3 + 1] - pos[a * 3 + 1],
+                    dz = pos[b * 3 + 2] - pos[a * 3 + 2];
+              const L3 = Math.hypot(dx, dy, dz);
+              if (!(L3 > 1e-12)) continue;
+              const sh = (L2 - L3) / 2;
+              if (Math.abs(sh) > mx) mx = Math.abs(sh);
+              const ux = dx / L3, uy = dy / L3, uz = dz / L3;
+              pos[a * 3] -= ux * sh; pos[a * 3 + 1] -= uy * sh; pos[a * 3 + 2] -= uz * sh;
+              pos[b * 3] += ux * sh; pos[b * 3 + 1] += uy * sh; pos[b * 3 + 2] += uz * sh;
+            }
+        if (mx <= TOL_SELF) break;
+      }
+      for (const pan of [front, back])
+        for (let j = 0; j <= nvB; j++) for (let i = 0; i <= pan.nu; i++) {
+          const v = at(pan, i, j);
+          const r = pushOut([pos[v * 3], pos[v * 3 + 1], pos[v * 3 + 2]]);
+          pos[v * 3] = r[0]; pos[v * 3 + 1] = r[1]; pos[v * 3 + 2] = r[2];
+        }
+    }
     /* S4 — 밀어냄 */
     const gradPush: number[] = [];
     let iter = 0, maxMove = Infinity;
     /* ★ v5-15 (A) — 걸음 상한 `THICK`(행 간격의 «한 자릿수 아래» · 등재 자 인용 · 손 상수 0) ·
      * 훑는 순서 = **봉제선(맨 위 행)에서 아래로** · 반복 상한 = `NY`(이 함수가 이미 쓰는 등재 값). */
-    const STEPCAP = FIX === 'A' ? cfg.THICK : Infinity;
-    const ITERCAP = FIX === 'A' ? NY : 8;
+    const STEPCAP = S4CAP ? cfg.THICK : Infinity;
+    const ITERCAP = S4CAP ? NY : 8;
     const list: number[] = [];
-    if (FIX === 'A') {
+    if (S4CAP) {
       for (let j = nvB; j >= 0; j--) for (const pan of [front, back])
         for (let i = 0; i <= pan.nu; i++) list.push(at(pan, i, j));
     } else {

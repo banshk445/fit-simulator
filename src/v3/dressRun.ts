@@ -53,7 +53,7 @@ export type RunInput = {
   /** ★ v5-12 — 조립 2세대 플래그(기본 `undefined` = 현행 · `createScene` 으로 그대로 넘긴다). */
   asm2?: boolean;
   /** ★ v5-15 — S4 처방 하위 플래그(진단 · 그대로 넘긴다). */
-  asm2Fix?: 'A' | 'B';
+  asm2Fix?: 'A' | 'B' | 'AB' | 'ABI' | 'BLEND';
   fabric: Fabric;
   /** 해상도 [m] — 제품 설정은 d11(v3-33 갈래 B) */
   d?: number;

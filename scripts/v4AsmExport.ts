@@ -38,7 +38,8 @@ const verts = new Float32Array(bb.buffer.slice(bb.byteOffset, bb.byteOffset + bb
 const fab = (FABRICS as Record<string, { k: number; rho: number; B: number }>)[FAB];
 /* ★ v5-16 — **조립 2세대 env**(`ASM2=1` · `ASM2FIX=A|B`). 없으면 키를 넣지 않는다 ⟹ 기존 호출 불변. */
 const ASM2 = process.env.ASM2 === '1';
-const ASM2FIX = (process.env.ASM2FIX === 'A' || process.env.ASM2FIX === 'B') ? process.env.ASM2FIX : undefined;
+const OKFIX = ['A', 'B', 'AB', 'ABI', 'BLEND'] as const;
+const ASM2FIX = (OKFIX as readonly string[]).includes(process.env.ASM2FIX ?? '') ? (process.env.ASM2FIX as typeof OKFIX[number]) : undefined;
 const P = prepare({ glb, fabric: FABRICS.gray, d: D, garment: SPEC ? patternOfSpecName(SPEC) : garmentOf(c.size as Size), armAxis: armAxisFromEnv(),
                     bodyVerts: verts, minPairDistLite,
                     ...(ASM2 ? { asm2: true } : {}), ...(ASM2FIX ? { asm2Fix: ASM2FIX } : {}) });
