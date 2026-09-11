@@ -71,7 +71,7 @@ def _unpack(path):
     return json.loads(raw[4:4 + hl].decode("utf-8")), np.frombuffer(raw[4 + hl:], dtype="<f8")
 
 
-def bake(cell, asm=None, frames_in=None, cap=None, ramp=False):
+def bake(cell, asm=None, frames_in=None, cap=None, ramp=False, ramp_order=False):
     """`asm` 이 있으면 **조립 입력 모드**(v4-20 §1-①) — 초기 상태를 조립 산출에서 읽는다.
     없으면 v4-18 이 «채택»한 기존 모드 그대로다(정착 blob 에서 읽는다 · **그 경로 diff 0**)."""
     body = cell.rsplit("_", 1)[0]
@@ -117,6 +117,7 @@ def bake(cell, asm=None, frames_in=None, cap=None, ramp=False):
     #     프레임 f(0부터) «전»에 t = min(1, (f+1)/RAMP_N) 로 rest[k] = rest0[k] + (SEP − rest0[k])·t
     #   ★ 커널은 `sm_rest` 를 읽기만 한다 — 이 배열을 «호출부»가 프레임마다 갱신한다.
     ramp_meta = None
+    sh_mask = None
     if ramp:
         p0 = st[: n * 3].reshape(n, 3).astype(np.float64)
         si = np.asarray(sm_idx, np.int64)
@@ -125,6 +126,33 @@ def bake(cell, asm=None, frames_in=None, cap=None, ramp=False):
         rampN = int(np.ceil((rest0.max() - SEPm) / (G * DT * DT)))
         ramp_meta = {"rampN": rampN, "rest0Max": float(rest0.max()), "rest0Min": float(rest0.min()),
                      "SEP": SEPm, "mode": "dressRun.ts:111-116 선형 · setRest 는 step «앞»"}
+        # ── v5-9 §0-4㉡ **램프 «순서» 진단**(`ramp_order` 가 참일 때만 · 커널 식 0줄 · 기본 경로 불변) ──
+        #   어깨 봉제를 «먼저» 닫고 그 뒤에 나머지를 닫는다. 램프 식은 위 원형 그대로이고
+        #   t 를 **구간별로** 주는 것만 다르다. N 은 그 구간의 rest0 에서 «유도»한다(손 상수 0).
+        if ramp_order:
+            grp = hm.get("seamGroups")
+            if not grp:
+                raise SystemExit("rampOrder 인데 봉제 헤더에 seamGroups 가 없다 — 조립을 다시 내보내라"
+                                 " (v5-9 §0-4㉠)")
+            sh_mask = np.zeros(len(rest0), bool)
+            names = []
+            for g in grp:
+                if g["name"].startswith("어깨"):
+                    sh_mask[int(g["from"]):int(g["to"])] = True
+                    names.append(f"{g['name']}[{g['from']}:{g['to']})")
+            if not sh_mask.any():
+                raise SystemExit("봉제 그룹에 «어깨» 가 없다 — " + ",".join(g["name"] for g in grp))
+            n_sh = int(np.ceil((rest0[sh_mask].max() - SEPm) / (G * DT * DT)))
+            n_ot = int(np.ceil((rest0[~sh_mask].max() - SEPm) / (G * DT * DT)))
+            rampN = n_sh + n_ot
+            ramp_meta.update({"rampOrder": True, "어깨쌍": int(sh_mask.sum()), "나머지쌍": int((~sh_mask).sum()),
+                              "N_sh": n_sh, "N_ot": n_ot, "rampN": rampN, "어깨그룹": names,
+                              "어깨rest0Max": float(rest0[sh_mask].max()),
+                              "나머지rest0Max": float(rest0[~sh_mask].max()),
+                              "mode": "v5-9 §0-4㉡ 어깨 우선 — 어깨 t=min(1,(f+1)/N_sh) · "
+                                      "나머지 t=clip(((f+1)-N_sh)/N_ot,0,1)"})
+            log(f"  램프 순서 — 어깨 {int(sh_mask.sum())}쌍 N_sh {n_sh} · 나머지 "
+                f"{int((~sh_mask).sum())}쌍 N_ot {n_ot} · RAMP_N {rampN} · {','.join(names)}")
         log(f"  램프 — RAMP_N {rampN} · rest0 {rest0.min():.6e}~{rest0.max():.6e} · SEP {SEPm:.6e}")
 
     ref = fu.pos.to_numpy().astype(np.float64)
@@ -133,9 +161,15 @@ def bake(cell, asm=None, frames_in=None, cap=None, ramp=False):
     t0 = time.perf_counter()
     while frame < frames:
         if ramp:                                          # 프레임 단위(램프가 매 프레임 rest 를 바꾼다)
-            tt = min(1.0, (frame + 1) / rampN)
-            fu.sm_rest.from_numpy(np.ascontiguousarray(
-                rest0 + (ramp_meta["SEP"] - rest0) * tt, dtype=npfp))
+            if sh_mask is None:
+                tt = min(1.0, (frame + 1) / rampN)
+                cur = rest0 + (ramp_meta["SEP"] - rest0) * tt
+            else:                                         # v5-9 §0-4㉡ — 어깨 먼저, 그 뒤 나머지
+                t_sh = min(1.0, (frame + 1) / ramp_meta["N_sh"])
+                t_ot = min(1.0, max(0.0, ((frame + 1) - ramp_meta["N_sh"]) / ramp_meta["N_ot"]))
+                tt = np.where(sh_mask, t_sh, t_ot)
+                cur = rest0 + (ramp_meta["SEP"] - rest0) * tt
+            fu.sm_rest.from_numpy(np.ascontiguousarray(cur, dtype=npfp))
         w = 1 if ramp else min(N_WIN, frames - frame)
         _, _, d = fu.step(w, SUB, DT, G, DAMP, **FLAGS)
         deg += d
@@ -158,6 +192,10 @@ def bake(cell, asm=None, frames_in=None, cap=None, ramp=False):
     p.tofile(str(OUT / f"{cell}.bin"))
     dv = np.linalg.norm(p - blob_pos, axis=1) * 1000.0
     meta = {"cell": cell, "inputMode": "assembled" if asm is not None else "settled",
+            # v5-9 §0 사무 ㄱ — **조립이 헤더에 적어 둔 장면 인자**를 meta 에 싣는다(v5-8 사고 5 의 부류 처분).
+            #   없는 키는 넣지 않는다 ⟹ 옛 조립 산출은 종전대로 부모 환경을 쓴다.
+            "scene": {k: BH[j] for k, j in (("BODY_BIN", "body"), ("ARM_AXIS_JSON", "armAxisJson"),
+                                            ("ARM_ORIGIN_JSON", "armOriginJson")) if BH.get(j)},
             "asm": asm, "cellCap": cap, "ramp": ramp_meta, "fp": FPN, "arch": arch, "n": n, "substeps": SUB, "frames": frame,
             "headerFrames": BH["frame"], "tol": TOL, "converged": conv, "convFrame": cf,
             "convNet": cn, "lastNet": last, "degenerate": deg, "trail": trail,
@@ -182,6 +220,10 @@ def layer3(cell, meta, report_cell=None, spec=None):
     env = dict(os.environ, PYTHONIOENCODING="utf-8", CELL=(report_cell or cell),
                POS=str((OUT / f"{cell}.bin").relative_to(Path.cwd())).replace("\\", "/"),
                TAG=f"bake-{NAME}-{cell}")
+    # v5-9 §0 사무 ㄱ — **장면 인자 전량**(몸 · 팔 축 · 원점)을 조립 산출에서 읽어 넘긴다.
+    #   근거 = v5-8 사고 5 — 조립 정점 수가 «몸»에 딸려 있어(T포즈 12,042 ↔ A포즈 12,144)
+    #   이 셋이 없으면 계기가 다른 장면을 세우고 「위치 파일 길이가 다르다」로 던진다.
+    env.update(meta.get("scene") or {})
     if spec:
         env["SPEC"] = str(spec)
     subprocess.run(["npx", "tsx", "scripts/v4FitReport.ts"], env=env, shell=True, check=True,
@@ -205,7 +247,7 @@ CELL_IDS = [c["cell"] if isinstance(c, dict) else c for c in CELLS]
 if CHILD:                                                 # ── 자식: 칸 «하나»만 굽는다 ──
     sp = SPEC.get(CHILD_CELL, {})
     m = bake(CHILD_CELL, asm=sp.get("asm"), frames_in=sp.get("frames"), cap=sp.get("cellCap"),
-              ramp=bool(sp.get("ramp")))
+              ramp=bool(sp.get("ramp")), ramp_order=bool(sp.get("rampOrder")))
     g = layer3(CHILD_CELL, m, report_cell=sp.get("reportCell"), spec=sp.get("spec"))
     (OUT / f"{CHILD_CELL}.done").write_text(time.strftime("%Y-%m-%d %H:%M:%S"), encoding="utf-8")
     log(f"{CHILD_CELL} · 정착 {'f' + str(m['convFrame']) if m['converged'] else '미도달'} · "

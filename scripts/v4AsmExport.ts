@@ -133,8 +133,17 @@ writeFileSync(`${OUT}/scene-bend-${TAG}.bin`, pack({ cell: TAG, n: sc.n, mb, d: 
 const ms = seam.length;
 const sidx = new Int32Array(ms * 2), spar = new Float64Array(ms);
 seam.forEach((x, t) => { sidx[t * 2] = x.i; sidx[t * 2 + 1] = x.j; spar[t] = x.rest; });
+/* v5-9 §0-4㉠ — **봉제 «그룹 구간»을 헤더에 적는다**(데이터만 · payload 0바이트 변경).
+ * 근거(§0-2ㄴ) — `garmentScene.ts:833-844` 가 그룹을 순서대로 만들고 `:878-881` 이 그 순서대로
+ * `seamCons` 에 밀어 넣으며, 위 `all.filter(kind==='dist')` 도 그 순서를 보존한다 ⟹ 누적 길이가 구간이다.
+ * 읽는 쪽은 오프셋을 헤더 «길이»에서 계산하므로(`gpu/engine/seam.py:43-44`) 기존 로더는 그대로 돈다. */
+const seamGroups: { name: string; from: number; to: number }[] = [];
+{ let acc = 0;
+  for (const sm of (sc as unknown as { seams: { name: string; a: number[] }[] }).seams) {
+    seamGroups.push({ name: sm.name, from: acc, to: acc + sm.a.length }); acc += sm.a.length; }
+  if (acc !== ms) throw new Error(`봉제 그룹 누적 ${acc} ≠ 봉제 수 ${ms} — ${TAG}`); }
 writeFileSync(`${OUT}/scene-seam-${TAG}.bin`, pack({ cell: TAG, n: sc.n, ms, d: D, fabric: FAB,
-  k: fab.k, SEP: 2 * THICK, THICK, G, DT, MU, DAMP, substeps: P.SUB, rampN: P.RAMP_N,
+  k: fab.k, SEP: 2 * THICK, THICK, G, DT, MU, DAMP, substeps: P.SUB, rampN: P.RAMP_N, seamGroups,
   note: 'v4-20 §1-① 조립 입력 덤프(봉제)' }, Buffer.from(sidx.buffer), Buffer.from(spar.buffer)));
 
 const g = P.bodyG;
@@ -146,8 +155,16 @@ writeFileSync(`${OUT}/sdf-${BODYTAG}.bin`, pack({ cell: TAG, body: BODYTAG, ox: 
 /* ★ 조립 «상태» — 정착 blob 과 «같은 포장»이라 워커가 같은 리더로 읽는다. 속도는 조립 직후 = 0. */
 const pos = Float64Array.from(sc.s.pos.subarray(0, sc.n * 3));
 const vel = new Float64Array(sc.n * 3);
+/* v5-9 §0 사무 ㄱ — **장면 인자를 조립 산출이 «스스로» 적는다**(데이터만 · 물리 0).
+ * 근거 = v5-8 사고 5: 워커 `layer3` 이 `BODY_BIN`·`ARM_AXIS_JSON`·`ARM_ORIGIN_JSON` 을 복원하지 못해
+ * 계기가 **T포즈 기본 몸**으로 장면을 세우고 정점 수가 갈렸다(12,042 ≠ 12,144). 조립이 쓴 그 값을 여기 남기면
+ * 뒤에 오는 계기가 **같은 장면**을 세울 수 있다. 없는 키는 **넣지 않는다** ⟹ 기존 헤더와 키 집합이 같다. */
+const SCENEARGS = { body: BODY_BIN,
+  ...(process.env.ARM_AXIS_JSON ? { armAxisJson: process.env.ARM_AXIS_JSON } : {}),
+  ...(process.env.ARM_ORIGIN_JSON ? { armOriginJson: process.env.ARM_ORIGIN_JSON } : {}),
+  ...(SPEC ? { spec: SPEC } : {}) };
 writeFileSync(`${OUT}/asm-${TAG}.bin`, pack({ what: 'v4-20 조립 «직후» 상태(속도 0)', cell: TAG,
-  n: sc.n, frame: 0, d: D, body: BODY_BIN, substeps: P.SUB },
+  n: sc.n, frame: 0, d: D, ...SCENEARGS, substeps: P.SUB },
   Buffer.from(pos.buffer), Buffer.from(vel.buffer)));
 
 console.log(JSON.stringify({ what: 'v4-20 §1-① 조립 입력 내보내기', cell: CELL, tag: TAG,

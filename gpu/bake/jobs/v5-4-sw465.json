@@ -1,0 +1,19 @@
+{
+ "name": "v5-4-sw465",
+ "fp": "f64",
+ "arch": "cuda",
+ "frames": 400,
+ "cells": [
+  {
+   "cell": "mstsw465_XL",
+   "asm": "asm-mstsw465_XL.bin",
+   "reportCell": "c100-h170-s45_XL",
+   "frames": 400,
+   "cellCap": {
+    "cell_cap": 192,
+    "max_cells": 262144
+   },
+   "ramp": true
+  }
+ ]
+}
