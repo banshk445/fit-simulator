@@ -871,6 +871,35 @@ export function createScene(cfg: SceneConfig) {
       for (const [x, z] of pts) if (sgn * x > bx) { bx = sgn * x; bz = z; }
       return [sgn * bx, bz];
     };
+    /* ★ 정정 1(v5-12 §1-① 사고 1) — 능선을 **폴리라인으로 한 번** 만들고 «호길이»로 배치한다.
+     * `supportAt(y, SLAB)` 의 슬랩 반폭이 어깨 표본 간격보다 «클» 수 있어 i 마다 링을 뽑으면
+     * **인접 링이 같아져 정점이 겹친다**(실측: `front↔front 0.000mm` 로 자기검사가 던졌다).
+     * 규칙(링 `|x|` 최대)은 그대로 두고 **구성만** 바꾼다 — 저장소의 「호길이 보존」과 같은 방식. */
+    const ridgeOf = (sgn: number) => {
+      const ys: number[] = [];
+      const step = Math.max(sdfSpec.h, SLAB);
+      for (let y = Y_NECK; y > Y_NECK - SH_DROP - 1e-12; y -= step) ys.push(y);
+      if (ys[ys.length - 1] > Y_NECK - SH_DROP + 1e-12) ys.push(Y_NECK - SH_DROP);
+      const pts = ys.map((y) => { const e = xExtreme(y, sgn); return [e[0], y, AXIS_Z + e[1]] as [number, number, number]; });
+      const acc = [0];
+      for (let k = 1; k < pts.length; k++) acc.push(acc[k - 1] +
+        Math.hypot(pts[k][0] - pts[k - 1][0], pts[k][1] - pts[k - 1][1], pts[k][2] - pts[k - 1][2]));
+      const total = acc[acc.length - 1];
+      const at3 = (t: number): [number, number, number] => {
+        const sArc = Math.max(0, Math.min(1, t)) * total;
+        let k = 1; while (k < acc.length - 1 && acc[k] < sArc) k++;
+        const u = (sArc - acc[k - 1]) / Math.max(1e-12, acc[k] - acc[k - 1]);
+        return [pts[k - 1][0] + (pts[k][0] - pts[k - 1][0]) * u,
+                pts[k - 1][1] + (pts[k][1] - pts[k - 1][1]) * u,
+                pts[k - 1][2] + (pts[k][2] - pts[k - 1][2]) * u];
+      };
+      return { at3, total, pts };
+    };
+    const rgL = ridgeOf(-1), rgR = ridgeOf(1);
+    /* ★ 정정 2(사고 2) — 「이미 닫힌」은 **거리 0 이 아니라 «거리 = rest = SEP»**(간극 0)이다.
+     * 이 저장소의 봉제 rest 가 `SEP`(2×두께)이고 자기충돌이 그 분리를 요구한다(위 「봉제」 절 주석).
+     * 앞판 `+z` · 뒤판 `−z` 로 `SEP/2` 씩 벌려 능선을 «사이에» 둔다(새 상수 0 — `SEP` 뿐). */
+    const ZHALF = SEP / 2;
     const uvAt = (pan: Panel, i: number, j: number): [number, number] => {
       const k = (j * (pan.nu + 1) + i) * 2;
       return [pan.uv[k], pan.uv[k + 1]];
@@ -880,12 +909,12 @@ export function createScene(cfg: SceneConfig) {
       const pan = isFront ? front : back;
       for (let i = 0; i <= nuB; i++) {
         const v = at(pan, i, nvB);
-        const [px, py] = uvAt(pan, i, nvB);
+        const [px] = uvAt(pan, i, nvB);
         let q: [number, number, number];
         if (i < N_sh || i >= N_sh + N_nk) {                 // 어깨 토막(S2)
-          const y = Y_ANCHOR - (L - py);
-          const e = xExtreme(y, i < N_sh ? -1 : 1);
-          q = [e[0], y, AXIS_Z + e[1]];
+          const t = i < N_sh ? (N_sh - i) / N_sh : (i - (N_sh + N_nk)) / N_sh;
+          const r3 = (i < N_sh ? rgL : rgR).at3(t);
+          q = [r3[0], r3[1], r3[2] + (isFront ? ZHALF : -ZHALF)];
         } else {                                            // 목선 토막(S1)
           const rz = (isFront ? nkF : nkB).at(isFront ? px : -px);
           q = [rz[0], Y_NECK, AXIS_Z + rz[1]];
@@ -932,6 +961,9 @@ export function createScene(cfg: SceneConfig) {
     }
     (globalThis as unknown as { __asm2Probe?: (r: Record<string, unknown>) => void }).__asm2Probe?.({
       SH_DROP, Y_ANCHOR, Y_NECK, Y_TOP, DELTA, 'S4 반복': iter, 'S4 상한': 8,
+      '능선 표본': rgL.pts.length, '능선 길이 mm(좌/우)': [rgL.total * 1000, rgR.total * 1000],
+      '패턴 어깨선 길이 mm': Math.hypot(SH_LEN, SH_DROP) * 1000,
+      '능선/패턴': rgL.total / Math.max(1e-12, Math.hypot(SH_LEN, SH_DROP)),
       'S4 최대이동 궤적 mm': gradPush.map((x) => x * 1000), 'S4 수렴': maxMove <= TOL_SELF,
       'TOL_SELF mm': TOL_SELF * 1000, '정점': list.length,
     });
