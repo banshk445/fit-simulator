@@ -1033,9 +1033,30 @@ export function createScene(cfg: SceneConfig) {
           if (j === nvB) dTop = dS;
           if (firstJ < 0 && Math.min(dS, dD) < SEP) firstJ = j;
         }
+        /* ★ v5-14 §1-① 보충 — 실패 자리의 «행 간격»과 대각 거리를 함께 낸다(원인 후보를 가른다). */
+        let rowGap = NaN, dSameAt = NaN, dDiagAt = NaN;
+        if (firstJ >= 0) {
+          const vf = at(front, i, firstJ), vb2 = at(back, i, firstJ);
+          dSameAt = Math.hypot(pos[vf * 3] - pos[vb2 * 3], pos[vf * 3 + 1] - pos[vb2 * 3 + 1],
+                               pos[vf * 3 + 2] - pos[vb2 * 3 + 2]);
+          let dd = Infinity;
+          for (const dj of [-1, 1]) {
+            const jj = firstJ + dj; if (jj < 0 || jj > nvB) continue;
+            const vb3 = at(back, i, jj);
+            dd = Math.min(dd, Math.hypot(pos[vf * 3] - pos[vb3 * 3], pos[vf * 3 + 1] - pos[vb3 * 3 + 1],
+                                         pos[vf * 3 + 2] - pos[vb3 * 3 + 2]));
+          }
+          dDiagAt = dd;
+          if (firstJ < nvB) {
+            const vu = at(front, i, firstJ + 1);
+            rowGap = Math.hypot(pos[vf * 3] - pos[vu * 3], pos[vf * 3 + 1] - pos[vu * 3 + 1],
+                                pos[vf * 3 + 2] - pos[vu * 3 + 2]);
+          }
+        }
         rowTrace.push({ side: side < 0 ? 'L' : 'R', i, 'sArc mm': sArc * 1000, 'tHatY': tHatY,
                         'n↔z deg': nzDeg, '상단 간격 mm': dTop * 1000, 'SEP 밑 첫 j': firstJ,
-                        'nvB': nvB });
+                        'nvB': nvB, '그 자리 같은행 mm': dSameAt * 1000, '그 자리 대각 mm': dDiagAt * 1000,
+                        '그 자리 행간격 mm': rowGap * 1000 });
       }
     }
     (globalThis as unknown as { __asm2Probe?: (r: Record<string, unknown>) => void }).__asm2Probe?.({
