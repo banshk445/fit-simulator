@@ -26,6 +26,7 @@ import { patternOfSpecName } from '../src/v5/specToPattern.ts';
 import { armAxisFromEnv } from './armAxisEnv.ts';
 
 const ASM2 = process.env.ASM2 === '1';
+const FIX = (process.env.ASM2FIX === 'A' || process.env.ASM2FIX === 'B') ? process.env.ASM2FIX : undefined;
 const SPEC = process.env.SPEC;
 const CELL = process.env.CELL ?? 'c100-h170-s45_XL';
 const D = Number(process.env.D_MM ?? 9) / 1000;
@@ -42,7 +43,8 @@ let P: ReturnType<typeof prepare> | null = null;
 try {
   P = prepare({ glb, fabric: FABRICS.gray, d: D, garment: GD,
     bodyVerts: new Float32Array(bb.buffer.slice(bb.byteOffset, bb.byteOffset + bb.byteLength)),
-    minPairDistLite, armAxis: armAxisFromEnv(), ...(ASM2 ? { asm2: true } : {}) } as never);
+    minPairDistLite, armAxis: armAxisFromEnv(), ...(ASM2 ? { asm2: true } : {}),
+    ...(FIX ? { asm2Fix: FIX } : {}) } as never);
 } catch (e) {
   THROWN = String((e as Error).message).replace(/\s+/g, ' ');
 }
@@ -51,7 +53,7 @@ if (!P) {
     _args: { ASM2: ASM2 ? 1 : 0, SPEC: SPEC ?? null, CELL, 계기: import.meta.url.split('/').pop() },
     치수: { 'SW cm': GD.SW * 100, 'W cm': GD.W * 100, 'L cm': GD.L * 100 },
     던짐: THROWN, S4: asm2Probe };
-  writeFileSync(`gpu/oracle/export/v5-12-asm2-${ASM2 ? 'on' : 'off'}-${SPEC ?? CELL}.json`, JSON.stringify(out0, null, 1));
+  writeFileSync(`gpu/oracle/export/v5-12-asm2-${ASM2 ? 'on' : 'off'}${FIX ?? ''}-${SPEC ?? CELL}.json`, JSON.stringify(out0, null, 1));
   console.log(JSON.stringify(out0, null, 1));
   process.exit(0);
 }
@@ -117,5 +119,5 @@ const out = { what: 'v5-12 §1-② 조립 2세대 f0 채널(측정만 · 판정 
   '최소 쌍거리 mm': minPairDistLite(pos, sc.tris) * 1000,
   '배치 어깨 반폭 cm': shHalf * 100, 'SW/2 cm': (GD.SW / 2) * 100, '반폭 − SW/2 mm': (shHalf - GD.SW / 2) * 1000,
   RAMP_N: (P as unknown as { RAMP_N: number }).RAMP_N, S4: asm2Probe, 던짐: THROWN };
-writeFileSync(`gpu/oracle/export/v5-12-asm2-${ASM2 ? 'on' : 'off'}-${SPEC ?? CELL}.json`, JSON.stringify(out, null, 1));
+writeFileSync(`gpu/oracle/export/v5-12-asm2-${ASM2 ? 'on' : 'off'}${FIX ?? ''}-${SPEC ?? CELL}.json`, JSON.stringify(out, null, 1));
 console.log(JSON.stringify(out, null, 1));

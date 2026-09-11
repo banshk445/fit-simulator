@@ -78,6 +78,10 @@ export type SceneConfig = {
    * 한 줄도 다르지 않다(off 비트 불변이 회차 조건이다 · v5-12 §0-4ㄱ).
    * 설계 정본 = `docs/v5/설계-조립2세대.md`(v5-11) · 검수 결정 = `docs/v5/12-2세대구현.md` §0-1. */
   asm2?: boolean;
+  /** ★ v5-15 — **S4 붕괴 처방 «하위 플래그»**(진단 전용 · 기본 `undefined` = v5-14 거동).
+   * `'A'` = S4 걸음 상한(`THICK`) + 봉제선→아래 **행 순서** 훑기 · `'B'` = **표면 추종 S3**.
+   * `asm2` 가 꺼져 있으면 이 값은 읽히지 않는다(정본 off 비트 불변). */
+  asm2Fix?: 'A' | 'B';
 };
 
 /** ★ v5-12 — **어깨 경사 낙차 `SH_DROP` [m]**(조립 2세대 템플릿 상수 · 이름·값·출처 공개).
@@ -97,7 +101,8 @@ export const ASM2_SH_DROP = 0.0635;
 export function createScene(cfg: SceneConfig) {
   const { bodyIdx, bodyG, sdfSpec, L, W, SW, SLEN, ARM_G, DT, SEP, KMEM, MAT, TOL_SELF, D_FIXED, minPairDistLite } = cfg;
   const prim0 = cfg.body;
-  const ASM2 = cfg.asm2 === true;                  // v5-12 — 플래그(기본 false ⟹ 아래 분기 전부 죽는다)
+  const ASM2 = cfg.asm2 === true;
+  const FIX = ASM2 ? cfg.asm2Fix : undefined;      // v5-15 — 하위 플래그(ASM2 밖에서는 항상 undefined)                  // v5-12 — 플래그(기본 false ⟹ 아래 분기 전부 죽는다)
   const SH_DROP = ASM2 ? ASM2_SH_DROP : 0;         // off 면 0 ⟹ 제도식이 «수평 직선» 그대로다
   const V2DIMS = cfg.dimsOverride !== undefined;
   const V2REF = cfg.dimsOverride ?? { neckHalfWidthCm: 0, necklineGirthCm: 0, capHeightCm: 0 };
@@ -940,7 +945,33 @@ export function createScene(cfg: SceneConfig) {
         pos[v * 3] = q[0]; pos[v * 3 + 1] = q[1]; pos[v * 3 + 2] = q[2];
       }
     }
-    /* S3 — 드레이프(위에서 아래로 · 열마다) */
+    const hh = sdfSpec.h;
+    /** 그 점의 몸 SDF 기울기 단위 벡터(S4 가 쓰는 그 중앙차분과 «같은 식»). */
+    const nHat = (x: number, y: number, z: number): [number, number, number] | null => {
+      const gx = sampleSdf(bodyG, x + hh, y, z) - sampleSdf(bodyG, x - hh, y, z);
+      const gy = sampleSdf(bodyG, x, y + hh, z) - sampleSdf(bodyG, x, y - hh, z);
+      const gz = sampleSdf(bodyG, x, y, z + hh) - sampleSdf(bodyG, x, y, z - hh);
+      const gn = Math.hypot(gx, gy, gz);
+      return gn > 1e-12 ? [gx / gn, gy / gn, gz / gn] : null;
+    };
+    /** ★ v5-15 (B) — **접평면 낙하 방향** `d = normalize(−ŷ − (−ŷ·n̂) n̂)` · 평행이면 전역 `−y`. */
+    const fallDir = (n: [number, number, number] | null): [number, number, number] => {
+      if (!n) return [0, -1, 0];
+      const dot = -n[1];                               // (−ŷ)·n̂
+      const v: [number, number, number] = [-dot * n[0], -1 - dot * n[1], -dot * n[2]];
+      const vn = Math.hypot(v[0], v[1], v[2]);
+      return vn > 1e-9 ? [v[0] / vn, v[1] / vn, v[2] / vn] : [0, -1, 0];
+    };
+    /** 그 점을 몸 밖 `SEP` 까지 민다(한 번 · (B) 의 관통 원천 차단용). */
+    const pushOut = (q: [number, number, number]): [number, number, number] => {
+      const dd = sampleSdf(bodyG, q[0], q[1], q[2]);
+      if (!(dd < SEP)) return q;
+      const n = nHat(q[0], q[1], q[2]);
+      if (!n) return q;
+      const st = SEP - dd;
+      return [q[0] + n[0] * st, q[1] + n[1] * st, q[2] + n[2] * st];
+    };
+    /* S3 — 드레이프(위에서 아래로 · 열마다) · `FIX === 'B'` 면 **표면 추종** */
     for (const isFront of [true, false]) {
       const pan = isFront ? front : back;
       for (let i = 0; i <= nuB; i++)
@@ -948,19 +979,34 @@ export function createScene(cfg: SceneConfig) {
           const vt = at(pan, i, j + 1), vb = at(pan, i, j);
           const [ax, ay] = uvAt(pan, i, j + 1), [bx2, by2] = uvAt(pan, i, j);
           const len = Math.hypot(ax - bx2, ay - by2);
-          pos[vb * 3] = pos[vt * 3];
-          pos[vb * 3 + 1] = pos[vt * 3 + 1] - len;
-          pos[vb * 3 + 2] = pos[vt * 3 + 2];
+          if (FIX === 'B') {
+            const px2 = pos[vt * 3], py2 = pos[vt * 3 + 1], pz2 = pos[vt * 3 + 2];
+            const d = fallDir(nHat(px2, py2, pz2));
+            const q = pushOut([px2 + d[0] * len, py2 + d[1] * len, pz2 + d[2] * len]);
+            pos[vb * 3] = q[0]; pos[vb * 3 + 1] = q[1]; pos[vb * 3 + 2] = q[2];
+          } else {
+            pos[vb * 3] = pos[vt * 3];
+            pos[vb * 3 + 1] = pos[vt * 3 + 1] - len;
+            pos[vb * 3 + 2] = pos[vt * 3 + 2];
+          }
         }
     }
     /* S4 — 밀어냄 */
-    const hh = sdfSpec.h;
     const gradPush: number[] = [];
     let iter = 0, maxMove = Infinity;
+    /* ★ v5-15 (A) — 걸음 상한 `THICK`(행 간격의 «한 자릿수 아래» · 등재 자 인용 · 손 상수 0) ·
+     * 훑는 순서 = **봉제선(맨 위 행)에서 아래로** · 반복 상한 = `NY`(이 함수가 이미 쓰는 등재 값). */
+    const STEPCAP = FIX === 'A' ? cfg.THICK : Infinity;
+    const ITERCAP = FIX === 'A' ? NY : 8;
     const list: number[] = [];
-    for (const pan of [front, back])
-      for (let j = 0; j <= pan.nv; j++) for (let i = 0; i <= pan.nu; i++) list.push(at(pan, i, j));
-    for (; iter < 8 && maxMove > TOL_SELF; iter++) {
+    if (FIX === 'A') {
+      for (let j = nvB; j >= 0; j--) for (const pan of [front, back])
+        for (let i = 0; i <= pan.nu; i++) list.push(at(pan, i, j));
+    } else {
+      for (const pan of [front, back])
+        for (let j = 0; j <= pan.nv; j++) for (let i = 0; i <= pan.nu; i++) list.push(at(pan, i, j));
+    }
+    for (; iter < ITERCAP && maxMove > TOL_SELF; iter++) {
       maxMove = 0;
       for (const v of list) {
         const x = pos[v * 3], y = pos[v * 3 + 1], z = pos[v * 3 + 2];
@@ -971,7 +1017,7 @@ export function createScene(cfg: SceneConfig) {
         const gz = sampleSdf(bodyG, x, y, z + hh) - sampleSdf(bodyG, x, y, z - hh);
         const gn = Math.hypot(gx, gy, gz);
         if (!(gn > 1e-12)) continue;
-        const step = SEP - dd;
+        const step = Math.min(SEP - dd, STEPCAP);
         pos[v * 3] += (gx / gn) * step; pos[v * 3 + 1] += (gy / gn) * step; pos[v * 3 + 2] += (gz / gn) * step;
         if (step > maxMove) maxMove = step;
       }
@@ -1000,6 +1046,24 @@ export function createScene(cfg: SceneConfig) {
      * 어느 행에서 `SEP` 밑으로 가는지 + 그 `i` 의 **능선 기울기**(`|t·ŷ|`)와 `n`↔`ẑ` 각을 함께 낸다.
      * 같은 행끼리(`d_same`)와 **대각 이웃**(`d_diag` · v5-13 의 최근접 쌍이 전부 대각이었다)을 둘 다 본다.
      * 인쇄 전용 · 동작 0. */
+    /* ★ v5-15 §1-① — **(B) 산수 사전 점검**: 팔 윗면 곡률 반경을 «낙하 방향»으로 잰다.
+     * `R ≈ Δ / ∠(n̂(c), n̂(c + d·Δ))` · `Δ = SEP`(등재 자 · 새 상수 0) ⟹ 「R < 행 길이」면
+     * 접평면 한 걸음이 표면을 벗어난다(그 사실을 값으로 적는다 · 후보를 미리 떨구지 않는다). */
+    const curvR: number[] = [];
+    for (const side of [-1, 1]) {
+      const rg = side < 0 ? rgL : rgR;
+      for (let k = 1; k <= N_sh; k++) {
+        const c = rg.atS((k / N_sh) * PATLEN);
+        const n1 = nHat(c[0], c[1], c[2]); if (!n1) continue;
+        const d = fallDir(n1);
+        const c2: [number, number, number] = [c[0] + d[0] * SEP, c[1] + d[1] * SEP, c[2] + d[2] * SEP];
+        const n2 = nHat(c2[0], c2[1], c2[2]); if (!n2) continue;
+        const dot = Math.max(-1, Math.min(1, n1[0] * n2[0] + n1[1] * n2[1] + n1[2] * n2[2]));
+        const ang = Math.acos(dot);
+        curvR.push(ang > 1e-9 ? SEP / ang : Infinity);
+      }
+    }
+    const curvFin = curvR.filter((x) => Number.isFinite(x));
     const rowTrace: Record<string, unknown>[] = [];
     for (const side of [-1, 1]) {
       const rg = side < 0 ? rgL : rgR;
@@ -1061,7 +1125,13 @@ export function createScene(cfg: SceneConfig) {
     }
     (globalThis as unknown as { __asm2Probe?: (r: Record<string, unknown>) => void }).__asm2Probe?.({
       '최근접 정점쌍 mm': near.d * 1000, '최근접 자리': [near.a, near.b], '행별 추적': rowTrace,
-      SH_DROP, Y_ANCHOR, Y_NECK, Y_TOP, DELTA, 'S4 반복': iter, 'S4 상한': 8,
+      SH_DROP, Y_ANCHOR, Y_NECK, Y_TOP, DELTA, 'S4 반복': iter, 'S4 상한': ITERCAP,
+      FIX: FIX ?? null, 'S4 걸음 상한 mm': STEPCAP === Infinity ? null : STEPCAP * 1000,
+      '곡률 반경 mm': { 표본: curvR.length, 유한: curvFin.length,
+        최소: curvFin.length ? Math.min(...curvFin) * 1000 : null,
+        중앙: curvFin.length ? [...curvFin].sort((a, b) => a - b)[Math.floor(curvFin.length / 2)] * 1000 : null,
+        '행 길이보다 작은 표본': curvFin.filter((x) => x < L / nvB).length },
+      '행 간격(설계) mm': (L / nvB) * 1000,
       '능선 표본': rgL.pts.length, '능선 길이 mm(좌/우)': [rgL.total * 1000, rgR.total * 1000],
       '패턴 어깨선 길이(PATLEN) mm': PATLEN * 1000,
       '능선이 PATLEN 을 담는가(좌/우)': [rgL.total >= PATLEN, rgR.total >= PATLEN],
