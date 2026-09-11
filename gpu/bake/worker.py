@@ -170,11 +170,20 @@ def bake(cell, asm=None, frames_in=None, cap=None, ramp=False):
     return meta
 
 
-def layer3(cell, meta, report_cell=None):
-    """층3 — 기존 계기를 그대로 부른다(수정 0 · 물리 0프레임)."""
+def layer3(cell, meta, report_cell=None, spec=None):
+    """층3 — 기존 계기를 그대로 부른다(수정 0 · 물리 0프레임).
+
+    v5-8 §0 사무 ㄹ — `spec` 이 있으면 계기에 **`SPEC` 을 넘긴다**(v5-7b 사고 4의 처분).
+    v5-3 이 `v4FitReport`·`v4ProductGate` 등 계기 4종에 `SPEC` «선택 인자»를 열었는데
+    이 자리가 그 인자를 **채우지 않아** v5 스펙 칸에서 차트 사이즈로 옷을 세우고
+    「위치 파일 길이가 다르다」로 던졌다(v5-7b 는 부모 환경으로 우회했다).
+    `spec` 이 None 이면 키를 넣지 않는다 ⟹ **기존 호출은 env 가 바이트 불변**이다.
+    """
     env = dict(os.environ, PYTHONIOENCODING="utf-8", CELL=(report_cell or cell),
                POS=str((OUT / f"{cell}.bin").relative_to(Path.cwd())).replace("\\", "/"),
                TAG=f"bake-{NAME}-{cell}")
+    if spec:
+        env["SPEC"] = str(spec)
     subprocess.run(["npx", "tsx", "scripts/v4FitReport.ts"], env=env, shell=True, check=True,
                    capture_output=True)
     env2 = dict(env, NET=repr(float(meta["lastNet"])))
@@ -197,7 +206,7 @@ if CHILD:                                                 # ── 자식: 칸 �
     sp = SPEC.get(CHILD_CELL, {})
     m = bake(CHILD_CELL, asm=sp.get("asm"), frames_in=sp.get("frames"), cap=sp.get("cellCap"),
               ramp=bool(sp.get("ramp")))
-    g = layer3(CHILD_CELL, m, report_cell=sp.get("reportCell"))
+    g = layer3(CHILD_CELL, m, report_cell=sp.get("reportCell"), spec=sp.get("spec"))
     (OUT / f"{CHILD_CELL}.done").write_text(time.strftime("%Y-%m-%d %H:%M:%S"), encoding="utf-8")
     log(f"{CHILD_CELL} · 정착 {'f' + str(m['convFrame']) if m['converged'] else '미도달'} · "
         f"{m['secPerFrame']:.3f} s/프레임 · JIT {m['jitSec']:.1f}s · ti.init {init_s:.1f}s · "

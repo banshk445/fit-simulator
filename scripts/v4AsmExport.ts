@@ -76,9 +76,49 @@ const im = new Float64Array(sc.n); im.set(sc.s.invMass.subarray(0, sc.n));
 const idx = new Int32Array(m * 3), par = new Float64Array(m * 5);
 inplane.forEach((x, t) => { idx[t * 3] = x.i0; idx[t * 3 + 1] = x.i1; idx[t * 3 + 2] = x.i2;
   par[t * 5] = x.a; par[t * 5 + 1] = x.b; par[t * 5 + 2] = x.c; par[t * 5 + 3] = x.d; par[t * 5 + 4] = x.area; });
+
+/* ★ v5-8 §0-4 — **목선 링 «비신장» 진단 경로**(기본 off ⟹ 없으면 위 포장이 바이트 불변).
+ *
+ * 작용점은 코드에서 읽었다 — `gpu/engine/stretch.py:126` 「α̃ = α/h² · α = 1/(A·k)」 ⟹
+ * 컴플라이언스는 `par[t][4]`(area) 와 전역 `k` 로만 정해지고, `par[t][4]` 를 읽는 자리는
+ * `stretch.py:96` · `full.py:80` **둘뿐**이며 쓰임은 `at` 하나다(면적으로서의 다른 소비 0).
+ * ⟹ `area = Infinity` 로 두면 `at = 1/(∞·k)/h² = 0` ⟹ **컴플라이언스 ×0**(비신장 극한) ·
+ *    `dl = −C/denomW` 가 되어 하드 투영이 된다(`denomW ≥ 1e-20` 가드는 그대로).
+ *
+ * ★★ **대체를 명시한다** — 늘어남은 «삼각형 단위»(`garmentScene.ts:883`)라 「목선 링 엣지」라는
+ *    제약이 **없다**. 그래서 «링 정점을 하나라도 포함하는 삼각형»을 대상으로 삼는다 —
+ *    엣지보다 **넓은 집합**이고, 그 개수를 헤더·로그에 값으로 적는다. 「엣지만」이라 적지 않는다.
+ * 진단 전용 — 정본 굽기에는 쓰지 않는다(`NECKRIGID` 미설정이 기본). */
+const NECKRIGID = process.env.NECKRIGID === '1';
+let nrTris = 0;
+const ring = new Set<number>([...P.neckF, ...P.neckB]);
+if (NECKRIGID) {
+  for (let t = 0; t < m; t++) {
+    if (ring.has(idx[t * 3]) || ring.has(idx[t * 3 + 1]) || ring.has(idx[t * 3 + 2])) {
+      par[t * 5 + 4] = Infinity; nrTris++;
+    }
+  }
+}
+
+/* ★ v5-8 — `par` **유한성 가드 신설**. v4-26 검사는 `pos`·`uv` 만 보고 `par` 는 안 봤다(구멍).
+ * 플래그 off 면 비유한 값이 하나라도 있으면 **던진다** · on 이면 센티넬 개수를 인쇄한다. */
+{
+  let bad = 0, inf = 0;
+  for (let q = 0; q < par.length; q++) {
+    if (Number.isFinite(par[q])) continue;
+    if (NECKRIGID && q % 5 === 4 && par[q] === Infinity) inf++; else bad++;
+  }
+  if (bad) throw new Error(`조립 늘어남 par 에 비유한 값이 ${bad}개 있다 — ${TAG}`);
+  if (NECKRIGID)
+    console.log(JSON.stringify({ NECKRIGID: true, '링 정점': ring.size, '링 인접 삼각형': nrTris,
+                                 '전체 삼각형': m, '센티넬(area=Inf)': inf,
+                                 note: 'v5-8 §1-③ 진단 전용 — 컴플라이언스 ×0 · 정본 아님' }));
+}
+
 writeFileSync(`${OUT}/scene-${TAG}.bin`, pack({ cell: TAG, n: sc.n, tris: sc.tris.length / 3, m, d: D,
   fabric: FAB, k: fab.k, rho: fab.rho, B: fab.B, THICK, G, DT, MU, DAMP,
   substeps: P.SUB, memb: P.sub.memb, bendSub: P.sub.bend, kU: fab.k, kV: fab.k, kS: fab.k,
+  ...(NECKRIGID ? { neckRigid: { vertices: ring.size, tris: nrTris } } : {}),
   note: 'v4-20 §1-① 조립 입력 덤프 · v4Export 와 같은 형식' },
   Buffer.from(im.buffer), Buffer.from(idx.buffer), Buffer.from(par.buffer)));
 
