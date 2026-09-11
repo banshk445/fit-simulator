@@ -996,8 +996,50 @@ export function createScene(cfg: SceneConfig) {
           if (d < near.d) { near.d = d; near.a = `${A.pan}(i${A.i},j${A.j})`; near.b = `${B2.pan}(i${B2.i},j${B2.j})`; }
         }
     }
+    /* ★ v5-14 §1-① — **㉡ 사실**(처방 «전»): 같은 `i` 의 앞뒤 간격을 **행별로** 추적한다.
+     * 어느 행에서 `SEP` 밑으로 가는지 + 그 `i` 의 **능선 기울기**(`|t·ŷ|`)와 `n`↔`ẑ` 각을 함께 낸다.
+     * 같은 행끼리(`d_same`)와 **대각 이웃**(`d_diag` · v5-13 의 최근접 쌍이 전부 대각이었다)을 둘 다 본다.
+     * 인쇄 전용 · 동작 0. */
+    const rowTrace: Record<string, unknown>[] = [];
+    for (const side of [-1, 1]) {
+      const rg = side < 0 ? rgL : rgR;
+      for (let k = 1; k <= N_sh; k++) {
+        const i = side < 0 ? N_sh - k : N_sh + N_nk + k - 1;
+        if (i < 0 || i > nuB) continue;
+        const sArc = (k / N_sh) * PATLEN;
+        const e = 1e-4;
+        const pA = rg.atS(Math.max(0, sArc - e)), pB = rg.atS(Math.min(rg.total, sArc + e));
+        const tv = [pB[0] - pA[0], pB[1] - pA[1], pB[2] - pA[2]];
+        const tn = Math.hypot(tv[0], tv[1], tv[2]) || 1;
+        const tHatY = Math.abs(tv[1] / tn);                       // |t·ŷ| — 능선 기울기
+        const c = rg.atS(sArc);
+        const gx = sampleSdf(bodyG, c[0] + hh, c[1], c[2]) - sampleSdf(bodyG, c[0] - hh, c[1], c[2]);
+        const gy = sampleSdf(bodyG, c[0], c[1] + hh, c[2]) - sampleSdf(bodyG, c[0], c[1] - hh, c[2]);
+        const gz = sampleSdf(bodyG, c[0], c[1], c[2] + hh) - sampleSdf(bodyG, c[0], c[1], c[2] - hh);
+        const gn2 = Math.hypot(gx, gy, gz) || 1;
+        const nzDeg = (Math.acos(Math.max(-1, Math.min(1, gz / gn2))) * 180) / Math.PI;  // n↔ẑ 각
+        let firstJ = -1, dTop = NaN;
+        for (let j = nvB; j >= 0; j--) {
+          const vf = at(front, i, j), vb2 = at(back, i, j);
+          const dS = Math.hypot(pos[vf * 3] - pos[vb2 * 3], pos[vf * 3 + 1] - pos[vb2 * 3 + 1],
+                                pos[vf * 3 + 2] - pos[vb2 * 3 + 2]);
+          let dD = Infinity;
+          for (const dj of [-1, 1]) {
+            const jj = j + dj; if (jj < 0 || jj > nvB) continue;
+            const vb3 = at(back, i, jj);
+            dD = Math.min(dD, Math.hypot(pos[vf * 3] - pos[vb3 * 3], pos[vf * 3 + 1] - pos[vb3 * 3 + 1],
+                                         pos[vf * 3 + 2] - pos[vb3 * 3 + 2]));
+          }
+          if (j === nvB) dTop = dS;
+          if (firstJ < 0 && Math.min(dS, dD) < SEP) firstJ = j;
+        }
+        rowTrace.push({ side: side < 0 ? 'L' : 'R', i, 'sArc mm': sArc * 1000, 'tHatY': tHatY,
+                        'n↔z deg': nzDeg, '상단 간격 mm': dTop * 1000, 'SEP 밑 첫 j': firstJ,
+                        'nvB': nvB });
+      }
+    }
     (globalThis as unknown as { __asm2Probe?: (r: Record<string, unknown>) => void }).__asm2Probe?.({
-      '최근접 정점쌍 mm': near.d * 1000, '최근접 자리': [near.a, near.b],
+      '최근접 정점쌍 mm': near.d * 1000, '최근접 자리': [near.a, near.b], '행별 추적': rowTrace,
       SH_DROP, Y_ANCHOR, Y_NECK, Y_TOP, DELTA, 'S4 반복': iter, 'S4 상한': 8,
       '능선 표본': rgL.pts.length, '능선 길이 mm(좌/우)': [rgL.total * 1000, rgR.total * 1000],
       '패턴 어깨선 길이(PATLEN) mm': PATLEN * 1000,
