@@ -1,0 +1,21 @@
+{
+ "name": "v5-9-mstoverRO",
+ "fp": "f64",
+ "arch": "cuda",
+ "frames": 400,
+ "cells": [
+  {
+   "cell": "mstoverRO_XL",
+   "asm": "asm-mstoverRO_XL.bin",
+   "reportCell": "c100-h170-s45_XL",
+   "spec": "mst-over-L",
+   "frames": 400,
+   "cellCap": {
+    "cell_cap": 192,
+    "max_cells": 262144
+   },
+   "ramp": true,
+   "rampOrder": true
+  }
+ ]
+}
