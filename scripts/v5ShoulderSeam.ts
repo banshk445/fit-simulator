@@ -109,10 +109,16 @@ function between(p: Float64Array, i: number, j: number) {
 
 const rows: Record<string, unknown>[] = [];
 const perPair: Record<string, unknown>[] = [];
-for (const f of FRAMES) {
+/* v5-9 §1-③ — **정착 상태 진입**(추가 인자 · 기본값 불변 ⟹ 덤프 경로는 종전 그대로).
+ * `POS=<파일>` 이 있으면 그 상태를 프레임 **9999**(램프 «뒤» ⟹ `rest = SEP`)로 한 번 더 잰다.
+ * 굽기 산출에는 덤프가 없고 최종 `.bin` 만 있다(램프 순서 진단 칸). 측정 로직은 0줄 바뀌지 않는다. */
+const POSF = process.env.POS ?? null;
+for (const f of POSF ? [...FRAMES, 9999] : FRAMES) {
   const path = `${DUMPS}/${PREFIX}-f${String(f).padStart(3, '0')}.bin`;
   const p = f === 0 ? sc.s.pos
-    : (existsSync(path) ? new Float64Array(readFileSync(path).buffer.slice(0, n * 24)) : null);
+    : f === 9999
+      ? new Float64Array(readFileSync(POSF!).buffer.slice(0, n * 24))
+      : (existsSync(path) ? new Float64Array(readFileSync(path).buffer.slice(0, n * 24)) : null);
   if (!p) continue;
   for (const k of shIdx) {
     const g = groups[k], r0 = gRest0[k];
@@ -129,11 +135,11 @@ for (const f of FRAMES) {
                 '간극 최대 순번': gap.indexOf(Math.max(...gap)), '중점 y 중앙 m': med(midy),
                 '중점 y 최소 m': Math.min(...midy), '중점 y 최대 m': Math.max(...midy) });
     /* 순번별 — 요청된 프레임에서만(값 전량) */
-    if (f === 0 || f === 30 || f === 100 || f === 200) {
+    if (f === 0 || f === 30 || f === 100 || f === 200 || f === 9999) {
       for (let q = 0; q < g.a.length; q++) {
         const row: Record<string, unknown> = { f, 그룹: g.name, 순번: q, '거리 mm': dist[q], '간극 mm': gap[q],
           '중점 y m': midy[q], 'x_i m': p[g.a[q] * 3], 'rest0 mm': r0[q] * 1000 };
-        if (f === 0 || f === 100) Object.assign(row, between(p, g.a[q], g.b[q]));
+        if (f === 0 || f === 100 || f === 9999) Object.assign(row, between(p, g.a[q], g.b[q]));
         perPair.push(row);
       }
     }
@@ -141,11 +147,12 @@ for (const f of FRAMES) {
 }
 const _args = { BODY_BIN: process.env.BODY_BIN ?? null, ARM_AXIS_JSON: process.env.ARM_AXIS_JSON ?? null,
   ARM_ORIGIN_JSON: process.env.ARM_ORIGIN_JSON ?? null, SPEC: SPEC ?? null, CELL, DUMPS, PREFIX,
-  D_MM: process.env.D_MM ?? null, FRAMES: FRAMES.join(','), 계기: import.meta.url.split('/').pop() };
+  D_MM: process.env.D_MM ?? null, FRAMES: FRAMES.join(','), POS: POSF,
+  계기: import.meta.url.split('/').pop() };
 const out = { what: 'v5-9 §1-① 어깨 봉제 기하(측정만 · 판정 0)', _args,
   'Y_TOP m': S.Y_TOP, 'ARM_D m': S.ARM_D, RAMP_N, SEP, n,
   '봉제 그룹': groups.map((g, k) => ({ name: g.name, 쌍: g.a.length,
     'rest0 최소 mm': Math.min(...gRest0[k]) * 1000, 'rest0 최대 mm': Math.max(...gRest0[k]) * 1000 })),
   '소매 정점 수': slvV.length, 피벗: piv ?? null, rows, perPair };
-writeFileSync(`gpu/oracle/export/v5-9-shoulder-${PREFIX}.json`, JSON.stringify(out, null, 1));
+writeFileSync(`gpu/oracle/export/v5-9-shoulder-${process.env.OUTTAG ?? PREFIX}.json`, JSON.stringify(out, null, 1));
 console.log(JSON.stringify({ ...out, perPair: `${perPair.length}행(파일)`, rows }, null, 1));
