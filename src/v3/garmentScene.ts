@@ -875,27 +875,44 @@ export function createScene(cfg: SceneConfig) {
      * `supportAt(y, SLAB)` 의 슬랩 반폭이 어깨 표본 간격보다 «클» 수 있어 i 마다 링을 뽑으면
      * **인접 링이 같아져 정점이 겹친다**(실측: `front↔front 0.000mm` 로 자기검사가 던졌다).
      * 규칙(링 `|x|` 최대)은 그대로 두고 **구성만** 바꾼다 — 저장소의 「호길이 보존」과 같은 방식. */
-    const ridgeOf = (sgn: number) => {
-      const ys: number[] = [];
+    /* ★ v5-13 §1-② — **호길이 사상**. `needLen` 만큼 «갈 수 있을 때까지» 능선을 내린다 —
+     * 패턴 어깨선이 `Y_NECK − SH_DROP` 까지의 능선보다 길면 **팔 윗면 능선으로 연속**된다
+     * (전략 세션 v5-12 중간 판정문 「끝이 몸 어깨점 앞에서 멈추거나 팔 윗면으로 넘어간다」).
+     * 상한은 «옷 높이대»(`Y_HEM`)와 표본 수 `NY` — 둘 다 이미 도출된 값이다(새 상수 0). */
+    const ridgeOf = (sgn: number, needLen: number) => {
       const step = Math.max(sdfSpec.h, SLAB);
-      for (let y = Y_NECK; y > Y_NECK - SH_DROP - 1e-12; y -= step) ys.push(y);
-      if (ys[ys.length - 1] > Y_NECK - SH_DROP + 1e-12) ys.push(Y_NECK - SH_DROP);
-      const pts = ys.map((y) => { const e = xExtreme(y, sgn); return [e[0], y, AXIS_Z + e[1]] as [number, number, number]; });
-      const acc = [0];
-      for (let k = 1; k < pts.length; k++) acc.push(acc[k - 1] +
-        Math.hypot(pts[k][0] - pts[k - 1][0], pts[k][1] - pts[k - 1][1], pts[k][2] - pts[k - 1][2]));
+      const pts: [number, number, number][] = [];
+      const acc: number[] = [0];
+      for (let k = 0; k < NY; k++) {
+        const y = Y_NECK - step * k;
+        if (y < Y_HEM) break;
+        const e = xExtreme(y, sgn);
+        const q = [e[0], y, AXIS_Z + e[1]] as [number, number, number];
+        if (k > 0) {
+          const pv = pts[k - 1];
+          acc.push(acc[k - 1] + Math.hypot(q[0] - pv[0], q[1] - pv[1], q[2] - pv[2]));
+        }
+        pts.push(q);
+        /* 필요 길이를 넘기면 한 표본 더 두고 멈춘다(보간 여유) */
+        if (acc[acc.length - 1] > needLen && y <= Y_NECK - SH_DROP) break;
+      }
       const total = acc[acc.length - 1];
-      const at3 = (t: number): [number, number, number] => {
-        const sArc = Math.max(0, Math.min(1, t)) * total;
+      /** ★ 호길이 «절대» 사상 — 인자는 목점으로부터의 호길이 `sArc`[m] 다(정규화 0). */
+      const atS = (sArcIn: number): [number, number, number] => {
+        const sArc = Math.max(0, Math.min(total, sArcIn));
         let k = 1; while (k < acc.length - 1 && acc[k] < sArc) k++;
         const u = (sArc - acc[k - 1]) / Math.max(1e-12, acc[k] - acc[k - 1]);
         return [pts[k - 1][0] + (pts[k][0] - pts[k - 1][0]) * u,
                 pts[k - 1][1] + (pts[k][1] - pts[k - 1][1]) * u,
                 pts[k - 1][2] + (pts[k][2] - pts[k - 1][2]) * u];
       };
-      return { at3, total, pts };
+      /* v5-13 §1-① — **현 길이**(두 끝점 직선). 폴리라인/현 비가 «부풂»의 자다(v5-10 z 튐 계열). */
+      const a0 = pts[0], a1 = pts[pts.length - 1];
+      const chord = Math.hypot(a1[0] - a0[0], a1[1] - a0[1], a1[2] - a0[2]);
+      return { atS, total, pts, chord, need: needLen };
     };
-    const rgL = ridgeOf(-1), rgR = ridgeOf(1);
+    const PATLEN = Math.hypot(SH_LEN, SH_DROP);          // 패턴 어깨 이음선의 «자기» 길이
+    const rgL = ridgeOf(-1, PATLEN), rgR = ridgeOf(1, PATLEN);
     /* ★ 정정 2(사고 2) — 「이미 닫힌」은 **거리 0 이 아니라 «거리 = rest = SEP»**(간극 0)이다.
      * 이 저장소의 봉제 rest 가 `SEP`(2×두께)이고 자기충돌이 그 분리를 요구한다(위 「봉제」 절 주석).
      * 앞판 `+z` · 뒤판 `−z` 로 `SEP/2` 씩 벌려 능선을 «사이에» 둔다(새 상수 0 — `SEP` 뿐). */
@@ -912,8 +929,9 @@ export function createScene(cfg: SceneConfig) {
         const [px] = uvAt(pan, i, nvB);
         let q: [number, number, number];
         if (i < N_sh || i >= N_sh + N_nk) {                 // 어깨 토막(S2)
-          const t = i < N_sh ? (N_sh - i) / N_sh : (i - (N_sh + N_nk)) / N_sh;
-          const r3 = (i < N_sh ? rgL : rgR).at3(t);
+          /* 목점(호길이 0)에서 패턴 위 거리만큼 능선을 «따라» 간다 — 끝점을 맞추지 않는다. */
+          const sArc = (i < N_sh ? (N_sh - i) : (i - (N_sh + N_nk))) / N_sh * PATLEN;
+          const r3 = (i < N_sh ? rgL : rgR).atS(sArc);
           q = [r3[0], r3[1], r3[2] + (isFront ? ZHALF : -ZHALF)];
         } else {                                            // 목선 토막(S1)
           const rz = (isFront ? nkF : nkB).at(isFront ? px : -px);
@@ -959,9 +977,35 @@ export function createScene(cfg: SceneConfig) {
       }
       gradPush.push(maxMove);
     }
+    /* ★ v5-13 §1-③ — **맞닿는 «자리»를 잰다**(v5-12 ㉡ 가 남긴 「계기 한 줄」 · 인쇄 전용 · 동작 0).
+     * 자기검사는 «삼각형 쌍»만 알려 주고 «어느 정점·어느 행»인지 말하지 않는다. 상단 4행에 한해
+     * 정점 쌍 최소 거리를 그 «자리»(패널 · i · j)와 함께 낸다(같은 열의 이웃 행은 뺀다 — 설계상 붙어 있다). */
+    const near = { d: Infinity, a: '', b: '' };
+    {
+      const cand: { v: number; pan: string; i: number; j: number }[] = [];
+      for (const [nm, pan] of [['front', front], ['back', back]] as const)
+        for (let j = Math.max(0, nvB - 3); j <= nvB; j++)
+          for (let i = 0; i <= pan.nu; i++) cand.push({ v: at(pan, i, j), pan: nm, i, j });
+      for (let a = 0; a < cand.length; a++)
+        for (let b = a + 1; b < cand.length; b++) {
+          const A = cand[a], B2 = cand[b];
+          if (A.pan === B2.pan && A.i === B2.i && Math.abs(A.j - B2.j) <= 1) continue;
+          if (A.pan === B2.pan && Math.abs(A.i - B2.i) <= 1 && A.j === B2.j) continue;
+          const d = Math.hypot(pos[A.v * 3] - pos[B2.v * 3], pos[A.v * 3 + 1] - pos[B2.v * 3 + 1],
+                               pos[A.v * 3 + 2] - pos[B2.v * 3 + 2]);
+          if (d < near.d) { near.d = d; near.a = `${A.pan}(i${A.i},j${A.j})`; near.b = `${B2.pan}(i${B2.i},j${B2.j})`; }
+        }
+    }
     (globalThis as unknown as { __asm2Probe?: (r: Record<string, unknown>) => void }).__asm2Probe?.({
+      '최근접 정점쌍 mm': near.d * 1000, '최근접 자리': [near.a, near.b],
       SH_DROP, Y_ANCHOR, Y_NECK, Y_TOP, DELTA, 'S4 반복': iter, 'S4 상한': 8,
       '능선 표본': rgL.pts.length, '능선 길이 mm(좌/우)': [rgL.total * 1000, rgR.total * 1000],
+      '패턴 어깨선 길이(PATLEN) mm': PATLEN * 1000,
+      '능선이 PATLEN 을 담는가(좌/우)': [rgL.total >= PATLEN, rgR.total >= PATLEN],
+      '능선 끝 y m(좌/우)': [rgL.pts[rgL.pts.length - 1][1], rgR.pts[rgR.pts.length - 1][1]],
+      '어깨끝(호길이 PATLEN) 좌': rgL.atS(PATLEN), '어깨끝(호길이 PATLEN) 우': rgR.atS(PATLEN),
+      '능선 현 mm(좌/우)': [rgL.chord * 1000, rgR.chord * 1000],
+      '폴리라인/현(좌/우)': [rgL.total / Math.max(1e-12, rgL.chord), rgR.total / Math.max(1e-12, rgR.chord)],
       '패턴 어깨선 길이 mm': Math.hypot(SH_LEN, SH_DROP) * 1000,
       '능선/패턴': rgL.total / Math.max(1e-12, Math.hypot(SH_LEN, SH_DROP)),
       'S4 최대이동 궤적 mm': gradPush.map((x) => x * 1000), 'S4 수렴': maxMove <= TOL_SELF,
