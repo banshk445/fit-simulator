@@ -74,11 +74,31 @@ export type SceneConfig = {
   /** 옆 틈 G 도출이 쓰는 «가벼운» 최소 거리 계기. 계기는 하네스에 남고(§1 분류)
    * 조립은 그것을 «인자로» 받는다 — 정의가 둘로 갈리지 않게 하는 유일한 방법이다. */
   minPairDistLite: (pos: Float64Array, tris: number[]) => number;
+  /** ★ v5-12 — **조립 2세대 플래그**(기본 `undefined` = 현행). 켜지지 않으면 이 파일의 거동은
+   * 한 줄도 다르지 않다(off 비트 불변이 회차 조건이다 · v5-12 §0-4ㄱ).
+   * 설계 정본 = `docs/v5/설계-조립2세대.md`(v5-11) · 검수 결정 = `docs/v5/12-2세대구현.md` §0-1. */
+  asm2?: boolean;
 };
+
+/** ★ v5-12 — **어깨 경사 낙차 `SH_DROP` [m]**(조립 2세대 템플릿 상수 · 이름·값·출처 공개).
+ * 값 = **2½ in = 63.5 mm** — 의류 제도 관행의 «표준 어깨» 경사 깊이.
+ *   출처 ① My Golden Thimble, "How to Draft a Bodice Sloper" —
+ *     「On standard shoulders, the shoulder slope is **2 ½"**. On high shoulders, 2", and on dropped shoulders, 3"」
+ *     https://www.mygoldenthimble.com/how-to-draft-a-bodice-sloper/
+ *   출처 ② Pattern Academy, "How To Make A Basic Bodice Block" —
+ *     「C to D is the Back shoulder slope depth … **Use 2'' for all sizes**」
+ *     https://charnold.com/how-to-make-basic-bodice-block-tutorial/
+ * ★ **몸에서 도출하지 않는다**(전략 세션 v5-11 검수 결정 ① — 「몸 도출 기각(옷의 몸 종속)」) ⟹
+ *   이 상수는 몸을 **읽지 않는다**. 실측표에 이 항목이 생기면 그때 실측표가 이긴다(`specToPattern.ts` 문).
+ * ★ 몸의 실제 목↔어깨 낙차는 `Y_NECK − Y_TOP` 이고 v5-10 실측으로 **48.5991 mm**(SW 44.5) ·
+ *   **82.2598 mm**(SW 52) 다 ⟹ 이 상수와의 차(**14.9 / 18.8 mm**)는 **측정 대상**이다(v5-12 §0-2①). */
+export const ASM2_SH_DROP = 0.0635;
 
 export function createScene(cfg: SceneConfig) {
   const { bodyIdx, bodyG, sdfSpec, L, W, SW, SLEN, ARM_G, DT, SEP, KMEM, MAT, TOL_SELF, D_FIXED, minPairDistLite } = cfg;
   const prim0 = cfg.body;
+  const ASM2 = cfg.asm2 === true;                  // v5-12 — 플래그(기본 false ⟹ 아래 분기 전부 죽는다)
+  const SH_DROP = ASM2 ? ASM2_SH_DROP : 0;         // off 면 0 ⟹ 제도식이 «수평 직선» 그대로다
   const V2DIMS = cfg.dimsOverride !== undefined;
   const V2REF = cfg.dimsOverride ?? { neckHalfWidthCm: 0, necklineGirthCm: 0, capHeightCm: 0 };
 
@@ -232,6 +252,12 @@ export function createScene(cfg: SceneConfig) {
     return y0;
   }
   const Y_NECK = neckBaseY();
+  /** ★ v5-12 — **옷 높이대의 «앵커»**. 실측표의 총장은 「옷을 눕혀 **뒷목 중심**에서 밑단까지」
+   * (`src/v5/specToPattern.ts` 머리주석)인데 현행은 그 길이를 **어깨끝 높이 `Y_TOP`** 에 매달고 있다
+   * (전략 세션 v5-11 검수 = **버그**). 2세대는 `Y_NECK`(목 밑동)에 매단다.
+   * ★ off 면 `Y_TOP` 그대로다 ⟹ 아래 «옷 높이대» 자리 전부가 바이트 불변이다.
+   * ★ 「몸 어깨끝」을 뜻하는 자리(`shoulderTopY` 정의 · `neckBaseY` 탐색 구간)는 **`Y_TOP` 을 그대로** 쓴다. */
+  const Y_ANCHOR = ASM2 ? Y_NECK : Y_TOP;
   const NECK_RING = ringOf(planeSection(0, 1, Y_NECK), SEP);
   /** 목선 반폭 [m] — 목 밑동 링의 x 반폭 */
   const NECK_A = V2DIMS ? V2REF.neckHalfWidthCm / 100 : NECK_RING.vmax;
@@ -315,7 +341,10 @@ export function createScene(cfg: SceneConfig) {
   const famNeck = (a: number, b: number): Curve => (t) => [a * (1 - t), (b / 2) * (1 - Math.cos(Math.PI * t))];
   const NECK_B = solveB(NECK_G / 4, (b) => arcLen(famNeck(NECK_A, b)), 1e-4, 1);
 
-  const Y_ARM = L - ARM_D;                 // 옆선 상단(겨드랑이) 높이
+  /* ★ v5-12 — **암홀 강체 이동**. `armR` 의 위 끝점이 «어깨점»이므로 어깨가 `SH_DROP` 내려가면
+   * 암홀도 그만큼 내려가야 한다. 곡선 «모양»과 호길이가 보존되므로 `ARM_D = solveB(ARM_G/2, …)`
+   * 의 제약(암홀 둘레)이 유지된다(v5-12 §0-4ㄴ). off 면 `SH_DROP = 0` ⟹ 옛 식과 같다. */
+  const Y_ARM = L - SH_DROP - ARM_D;       // 옆선 상단(겨드랑이) 높이
   const SH_LEN = SW / 2 - NECK_A;          // 어깨 이음선 길이
   const SLEEVE_UNDER = SLEN - CAP_H;       // 소매 밑단까지(소매산 아래)
 
@@ -404,7 +433,9 @@ export function createScene(cfg: SceneConfig) {
 
   /** 목표 간격 d에서 «네 패널»을 만든다. 봉제가 요구하는 분할 수는 여기서 맞춘다. */
   function build(d: number) {
-    const N_sh = Math.max(1, Math.round(SH_LEN / d));
+    /* ★ v5-12 — 어깨 이음선이 경사지면 실제 길이는 `hypot(SH_LEN, SH_DROP)` 다 ⟹ 분할 수도 그것으로
+     * 센다(설계서 ①-5 자리 8). off 면 `SH_DROP = 0` 이라 `hypot(SH_LEN, 0) = SH_LEN` — **같은 수**다. */
+    const N_sh = Math.max(1, Math.round(Math.hypot(SH_LEN, SH_DROP) / d));
     const N_nk = Math.max(2, Math.round(LEN_NECK / d));
     const N_side = Math.max(1, Math.round(Y_ARM / d));
     const N_arm = Math.max(1, Math.round(LEN_ARM / d));
@@ -413,8 +444,9 @@ export function createScene(cfg: SceneConfig) {
     const nvB = N_side + N_arm;
     const nuS = 2 * N_arm;
 
-    const shL = line([-SW / 2, L], [-NECK_A, L], N_sh);
-    const shR = line([NECK_A, L], [SW / 2, L], N_sh);
+    /* ★ v5-12 — **어깨 경사**: 어깨끝이 목점보다 `SH_DROP` 낮다(off 면 0 ⟹ 수평 직선 그대로). */
+    const shL = line([-SW / 2, L - SH_DROP], [-NECK_A, L], N_sh);
+    const shR = line([NECK_A, L], [SW / 2, L - SH_DROP], N_sh);
     const nk = resample(neckF, N_nk);
     const topB: Pt[] = [...shL.slice(0, -1), ...nk.slice(0, -1), ...shR];
     const botB = line([-W / 2, 0], [W / 2, 0], nuB);
@@ -440,7 +472,7 @@ export function createScene(cfg: SceneConfig) {
   }
 
   /* ── 배치: 몸에서 «도출»한 면 위에 얹는다 ────────────────────────────────── */
-  const Y_HEM = Y_TOP - L;
+  const Y_HEM = Y_ANCHOR - L;   // v5-12 — 앵커(off = Y_TOP)
 
   /* ── 배치면: 몸의 «실루엣»을 감싸는 볼록 기둥 ──────────────────────────────
    * 왜 기둥인가: 기둥면은 «전개 가능»하다 ⟹ 평면 패널을 호길이 보존으로 얹으면
@@ -465,7 +497,7 @@ export function createScene(cfg: SceneConfig) {
     let z0 = Infinity, z1 = -Infinity;
     for (let v = 0; v < prim0.pos.length / 3; v++) {
       const y = prim0.pos[v * 3 + 1];
-      if (y < Y_HEM || y > Y_TOP) continue;
+      if (y < Y_HEM || y > Y_ANCHOR) continue;
       z0 = Math.min(z0, prim0.pos[v * 3 + 2]); z1 = Math.max(z1, prim0.pos[v * 3 + 2]);
     }
     return (z0 + z1) / 2;
@@ -535,9 +567,9 @@ export function createScene(cfg: SceneConfig) {
   }
 
   const NY = 61;
-  const yOf = (k: number) => Y_HEM + ((Y_TOP - Y_HEM) * k) / (NY - 1);
+  const yOf = (k: number) => Y_HEM + ((Y_ANCHOR - Y_HEM) * k) / (NY - 1);
   /** 슬랩 반폭 — 표본 간격의 절반. 손 상수 0. */
-  const SLAB = (Y_TOP - Y_HEM) / (2 * (NY - 1));
+  const SLAB = (Y_ANCHOR - Y_HEM) / (2 * (NY - 1));
   const HSUP_Y: Float64Array[] = Array.from({ length: NY }, (_, k) => supportAt(yOf(k), SLAB));
   const perimOf = (pts: [number, number][]) =>
     pts.reduce((t, q, i) => t + Math.hypot(q[0] - pts[(i + 1) % pts.length][0], q[1] - pts[(i + 1) % pts.length][1]), 0);
@@ -548,7 +580,7 @@ export function createScene(cfg: SceneConfig) {
   let GAP_SIDE = SEP;
   function scalesFor(delta: number): number[] {
     return HSUP_Y.map((h, k) => {
-      const py = yOf(k) - (Y_TOP - L);          // 그 높이에 대응하는 2D 높이
+      const py = yOf(k) - (Y_ANCHOR - L);       // 그 높이에 대응하는 2D 높이
       const need = 4 * panelHalfWidth(Math.max(0, Math.min(L, py))) + 2 * GAP_SIDE;
       const base = perimOf(boundaryOf(h, delta, 1));
       /* v3-90 §1-① — **인쇄 «전용» 계기**(동작 0). 클램프 `Math.max(1, …)` 발화 = `need < base`.
@@ -577,8 +609,8 @@ export function createScene(cfg: SceneConfig) {
 
   /** 2D 높이 py → 높이 표 인덱스(선형 보간용) */
   const yIndex = (py: number) => {
-    const y = Y_TOP - (L - py);
-    const t = ((y - Y_HEM) / (Y_TOP - Y_HEM)) * (NY - 1);
+    const y = Y_ANCHOR - (L - py);
+    const t = ((y - Y_HEM) / (Y_ANCHOR - Y_HEM)) * (NY - 1);
     return Math.max(0, Math.min(NY - 1, t));
   };
 
@@ -599,7 +631,7 @@ export function createScene(cfg: SceneConfig) {
     const k0 = Math.floor(t), k1 = Math.min(NY - 1, k0 + 1), f = t - k0;
     const A = front ? ARCS_F : ARCS_B;
     const p0 = A[k0].at(front ? px : -px), p1 = A[k1].at(front ? px : -px);
-    return [p0[0] + (p1[0] - p0[0]) * f, Y_TOP - (L - py), AXIS_Z + p0[1] + (p1[1] - p0[1]) * f];
+    return [p0[0] + (p1[0] - p0[0]) * f, Y_ANCHOR - (L - py), AXIS_Z + p0[1] + (p1[1] - p0[1]) * f];
   }
 
   /** δ — 몸판의 놓인 정점이 전부 몸에서 SEP 이상 떨어지는 최소값(이분법). */
@@ -627,7 +659,7 @@ export function createScene(cfg: SceneConfig) {
 
   /** 배치면까지의 (x,z) 거리 — 소매가 몸판과 겹치지 않게 하는 데 쓴다(가장 가까운 높이 표본). */
   function distToSurface(x: number, y: number, z: number): number {
-    const t = Math.max(0, Math.min(NY - 1, ((y - Y_HEM) / (Y_TOP - Y_HEM)) * (NY - 1)));
+    const t = Math.max(0, Math.min(NY - 1, ((y - Y_HEM) / (Y_ANCHOR - Y_HEM)) * (NY - 1)));
     const pts = boundaryOf(HSUP_Y[Math.round(t)], DELTA, SCALES[Math.round(t)]);
     let m = Infinity;
     for (let k = 0; k < pts.length; k++) {
@@ -737,7 +769,7 @@ export function createScene(cfg: SceneConfig) {
         const [x, y, z] = axPoint(x0 + (CAP_H - py), R, ph, 1);
         min = Math.min(min, sampleSdf(bodyG, x, y, z));
         // 몸판(수직 기둥)과도 SEP 이상 떨어져야 한다 — 옷–옷 분리 거리다
-        if (y >= Y_HEM && y <= Y_TOP) min = Math.min(min, distToSurface(x, y, z - AXIS_Z));
+        if (y >= Y_HEM && y <= Y_ANCHOR) min = Math.min(min, distToSurface(x, y, z - AXIS_Z));
       }
       /* ★ v3-90 §1-① — **소매 «자기» 최소쌍도 본다**(항 «하나» · 시드·브래킷 불변).
        * 옛 probe 는 몸과 몸판만 봐서, 감김이 한 바퀴를 채워 두 끝이 겹쳐도 통과시켰다(v3-87 §1-③′).
@@ -758,7 +790,7 @@ export function createScene(cfg: SceneConfig) {
           const ph = px / R;
           const [x, y, z] = axPoint(x0 + (CAP_H - py), R, ph, 1);
           const dB = sampleSdf(bodyG, x, y, z);
-          const dC = (y >= Y_HEM && y <= Y_TOP) ? distToSurface(x, y, z - AXIS_Z) : Infinity;
+          const dC = (y >= Y_HEM && y <= Y_ANCHOR) ? distToSurface(x, y, z - AXIS_Z) : Infinity;
           if (dB < mb) { mb = dB; ab = [x, y, z, px, py]; }
           if (dC < mc) { mc = dC; ac = [x, y, z, px, py]; }
           if (sleeveTrace.all) sleeveTrace.samples.push({ px, py, x, y, z, body: dB, col: dC });
@@ -814,6 +846,97 @@ export function createScene(cfg: SceneConfig) {
    * 서브스텝 산정이 바뀌지 않는다). */
   type Seam = { name: string; a: number[]; b: number[] };
 
+  /* ── ★ v5-12 — **조립 2세대 배치(S1~S4)**(`asm2` 가 참일 때만 돈다 · `place()` 수정 0줄) ──
+   * 설계 정본 `docs/v5/설계-조립2세대.md` ②-2 · 검수 결정 = `docs/v5/12-2세대구현.md` §0-2②.
+   *   S1 목선 토막 → **목 밑동 링**(`Y_NECK` 의 링 · 앞뒤 각자 자기 반쪽)
+   *   S2 어깨 토막 → 그 높이 링의 **`|x|` 최대 점**(= 앞뒤 패널이 만나는 자리) ⟹ 앞뒤에 **같은 점**을
+   *      주므로 어깨 봉제쌍 거리가 **0** 이다(「이미 닫힌 상태」)
+   *   S3 드레이프 → 각 열을 상단점에서 **2D 패턴 열 엣지 길이만큼 아래로** 누적해 내린다
+   *      (면내 변형 0 인 «자유 낙하» 형태 ⟹ 하위 행 신장률이 설계상 1.0 이다)
+   *   S4 밀어냄 → 몸 SDF 안(또는 `SEP` 미만)인 정점을 **기울기 방향**으로 민다
+   *      · 수렴 = 최대 이동 < `TOL_SELF`(v3 가 「두 기하를 같다고 보는 길이」) ·
+   *      · 반복 상한 = **8**(이 파일 δ 보정 루프의 상한과 같은 수를 쓴다 · 새 상수 0) ·
+   *      · 상한에 닿으면 인쇄만 하고 그 사실을 값으로 남긴다(판정은 회차가 한다)
+   *   S5 소매 → **손대지 않는다**(전략 세션 v5-11 검수 승인 · v5-9 「소매 관 무죄」)
+   * ★ 인쇄 전용 훅 `__asm2Probe` — 있으면 값을 넘긴다(없으면 아무 일도 없다 · 동작 0). */
+  function redrapeAsm2(B: ReturnType<typeof build>, pos: Float64Array): void {
+    const { front, back, N_sh, N_nk, nuB, nvB } = B;
+    const ringAt = (y: number) => boundaryOf(supportAt(y, SLAB), DELTA, 1);
+    const nkPts = ringAt(Y_NECK);
+    const nkF = arcOn(nkPts, false), nkB = arcOn(nkPts, true);
+    /** 그 높이 링에서 `sgn` 쪽 `|x|` 최대 점 — 앞뒤 패널이 만나는 자리다. */
+    const xExtreme = (y: number, sgn: number): [number, number] => {
+      const pts = ringAt(y);
+      let bx = -Infinity, bz = 0;
+      for (const [x, z] of pts) if (sgn * x > bx) { bx = sgn * x; bz = z; }
+      return [sgn * bx, bz];
+    };
+    const uvAt = (pan: Panel, i: number, j: number): [number, number] => {
+      const k = (j * (pan.nu + 1) + i) * 2;
+      return [pan.uv[k], pan.uv[k + 1]];
+    };
+    /* S1·S2 — 상단 행 */
+    for (const isFront of [true, false]) {
+      const pan = isFront ? front : back;
+      for (let i = 0; i <= nuB; i++) {
+        const v = at(pan, i, nvB);
+        const [px, py] = uvAt(pan, i, nvB);
+        let q: [number, number, number];
+        if (i < N_sh || i >= N_sh + N_nk) {                 // 어깨 토막(S2)
+          const y = Y_ANCHOR - (L - py);
+          const e = xExtreme(y, i < N_sh ? -1 : 1);
+          q = [e[0], y, AXIS_Z + e[1]];
+        } else {                                            // 목선 토막(S1)
+          const rz = (isFront ? nkF : nkB).at(isFront ? px : -px);
+          q = [rz[0], Y_NECK, AXIS_Z + rz[1]];
+        }
+        pos[v * 3] = q[0]; pos[v * 3 + 1] = q[1]; pos[v * 3 + 2] = q[2];
+      }
+    }
+    /* S3 — 드레이프(위에서 아래로 · 열마다) */
+    for (const isFront of [true, false]) {
+      const pan = isFront ? front : back;
+      for (let i = 0; i <= nuB; i++)
+        for (let j = nvB - 1; j >= 0; j--) {
+          const vt = at(pan, i, j + 1), vb = at(pan, i, j);
+          const [ax, ay] = uvAt(pan, i, j + 1), [bx2, by2] = uvAt(pan, i, j);
+          const len = Math.hypot(ax - bx2, ay - by2);
+          pos[vb * 3] = pos[vt * 3];
+          pos[vb * 3 + 1] = pos[vt * 3 + 1] - len;
+          pos[vb * 3 + 2] = pos[vt * 3 + 2];
+        }
+    }
+    /* S4 — 밀어냄 */
+    const hh = sdfSpec.h;
+    const gradPush: number[] = [];
+    let iter = 0, maxMove = Infinity;
+    const list: number[] = [];
+    for (const pan of [front, back])
+      for (let j = 0; j <= pan.nv; j++) for (let i = 0; i <= pan.nu; i++) list.push(at(pan, i, j));
+    for (; iter < 8 && maxMove > TOL_SELF; iter++) {
+      maxMove = 0;
+      for (const v of list) {
+        const x = pos[v * 3], y = pos[v * 3 + 1], z = pos[v * 3 + 2];
+        const dd = sampleSdf(bodyG, x, y, z);
+        if (!(dd < SEP)) continue;
+        const gx = sampleSdf(bodyG, x + hh, y, z) - sampleSdf(bodyG, x - hh, y, z);
+        const gy = sampleSdf(bodyG, x, y + hh, z) - sampleSdf(bodyG, x, y - hh, z);
+        const gz = sampleSdf(bodyG, x, y, z + hh) - sampleSdf(bodyG, x, y, z - hh);
+        const gn = Math.hypot(gx, gy, gz);
+        if (!(gn > 1e-12)) continue;
+        const step = SEP - dd;
+        pos[v * 3] += (gx / gn) * step; pos[v * 3 + 1] += (gy / gn) * step; pos[v * 3 + 2] += (gz / gn) * step;
+        if (step > maxMove) maxMove = step;
+      }
+      gradPush.push(maxMove);
+    }
+    (globalThis as unknown as { __asm2Probe?: (r: Record<string, unknown>) => void }).__asm2Probe?.({
+      SH_DROP, Y_ANCHOR, Y_NECK, Y_TOP, DELTA, 'S4 반복': iter, 'S4 상한': 8,
+      'S4 최대이동 궤적 mm': gradPush.map((x) => x * 1000), 'S4 수렴': maxMove <= TOL_SELF,
+      'TOL_SELF mm': TOL_SELF * 1000, '정점': list.length,
+    });
+  }
+
   function assemble(d: number) {
     const B = build(d);
     const n = B.n;
@@ -826,6 +949,7 @@ export function createScene(cfg: SceneConfig) {
     const s = makeSolver(n);
     for (const p of B.panels)
       for (let j = 0; j <= p.nv; j++) for (let i = 0; i <= p.nu; i++) place(p, i, j, s.pos, at(p, i, j) * 3);
+    if (ASM2) redrapeAsm2(B, s.pos);      // ★ v5-12 — 2세대 배치(off 면 이 줄이 아무 일도 하지 않는다)
 
     const { front, back, slv, N_sh, N_nk, N_side, N_arm, N_und, nuB, nvB, nuS } = B;
     const col = (p: Panel, i: number, j0: number, j1: number) => Array.from({ length: j1 - j0 + 1 }, (_, k) => at(p, i, j0 + k));

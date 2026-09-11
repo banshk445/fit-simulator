@@ -50,6 +50,8 @@ export type RunInput = {
   bodyVerts?: Float32Array;
   /** 옷 치수 [m] — 제품 UI 입력 */
   garment?: { L: number; W: number; SW: number; SLEN: number; ARM_G: number };
+  /** ★ v5-12 — 조립 2세대 플래그(기본 `undefined` = 현행 · `createScene` 으로 그대로 넘긴다). */
+  asm2?: boolean;
   fabric: Fabric;
   /** 해상도 [m] — 제품 설정은 d11(v3-33 갈래 B) */
   d?: number;
@@ -108,6 +110,7 @@ export function prepare(inp: RunInput) {
     L: gd.L, W: gd.W, SW: gd.SW, SLEN: gd.SLEN, ARM_G: gd.ARM_G,
     G, DT, THICK, SEP, KMEM: inp.fabric.k, MAT: { rho: inp.fabric.rho, B: inp.fabric.B },
     TOL_SELF, D_FIXED: d, minPairDistLite: inp.minPairDistLite,
+    ...(inp.asm2 ? { asm2: true } : {}),      // v5-12 — 없으면 키를 안 넣는다 ⟹ off 경로 불변
   });
   const sc = S.assemble(d);
   const st = S.substepsOf(sc);

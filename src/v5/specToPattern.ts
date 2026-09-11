@@ -39,6 +39,13 @@ export type Pattern = { L: number; W: number; SW: number; SLEN: number; ARM_G: n
 export const TEE_TEMPLATE = {
   /** 암홀 둘레 [m] · 출처 `src/v3/grid.ts:28`(v3-73 §0 처분 · 전 사이즈 공통 제도 기본값). */
   ARM_G: 0.4439,
+  /** ★ v5-12 — **어깨 경사 낙차** [m]. **값의 자리는 `src/v3/garmentScene.ts` 의 `ASM2_SH_DROP`** 이고
+   * 여기서는 **두 벌로 두지 않는다**(한 수는 한 자리 · 함정 13 계열). 값 = 2½ in = **0.0635 m** ·
+   * 출처(관행 표준 어깨) = https://www.mygoldenthimble.com/how-to-draft-a-bodice-sloper/ ·
+   * 교차 = https://charnold.com/how-to-make-basic-bodice-block-tutorial/
+   * ★ 실측표에 이 항목이 생기면 **실측표가 이긴다** — 그때 `TeeSpec.shoulderSlope` 를 열고
+   *   `specToPattern` 이 그 값을 넘기면 된다(지금 등재된 두 실물 표에 그 항목이 **없다** ⟹ 항상 템플릿 상수).
+   *   이 주석이 전략 세션 v5-11 검수 결정 ①의 「실측표 선택 항목 문만」이다. */
 } as const;
 
 /** 실측표 → 패턴 상수. **새 수 0** — 나누기 100(cm→m)과 템플릿 상수뿐이다. */
