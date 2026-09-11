@@ -39,6 +39,12 @@ console.log(`# v5-12 조립 sha 표 · MODE=${MODE} · ASM2=${ASM2 ? 1 : 0} · �
 for (const { cell, bodyBin, apose } of LIST) {
   const c = cells().find((x) => x.id === cell)!;
   const bb = readFileSync(bodyBin);
+  /* ★ 조립은 칸에 따라 **기존 자기검사에서 던진다**(예: `garmentScene.ts:922` 「옷 자기 간격 SEP 미달」).
+   * 108칸 계정에 착용불가·보류가 있으므로 **던짐도 «값»으로 표에 담는다** — 던짐 문언이 바뀌는 것도
+   * 회귀이기 때문이다(추정으로 건너뛰지 않는다). */
+  const row = (v: string) => console.log(`${cell}\t${v}`);
+  let out = '';
+  try {
   /* ★ A포즈 칸은 **칸마다 몸이 다르므로 팔 축·원점도 그 몸의 것**이어야 한다.
    * 읽는 자리는 `armAxisFromEnv` 한 곳으로 유지하고(v4-25 §1-② 규약) env 를 칸마다 채운다. */
   if (apose) {
@@ -66,5 +72,9 @@ for (const { cell, bodyBin, apose } of LIST) {
     }
     h.update(Buffer.from(Float64Array.from(nums).buffer));
   }
-  console.log(`${cell}\t${sc.n}\t${h.digest('hex')}`);
+    out = `${sc.n}\t${h.digest('hex')}`;
+  } catch (e) {
+    out = `THROW\t${String((e as Error).message).replace(/\s+/g, ' ').slice(0, 90)}`;
+  }
+  row(out);
 }
