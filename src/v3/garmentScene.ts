@@ -102,7 +102,9 @@ export function createScene(cfg: SceneConfig) {
   const { bodyIdx, bodyG, sdfSpec, L, W, SW, SLEN, ARM_G, DT, SEP, KMEM, MAT, TOL_SELF, D_FIXED, minPairDistLite } = cfg;
   const prim0 = cfg.body;
   const ASM2 = cfg.asm2 === true;
-  const FIX = ASM2 ? cfg.asm2Fix : undefined;      // v5-15 — 하위 플래그(ASM2 밖에서는 항상 undefined)                  // v5-12 — 플래그(기본 false ⟹ 아래 분기 전부 죽는다)
+  /* v5-15 신설 · ★ v5-16 — **(A) 를 기본값으로 올린다**(전략 세션 v5-15 §4 「(A) 걸음 상한 THICK 채택」) ·
+   * `'B'`(표면 추종)는 **보류**로 코드에 남긴다(삭제 0 · 열 간격 항이 생기면 다시 시험한다). */
+  const FIX = ASM2 ? (cfg.asm2Fix ?? 'A') : undefined;                  // v5-12 — 플래그(기본 false ⟹ 아래 분기 전부 죽는다)
   const SH_DROP = ASM2 ? ASM2_SH_DROP : 0;         // off 면 0 ⟹ 제도식이 «수평 직선» 그대로다
   const V2DIMS = cfg.dimsOverride !== undefined;
   const V2REF = cfg.dimsOverride ?? { neckHalfWidthCm: 0, necklineGirthCm: 0, capHeightCm: 0 };
@@ -1240,7 +1242,21 @@ export function createScene(cfg: SceneConfig) {
         /* v3-87 §1-③ — 소매 배치의 «유도값»도 함께 넘긴다(인쇄 전용). */
         SLV_X0, SLV_R, CAP_W, RMIN_소매: CAP_W / Math.PI, 감김호_rad: 2 * CAP_W / SLV_R,
         sdf: (x: number, y: number, z: number) => sampleSdf(bodyG, x, y, z) });
-      if (m0 >= need) { ok = true; break; }
+      /* ★ v5-16 §1-② — **`asm2` 경로의 «자의 대상» 정정**(전략 세션 v5-15 §4 판정문 · 문턱 이동 «아님»).
+       * 근거 — 남은 f0 결함은 관통·교차가 아니라 **천끼리 `SEP` 미만 근접**(0.52~1.58 mm · v5-15 §1-②)이고
+       *   그 대역은 **자기충돌 제약의 정의역 안**이다(`sep` 안의 쌍을 «전부» 처리한다 · v3-12) ⟹
+       *   v4-37 규칙의 자기충돌판 = 「f0 자기 근접이 **교차 0** 이고 제약 작동 범위 안이면 **최종 판정은
+       *   굽기(게이트)가 한다**」.
+       * ⟹ 재는 «양»을 「거리 ≥ `SEP`」에서 **「면 교차 0 ∧ 최소쌍 > 0」**으로 바꾼다.
+       *   `min > 0` 은 문턱이 아니라 **«같은 점이 아니다»**라는 뜻이다(부동소수에서 0 = 겹침).
+       * ★ `asm2` 가 꺼져 있으면 이 분기를 **지나가지 않는다** ⟹ off 경로 바이트 불변(A29·T108 로 확인). */
+      if (ASM2) {
+        const mpA = minPairDist(sc0.s.pos, sc0.tris, SEP * 2);
+        (globalThis as unknown as { __asm2SelfProbe?: (r: Record<string, unknown>) => void })
+          .__asm2SelfProbe?.({ 회차: i, 교차: mpA.hits, '최소쌍 mm': mpA.min * 1000, GAP_SIDE, DELTA,
+            '최소쌍 삼각형': mpA.worst });
+        if (mpA.hits === 0 && mpA.min > 0) { ok = true; break; }
+      } else if (m0 >= need) { ok = true; break; }
       GAP_SIDE *= 1.5;
     }
     if (!ok) {
@@ -1252,6 +1268,8 @@ export function createScene(cfg: SceneConfig) {
       const bases = sc0.panels.map((p) => p.base).concat([sc0.n]);
       const nameOf = (v: number) => { for (let k = 0; k < sc0.panels.length; k++) if (v >= bases[k] && v < bases[k + 1]) return sc0.panels[k].name; return '?'; };
       const pn = (t: number) => t < 0 ? '?' : [...new Set([0, 1, 2].map((k) => nameOf(sc0.tris[t * 3 + k])))].join('+');
+      if (ASM2) throw new Error(`옷 자기 «교차» — 교차 ${w.hits}개 · 최소쌍 `
+        + `${pn(w.worst[0])}↔${pn(w.worst[1])} ${(w.min * 1000).toPrecision(4)}mm — 갈래 D`);
       throw new Error(`옷 자기 간격 SEP 미달 — 최소쌍 ${pn(w.worst[0])}↔${pn(w.worst[1])}`
         + ` ${(w.min * 1000).toPrecision(4)}mm — 갈래 D`);
     }

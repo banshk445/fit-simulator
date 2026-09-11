@@ -36,8 +36,12 @@ const glb = gb.buffer.slice(gb.byteOffset, gb.byteOffset + gb.byteLength) as Arr
 const bb = readFileSync(BODY_BIN);
 const verts = new Float32Array(bb.buffer.slice(bb.byteOffset, bb.byteOffset + bb.byteLength));
 const fab = (FABRICS as Record<string, { k: number; rho: number; B: number }>)[FAB];
+/* ★ v5-16 — **조립 2세대 env**(`ASM2=1` · `ASM2FIX=A|B`). 없으면 키를 넣지 않는다 ⟹ 기존 호출 불변. */
+const ASM2 = process.env.ASM2 === '1';
+const ASM2FIX = (process.env.ASM2FIX === 'A' || process.env.ASM2FIX === 'B') ? process.env.ASM2FIX : undefined;
 const P = prepare({ glb, fabric: FABRICS.gray, d: D, garment: SPEC ? patternOfSpecName(SPEC) : garmentOf(c.size as Size), armAxis: armAxisFromEnv(),
-                    bodyVerts: verts, minPairDistLite });
+                    bodyVerts: verts, minPairDistLite,
+                    ...(ASM2 ? { asm2: true } : {}), ...(ASM2FIX ? { asm2Fix: ASM2FIX } : {}) });
 
 /* ★ v4-26 §1-② **유한성 검사**(전략 세션 v4-25 §4 승인 · 함정 후보 「배치 산출의 조용한 NaN 통과」).
  * v4-25 는 소매 1,020 정점이 NaN 인 조립 blob 을 **아무 말 없이** 내보냈다 — 굽기까지 가서야 드러난다.
@@ -162,7 +166,7 @@ const vel = new Float64Array(sc.n * 3);
 const SCENEARGS = { body: BODY_BIN,
   ...(process.env.ARM_AXIS_JSON ? { armAxisJson: process.env.ARM_AXIS_JSON } : {}),
   ...(process.env.ARM_ORIGIN_JSON ? { armOriginJson: process.env.ARM_ORIGIN_JSON } : {}),
-  ...(SPEC ? { spec: SPEC } : {}) };
+  ...(SPEC ? { spec: SPEC } : {}), ...(ASM2 ? { asm2: true, asm2Fix: ASM2FIX ?? 'A' } : {}) };
 writeFileSync(`${OUT}/asm-${TAG}.bin`, pack({ what: 'v4-20 조립 «직후» 상태(속도 0)', cell: TAG,
   n: sc.n, frame: 0, d: D, ...SCENEARGS, substeps: P.SUB },
   Buffer.from(pos.buffer), Buffer.from(vel.buffer)));
