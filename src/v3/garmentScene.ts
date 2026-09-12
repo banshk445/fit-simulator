@@ -1338,6 +1338,23 @@ export function createScene(cfg: SceneConfig) {
         'p99 침투 mm': penP.length ? penP[Math.floor(penP.length * 0.01)] * 1000 : 0,
         '밴드 밖 정점 수': outBand.length,
         '밴드 밖 자리': outBand.slice(0, 12).map((r) => `${r.pan}(i${r.i},j${r.j}) ${(-r.signed * 1000).toFixed(4)}mm`),
+        /* ★ v5-19 §1-② — **부위**: 패널 · 행(`nvB − j`) · 암홀 열 여부(`dEdge ≤ N_sh`) · y 대역 ·
+         * 팔축 좌표 `axDot`(팔 윗면인지 · 소매가 시작하는 `SLV_X0` 와 견준다). 전부 인쇄 전용. */
+        '밴드 밖 패널': (() => { const m: Record<string, number> = {};
+          for (const r of outBand) m[r.pan] = (m[r.pan] ?? 0) + 1; return m; })(),
+        '밴드 밖 행(nvB−j)': (() => { const m: Record<string, number> = {};
+          for (const r of outBand) { const k = `nvB−${nvB - r.j}`; m[k] = (m[k] ?? 0) + 1; }
+          return Object.fromEntries(Object.entries(m).sort((a, b) => b[1] - a[1]).slice(0, 12)); })(),
+        '밴드 밖 암홀 열 비율': outBand.length
+          ? outBand.filter((r) => Math.min(r.i, nuB - r.i) <= N_sh).length / outBand.length : null,
+        '밴드 밖 y mm': outBand.length ? {
+          최소: Math.min(...outBand.map((r) => pos[r.v * 3 + 1])) * 1000,
+          최대: Math.max(...outBand.map((r) => pos[r.v * 3 + 1])) * 1000,
+          'Y_ANCHOR mm': Y_ANCHOR * 1000, 'Y_ARM mm': Y_ARM * 1000 } : null,
+        '밴드 밖 팔축 s mm': outBand.length ? {
+          최소: Math.min(...outBand.map((r) => axDot(pos[r.v * 3], pos[r.v * 3 + 1], pos[r.v * 3 + 2]))) * 1000,
+          최대: Math.max(...outBand.map((r) => axDot(pos[r.v * 3], pos[r.v * 3 + 1], pos[r.v * 3 + 2]))) * 1000,
+          'SLV_X0 mm': SLV_X0 * 1000 } : null,
         '최대 자리': penAll.length
           ? (() => { const w = penAll.reduce((a, b) => (a.signed <= b.signed ? a : b));
                      return `${w.pan}(i${w.i},j${w.j})`; })() : null,
