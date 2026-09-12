@@ -54,11 +54,9 @@ const AO = TUBE['AO(원점)'] as [number, number, number] | null;
 const sdf = G.sdf;
 
 /* ── 정점 ↔ (패널 · i · j) ── */
-const bases = G.panels.map((p) => p.base).concat([G.n]);
 const nuOf = (nm: string) => (nm === 'front' || nm === 'back' ? nuB : nuS);
 const at = (nm: string, i: number, j: number) =>
   G.panels[G.panels.findIndex((p) => p.name === nm)].base + j * (nuOf(nm) + 1) + i;
-};
 const P = (p: Float64Array, v: number): [number, number, number] => [p[v * 3], p[v * 3 + 1], p[v * 3 + 2]];
 const nrm = (a: [number, number, number]) => {
   const L = Math.hypot(a[0], a[1], a[2]);
