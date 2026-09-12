@@ -12,9 +12,14 @@ let last: Gap | null = null;
 (globalThis as unknown as { __v3gapProbe?: (r: Gap) => void }).__v3gapProbe = (r) => { last = r; };
 let asm2: Record<string, unknown> | null = null;
 (globalThis as unknown as { __asm2Probe?: (r: Record<string, unknown>) => void }).__asm2Probe = (r) => { asm2 = r; };
-const stage: Record<string, Float64Array> = {};
+/** δ 맞춤 회차마다 장면이 다시 선다 ⟹ 단계 스냅숏을 **회차별로 짝지어** 모으고,
+ * 마지막에 `__v3gapProbe` 가 준 `pos` 와 **비트 일치**하는 S4 짝만 쓴다(다른 회차의 값을 섞지 않는다). */
+const hist: { S3?: Float64Array; S4?: Float64Array }[] = [];
 (globalThis as unknown as { __asm2StageProbe?: (s: string, p: Float64Array) => void })
-  .__asm2StageProbe = (s, p) => { stage[s] = p; };
+  .__asm2StageProbe = (s, p) => {
+    if (s === 'S3') hist.push({ S3: p });
+    else if (hist.length) hist[hist.length - 1].S4 = p;
+  };
 
 import { prepare } from '../src/v3/dressRun.ts';
 import { FABRICS, SEP } from '../src/v3/consts.ts';
@@ -143,10 +148,25 @@ for (const pan of ['front', 'back'])
     if (j < nvB) gapRow.push(dist(at(pan, i, j), at(pan, i, j + 1)));
   }
 
-const stageRows = Object.fromEntries(Object.entries(stage).map(([k, p]) => [k, crossings(p)]));
+const same = (a: Float64Array, b: Float64Array) => {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
+  return true;
+};
+/* 마지막 조립 장면의 **한 짝**을 쓴다(S4 는 같은 호출 안에서 S3 바로 뒤다 ⟹ 같은 장면이 보장된다).
+ * `gapProbe` 장면과 비트 일치하는지는 **따로 적는다** — 일치하지 않으면 S4 뒤에도 `pos` 가 움직인다는 사실이다. */
+const done = hist.filter((h) => h.S3 && h.S4);
+const pair = done.length ? done[done.length - 1] : null;
+const matched = pair?.S4 ? same(pair.S4, G.pos) : false;
+const stageRows: Record<string, ReturnType<typeof crossings>> = {};
+if (pair?.S3) stageRows.S3 = crossings(pair.S3);
+if (pair?.S4) stageRows.S4 = crossings(pair.S4);
 const out = {
   what: 'v5-18 §1-①③ 암홀 열 정의 표 · 후보 f0 시험(측정만 · src 거동 0줄 · 판정 0)',
-  _args: { ASM2FIX: FIX ?? null, SPEC: SPEC ?? null, CELL, 계기: 'v5ArmholeDist.ts' },
+  /** ★ v5-18 — **진입 env 를 산출에 «적는다»**(CC 귀책 C3 재발 방지 · v5-7b §0-5ㄴ 확정분인지 눈으로 본다). */
+  _args: { ASM2FIX: FIX ?? null, SPEC: SPEC ?? null, CELL, D_MM: D * 1000, 계기: 'v5ArmholeDist.ts',
+    BODY_BIN: process.env.BODY_BIN ?? null, ARM_AXIS_JSON: process.env.ARM_AXIS_JSON ?? null,
+    ARM_ORIGIN_JSON: process.env.ARM_ORIGIN_JSON ?? null },
   던짐: thrown, 'gapProbe 회차': G.회차, '삼각형': T, n: G.n,
   '① 패턴 분할': DIV,
   '① 암홀 열 정의': {
@@ -166,8 +186,12 @@ const out = {
   '③ 열 i 분포(상위 12)': tally(rows, (r) => `i${Math.min(r.iA, r.iB)}`).slice(0, 12),
   '③ 암홀 열 안 교차 비율': rows.length
     ? rows.filter((r) => inArmCol(r.iA) || inArmCol(r.iB)).length / rows.length : null,
-  '③ 단계 가름(같은 tris)': Object.fromEntries(Object.entries(stageRows).map(([k, rs]) => [k,
-    { '교차': rs.length, '패널 조합': tally(rs, (r) => r.panPair).slice(0, 4) }])),
+  '③ 단계 가름(같은 tris · gapProbe 장면과 비트 일치하는 짝만)': {
+    '짝 찾음': pair !== null, '조립 장면 수': hist.length, 'gapProbe 회차': G.회차,
+    '★ S4 스냅숏 = gapProbe 장면인가': matched,
+    ...Object.fromEntries(Object.entries(stageRows).map(([k, rs]) => [k,
+      { '교차': rs.length, '패널 조합': tally(rs, (r) => r.panPair).slice(0, 4) }])),
+  },
   '③ 봉제쌍 거리 mm — 어깨': stat(shoulderPairs),
   '③ 봉제쌍 거리 mm — 소매 캡↔암홀': Object.fromEntries(
     Object.entries(armPairs).map(([k, v]) => [k, stat(v)])),
