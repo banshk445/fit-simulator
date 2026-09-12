@@ -203,6 +203,16 @@ const out = {
   '③ u(i) > 0 인 열 수': a2?.['u(i) 표본'] ?? null,
   /* ★ v5-19 — S4 가 «없으므로» S3 스냅숏과 최종 장면의 일치 여부가 v5-18 의 미규명 자리를 직접 드러낸다. */
   '① S3 스냅숏 = gapProbe 장면인가': pair?.S3 ? same(pair.S3, G.pos) : null,
+  /* ★ v5-19 — **모든** 조립 장면의 S3·S4 스냅숏을 훑어 `gapProbe` 장면과 비트 일치하는 것이 있는지 본다.
+   * 있으면 「`redrapeAsm2` 뒤에는 `pos` 가 움직이지 않는다」가 증명되고, 앞선 불일치는 **다른 δ 회차**일 뿐이다. */
+  '① 비트 일치 스냅숏': (() => {
+    for (let k = 0; k < hist.length; k++) {
+      if (hist[k].S3 && same(hist[k].S3!, G.pos)) return `장면#${k + 1}·S3`;
+      if (hist[k].S4 && same(hist[k].S4!, G.pos)) return `장면#${k + 1}·S4`;
+    }
+    return null;
+  })(),
+  '① 장면별 S3 교차': hist.map((h) => (h.S3 ? crossings(h.S3).length : null)),
   '① S4 없음': a2?.['S4 없음'] ?? null,
   '① 밴드 mm': a2?.['밴드 mm'] ?? null, '① h mm': a2?.['h mm'] ?? null,
   '① THICK mm': a2?.['THICK mm'] ?? null,
