@@ -81,7 +81,7 @@ export type SceneConfig = {
   /** ★ v5-15 — **S4 붕괴 처방 «하위 플래그»**(진단 전용 · 기본 `undefined` = v5-14 거동).
    * `'A'` = S4 걸음 상한(`THICK`) + 봉제선→아래 **행 순서** 훑기 · `'B'` = **표면 추종 S3**.
    * `asm2` 가 꺼져 있으면 이 값은 읽히지 않는다(정본 off 비트 불변). */
-  asm2Fix?: 'A' | 'B' | 'AB' | 'ABI' | 'BLEND' | 'ARM' | 'RC' | 'ARMRC';
+  asm2Fix?: 'A' | 'B' | 'AB' | 'ABI' | 'BLEND' | 'ARM' | 'RC' | 'ARMRC' | 'NOS4';
 };
 
 /** ★ v5-12 — **어깨 경사 낙차 `SH_DROP` [m]**(조립 2세대 템플릿 상수 · 이름·값·출처 공개).
@@ -116,7 +116,10 @@ export function createScene(cfg: SceneConfig) {
    *     `'ARMRC'`  = ㉮ + ㉯
    * ★ `'AB'` 는 **폐기**다(v5-17 실측 교차 **73,131** = 기준선의 49배) — 삭제 0 · 이력으로만 남긴다.
    *   새 시험에서 `'AB'` 를 후보로 올리지 않는다. `'A'`·`'B'`·`'ABI'` 도 이력 그대로 둔다. */
-  const BLENDFAM = FIX === 'BLEND' || FIX === 'ARM' || FIX === 'RC' || FIX === 'ARMRC';
+  /* ★ v5-19 — `'NOS4'` = BLEND 의 S3 그대로 · **S4 밀어냄 루프를 돌지 않는다**(§0-5 형식화).
+   * `'ARM'`·`'RC'`·`'ARMRC'` 는 **코드 유지 · 이 판 미사용**(v5-18 이력 · 삭제 0). */
+  const BLENDFAM = FIX === 'BLEND' || FIX === 'ARM' || FIX === 'RC' || FIX === 'ARMRC' || FIX === 'NOS4';
+  const S4NONE = FIX === 'NOS4';
   const S3SURF = FIX === 'B' || FIX === 'AB' || FIX === 'ABI' || BLENDFAM;
   const S4CAP = FIX === 'A' || FIX === 'AB' || FIX === 'ABI' || BLENDFAM;
   const S3INTERVAL = FIX === 'ABI';
@@ -1144,7 +1147,7 @@ export function createScene(cfg: SceneConfig) {
     /* ★ v5-15 (A) — 걸음 상한 `THICK`(행 간격의 «한 자릿수 아래» · 등재 자 인용 · 손 상수 0) ·
      * 훑는 순서 = **봉제선(맨 위 행)에서 아래로** · 반복 상한 = `NY`(이 함수가 이미 쓰는 등재 값). */
     const STEPCAP = S4CAP ? cfg.THICK : Infinity;
-    const ITERCAP = S4CAP ? NY : 8;
+    const ITERCAP = S4NONE ? 0 : S4CAP ? NY : 8;   // ★ v5-19 — 0 이면 아래 루프가 «한 번도» 돌지 않는다
     const list: number[] = [];
     if (S4CAP) {
       for (let j = nvB; j >= 0; j--) for (const pan of [front, back])
@@ -1172,6 +1175,21 @@ export function createScene(cfg: SceneConfig) {
     }
     (globalThis as unknown as { __asm2StageProbe?: (stage: string, p: Float64Array) => void })
       .__asm2StageProbe?.('S4', Float64Array.from(pos));
+    /* ★ v5-19 §1-① — **몸 관통 분포**(인쇄 전용 · 거동 0줄). 자는 `S4`·`pushOut` 이 쓰는 그 `sampleSdf` 다.
+     * `signed` = 몸 부호 있는 거리 · **침투 `P = max(0, −signed)`** · **밴드 안 ⟺ `P ≤ sdfSpec.band`** ·
+     * 게이트 식 `pen = THICK − signed` 도 함께 낸다(`instruments.ts:255` · `s4Gate.ts:142` 그 채널).
+     * ★ 손 상수 0 — `band` 는 `sdfSpec` 에서 읽는다(v4-34 의 8.5054 를 적지 않는다). */
+    const BAND = sdfSpec.band;
+    const penAll: { v: number; signed: number; pan: string; i: number; j: number }[] = [];
+    for (const pan of B.panels)
+      for (let j = 0; j <= pan.nv; j++)
+        for (let i = 0; i <= pan.nu; i++) {
+          const v = at(pan, i, j);
+          const sg = sampleSdf(bodyG, pos[v * 3], pos[v * 3 + 1], pos[v * 3 + 2]);
+          if (sg < 0) penAll.push({ v, signed: sg, pan: pan.name, i, j });
+        }
+    const penP = penAll.map((r) => -r.signed).sort((a, b) => b - a);
+    const outBand = penAll.filter((r) => -r.signed > BAND);
     /* ★ v5-13 §1-③ — **맞닿는 «자리»를 잰다**(v5-12 ㉡ 가 남긴 「계기 한 줄」 · 인쇄 전용 · 동작 0).
      * 자기검사는 «삼각형 쌍»만 알려 주고 «어느 정점·어느 행»인지 말하지 않는다. 상단 4행에 한해
      * 정점 쌍 최소 거리를 그 «자리»(패널 · i · j)와 함께 낸다(같은 열의 이웃 행은 뺀다 — 설계상 붙어 있다). */
@@ -1297,6 +1315,22 @@ export function createScene(cfg: SceneConfig) {
       '팔 관': { AX, 'AP(피벗)': AP, 'AO(원점)': AO, 'ARM.yc': ARM.yc, 'ARM.zc': ARM.zc,
         'SLV_R mm': SLV_R * 1000, 'SLV_X0 mm': SLV_X0 * 1000, 'SEP mm': SEP * 1000 },
       'u(i) 표본': Array.from({ length: nuB + 1 }, (_, i) => uArm(i)).filter((x) => x > 0).length,
+      /* ★ v5-19 §1-① — 관통 분포 · 밴드 자(전부 인쇄 전용). */
+      'S4 없음': S4NONE,
+      '밴드 mm': BAND * 1000, 'h mm': hh * 1000, 'THICK mm': cfg.THICK * 1000, 'SEP mm': SEP * 1000,
+      '관통': {
+        '정점 수(signed < 0)': penAll.length,
+        '최대 침투 mm': penP.length ? penP[0] * 1000 : 0,
+        '중앙 침투 mm': penP.length ? penP[Math.floor(penP.length / 2)] * 1000 : 0,
+        'p99 침투 mm': penP.length ? penP[Math.floor(penP.length * 0.01)] * 1000 : 0,
+        '밴드 밖 정점 수': outBand.length,
+        '밴드 밖 자리': outBand.slice(0, 12).map((r) => `${r.pan}(i${r.i},j${r.j}) ${(-r.signed * 1000).toFixed(4)}mm`),
+        '최대 자리': penAll.length
+          ? (() => { const w = penAll.reduce((a, b) => (a.signed <= b.signed ? a : b));
+                     return `${w.pan}(i${w.i},j${w.j})`; })() : null,
+        /* `pen = THICK − signed` 이고 `signed` 최소 = `−penP[0]` ⟹ `pen` 최대 = `THICK + penP[0]`(전개 0). */
+        '게이트 식 pen 최대 mm': penP.length ? (cfg.THICK + penP[0]) * 1000 : null,
+      },
     });
   }
 
