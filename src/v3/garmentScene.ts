@@ -1315,6 +1315,19 @@ export function createScene(cfg: SceneConfig) {
       '팔 관': { AX, 'AP(피벗)': AP, 'AO(원점)': AO, 'ARM.yc': ARM.yc, 'ARM.zc': ARM.zc,
         'SLV_R mm': SLV_R * 1000, 'SLV_X0 mm': SLV_X0 * 1000, 'SEP mm': SEP * 1000 },
       'u(i) 표본': Array.from({ length: nuB + 1 }, (_, i) => uArm(i)).filter((x) => x > 0).length,
+      /* ★ v5-19 §1-① — **목선 링 / rest**(인쇄 전용). 링 = 맨 윗행의 목선 토막(`i ∈ [N_sh, N_sh+N_nk]`)
+       * 을 앞·뒤에서 이어 붙인 폴리라인이고, rest 는 **같은 정점 쌍의 2D 패턴 거리 합**이다(별도 배열 0 · 함정 12). */
+      '목선 링': (() => {
+        let d3 = 0, d2 = 0;
+        for (const pan of [front, back])
+          for (let i = N_sh; i < N_sh + N_nk; i++) {
+            const a = at(pan, i, nvB), b = at(pan, i + 1, nvB);
+            d3 += Math.hypot(pos[a * 3] - pos[b * 3], pos[a * 3 + 1] - pos[b * 3 + 1], pos[a * 3 + 2] - pos[b * 3 + 2]);
+            const ka = (nvB * (pan.nu + 1) + i) * 2, kb = (nvB * (pan.nu + 1) + i + 1) * 2;
+            d2 += Math.hypot(pan.uv[ka] - pan.uv[kb], pan.uv[ka + 1] - pan.uv[kb + 1]);
+          }
+        return { '3D mm': d3 * 1000, 'rest(패턴) mm': d2 * 1000, '비': d3 / Math.max(1e-12, d2) };
+      })(),
       /* ★ v5-19 §1-① — 관통 분포 · 밴드 자(전부 인쇄 전용). */
       'S4 없음': S4NONE,
       '밴드 mm': BAND * 1000, 'h mm': hh * 1000, 'THICK mm': cfg.THICK * 1000, 'SEP mm': SEP * 1000,
