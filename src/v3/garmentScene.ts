@@ -1292,6 +1292,11 @@ export function createScene(cfg: SceneConfig) {
       '능선/패턴': rgL.total / Math.max(1e-12, Math.hypot(SH_LEN, SH_DROP)),
       'S4 최대이동 궤적 mm': gradPush.map((x) => x * 1000), 'S4 수렴': maxMove <= TOL_SELF,
       'TOL_SELF mm': TOL_SELF * 1000, '정점': list.length,
+      /* ★ v5-18 §1-① — **패턴 분할 수**(암홀 열 정의가 여기서 선다) · **팔 관 값 «그대로»**. 인쇄 전용. */
+      '패턴 분할': { N_sh, N_nk, N_side, N_arm: B.N_arm, N_und: B.N_und, nuB, nvB, nuS: B.nuS },
+      '팔 관': { AX, 'AP(피벗)': AP, 'AO(원점)': AO, 'ARM.yc': ARM.yc, 'ARM.zc': ARM.zc,
+        'SLV_R mm': SLV_R * 1000, 'SLV_X0 mm': SLV_X0 * 1000, 'SEP mm': SEP * 1000 },
+      'u(i) 표본': Array.from({ length: nuB + 1 }, (_, i) => uArm(i)).filter((x) => x > 0).length,
     });
   }
 
