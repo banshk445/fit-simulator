@@ -81,7 +81,7 @@ export type SceneConfig = {
   /** ★ v5-15 — **S4 붕괴 처방 «하위 플래그»**(진단 전용 · 기본 `undefined` = v5-14 거동).
    * `'A'` = S4 걸음 상한(`THICK`) + 봉제선→아래 **행 순서** 훑기 · `'B'` = **표면 추종 S3**.
    * `asm2` 가 꺼져 있으면 이 값은 읽히지 않는다(정본 off 비트 불변). */
-  asm2Fix?: 'A' | 'B' | 'AB' | 'ABI' | 'BLEND';
+  asm2Fix?: 'A' | 'B' | 'AB' | 'ABI' | 'BLEND' | 'ARM' | 'RC' | 'ARMRC';
 };
 
 /** ★ v5-12 — **어깨 경사 낙차 `SH_DROP` [m]**(조립 2세대 템플릿 상수 · 이름·값·출처 공개).
@@ -104,15 +104,25 @@ export function createScene(cfg: SceneConfig) {
   const ASM2 = cfg.asm2 === true;
   /* v5-15 신설 · ★ v5-16 — **(A) 를 기본값으로 올린다**(전략 세션 v5-15 §4 「(A) 걸음 상한 THICK 채택」) ·
    * `'B'`(표면 추종)는 **보류**로 코드에 남긴다(삭제 0 · 열 간격 항이 생기면 다시 시험한다). */
-  const FIX = ASM2 ? (cfg.asm2Fix ?? 'A') : undefined;
+  /* ★ v5-18 — **`'BLEND'` 를 기본값으로 승격**(전략 세션 v5-17 §4 「BLEND 채택(값 = 설계 의도)」). */
+  const FIX = ASM2 ? (cfg.asm2Fix ?? 'BLEND') : undefined;
   /* ★ v5-17 — 후보 조합 해석(§0-4 형식화 그대로 · 새 상수 0):
    *   (ㄱ) `'AB'`   = 표면 추종 S3 + 걸음 상한·행 순서 S4
    *   (ㄴ) `'ABI'`  = (ㄱ) + **열 간격 항**(같은 행 `i↔i+1` 거리를 2D 패턴 거리로 투영)
    *   (ㄷ) `'BLEND'`= 튜브(오늘 통과하는 배치) ↔ 드레이프의 **행 비율 보간** + `SEP` 사영 · S4 는 잔여만 */
-  const S3SURF = FIX === 'B' || FIX === 'AB' || FIX === 'ABI' || FIX === 'BLEND';
-  const S4CAP = FIX === 'A' || FIX === 'AB' || FIX === 'ABI' || FIX === 'BLEND';
+  /* ★ v5-18 — 후보 2종(§0-6 형식화 그대로 · 새 상수 0):
+   *   ㉮ `'ARM'`   = BLEND + **암홀 열의 블렌드 목표를 «팔 관 표면»(반지름 `SLV_R` · SEP 등위면)으로**
+   *   ㉯ `'RC'`    = BLEND + **행·열 간격 «동시» 보존 항**((ㄴ) 정정판 — 옛 `'ABI'` 는 열만 잡았다)
+   *     `'ARMRC'`  = ㉮ + ㉯
+   * ★ `'AB'` 는 **폐기**다(v5-17 실측 교차 **73,131** = 기준선의 49배) — 삭제 0 · 이력으로만 남긴다.
+   *   새 시험에서 `'AB'` 를 후보로 올리지 않는다. `'A'`·`'B'`·`'ABI'` 도 이력 그대로 둔다. */
+  const BLENDFAM = FIX === 'BLEND' || FIX === 'ARM' || FIX === 'RC' || FIX === 'ARMRC';
+  const S3SURF = FIX === 'B' || FIX === 'AB' || FIX === 'ABI' || BLENDFAM;
+  const S4CAP = FIX === 'A' || FIX === 'AB' || FIX === 'ABI' || BLENDFAM;
   const S3INTERVAL = FIX === 'ABI';
-  const S3BLEND = FIX === 'BLEND';                  // v5-12 — 플래그(기본 false ⟹ 아래 분기 전부 죽는다)
+  const S3BLEND = BLENDFAM;                         // v5-12 — 플래그(기본 false ⟹ 아래 분기 전부 죽는다)
+  const S3ARM = FIX === 'ARM' || FIX === 'ARMRC';   // ㉮
+  const S3RC = FIX === 'RC' || FIX === 'ARMRC';     // ㉯
   const SH_DROP = ASM2 ? ASM2_SH_DROP : 0;         // off 면 0 ⟹ 제도식이 «수평 직선» 그대로다
   const V2DIMS = cfg.dimsOverride !== undefined;
   const V2REF = cfg.dimsOverride ?? { neckHalfWidthCm: 0, necklineGirthCm: 0, capHeightCm: 0 };
@@ -984,6 +994,26 @@ export function createScene(cfg: SceneConfig) {
       const st = SEP - dd;
       return [q[0] + n[0] * st, q[1] + n[1] * st, q[2] + n[2] * st];
     };
+    /* ★ v5-18 ㉮ — **팔 관 표면 사영**(§0-6 형식화 그대로 · 새 상수 0).
+     * 관 = `axPoint` 가 소매를 놓는 그 관이다 — 축 `AX` · 피벗 `AP`(없으면 중심 `(0, ARM.yc, ARM.zc)`) ·
+     * 반지름 **`SLV_R`**(= `fitSleeve()` 가 몸에서 `SEP` 떨어지도록 고른 등위면 · 이 판은 «읽기만» 한다).
+     * 축 좌표와 위상은 보존하고 **반경만** `SLV_R` 로 옮긴다. 축 위(반경 0)면 그대로 둔다. */
+    const armProj = (q: [number, number, number]): [number, number, number] => {
+      const sgn = q[0] >= 0 ? 1 : -1;                 // `axPoint` 의 AP 분기가 x 를 거울하는 그 방식
+      const qx = AP ? sgn * q[0] : q[0];
+      const O: [number, number, number] = AP ? AP : [0, ARM.yc, ARM.zc];
+      const dx = qx - O[0], dy = q[1] - O[1], dz = q[2] - O[2];
+      const t = dx * AX[0] + dy * AX[1] + dz * AX[2];
+      const rx = dx - t * AX[0], ry = dy - t * AX[1], rz = dz - t * AX[2];
+      const rho = Math.hypot(rx, ry, rz);
+      if (!(rho > 1e-12)) return q;
+      const k = SLV_R / rho;
+      const px = O[0] + t * AX[0] + rx * k, py = O[1] + t * AX[1] + ry * k, pz = O[2] + t * AX[2] + rz * k;
+      return [AP ? sgn * px : px, py, pz];
+    };
+    /** ★ v5-18 ㉮ — **열 가중** `u(i) = max(0, 1 − dEdge/N_sh)` · `dEdge = min(i, nuB − i)`.
+     * `i = 0 · nuB`(암홀 봉제선)에서 1 · `dEdge ≥ N_sh`(목선 구간)에서 0 ⟹ `u ≡ 0` 이면 BLEND 와 «같은 계산». */
+    const uArm = (i: number) => Math.max(0, 1 - Math.min(i, nuB - i) / N_sh);
     /* S3 — 드레이프(위에서 아래로 · 열마다) · `FIX === 'B'` 면 **표면 추종** */
     for (const isFront of [true, false]) {
       const pan = isFront ? front : back;
@@ -1017,10 +1047,20 @@ export function createScene(cfg: SceneConfig) {
               continue;
             }
             const w = Math.min(1, (j - N_side) / span);
+            /* ★ v5-18 ㉮ — `w = 0` 쪽 재료(= 몸통 튜브)를 **열에 따라** 팔 관 표면으로 바꾼다.
+             * `T = (1 − u)·tube + u·armProj(tube)` · `S3ARM` 이 꺼져 있으면 `T = tube`(v5-17 그대로). */
+            let T0 = tube[v * 3], T1 = tube[v * 3 + 1], T2 = tube[v * 3 + 2];
+            if (S3ARM) {
+              const u = uArm(i);
+              if (u > 0) {
+                const a = armProj([T0, T1, T2]);
+                T0 += (a[0] - T0) * u; T1 += (a[1] - T1) * u; T2 += (a[2] - T2) * u;
+              }
+            }
             const q: [number, number, number] = [
-              tube[v * 3] * (1 - w) + pos[v * 3] * w,
-              tube[v * 3 + 1] * (1 - w) + pos[v * 3 + 1] * w,
-              tube[v * 3 + 2] * (1 - w) + pos[v * 3 + 2] * w];
+              T0 * (1 - w) + pos[v * 3] * w,
+              T1 * (1 - w) + pos[v * 3 + 1] * w,
+              T2 * (1 - w) + pos[v * 3 + 2] * w];
             const r = pushOut(q);
             pos[v * 3] = r[0]; pos[v * 3 + 1] = r[1]; pos[v * 3 + 2] = r[2];
           }
@@ -1055,6 +1095,49 @@ export function createScene(cfg: SceneConfig) {
           pos[v * 3] = r[0]; pos[v * 3 + 1] = r[1]; pos[v * 3 + 2] = r[2];
         }
     }
+    /* ★ v5-18 ㉯ — **행·열 간격 «동시» 보존 항**((ㄴ) 정정판 · §0-6 형식화 그대로).
+     * 옛 `'ABI'` 는 같은 행의 `i↔i+1` 만 잡아 **열이 안쪽으로 수렴**했다 ⟹ 같은 열의 `j↔j+1` 도 같이 잡는다.
+     * 목표 거리 = 2D 패턴 거리 · 중점 대칭 이동 · 수렴 `TOL_SELF` · 상한 `NY` · 끝나고 `SEP` 밀어냄.
+     * 셋 다 이미 등재된 값이다 — 새 상수 0. */
+    if (S3RC) {
+      const rest = (pan: Panel, ia: number, ja: number, ib: number, jb: number) => {
+        const ka = (ja * (pan.nu + 1) + ia) * 2, kb = (jb * (pan.nu + 1) + ib) * 2;
+        return Math.hypot(pan.uv[ka] - pan.uv[kb], pan.uv[ka + 1] - pan.uv[kb + 1]);
+      };
+      let mx = 0;
+      const relax = (a: number, b: number, L2: number) => {
+        const dx = pos[b * 3] - pos[a * 3], dy = pos[b * 3 + 1] - pos[a * 3 + 1], dz = pos[b * 3 + 2] - pos[a * 3 + 2];
+        const L3 = Math.hypot(dx, dy, dz);
+        if (!(L3 > 1e-12)) return;
+        const sh = (L2 - L3) / 2;
+        if (Math.abs(sh) > mx) mx = Math.abs(sh);
+        const ux = dx / L3, uy = dy / L3, uz = dz / L3;
+        pos[a * 3] -= ux * sh; pos[a * 3 + 1] -= uy * sh; pos[a * 3 + 2] -= uz * sh;
+        pos[b * 3] += ux * sh; pos[b * 3 + 1] += uy * sh; pos[b * 3 + 2] += uz * sh;
+      };
+      for (let it = 0; it < NY; it++) {
+        mx = 0;
+        for (const pan of [front, back]) {
+          for (let j = 0; j <= nvB; j++)                       // (가) 열 간격 — 같은 행의 이웃 열
+            for (let i = 0; i < pan.nu; i++)
+              relax(at(pan, i, j), at(pan, i + 1, j), rest(pan, i, j, i + 1, j));
+          for (let i = 0; i <= pan.nu; i++)                    // (나) 행 간격 — 같은 열의 이웃 행
+            for (let j = 0; j < nvB; j++)
+              relax(at(pan, i, j), at(pan, i, j + 1), rest(pan, i, j, i, j + 1));
+        }
+        if (mx <= TOL_SELF) break;
+      }
+      for (const pan of [front, back])
+        for (let j = 0; j <= nvB; j++) for (let i = 0; i <= pan.nu; i++) {
+          const v = at(pan, i, j);
+          const r = pushOut([pos[v * 3], pos[v * 3 + 1], pos[v * 3 + 2]]);
+          pos[v * 3] = r[0]; pos[v * 3 + 1] = r[1]; pos[v * 3 + 2] = r[2];
+        }
+    }
+    /* ★ v5-18 — **「S3 직후 vs S4 직후」 훅**(v5-17 미측정 해소 · **인쇄 전용 · 거동 0줄**).
+     * `pos` 사본만 넘긴다 — 교차는 계기가 «같은 `tris`» 로 단계별로 센다. */
+    (globalThis as unknown as { __asm2StageProbe?: (stage: string, p: Float64Array) => void })
+      .__asm2StageProbe?.('S3', Float64Array.from(pos));
     /* S4 — 밀어냄 */
     const gradPush: number[] = [];
     let iter = 0, maxMove = Infinity;
@@ -1087,6 +1170,8 @@ export function createScene(cfg: SceneConfig) {
       }
       gradPush.push(maxMove);
     }
+    (globalThis as unknown as { __asm2StageProbe?: (stage: string, p: Float64Array) => void })
+      .__asm2StageProbe?.('S4', Float64Array.from(pos));
     /* ★ v5-13 §1-③ — **맞닿는 «자리»를 잰다**(v5-12 ㉡ 가 남긴 「계기 한 줄」 · 인쇄 전용 · 동작 0).
      * 자기검사는 «삼각형 쌍»만 알려 주고 «어느 정점·어느 행»인지 말하지 않는다. 상단 4행에 한해
      * 정점 쌍 최소 거리를 그 «자리»(패널 · i · j)와 함께 낸다(같은 열의 이웃 행은 뺀다 — 설계상 붙어 있다). */
