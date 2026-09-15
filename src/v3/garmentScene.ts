@@ -81,7 +81,7 @@ export type SceneConfig = {
   /** ★ v5-15 — **S4 붕괴 처방 «하위 플래그»**(진단 전용 · 기본 `undefined` = v5-14 거동).
    * `'A'` = S4 걸음 상한(`THICK`) + 봉제선→아래 **행 순서** 훑기 · `'B'` = **표면 추종 S3**.
    * `asm2` 가 꺼져 있으면 이 값은 읽히지 않는다(정본 off 비트 불변). */
-  asm2Fix?: 'A' | 'B' | 'AB' | 'ABI' | 'BLEND' | 'ARM' | 'RC' | 'ARMRC' | 'NOS4';
+  asm2Fix?: 'A' | 'B' | 'AB' | 'ABI' | 'BLEND' | 'ARM' | 'RC' | 'ARMRC' | 'NOS4' | 'OUT';
 };
 
 /** ★ v5-12 — **어깨 경사 낙차 `SH_DROP` [m]**(조립 2세대 템플릿 상수 · 이름·값·출처 공개).
@@ -119,7 +119,9 @@ export function createScene(cfg: SceneConfig) {
   /* ★ v5-19 — `'NOS4'` = BLEND 의 S3 그대로 · **S4 밀어냄 루프를 돌지 않는다**(§0-5 형식화).
    * `'ARM'`·`'RC'`·`'ARMRC'` 는 **코드 유지 · 이 판 미사용**(v5-18 이력 · 삭제 0). */
   const BLENDFAM = FIX === 'BLEND' || FIX === 'ARM' || FIX === 'RC' || FIX === 'ARMRC' || FIX === 'NOS4';
-  const S4NONE = FIX === 'NOS4';
+  const S4NONE = FIX === 'NOS4' || FIX === 'OUT';   // ★ v5-21 — 「S4 없음」(판정문)
+  /** ★ v5-21 — **바깥 펼침**(2세대 마지막 후보 · §0-3 형식화 그대로 · 이 값일 때만 아래 블록이 돈다). */
+  const S3OUT = FIX === 'OUT';
   const S3SURF = FIX === 'B' || FIX === 'AB' || FIX === 'ABI' || BLENDFAM;
   const S4CAP = FIX === 'A' || FIX === 'AB' || FIX === 'ABI' || BLENDFAM;
   const S3INTERVAL = FIX === 'ABI';
@@ -891,7 +893,9 @@ export function createScene(cfg: SceneConfig) {
     const { front, back, N_sh, N_nk, N_side, nuB, nvB } = B;
     /* ★ v5-17 (ㄷ) — **튜브 위치 스냅숏**. `place()` 가 놓은 그 배치가 «오늘 자기검사를 통과하는»
      * 결 보존 배치다(판정문 「메시 결 보존 + 몸 밖」) ⟹ 블렌드의 한쪽 재료로 쓴다. */
-    const tube = S3BLEND ? Float64Array.from(pos) : null;
+    const tube = (S3BLEND || S3OUT) ? Float64Array.from(pos) : null;   // ★ v5-21 — OUT 도 튜브 행을 그대로 쓴다
+    /** ★ v5-21 — `n̂` 이 없어 전역 `−y` 로 떨어뜨린 열 수(인쇄 전용 · §0-3ㄱ). */
+    let outFall = 0;
     const ringAt = (y: number) => boundaryOf(supportAt(y, SLAB), DELTA, 1);
     const nkPts = ringAt(Y_NECK);
     const nkF = arcOn(nkPts, false), nkB = arcOn(nkPts, true);
@@ -1067,6 +1071,37 @@ export function createScene(cfg: SceneConfig) {
             const r = pushOut(q);
             pos[v * 3] = r[0]; pos[v * 3 + 1] = r[1]; pos[v * 3 + 2] = r[2];
           }
+    }
+    /* ★ v5-21 — **바깥 펼침**(2세대 마지막 후보 · §0-3 형식화 그대로 · 새 상수 0 · 밀어냄 0).
+     * 봉제선(행 `nvB` — S1/S2 가 능선·목선 링에 놓은 자리)에서 아래 행들을 «몸 바깥 + 아래»로 «직선»으로 건다:
+     *   방향 `d̂ = normalize(n̂ + (−ŷ))` — **단위 벡터 둘의 합**(이등분)이라 각도가 손 상수가 아니다.
+     *   위치 = 꼭대기 + `d̂` × (2D 패턴 열 엣지 길이 «누적») ⟹ 면내 변형 0 · 열마다 직선.
+     *   `j ≤ N_side` 는 **튜브 스냅숏 그대로** · 두 구간 사이 엣지는 «잇지 않는다»(물리가 잇는다).
+     * ★ `pushOut` 을 **부르지 않는다** — 「관통 0」은 구성상 «예측»이고 검사는 계기의 몫이다(§0-3ㄹ). */
+    if (S3OUT && tube) {
+      for (const pan of [front, back])
+        for (let i = 0; i <= pan.nu; i++) {
+          const vT = at(pan, i, nvB);
+          const qx = pos[vT * 3], qy = pos[vT * 3 + 1], qz = pos[vT * 3 + 2];
+          const n = nHat(qx, qy, qz);
+          let dx = 0, dy = -1, dz = 0;                      // `n̂` 이 없으면 전역 `−y`(그 열 수를 인쇄한다)
+          if (n) {
+            const ex = n[0], ey = n[1] - 1, ez = n[2];      // `n̂ + (−ŷ)`
+            const en = Math.hypot(ex, ey, ez);
+            if (en > 1e-9) { dx = ex / en; dy = ey / en; dz = ez / en; } else outFall++;
+          } else outFall++;
+          let acc = 0;
+          for (let j = nvB - 1; j > N_side; j--) {
+            const [ax, ay] = uvAt(pan, i, j + 1), [bx2, by2] = uvAt(pan, i, j);
+            acc += Math.hypot(ax - bx2, ay - by2);
+            const v = at(pan, i, j);
+            pos[v * 3] = qx + dx * acc; pos[v * 3 + 1] = qy + dy * acc; pos[v * 3 + 2] = qz + dz * acc;
+          }
+          for (let j = 0; j <= N_side; j++) {               // 실루엣 튜브 행 — 현행 그대로
+            const v = at(pan, i, j);
+            pos[v * 3] = tube[v * 3]; pos[v * 3 + 1] = tube[v * 3 + 1]; pos[v * 3 + 2] = tube[v * 3 + 2];
+          }
+        }
     }
     /* ★ v5-17 (ㄴ) — **열 간격 항**: 같은 행의 이웃 열 거리를 2D 패턴 거리로 투영한다(중점 대칭 이동) ·
      * 수렴 `TOL_SELF` · 상한 `NY`(등재 값) · 그 뒤 `SEP` 밀어냄. 새 상수 0. */
@@ -1328,6 +1363,28 @@ export function createScene(cfg: SceneConfig) {
           }
         return { '3D mm': d3 * 1000, 'rest(패턴) mm': d2 * 1000, '비': d3 / Math.max(1e-12, d2) };
       })(),
+      /* ★ v5-21 §1-② — **이음 엣지 신장**(인쇄 전용 · 거동 0줄). 펼침 구간과 튜브 구간의 경계
+       * `j = N_side ↔ N_side+1` 엣지의 «3D 길이 ÷ 2D 패턴 길이»를 열마다 낸다(문턱 0 · 판정 0). */
+      '이음 엣지(j=N_side↔N_side+1)': (() => {
+        const rs: number[] = []; const d3s: number[] = [];
+        let mx = -Infinity, mxAt = '', mx3 = 0, mx2 = 0;
+        for (const pan of [front, back])
+          for (let i = 0; i <= pan.nu; i++) {
+            const a = at(pan, i, N_side), b = at(pan, i, N_side + 1);
+            const d3 = Math.hypot(pos[a * 3] - pos[b * 3], pos[a * 3 + 1] - pos[b * 3 + 1], pos[a * 3 + 2] - pos[b * 3 + 2]);
+            const ka = (N_side * (pan.nu + 1) + i) * 2, kb = ((N_side + 1) * (pan.nu + 1) + i) * 2;
+            const d2 = Math.hypot(pan.uv[ka] - pan.uv[kb], pan.uv[ka + 1] - pan.uv[kb + 1]);
+            const r = d3 / Math.max(1e-12, d2);
+            rs.push(r); d3s.push(d3 * 1000);
+            if (r > mx) { mx = r; mxAt = `${pan.name}(i${i})`; mx3 = d3 * 1000; mx2 = d2 * 1000; }
+          }
+        const sr = [...rs].sort((x, y) => x - y), sd = [...d3s].sort((x, y) => x - y);
+        return { n: rs.length, '최소 배율': sr[0], '중앙 배율': sr[sr.length >> 1], '최대 배율': mx,
+                 '최대 자리': mxAt, '최대 자리 3D mm': mx3, '최대 자리 2D mm': mx2,
+                 '3D mm 중앙': sd[sd.length >> 1], '3D mm 최대': sd[sd.length - 1] };
+      })(),
+      /* ★ v5-21 — `n̂` 소실로 전역 `−y` 로 떨어뜨린 열 수(§0-3ㄱ · OUT 이 아니면 0). */
+      '펼침 떨어뜨린 열': outFall,
       /* ★ v5-19 §1-① — 관통 분포 · 밴드 자(전부 인쇄 전용). */
       'S4 없음': S4NONE,
       '밴드 mm': BAND * 1000, 'h mm': hh * 1000, 'THICK mm': cfg.THICK * 1000, 'SEP mm': SEP * 1000,
