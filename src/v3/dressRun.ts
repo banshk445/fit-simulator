@@ -52,6 +52,8 @@ export type RunInput = {
   garment?: { L: number; W: number; SW: number; SLEN: number; ARM_G: number };
   /** ★ v5-12 — 조립 2세대 플래그(기본 `undefined` = 현행 · `createScene` 으로 그대로 넘긴다). */
   asm2?: boolean;
+  /** ★ v5-22 — 1세대 배치 + 앵커 정정 + `SH_DROP`(그대로 넘긴다 · 기본 off). */
+  asm1x?: boolean;
   /** ★ v5-15 — S4 처방 하위 플래그(진단 · 그대로 넘긴다). */
   asm2Fix?: 'A' | 'B' | 'AB' | 'ABI' | 'BLEND' | 'ARM' | 'RC' | 'ARMRC' | 'NOS4' | 'OUT';
   fabric: Fabric;
@@ -114,6 +116,7 @@ export function prepare(inp: RunInput) {
     TOL_SELF, D_FIXED: d, minPairDistLite: inp.minPairDistLite,
     ...(inp.asm2 ? { asm2: true } : {}),      // v5-12 — 없으면 키를 안 넣는다 ⟹ off 경로 불변
     ...(inp.asm2Fix ? { asm2Fix: inp.asm2Fix } : {}),   // v5-15 — 같은 규약
+    ...(inp.asm1x ? { asm1x: true } : {}),             // v5-22 — 같은 규약
   });
   const sc = S.assemble(d);
   const st = S.substepsOf(sc);

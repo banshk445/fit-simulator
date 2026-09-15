@@ -78,6 +78,11 @@ export type SceneConfig = {
    * 한 줄도 다르지 않다(off 비트 불변이 회차 조건이다 · v5-12 §0-4ㄱ).
    * 설계 정본 = `docs/v5/설계-조립2세대.md`(v5-11) · 검수 결정 = `docs/v5/12-2세대구현.md` §0-1. */
   asm2?: boolean;
+  /** ★ v5-22 — **`asm1x`**: 1세대 배치(`place()` 그대로 · `redrapeAsm2` **0**)에
+   * **앵커 정정**(`Y_ANCHOR = Y_NECK`)과 **어깨 경사**(`SH_DROP = ASM2_SH_DROP`)만 얹는다.
+   * 2세대(`asm2`)가 종결된 뒤 «성립한 둘»만 승격하는 후보다(전략 세션 v5-21 §4 판정문).
+   * 주지 않으면 **한 줄도 다르지 않다**(off 비트 불변 · A29·T108 로 확인). */
+  asm1x?: boolean;
   /** ★ v5-15 — **S4 붕괴 처방 «하위 플래그»**(진단 전용 · 기본 `undefined` = v5-14 거동).
    * `'A'` = S4 걸음 상한(`THICK`) + 봉제선→아래 **행 순서** 훑기 · `'B'` = **표면 추종 S3**.
    * `asm2` 가 꺼져 있으면 이 값은 읽히지 않는다(정본 off 비트 불변). */
@@ -102,6 +107,7 @@ export function createScene(cfg: SceneConfig) {
   const { bodyIdx, bodyG, sdfSpec, L, W, SW, SLEN, ARM_G, DT, SEP, KMEM, MAT, TOL_SELF, D_FIXED, minPairDistLite } = cfg;
   const prim0 = cfg.body;
   const ASM2 = cfg.asm2 === true;
+  const ASM1X = cfg.asm1x === true;   // ★ v5-22 — 제도 두 자리만(배치는 1세대)
   /* v5-15 신설 · ★ v5-16 — **(A) 를 기본값으로 올린다**(전략 세션 v5-15 §4 「(A) 걸음 상한 THICK 채택」) ·
    * `'B'`(표면 추종)는 **보류**로 코드에 남긴다(삭제 0 · 열 간격 항이 생기면 다시 시험한다). */
   /* ★ v5-18 — **`'BLEND'` 를 기본값으로 승격**(전략 세션 v5-17 §4 「BLEND 채택(값 = 설계 의도)」). */
@@ -128,7 +134,7 @@ export function createScene(cfg: SceneConfig) {
   const S3BLEND = BLENDFAM;                         // v5-12 — 플래그(기본 false ⟹ 아래 분기 전부 죽는다)
   const S3ARM = FIX === 'ARM' || FIX === 'ARMRC';   // ㉮
   const S3RC = FIX === 'RC' || FIX === 'ARMRC';     // ㉯
-  const SH_DROP = ASM2 ? ASM2_SH_DROP : 0;         // off 면 0 ⟹ 제도식이 «수평 직선» 그대로다
+  const SH_DROP = (ASM2 || ASM1X) ? ASM2_SH_DROP : 0;         // off 면 0 ⟹ 제도식이 «수평 직선» 그대로다
   const V2DIMS = cfg.dimsOverride !== undefined;
   const V2REF = cfg.dimsOverride ?? { neckHalfWidthCm: 0, necklineGirthCm: 0, capHeightCm: 0 };
 
@@ -287,7 +293,7 @@ export function createScene(cfg: SceneConfig) {
    * (전략 세션 v5-11 검수 = **버그**). 2세대는 `Y_NECK`(목 밑동)에 매단다.
    * ★ off 면 `Y_TOP` 그대로다 ⟹ 아래 «옷 높이대» 자리 전부가 바이트 불변이다.
    * ★ 「몸 어깨끝」을 뜻하는 자리(`shoulderTopY` 정의 · `neckBaseY` 탐색 구간)는 **`Y_TOP` 을 그대로** 쓴다. */
-  const Y_ANCHOR = ASM2 ? Y_NECK : Y_TOP;
+  const Y_ANCHOR = (ASM2 || ASM1X) ? Y_NECK : Y_TOP;
   const NECK_RING = ringOf(planeSection(0, 1, Y_NECK), SEP);
   /** 목선 반폭 [m] — 목 밑동 링의 x 반폭 */
   const NECK_A = V2DIMS ? V2REF.neckHalfWidthCm / 100 : NECK_RING.vmax;
@@ -1073,6 +1079,10 @@ export function createScene(cfg: SceneConfig) {
           }
     }
     /* ★ v5-21 — **바깥 펼침**(2세대 마지막 후보 · §0-3 형식화 그대로 · 새 상수 0 · 밀어냄 0).
+     * ★★ **폐기(v5-22 §0-4ㄷ · 전략 세션 v5-21 §4 판정)** — 세 칸 모두 자기검사가 던졌다
+     *   (교차 9241 / 5495 / 2224 · 밴드 밖 관통 762 / 932 / 1066 · 기준선 `NOS4` 의 16~21배).
+     *   원인은 **꼭대기 행이 밴드 밖이라 몸 법선이 없다**(`D_MM` 9 mm > `sdfSpec.band` 8.2291 mm).
+     *   **코드는 이력으로 남긴다**(지우지 않는다) — 이 분기는 `asm2Fix = 'OUT'` 일 때만 돌고 기본이 아니다.
      * 봉제선(행 `nvB` — S1/S2 가 능선·목선 링에 놓은 자리)에서 아래 행들을 «몸 바깥 + 아래»로 «직선»으로 건다:
      *   방향 `d̂ = normalize(n̂ + (−ŷ))` — **단위 벡터 둘의 합**(이등분)이라 각도가 손 상수가 아니다.
      *   위치 = 꼭대기 + `d̂` × (2D 패턴 열 엣지 길이 «누적») ⟹ 면내 변형 0 · 열마다 직선.

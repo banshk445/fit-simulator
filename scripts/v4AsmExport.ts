@@ -28,6 +28,7 @@ const c = cells().find((x) => x.id === CELL)!;
 /* ★ v5-2 §1-② — **실측표 진입**(선택 인자 · 기본값 그대로 ⟹ 기존 호출은 바이트 불변).
  * `SPEC=<이름>` 이 있으면 옷 치수를 **등재된 실측표**에서 만든다(`src/v5/specToPattern.ts`).
  * 없으면 종전대로 `garmentOf(c.size)` 다(v4-24 의 `BODY_BIN` 처분과 같은 형태). */
+const ASM1X = process.env.ASM1X === '1';   // ★ v5-22 — 1세대 배치 + 앵커 정정 + SH_DROP
 const SPEC = process.env.SPEC;
 const BODY_BIN = process.env.BODY_BIN ?? `public/v3diag/v3-77/body-${c.bodyId}.bin`;
 
@@ -42,7 +43,8 @@ const OKFIX = ['A', 'B', 'AB', 'ABI', 'BLEND'] as const;
 const ASM2FIX = (OKFIX as readonly string[]).includes(process.env.ASM2FIX ?? '') ? (process.env.ASM2FIX as typeof OKFIX[number]) : undefined;
 const P = prepare({ glb, fabric: FABRICS.gray, d: D, garment: SPEC ? patternOfSpecName(SPEC) : garmentOf(c.size as Size), armAxis: armAxisFromEnv(),
                     bodyVerts: verts, minPairDistLite,
-                    ...(ASM2 ? { asm2: true } : {}), ...(ASM2FIX ? { asm2Fix: ASM2FIX } : {}) });
+                    ...(ASM2 ? { asm2: true } : {}), ...(ASM2FIX ? { asm2Fix: ASM2FIX } : {}),
+                    ...(ASM1X ? { asm1x: true } : {}) });   // ★ v5-22
 
 /* ★ v4-26 §1-② **유한성 검사**(전략 세션 v4-25 §4 승인 · 함정 후보 「배치 산출의 조용한 NaN 통과」).
  * v4-25 는 소매 1,020 정점이 NaN 인 조립 blob 을 **아무 말 없이** 내보냈다 — 굽기까지 가서야 드러난다.
@@ -167,7 +169,8 @@ const vel = new Float64Array(sc.n * 3);
 const SCENEARGS = { body: BODY_BIN,
   ...(process.env.ARM_AXIS_JSON ? { armAxisJson: process.env.ARM_AXIS_JSON } : {}),
   ...(process.env.ARM_ORIGIN_JSON ? { armOriginJson: process.env.ARM_ORIGIN_JSON } : {}),
-  ...(SPEC ? { spec: SPEC } : {}), ...(ASM2 ? { asm2: true, asm2Fix: ASM2FIX ?? 'A' } : {}) };
+  ...(SPEC ? { spec: SPEC } : {}), ...(ASM2 ? { asm2: true, asm2Fix: ASM2FIX ?? 'A' } : {}),
+  ...(ASM1X ? { asm1x: true } : {}) };
 writeFileSync(`${OUT}/asm-${TAG}.bin`, pack({ what: 'v4-20 조립 «직후» 상태(속도 0)', cell: TAG,
   n: sc.n, frame: 0, d: D, ...SCENEARGS, substeps: P.SUB },
   Buffer.from(pos.buffer), Buffer.from(vel.buffer)));

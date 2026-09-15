@@ -36,8 +36,11 @@ const glb = gb.buffer.slice(gb.byteOffset, gb.byteOffset + gb.byteLength) as Arr
 const bbPath = process.env.BODY_BIN ?? `public/v3diag/v3-77/body-${c.bodyId}.bin`;
 const bb = readFileSync(bbPath);
 const verts = new Float32Array(bb.buffer.slice(bb.byteOffset, bb.byteOffset + bb.byteLength));
+/* ★ v5-22 — `ASM1X=1` 이면 «1세대 배치 + 앵커 정정 + SH_DROP» 패턴으로 장면을 세운다
+ * (굽기와 «같은 패턴»이어야 위치를 갈아 끼울 수 있다 · 없으면 종전과 바이트 불변). */
+const ASM1X = process.env.ASM1X === '1';
 const P = prepare({ glb, fabric: FABRICS.gray, d: D, garment: SPEC ? patternOfSpecName(SPEC) : garmentOf(c.size as Size), armAxis: armAxisFromEnv(),
-                    bodyVerts: verts, minPairDistLite });
+                    bodyVerts: verts, minPairDistLite, ...(ASM1X ? { asm1x: true } : {}) });
 const sc = P.sc, n = sc.n;
 let pos: Float64Array;
 if (process.env.POS) {
