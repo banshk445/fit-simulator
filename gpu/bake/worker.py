@@ -194,8 +194,16 @@ def bake(cell, asm=None, frames_in=None, cap=None, ramp=False, ramp_order=False)
     meta = {"cell": cell, "inputMode": "assembled" if asm is not None else "settled",
             # v5-9 §0 사무 ㄱ — **조립이 헤더에 적어 둔 장면 인자**를 meta 에 싣는다(v5-8 사고 5 의 부류 처분).
             #   없는 키는 넣지 않는다 ⟹ 옛 조립 산출은 종전대로 부모 환경을 쓴다.
-            "scene": {k: BH[j] for k, j in (("BODY_BIN", "body"), ("ARM_AXIS_JSON", "armAxisJson"),
-                                            ("ARM_ORIGIN_JSON", "armOriginJson")) if BH.get(j)},
+            # ★ v5-22 — **사상 표에 «조립 플래그»도 넣는다**(v5-8 사고 5 / CC 귀책 C1 의 «부류» 재발).
+            #   v5-9 가 몸·팔축·원점을 넘기게 고쳤지만 표가 **화이트리스트**라, 뒤에 생긴 플래그
+            #   (`asm2`·`asm2Fix`·`asm1x`)는 헤더에 «적혀 있어도» 층3 로 가지 않았다 ⟹ 계기가 off 장면을
+            #   세우고 「위치 파일 길이가 다르다」로 던진다(v5-22 실측: n 10,150 ↔ 10,356).
+            #   계기는 `process.env.ASM1X === '1'` 를 보므로 **값은 문자열 '1'** 이다.
+            "scene": {**{k: BH[j] for k, j in (("BODY_BIN", "body"), ("ARM_AXIS_JSON", "armAxisJson"),
+                                              ("ARM_ORIGIN_JSON", "armOriginJson")) if BH.get(j)},
+                      **({"ASM1X": "1"} if BH.get("asm1x") else {}),
+                      **({"ASM2": "1"} if BH.get("asm2") else {}),
+                      **({"ASM2FIX": str(BH["asm2Fix"])} if BH.get("asm2Fix") else {})},
             "asm": asm, "cellCap": cap, "ramp": ramp_meta, "fp": FPN, "arch": arch, "n": n, "substeps": SUB, "frames": frame,
             "headerFrames": BH["frame"], "tol": TOL, "converged": conv, "convFrame": cf,
             "convNet": cn, "lastNet": last, "degenerate": deg, "trail": trail,
@@ -206,6 +214,21 @@ def bake(cell, asm=None, frames_in=None, cap=None, ramp=False, ramp_order=False)
                      "해소_서브스텝당": fu.sc_stat["applied"] / max(fu.sc_stat["calls"], 1)}}
     json.dump(meta, open(OUT / f"{cell}.json", "w", encoding="utf-8"), indent=1, ensure_ascii=False)
     return meta
+
+
+# ★ v5-22 — **조용한 실패 0**: 조립 산출이 적는 «장면 키» 집합을 여기 고정한다.
+#   `v4AsmExport.ts` 의 `SCENEARGS` 가 새 키를 적으면 이 집합과 위 사상 표에도 적어야 한다.
+#   적지 않으면 층3 가 다른 장면을 세우고 조용히 어긋난다(v5-8 사고 5 · v5-22 가 같은 부류로 재발).
+SCENE_KEYS = {"body", "armAxisJson", "armOriginJson", "spec", "asm2", "asm2Fix", "asm1x"}
+
+
+def check_scene_keys(BH):
+    """조립 헤더의 장면 키가 전부 «아는» 키인지 본다 — 모르는 키가 있으면 던진다."""
+    unknown = {k for k in BH if k in ("asm1x", "asm2", "asm2Fix", "spec", "armAxisJson",
+                                      "armOriginJson", "body")} - SCENE_KEYS
+    if unknown:
+        raise RuntimeError(f"조립 헤더에 «모르는» 장면 키가 있다 — {sorted(unknown)} · "
+                           f"worker.py 의 사상 표와 SCENE_KEYS 에 등재하라")
 
 
 def layer3(cell, meta, report_cell=None, spec=None):
