@@ -47,11 +47,24 @@ import type { Prepared } from './dressRun.ts';
 export const S4_THRESHOLD = {
   penMaxM: 5e-4,        // ③a 절대 관통 ≤ 0.5mm (v3-29 「두께의 절반」 도출분)
   crossings: 0,         // 자기관통 삼각형 교차 0
-  /** v3-40 §1 — 목선 «초과비» R = C_ring / C_allow ≤ **1**.
-   * C_allow = C_body + 2π(THICK + TOL_SELF) · C_body = 링을 몸에 정사영한 닫힌 둘레.
-   * **1 은 고른 수가 아니라 «정의»다** — 어림수 1.10(v3-24)을 교체했다.
-   * 구 채널(휴지 대비 비율)은 삭제하지 않고 `ringRestRatio` 로 **병기**한다(판정 아님). */
+  /** ★★★ v5-24 — **판정에서 «내렸다»**(삭제 0 · 보고 값으로 병기 · 전략 세션 v5-23 §4 판정문).
+   * 사유(값) — ㉠ 코드의 허용값은 v3-40 문언(「링 높이 몸 둘레」)이 아니라 **링 정점의 `nearestBodyPoint` 를
+   *   이은 «닫힌 사영 다각형»** 이다(`:124`) ⟹ 옷깃이 몸에서 뜨면 그 다각형이 좁은 자리로 모여 **허용이 붕괴**한다 ·
+   * ㉡ 링을 **`y ± 5 mm`** 강체 이동하면 **판정이 뒤집힌다**(v5-23 §1-①ㄷ — `on` 두 판본 다 −5 mm 에서 통과:
+   *   1.002145 → 0.999151 · 1.021083 → 0.991968) ⟹ **「경계를 넘느냐」가 계가 답할 수 있는 질문이 아니다**
+   *   (v4-15 가 표시 mm 에서 같은 형태로 채널을 내린 그 원리) ·
+   * ㉢ **덜 늘어난 쪽이 떨어진다** — `on` 휴지비 1.0377/1.0428 ↔ `off` 1.0830 인데 `on` 만 실패했다 ·
+   * ㉣ 옛 자는 **«옷깃이 흘러내려 넓은 자리에 앉는» 옛 체제**에서 판별력이 있었다.
+   * ⟹ **측정 대상 정정**(v4-37 · v5-16 계열)이고 **결과에 맞춘 문턱 이동이 아니다**(함정 14 아님 —
+   *   독립 근거 = ㉡ 의 뒤집힘).
+   * ★ 값은 계속 산출·인쇄한다(`ringExcess`·`ringM`·`ringBodyM`·`ringAllowM`). */
   ringExcess: 1,
+  /** ★ v5-24 — **목선 판정 채널 = 휴지 대비 신장률 `R_rest = (앞+뒤 목선 폴리라인) / ringRest` ≤ 1.10**.
+   * **새 수 0 · 새 식 0** — 자는 이 파일이 이미 매 판 계산해 `S4Result.ringRestRatio` 로 내놓던 값이고,
+   * 문턱 **1.10** 은 위 `ringExcess` 주석이 인용한 **v3-24 어림수** 그대로다(v3-40 이 교체했으나
+   * 「삭제하지 않고 병기」로 남겨 둔 것을 **판정으로 되돌린다**).
+   * `ringRest = 2 · LEN_NECK`(`dressRun.ts:161`) = 패턴 목선 길이의 두 배(앞·뒤). */
+  ringRestMax: 1.1,
   settleNetM: TOL_SELF, // 창 순변위 ≤ 0.1mm (v3-22 형상 불변 채널)
   pinned: 0,            // 보조 장치 0
 } as const;
@@ -62,8 +75,10 @@ export type S4Result = {
   crossings: number; minPairM: number;
   seamMedM: number; seamMaxM: number;
   lambdaMax: number;
-  /** v3-40 판정 채널 */ ringExcess: number; ringM: number; ringBodyM: number; ringAllowM: number;
-  /** 구 채널 · 참고(판정 아님 · 옛 문턱 1.10) */ ringRestRatio: number;
+  /** v3-40 판정 채널 → ★ v5-24 **보고 값**(판정에서 내림 · 삭제 0) */
+  ringExcess: number; ringM: number; ringBodyM: number; ringAllowM: number;
+  /** ★ v5-24 — **판정 채널**(휴지 대비 신장률 · 문턱 `ringRestMax` 1.10). v3-40~v5-23 은 참고였다. */
+  ringRestRatio: number;
   settleNetM: number; settled: boolean;
   pinned: number; diverged: boolean;
   fails: string[];
@@ -141,8 +156,11 @@ export function runS4Gate(P: Prepared, before?: Float64Array): S4Result {
 
   if (!(bc.maxPen <= S4_THRESHOLD.penMaxM)) fails.push(`③a 관통 ${(bc.maxPen * 1000).toFixed(4)}mm > 0.5mm`);
   if (mp.hits !== S4_THRESHOLD.crossings) fails.push(`자기관통 교차 ${mp.hits} ≠ 0`);
-  if (!(ringExcess <= S4_THRESHOLD.ringExcess))
-    fails.push(`목선 초과비 ${ringExcess.toFixed(4)} > 1 (링 ${(ringM * 100).toFixed(2)}cm > 허용 ${(ringAllowM * 100).toFixed(2)}cm)`);
+  /* ★ v5-24 — 목선 판정은 «휴지 대비 신장률»이 한다. 옛 초과비는 위에서 판정에서 내렸고 값만 병기한다. */
+  if (!(ringRestRatio <= S4_THRESHOLD.ringRestMax))
+    fails.push(`목선 휴지비 ${ringRestRatio.toFixed(4)} > ${S4_THRESHOLD.ringRestMax} `
+      + `(링 ${(ringM * 100).toFixed(2)}cm / 휴지 ${(P.ringRest * 100).toFixed(2)}cm`
+      + ` · 옛 초과비 ${ringExcess.toFixed(4)})`);
   if (pinned !== S4_THRESHOLD.pinned) fails.push(`보조 장치(invMass=0) ${pinned} ≠ 0`);
   if (before && !settled) fails.push(`정착 창 순변위 ${(settleNetM * 1000).toFixed(4)}mm > 0.1mm`);
   if (diverged) fails.push('발산');
