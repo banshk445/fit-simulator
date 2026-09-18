@@ -64,6 +64,7 @@ export const S4_THRESHOLD = {
    * 문턱 **1.10** 은 위 `ringExcess` 주석이 인용한 **v3-24 어림수** 그대로다(v3-40 이 교체했으나
    * 「삭제하지 않고 병기」로 남겨 둔 것을 **판정으로 되돌린다**).
    * `ringRest = 2 · LEN_NECK`(`dressRun.ts:161`) = 패턴 목선 길이의 두 배(앞·뒤). */
+  /** ★ v5-25 — **판정에서 내림**(보고 값 병기 · 삭제 0). 위 `ringExcess` 와 같은 처분이다. */
   ringRestMax: 1.1,
   settleNetM: TOL_SELF, // 창 순변위 ≤ 0.1mm (v3-22 형상 불변 채널)
   pinned: 0,            // 보조 장치 0
@@ -77,7 +78,7 @@ export type S4Result = {
   lambdaMax: number;
   /** v3-40 판정 채널 → ★ v5-24 **보고 값**(판정에서 내림 · 삭제 0) */
   ringExcess: number; ringM: number; ringBodyM: number; ringAllowM: number;
-  /** ★ v5-24 — **판정 채널**(휴지 대비 신장률 · 문턱 `ringRestMax` 1.10). v3-40~v5-23 은 참고였다. */
+  /** ★ v5-25 — **보고 값**(판정 제외). v5-24 한 판만 판정 채널이었다. */
   ringRestRatio: number;
   settleNetM: number; settled: boolean;
   pinned: number; diverged: boolean;
@@ -156,11 +157,20 @@ export function runS4Gate(P: Prepared, before?: Float64Array): S4Result {
 
   if (!(bc.maxPen <= S4_THRESHOLD.penMaxM)) fails.push(`③a 관통 ${(bc.maxPen * 1000).toFixed(4)}mm > 0.5mm`);
   if (mp.hits !== S4_THRESHOLD.crossings) fails.push(`자기관통 교차 ${mp.hits} ≠ 0`);
-  /* ★ v5-24 — 목선 판정은 «휴지 대비 신장률»이 한다. 옛 초과비는 위에서 판정에서 내렸고 값만 병기한다. */
-  if (!(ringRestRatio <= S4_THRESHOLD.ringRestMax))
-    fails.push(`목선 휴지비 ${ringRestRatio.toFixed(4)} > ${S4_THRESHOLD.ringRestMax} `
-      + `(링 ${(ringM * 100).toFixed(2)}cm / 휴지 ${(P.ringRest * 100).toFixed(2)}cm`
-      + ` · 옛 초과비 ${ringExcess.toFixed(4)})`);
+  /* ★★★ v5-25 — **목선 채널을 게이트 «판정»에서 내렸다**(전략 세션 v5-24 중간 판정문).
+   * 두 형태 모두 «옷 결함»을 재지 못한다는 것이 값으로 나왔다:
+   *   ㉠ 몸 기준(`ringExcess`) — 링을 `y ± 5 mm` 강체 이동하면 **판정이 뒤집힌다**
+   *     (`on supima-L` 1.002145 → 0.999151 · `on 기본 M` 1.021083 → 0.991968 · v5-23 §1-①ㄷ) ⟹
+   *     「경계를 넘느냐」가 **계가 답할 수 있는 질문이 아니다**(v4-15 가 표시 mm 에서 내린 그 원리).
+   *   ㉡ 휴지 기준(`ringRestRatio`) — 문턱 1.10 은 v3-40 이 「어림수」로 **기각**한 수다(위 주석 원문) ⟹
+   *     근거 없는 수로 판정할 수 없다(전략 세션 귀책 21건째).
+   *   ㉢ 옛 자는 정본 **37칸에서 0건**을 걸렀다(초과비 최대 0.998283 · v5-24 §1-②) = 판별력 0.
+   * ⟹ **판정 채널은 넷이다** — ③a 관통 · 자기관통 교차 · 정착 창 순변위 · pinned.
+   *   목선 결함 포착은 **③a·층3 눌림·어깨 걸림**이 분담한다(판정문).
+   * ★ 두 비율과 딸린 값은 **계속 산출·인쇄**한다(보고 값 병기 · 삭제 0) ·
+   *   문턱 `ringExcess`·`ringRestMax` 도 **지우지 않았다**(되돌림 = 아래 한 줄을 되쓰는 것).
+   * ★ 백로그 — 「목선 과신장 채널은 **천 신장 한계 상수**가 생길 때 재정의한다」. */
+  // if (!(ringRestRatio <= S4_THRESHOLD.ringRestMax)) fails.push(`목선 휴지비 …`);   ← v5-25 판정 제외
   if (pinned !== S4_THRESHOLD.pinned) fails.push(`보조 장치(invMass=0) ${pinned} ≠ 0`);
   if (before && !settled) fails.push(`정착 창 순변위 ${(settleNetM * 1000).toFixed(4)}mm > 0.1mm`);
   if (diverged) fails.push('발산');

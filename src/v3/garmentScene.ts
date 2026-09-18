@@ -82,7 +82,7 @@ export type SceneConfig = {
    * **앵커 정정**(`Y_ANCHOR = Y_NECK`)과 **어깨 경사**(`SH_DROP = ASM2_SH_DROP`)만 얹는다.
    * 2세대(`asm2`)가 종결된 뒤 «성립한 둘»만 승격하는 후보다(전략 세션 v5-21 §4 판정문).
    * 주지 않으면 **한 줄도 다르지 않다**(off 비트 불변 · A29·T108 로 확인). */
-  asm1x?: boolean;
+  asm1x?: boolean | 'anchor' | 'drop';   // ★ v5-25 — 두 자리를 «따로» 켤 수 있다(진단용 · true = 둘 다)
   /** ★ v5-15 — **S4 붕괴 처방 «하위 플래그»**(진단 전용 · 기본 `undefined` = v5-14 거동).
    * `'A'` = S4 걸음 상한(`THICK`) + 봉제선→아래 **행 순서** 훑기 · `'B'` = **표면 추종 S3**.
    * `asm2` 가 꺼져 있으면 이 값은 읽히지 않는다(정본 off 비트 불변). */
@@ -108,6 +108,9 @@ export function createScene(cfg: SceneConfig) {
   const prim0 = cfg.body;
   const ASM2 = cfg.asm2 === true;
   const ASM1X = cfg.asm1x === true;   // ★ v5-22 — 제도 두 자리만(배치는 1세대)
+  /* ★ v5-25 §1-② — **앵커와 어깨 경사를 따로 켠다**(원인 가름 · `true` 면 둘 다 = v5-22~24 와 항등). */
+  const A1X = ASM1X || cfg.asm1x === 'anchor';   // 앵커 정정만
+  const D1X = ASM1X || cfg.asm1x === 'drop';     // 어깨 경사만
   /* v5-15 신설 · ★ v5-16 — **(A) 를 기본값으로 올린다**(전략 세션 v5-15 §4 「(A) 걸음 상한 THICK 채택」) ·
    * `'B'`(표면 추종)는 **보류**로 코드에 남긴다(삭제 0 · 열 간격 항이 생기면 다시 시험한다). */
   /* ★ v5-18 — **`'BLEND'` 를 기본값으로 승격**(전략 세션 v5-17 §4 「BLEND 채택(값 = 설계 의도)」). */
@@ -134,7 +137,7 @@ export function createScene(cfg: SceneConfig) {
   const S3BLEND = BLENDFAM;                         // v5-12 — 플래그(기본 false ⟹ 아래 분기 전부 죽는다)
   const S3ARM = FIX === 'ARM' || FIX === 'ARMRC';   // ㉮
   const S3RC = FIX === 'RC' || FIX === 'ARMRC';     // ㉯
-  const SH_DROP = (ASM2 || ASM1X) ? ASM2_SH_DROP : 0;         // off 면 0 ⟹ 제도식이 «수평 직선» 그대로다
+  const SH_DROP = (ASM2 || D1X) ? ASM2_SH_DROP : 0;         // off 면 0 ⟹ 제도식이 «수평 직선» 그대로다
   const V2DIMS = cfg.dimsOverride !== undefined;
   const V2REF = cfg.dimsOverride ?? { neckHalfWidthCm: 0, necklineGirthCm: 0, capHeightCm: 0 };
 
@@ -293,7 +296,7 @@ export function createScene(cfg: SceneConfig) {
    * (전략 세션 v5-11 검수 = **버그**). 2세대는 `Y_NECK`(목 밑동)에 매단다.
    * ★ off 면 `Y_TOP` 그대로다 ⟹ 아래 «옷 높이대» 자리 전부가 바이트 불변이다.
    * ★ 「몸 어깨끝」을 뜻하는 자리(`shoulderTopY` 정의 · `neckBaseY` 탐색 구간)는 **`Y_TOP` 을 그대로** 쓴다. */
-  const Y_ANCHOR = (ASM2 || ASM1X) ? Y_NECK : Y_TOP;
+  const Y_ANCHOR = (ASM2 || A1X) ? Y_NECK : Y_TOP;
   const NECK_RING = ringOf(planeSection(0, 1, Y_NECK), SEP);
   /** 목선 반폭 [m] — 목 밑동 링의 x 반폭 */
   const NECK_A = V2DIMS ? V2REF.neckHalfWidthCm / 100 : NECK_RING.vmax;
