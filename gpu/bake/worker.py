@@ -32,6 +32,8 @@ sys.path.insert(0, str(ROOT))
 from oracle import load  # noqa: E402
 from engine import full_sc as FS, collide as CO, seam as SE  # noqa: E402
 
+# ★ v5-26 — 중간 프레임 덤프 주기(프레임). 없으면 0 ⟹ 덤프 0 · 기존 경로 불변.
+DUMP_EVERY = int(os.environ.get("DUMP_EVERY", "0") or 0)
 CHILD = "--child" in sys.argv
 CHILD_CELL = sys.argv[sys.argv.index("--child") + 1] if CHILD else None
 JOB = json.load(open(sys.argv[1], encoding="utf-8"))
@@ -183,6 +185,10 @@ def bake(cell, asm=None, frames_in=None, cap=None, ramp=False, ramp_order=False)
         net = float(np.linalg.norm(p - ref, axis=1).max())
         last = net
         trail.append((frame, net))
+        # ★ v5-26 §1-① — **중간 프레임 위치 덤프**(`DUMP_EVERY` 가 있을 때만 · 없으면 기존 경로 바이트 불변).
+        #   `trail` 은 (프레임, 순변위)뿐이라 「교차가 «언제» 생기는지」를 못 잰다 ⟹ 위치를 남긴다.
+        if DUMP_EVERY and frame % DUMP_EVERY == 0:
+            p.tofile(str(OUT / f"{cell}-f{frame:04d}.bin"))
         ref = p
         if not conv and net <= TOL:
             conv, cf, cn = True, frame, net
