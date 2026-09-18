@@ -21,8 +21,11 @@ import { armAxisFromEnv } from './armAxisEnv.ts';
 
 const SPEC = process.env.SPEC;
 const CELL = process.env.CELL ?? 'c87.5-h155-s40_S';
-const ASM1X = process.env.ASM1X === '1';
-const TAG = process.env.TAG ?? `${ASM1X ? 'on' : 'off'}-${SPEC ?? CELL}`;
+/** ★ v5-25 — `ASM1X` 를 `1|anchor|drop` 으로 받는다(`1` = 둘 다 · v5-22~24 와 항등). */
+const A1 = process.env.ASM1X;
+const ASM1X: boolean | 'anchor' | 'drop' | undefined =
+  A1 === '1' ? true : A1 === 'anchor' ? 'anchor' : A1 === 'drop' ? 'drop' : undefined;
+const TAG = process.env.TAG ?? `${A1 ?? 'off'}-${SPEC ?? CELL}`;
 const D = Number(process.env.D_MM ?? 9) / 1000;
 const c = cells().find((x) => x.id === CELL)!;
 const GD = SPEC ? patternOfSpecName(SPEC) : garmentOf(c.size as Size);
@@ -35,7 +38,7 @@ let thrown: string | null = null;
 let P: ReturnType<typeof prepare> | null = null;
 try {
   P = prepare({ glb, fabric: FABRICS.gray, d: D, garment: GD, bodyVerts: verts,
-    minPairDistLite, armAxis: armAxisFromEnv(), ...(ASM1X ? { asm1x: true } : {}) } as never);
+    minPairDistLite, armAxis: armAxisFromEnv(), ...(ASM1X ? { asm1x: ASM1X } : {}) } as never);
 } catch (e) { thrown = String((e as Error).message).replace(/\s+/g, ' '); }
 
 const src = P
@@ -70,9 +73,23 @@ else {
   const triInfo = (t: number) => {
     if (t < 0) return null;
     const vs = [0, 1, 2].map((k) => tris[t * 3 + k]);
-    return { 삼각형: t, 정점: vs.map((v) => ({ v, ...locOf(v),
-      'y mm': pos[v * 3 + 1] * 1000, 'x mm': pos[v * 3] * 1000, 'z mm': pos[v * 3 + 2] * 1000 })) };
+    return { 삼각형: t, 정점: vs.map((v) => { const L = locOf(v); return { v, ...L, ...(ij(L.off) ?? {}),
+      'y mm': pos[v * 3 + 1] * 1000, 'x mm': pos[v * 3] * 1000, 'z mm': pos[v * 3 + 2] * 1000 }; }) };
   };
+  /** ★ v5-25 — **격자 해독**: 몸판 정점 수 = (nuB+1)(nvB+1) 의 «두 인수»를 30~140 대역에서 찾는다.
+   * 둘 다 그 대역인 분해가 하나면 확정이고, 여러 개면 후보를 전부 적는다(추측 0). */
+  const body = dims.find((d) => d.name === 'back') ?? dims[0];
+  const pairs: [number, number][] = [];
+  for (let a = 30; a <= 140; a++) if (body.size % a === 0) {
+    const b = body.size / a; if (b >= 30 && b <= 140) pairs.push([a - 1, b - 1]);
+  }
+  const grid = pairs.length === 1 ? { nuB: pairs[0][0], nvB: pairs[0][1] } : null;
+  const ij = (off: number) => grid ? { i: off % (grid.nuB + 1), j: Math.floor(off / (grid.nuB + 1)) } : null;
+  /** 제도 분할 — 던지지 않은 판본에서는 장면이 직접 준다. */
+  const scAny = P ? (P.sc as unknown as Record<string, number>) : null;
+  out['제도 분할'] = scAny ? { N_sh: scAny.N_sh, N_nk: scAny.N_nk, N_side: scAny.N_side,
+    N_arm: scAny.N_arm, nuB: scAny.nuB, nvB: scAny.nvB } : '던져서 못 읽음(격자 해독으로 대체)';
+  out['격자 해독'] = { '몸판 정점': body.size, '후보 (nuB,nvB)': pairs, 확정: grid };
   out['장면'] = { n, 출처: src.출처, 삼각형: tris.length / 3, 패널: dims };
   out['최소쌍'] = { 'min mm': w.min * 1000, hits: w.hits,
     'worst 삼각형쌍': w.worst, A: triInfo(w.worst[0]), B: triInfo(w.worst[1]) };
