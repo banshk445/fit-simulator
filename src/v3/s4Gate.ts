@@ -74,6 +74,8 @@ export type S4Result = {
   pass: boolean;
   penMaxM: number; penCnt: number; penWorstVertex: number; penWorstXYZ: [number, number, number];
   crossings: number; minPairM: number;
+  /** ★ v5-27 — **보고 값**(판정 미사용) · `d < SEP − TOL_SELF` 인 비인접 쌍 수 */
+  violPairs: number;
   seamMedM: number; seamMaxM: number;
   lambdaMax: number;
   /** v3-40 판정 채널 → ★ v5-24 **보고 값**(판정에서 내림 · 삭제 0) */
@@ -156,7 +158,22 @@ export function runS4Gate(P: Prepared, before?: Float64Array): S4Result {
   const diverged = !Number.isFinite(pos[0]);
 
   if (!(bc.maxPen <= S4_THRESHOLD.penMaxM)) fails.push(`③a 관통 ${(bc.maxPen * 1000).toFixed(4)}mm > 0.5mm`);
-  if (mp.hits !== S4_THRESHOLD.crossings) fails.push(`자기관통 교차 ${mp.hits} ≠ 0`);
+  /* ★★★ v5-27 — **자기관통 채널에 «거리» 조건을 붙였다**(전략 세션 v5-26 §4 판정문 · 새 수 0 · 새 식 0).
+   * 옛 줄 — `if (mp.hits !== S4_THRESHOLD.crossings) fails.push(…)`   ← 되돌림은 이 한 줄을 되쓰는 것이다.
+   * 사유(값) — `mp.hits` 는 **거리와 무관하게** 삼각형 교차를 센다(`instruments.ts:111` · `d` 는
+   *   «정점↔삼각형» 여섯 거리의 최소일 뿐 «엣지↔엣지» 를 재지 않으므로 **교차해도 `d > 0`** 일 수 있다) ⟹
+   *   v5-26 의 `기본 M` 은 **최소 쌍거리 1.9798624570389312 mm 인 채로 교차 1** 이었다.
+   *   자기충돌 해소가 「다 풀었다」고 보는 자리는 `SEP` 가 아니라 **`SEP − TOL_SELF` = 1.9 mm** 이고
+   *   (`TOL_SELF` 는 이 파일이 이미 정착 창 순변위 문턱으로 쓰는 그 수다 · `settleNetM: TOL_SELF`),
+   *   1.97986 은 **그 안**이다 ⟹ **솔버 허용 오차 안의 경계 사건**이지 관통이 아니다.
+   * ⟹ **교차가 있어도 «전역» 최소 쌍거리가 `SEP − TOL_SELF` 밖이면 관통으로 세지 않는다.**
+   *   `mp.min` 은 전역 최소이므로 이 조건은 **교차 쌍을 포함한 어떤 쌍도** 허용 안으로 들어오지 않았다는 뜻이다
+   *   (쌍별 거리를 새로 꺼내지 않는다 · 함정 12).
+   * ★ **완화 방향의 변경이다** — 옛 자에서 pass 였던 칸은 새 자에서도 pass 다(`pass → fail` 불가).
+   * ★ `S4_THRESHOLD.crossings = 0` 은 **지우지 않았다** · `mp.viol`(= `d < SEP − TOL_SELF` 인 쌍 수)은
+   *   **보고 값으로 병기**한다(판정 미사용). */
+  if (mp.hits !== S4_THRESHOLD.crossings && mp.min < SEP - TOL_SELF)
+    fails.push(`자기관통 교차 ${mp.hits} ≠ 0 (최소 쌍거리 ${(mp.min * 1000).toFixed(4)}mm < ${((SEP - TOL_SELF) * 1000).toFixed(1)}mm)`);
   /* ★★★ v5-25 — **목선 채널을 게이트 «판정»에서 내렸다**(전략 세션 v5-24 중간 판정문).
    * 두 형태 모두 «옷 결함»을 재지 못한다는 것이 값으로 나왔다:
    *   ㉠ 몸 기준(`ringExcess`) — 링을 `y ± 5 mm` 강체 이동하면 **판정이 뒤집힌다**
@@ -180,7 +197,7 @@ export function runS4Gate(P: Prepared, before?: Float64Array): S4Result {
     pass: fails.length === 0,
     penMaxM: bc.maxPen, penCnt: bc.penCnt, penWorstVertex: bc.worstPen,
     penWorstXYZ: [pos[wo * 3], pos[wo * 3 + 1], pos[wo * 3 + 2]],
-    crossings: mp.hits, minPairM: mp.min,
+    crossings: mp.hits, minPairM: mp.min, violPairs: mp.viol,
     seamMedM: gaps[Math.floor(gaps.length / 2)], seamMaxM: gaps[gaps.length - 1],
     lambdaMax, ringExcess, ringM, ringBodyM, ringAllowM, ringRestRatio,
     settleNetM, settled, pinned, diverged, fails,
