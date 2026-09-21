@@ -75,6 +75,8 @@ const out = {
   채널: {
     '③a 관통 최대 mm': r.penMaxM * 1000, 관통정점수: r.penCnt,
     '자기관통 교차': r.crossings, '최소 쌍거리 mm': r.minPairM * 1000,
+    /** ★ v5-27 — 보고 값(판정 미사용) · `d < SEP − TOL_SELF` 인 비인접 쌍 수 */
+    '허용 미달 쌍': r.violPairs,
     '목선 초과비': r.ringExcess, '링 cm': r.ringM * 100, '허용 cm': r.ringAllowM * 100,
     '보조 장치(invMass=0)': r.pinned, 발산: r.diverged,
     '봉제 간극 중앙 mm': r.seamMedM * 1000, '봉제 간극 최대 mm': r.seamMaxM * 1000,
