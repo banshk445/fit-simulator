@@ -37,7 +37,15 @@ GRID = EXPORT / "grid27"
 JOBS = ROOT / "gpu" / "bake" / "jobs"
 RESULTS = ROOT / "gpu" / "bake" / "results"
 DEG = 35
-JOB_NAME = "v4-46-A108"
+# ★ v5-27 — **env 세 개로 넓혔다**(기본값은 v4-46 그대로 ⟹ 옛 호출은 바이트 불변).
+#   ASM1X=1   조립을 **1세대 배치 + 앵커 정정 + SH_DROP** 으로 세운다(`v4AsmExport.ts` 의 그 플래그).
+#   JOB_NAME  결과 폴더·job 이름.
+#   TAG_SUF   **몸 태그의 꼬리** — 태그가 `<몸><꼬리>_<사이즈>` 가 되어
+#             `scene-*`·`asm-*`·`sdf-<몸><꼬리>.bin` 이름이 T포즈 정본·v4-46 산출과 **갈린다**.
+#             ★ 이 꼬리가 없으면 위 「사고와 처분」의 덮어쓰기가 그대로 재발한다.
+ASM1X = os.environ.get("ASM1X") == "1"
+JOB_NAME = os.environ.get("JOB_NAME", "v4-46-A108")
+TAG_SUF = os.environ.get("TAG_SUF", "")
 
 args = [a for a in sys.argv[1:] if not a.startswith("--")]
 DRY = "--dry" in sys.argv
@@ -58,6 +66,8 @@ def env_for(body: str) -> dict:
              BODY_BIN=f"gpu/oracle/export/grid27/l3ap-body-{body}-a{DEG}.bin",
              ARM_AXIS_JSON=f"gpu/oracle/export/grid27/l3ap-body-{body}-a{DEG}.json",
              ARM_ORIGIN_JSON=f"gpu/oracle/export/grid27/l3ap-origin-{body}-a{DEG}.json")
+    if ASM1X:
+        e["ASM1X"] = "1"                              # ★ v5-27
     return e
 
 def log(msg: str) -> None:
@@ -68,11 +78,11 @@ def log(msg: str) -> None:
 
 RESULTS.mkdir(parents=True, exist_ok=True)
 todo = [(b, s) for s in SIZES for b in bodies]
-log(f"드라이버 시작 — 사이즈 {SIZES} · 몸 {len(bodies)} · 칸 {len(todo)}")
+log(f"드라이버 시작 — job {JOB_NAME} · 사이즈 {SIZES} · 몸 {len(bodies)} · 칸 {len(todo)} · ASM1X {ASM1X} · 태그꼬리 {TAG_SUF!r}")
 
 for i, (body, size) in enumerate(todo):
     cell = f"{body}_{size}"
-    tag = cell                                        # BODYTAG = body ⟹ SDF 는 몸당 1개
+    tag = f"{body}{TAG_SUF}_{size}"                    # BODYTAG = body+꼬리 ⟹ SDF 는 몸당 1개
     done = RESULTS / JOB_NAME / f"{tag}.done"
     if done.exists():
         log(f"[{i+1}/{len(todo)}] {cell} — .done 있음 · 건너뜀")
