@@ -65,8 +65,15 @@ for g in sorted(NEW.glob("gate-*.json")):
 for t in sorted(NEW.glob("*.throw.json")):
     T = json.load(open(t, encoding="utf-8"))
     msg = " ".join((T.get("err") or "").split())
-    hit = re.search(r"(옷 자기 간격 SEP 미달[^\\\"]*?mm)", msg)
-    throws[cell_of(t.name[:-11])] = {"stage": T.get("stage"), "요지": hit.group(1) if hit else msg[-160:]}
+    # ★ v5-27 실측 — 던짐은 **두 부류**다: ㄱ 조립 자기검사(「옷 자기 간격 SEP 미달 … mm」) ·
+    #   ㄴ 제도 불능(「소매산 실수해 없음 — 암홀 반쪽 … < 소매산 반폭 …」 · `asm1x` «이전» 층위).
+    hit = re.search(r"Error:\s*(.+?)\s+at\s", msg)
+    gist = hit.group(1) if hit else msg[-160:]
+    kind = ("ㄱ 조립 자기검사" if "자기 간격" in gist else
+            "ㄴ 제도 불능" if "소매산" in gist else "ㄷ 그 밖")
+    mm = re.search(r"([0-9.]+)mm", gist)
+    throws[cell_of(t.name[:-11])] = {"stage": T.get("stage"), "부류": kind, "요지": gist[:180],
+                                     "최소쌍 mm": float(mm.group(1)) if (mm and "자기 간격" in gist) else None}
 
 old = {}
 if OLD:
@@ -111,6 +118,7 @@ out = {
     "fail": sum(1 for r in rows.values() if not r["pass"]),
     "fail 부류": dict(fail_kind), "사이즈별": by_size,
     "던짐 전량": throws,
+    "던짐 부류": dict(Counter(v["부류"] for v in throws.values())),
     "층3": {"5행 성립": sum(1 for r in rows.values() if r.get("층3행") == 5),
            "press 0 인 칸": sum(1 for r in rows.values() if r.get("press합") == 0)},
     "정착": {"수렴": sum(1 for r in rows.values() if r.get("수렴")),
