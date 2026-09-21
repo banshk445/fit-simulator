@@ -1,0 +1,12 @@
+{
+ "name": "v5-27-reg2",
+ "fp": "f64",
+ "arch": "cuda",
+ "frames": 400,
+ "cells": [
+  { "cell": "v522onA_M", "asm": "asm-v522onA_M.bin", "reportCell": "c100-h170-s45_M",
+    "frames": 400, "cellCap": { "cell_cap": 192, "max_cells": 262144 }, "ramp": true },
+  { "cell": "v522onA_L", "asm": "asm-v522onA_L.bin", "reportCell": "c100-h170-s45_L",
+    "spec": "supima-L", "frames": 400, "cellCap": { "cell_cap": 192, "max_cells": 262144 }, "ramp": true }
+ ]
+}
