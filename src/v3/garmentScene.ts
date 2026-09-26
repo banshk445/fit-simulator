@@ -83,6 +83,14 @@ export type SceneConfig = {
    * 2세대(`asm2`)가 종결된 뒤 «성립한 둘»만 승격하는 후보다(전략 세션 v5-21 §4 판정문).
    * 주지 않으면 **한 줄도 다르지 않다**(off 비트 불변 · A29·T108 로 확인). */
   asm1x?: boolean | 'anchor' | 'drop';   // ★ v5-25 — 두 자리를 «따로» 켤 수 있다(진단용 · true = 둘 다)
+  /** ★ C1(캠페인) — **옷깃 후보 계열**. `asm1x` 가 켜진 «안»에서만 읽힌다(off 경로 불변).
+   * `'A[:k]'` 어깨 낙차를 **몸에서 유도**한다 — `SH_DROP = k × (Y_NECK − Y_TOP)`(k 기본 1) ·
+   * `'B'`     관행 상수를 몸 낙차로 **상한**한다 — `SH_DROP = min(ASM2_SH_DROP, Y_NECK − Y_TOP)` ·
+   * `'C[:m]'` **앵커 들림을 몸 낙차의 «비율»로** — `Y_ANCHOR = Y_NECK − m × (Y_NECK − Y_TOP)` ·
+   *           `m = 0` 이면 현행 `asm1x`(목 밑동) · `m = 1` 이면 옛 정본(어깨끝) · 사이를 훑는다 ·
+   * `'D'`     **배치 후처리** — 맨 윗행 목선 토막을 몸 목 밑동 링에 올린다(2세대 S1 규칙의 부분 적용).
+   * 여러 계열은 `'A:1+D'` 처럼 `+` 로 겹칠 수 있다. 값이 없으면 **현행 asm1x 그대로**다. */
+  c1Var?: string;
   /** ★ v5-15 — **S4 붕괴 처방 «하위 플래그»**(진단 전용 · 기본 `undefined` = v5-14 거동).
    * `'A'` = S4 걸음 상한(`THICK`) + 봉제선→아래 **행 순서** 훑기 · `'B'` = **표면 추종 S3**.
    * `asm2` 가 꺼져 있으면 이 값은 읽히지 않는다(정본 off 비트 불변). */
@@ -137,7 +145,11 @@ export function createScene(cfg: SceneConfig) {
   const S3BLEND = BLENDFAM;                         // v5-12 — 플래그(기본 false ⟹ 아래 분기 전부 죽는다)
   const S3ARM = FIX === 'ARM' || FIX === 'ARMRC';   // ㉮
   const S3RC = FIX === 'RC' || FIX === 'ARMRC';     // ㉯
-  const SH_DROP = (ASM2 || D1X) ? ASM2_SH_DROP : 0;         // off 면 0 ⟹ 제도식이 «수평 직선» 그대로다
+  const SH_DROP_TPL = (ASM2 || D1X) ? ASM2_SH_DROP : 0;     // off 면 0 ⟹ 제도식이 «수평 직선» 그대로다
+  /** ★ C1 — 계열 문자열(`asm1x` 안에서만 읽는다 · 없으면 빈 집합 ⟹ 현행 그대로). */
+  const C1 = (A1X || D1X || ASM2) ? (cfg.c1Var ?? '').split('+').filter(Boolean) : [];
+  const c1Of = (tag: string) => C1.find((x) => x === tag || x.startsWith(tag + ':'));
+  const c1Num = (tag: string, dflt: number) => { const f = c1Of(tag); const v = f?.includes(':') ? Number(f.split(':')[1]) : NaN; return Number.isFinite(v) ? v : dflt; };
   const V2DIMS = cfg.dimsOverride !== undefined;
   const V2REF = cfg.dimsOverride ?? { neckHalfWidthCm: 0, necklineGirthCm: 0, capHeightCm: 0 };
 
@@ -291,12 +303,26 @@ export function createScene(cfg: SceneConfig) {
     return y0;
   }
   const Y_NECK = neckBaseY();
+  /* ★ C1 — **몸 낙차**(목 밑동 − 어깨끝)와 계열별 어깨 낙차. 전부 몸에서 뜬 값이다(손 상수 0 ·
+   * 훑기 계수 k·m 만 캠페인 매개변수다 · 발주문 §2 자유도 안 · 물리 상수·문턱 접촉 0). */
+  const BODY_DROP = Y_NECK - Y_TOP;
+  const SH_DROP = c1Of('A') ? c1Num('A', 1) * BODY_DROP
+                : c1Of('B') ? Math.min(SH_DROP_TPL, BODY_DROP)
+                : SH_DROP_TPL;
+  /** ★ C1 계열 C — 앵커 들림을 **몸 낙차의 비율**로 내린다(`m=0` 현행 · `m=1` 옛 정본 · 몸 유도).
+   * 근거(§3① 진단) — 정착 링 들림이 칸에 무관하게 ≈ +20 mm 로 일정했고 초과분과 **무상관**(r = −0.1285)이었다
+   * ⟹ 「초과분만큼」이 아니라 **앵커 자체를 비율로** 훑는 것이 그 사실에 맞는 자유도다. */
+  const C1_ANCHOR_DROP = c1Of('C') ? c1Num('C', 1) * BODY_DROP : 0;
+  (globalThis as unknown as { __c1VarProbe?: (r: Record<string, unknown>) => void }).__c1VarProbe?.({
+    c1Var: cfg.c1Var ?? null, '몸 낙차 mm': BODY_DROP * 1000, '템플릿 SH_DROP mm': SH_DROP_TPL * 1000,
+    'SH_DROP mm': SH_DROP * 1000, '앵커 하강 mm': C1_ANCHOR_DROP * 1000,
+    'Y_TOP mm': Y_TOP * 1000, 'Y_NECK mm': Y_NECK * 1000 });
   /** ★ v5-12 — **옷 높이대의 «앵커»**. 실측표의 총장은 「옷을 눕혀 **뒷목 중심**에서 밑단까지」
    * (`src/v5/specToPattern.ts` 머리주석)인데 현행은 그 길이를 **어깨끝 높이 `Y_TOP`** 에 매달고 있다
    * (전략 세션 v5-11 검수 = **버그**). 2세대는 `Y_NECK`(목 밑동)에 매단다.
    * ★ off 면 `Y_TOP` 그대로다 ⟹ 아래 «옷 높이대» 자리 전부가 바이트 불변이다.
    * ★ 「몸 어깨끝」을 뜻하는 자리(`shoulderTopY` 정의 · `neckBaseY` 탐색 구간)는 **`Y_TOP` 을 그대로** 쓴다. */
-  const Y_ANCHOR = (ASM2 || A1X) ? Y_NECK : Y_TOP;
+  const Y_ANCHOR = (ASM2 || A1X) ? Y_NECK - C1_ANCHOR_DROP : Y_TOP;   // ★ C1 계열 C — 초과분만큼 내린다(기본 0)
   const NECK_RING = ringOf(planeSection(0, 1, Y_NECK), SEP);
   /** 목선 반폭 [m] — 목 밑동 링의 x 반폭 */
   const NECK_A = V2DIMS ? V2REF.neckHalfWidthCm / 100 : NECK_RING.vmax;
@@ -1447,6 +1473,22 @@ export function createScene(cfg: SceneConfig) {
     for (const p of B.panels)
       for (let j = 0; j <= p.nv; j++) for (let i = 0; i <= p.nu; i++) place(p, i, j, s.pos, at(p, i, j) * 3);
     if (ASM2) redrapeAsm2(B, s.pos);      // ★ v5-12 — 2세대 배치(off 면 이 줄이 아무 일도 하지 않는다)
+    /* ★ C1 계열 D — **배치 후처리**: 맨 윗행의 «목선 토막»만 몸 목 밑동 링에 올린다
+     * (2세대 S1 규칙의 부분 적용 · `place()` 는 한 줄도 고치지 않는다 · `c1Var` 에 `D` 가 없으면 안 돈다).
+     * 링 = `boundaryOf(supportAt(Y_NECK, SLAB))` 의 앞·뒤 호 — 그 호를 패턴 `px` 로 읽어 옮긴다. */
+    if (c1Of('D')) {
+      const pts = boundaryOf(supportAt(Y_NECK, SLAB), DELTA, 1);
+      const arcF = arcOn(pts, false), arcB = arcOn(pts, true);
+      for (const isFront of [true, false]) {
+        const pan = isFront ? B.front : B.back;
+        for (let i = B.N_sh; i <= B.N_sh + B.N_nk; i++) {
+          const v = at(pan, i, B.nvB), k = (B.nvB * (pan.nu + 1) + i) * 2;
+          const px = pan.uv[k];
+          const rz = (isFront ? arcF : arcB).at(isFront ? px : -px);
+          s.pos[v * 3] = rz[0]; s.pos[v * 3 + 1] = Y_NECK; s.pos[v * 3 + 2] = AXIS_Z + rz[1];
+        }
+      }
+    }
 
     const { front, back, slv, N_sh, N_nk, N_side, N_arm, N_und, nuB, nvB, nuS } = B;
     const col = (p: Panel, i: number, j0: number, j1: number) => Array.from({ length: j1 - j0 + 1 }, (_, k) => at(p, i, j0 + k));
