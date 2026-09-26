@@ -58,7 +58,20 @@ const lo = [Infinity, Infinity, Infinity], hi = [-Infinity, -Infinity, -Infinity
 for (const m of meshes)
   for (let i = 0; i < m.pos.length; i += 3)
     for (let k = 0; k < 3; k++) { const v = m.pos[i + k]; if (v < lo[k]) lo[k] = v; if (v > hi[k]) hi[k] = v; }
-const bounds = { lo: lo as [number, number, number], hi: hi as [number, number, number] };
+let bounds = { lo: lo as [number, number, number], hi: hi as [number, number, number] };
+/* ★ C1 — **옷깃 확대**. `ZOOM=collar` 면 경계를 「어깨선 아래 한 뼘 ~ 목 밑동 위 한 뼘」으로 좁힌다.
+ * 폭은 그 창 안 «옷 정점»의 x·z 범위에서 뜬다(손 상수 0 — 창은 `Y_TOP`·`Y_NECK` 과 그 둘의 낙차로 만든다). */
+if (process.env.ZOOM === 'collar') {
+  const SS = P.S as unknown as { Y_TOP: number; Y_NECK: number };
+  const dh = Math.abs(SS.Y_NECK - SS.Y_TOP);
+  const y0 = SS.Y_TOP - dh, y1 = SS.Y_NECK + dh;
+  const zl = [Infinity, Infinity, Infinity], zh = [-Infinity, -Infinity, -Infinity];
+  for (let i = 0; i < pos.length; i += 3) {
+    if (pos[i + 1] < y0 || pos[i + 1] > y1) continue;
+    for (let k = 0; k < 3; k++) { const v = pos[i + k]; if (v < zl[k]) zl[k] = v; if (v > zh[k]) zh[k] = v; }
+  }
+  if (Number.isFinite(zl[0])) bounds = { lo: [zl[0], y0, zl[2]], hi: [zh[0], y1, zh[2]] };
+}
 mkdirSync(dirname(`${OUT}-x.png`), { recursive: true });
 for (const [file, name] of [['1-front', 'front'], ['2-side', 'sideXplus']] as const) {
   const view = VIEWS.find((v) => v.name === name)!;
