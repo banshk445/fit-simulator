@@ -209,7 +209,9 @@ def bake(cell, asm=None, frames_in=None, cap=None, ramp=False, ramp_order=False)
                                               ("ARM_ORIGIN_JSON", "armOriginJson")) if BH.get(j)},
                       **({"ASM1X": "1"} if BH.get("asm1x") else {}),
                       **({"ASM2": "1"} if BH.get("asm2") else {}),
-                      **({"ASM2FIX": str(BH["asm2Fix"])} if BH.get("asm2Fix") else {})},
+                      **({"ASM2FIX": str(BH["asm2Fix"])} if BH.get("asm2Fix") else {}),
+                      # ★ C1 — 옷깃 후보 계열도 층3·게이트 자식에게 넘긴다(없으면 키 자체가 없다 ⟹ 기존 호출 불변).
+                      **({"C1VAR": str(BH["c1Var"])} if BH.get("c1Var") else {})},
             "asm": asm, "cellCap": cap, "ramp": ramp_meta, "fp": FPN, "arch": arch, "n": n, "substeps": SUB, "frames": frame,
             "headerFrames": BH["frame"], "tol": TOL, "converged": conv, "convFrame": cf,
             "convNet": cn, "lastNet": last, "degenerate": deg, "trail": trail,
