@@ -88,6 +88,7 @@ export type SceneConfig = {
    * `'B'`     관행 상수를 몸 낙차로 **상한**한다 — `SH_DROP = min(ASM2_SH_DROP, Y_NECK − Y_TOP)` ·
    * `'C[:m]'` **앵커 들림을 몸 낙차의 «비율»로** — `Y_ANCHOR = Y_NECK − m × (Y_NECK − Y_TOP)` ·
    *           `m = 0` 이면 현행 `asm1x`(목 밑동) · `m = 1` 이면 옛 정본(어깨끝) · 사이를 훑는다 ·
+   * `'F:<mm>'` **고정 낙차**(mm · 몸 종속 0 · 관행 규격을 값으로 시험할 때) ·
    * `'D'`     **배치 후처리** — 맨 윗행 목선 토막을 몸 목 밑동 링에 올린다(2세대 S1 규칙의 부분 적용).
    * 여러 계열은 `'A:1+D'` 처럼 `+` 로 겹칠 수 있다. 값이 없으면 **현행 asm1x 그대로**다. */
   c1Var?: string;
@@ -310,7 +311,8 @@ export function createScene(cfg: SceneConfig) {
   /* ★ C1 — **몸 낙차**(목 밑동 − 어깨끝)와 계열별 어깨 낙차. 전부 몸에서 뜬 값이다(손 상수 0 ·
    * 훑기 계수 k·m 만 캠페인 매개변수다 · 발주문 §2 자유도 안 · 물리 상수·문턱 접촉 0). */
   const BODY_DROP = Y_NECK - Y_TOP;
-  const SH_DROP = c1Of('A') ? c1Num('A', 1) * BODY_DROP
+  const SH_DROP = c1Of('F') ? c1Num('F', SH_DROP_TPL * 1000) / 1000   // ★ C2 — `F:<mm>` 고정 낙차(몸 종속 0)
+                : c1Of('A') ? c1Num('A', 1) * BODY_DROP
                 : c1Of('B') ? Math.min(SH_DROP_TPL, BODY_DROP)
                 : SH_DROP_TPL;
   /** ★ C1 계열 C — 앵커 들림을 **몸 낙차의 비율**로 내린다(`m=0` 현행 · `m=1` 옛 정본 · 몸 유도).
