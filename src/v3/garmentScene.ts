@@ -98,7 +98,11 @@ export type SceneConfig = {
 };
 
 /** ★ v5-12 — **어깨 경사 낙차 `SH_DROP` [m]**(조립 2세대 템플릿 상수 · 이름·값·출처 공개).
- * 값 = **2½ in = 63.5 mm** — 의류 제도 관행의 «표준 어깨» 경사 깊이.
+ * ★★ **값 = 2 in = 50.8 mm**(캠페인 C2 §0 · 전략 세션 판정) — 제도 관행의 «하한»(high shoulders / all sizes).
+ *   근거 — C1 이 값으로 보인 것: 낙차를 **몸에서** 유도하면(`A:1`) 레귤러 세 벌에서 48.599~54.787 mm 가 나오고
+ *   그때 게이트 3/3 pass · 옷깃 링이 −4.4935 / −1.3419 mm 로 내려왔다. 그 대역이 **2 in = 50.8 mm** 와 겹친다
+ *   ⟹ 관행 상수의 «하한»을 쓴다. **몸 종속 0**(칸마다 달라지지 않는다 · v5-11 검수 결정 ① 그대로).
+ * ~~값 = **2½ in = 63.5 mm**~~ — 표준 어깨 경사 깊이(v5-12~C1 이력 · **삭제 0**).
  *   출처 ① My Golden Thimble, "How to Draft a Bodice Sloper" —
  *     「On standard shoulders, the shoulder slope is **2 ½"**. On high shoulders, 2", and on dropped shoulders, 3"」
  *     https://www.mygoldenthimble.com/how-to-draft-a-bodice-sloper/
@@ -109,7 +113,7 @@ export type SceneConfig = {
  *   이 상수는 몸을 **읽지 않는다**. 실측표에 이 항목이 생기면 그때 실측표가 이긴다(`specToPattern.ts` 문).
  * ★ 몸의 실제 목↔어깨 낙차는 `Y_NECK − Y_TOP` 이고 v5-10 실측으로 **48.5991 mm**(SW 44.5) ·
  *   **82.2598 mm**(SW 52) 다 ⟹ 이 상수와의 차(**14.9 / 18.8 mm**)는 **측정 대상**이다(v5-12 §0-2①). */
-export const ASM2_SH_DROP = 0.0635;
+export const ASM2_SH_DROP = 0.0508;        // ★ C2 — 2 in(관행 하한) · 옛 값 0.0635(2½ in)는 위 주석에 이력으로 남긴다
 
 export function createScene(cfg: SceneConfig) {
   const { bodyIdx, bodyG, sdfSpec, L, W, SW, SLEN, ARM_G, DT, SEP, KMEM, MAT, TOL_SELF, D_FIXED, minPairDistLite } = cfg;
