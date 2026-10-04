@@ -26,7 +26,7 @@ PEN_MAX, ALLOW_MM, SETTLE_MM = 0.5, 1.9, 0.1      # s4Gate.ts 의 등재 문턱(
 
 def cell_of(tag: str) -> str:
     """태그 `<몸>x_<사이즈>` → 칸 이름 `<몸>_<사이즈>`(꼬리 `x` 를 뗀다)."""
-    return re.sub(r"x_([A-Z]+)$", r"_\1", tag)
+    return re.sub(r"[a-z]?_([A-Z]+)$", r"_\1", tag)   # ★ C2 — 태그 꼬리가 x·y 등 한 글자면 벗긴다(칸 이름 복원)
 
 
 def rejudge(ch: dict, settle_mm: float) -> list:
