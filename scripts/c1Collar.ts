@@ -96,6 +96,10 @@ for (let a = 0; a < Z.length; a++)
 /* (c) 어깨선 초과 높이 · 밴드 밖 정점(G1 의 자) */
 let over = -Infinity, overAt = -1;
 for (const v of Z) { const h = pos[v * 3 + 1] - S.Y_TOP; if (h > over) { over = h; overAt = v; } }
+/* ★ C2 §2③ — **어깨 걸림**(편입 규약 v4-52 · 문턱 172): 어깨선 `Y_TOP` «위» 옷 정점 수.
+ * 정의·문턱은 `scripts/v4Provide.ts:25-52` 인용(새 식 0 · 새 수 0) — 한 계기로 세 채널을 함께 낸다. */
+let above = 0;
+for (let v = 0; v < sc.n; v++) if (pos[v * 3 + 1] > S.Y_TOP) above++;
 const band = (P.sdfSpec as { band: number }).band;
 let outBand = 0, penMax = 0;
 for (let v = 0; v < sc.n; v++) {
@@ -113,6 +117,7 @@ const out = { what: 'C1 G3 옷깃 채널(측정만 · 몸 유도 · 문턱 부�
   '구간 정점 수': Z.length, 'G3(b) 근접쌍 수': near, 'G3(b) 최소 쌍거리 mm': Number.isFinite(nearMin) ? mm(Math.sqrt(nearMin)) : null,
   'G3(b) 최소쌍 자리': nearAt || null, 'G3(b) 통과(=0)': near === 0,
   'G3(c) 어깨선 초과 최대 mm': mm(over), 'G3(c) 최대 자리 정점': overAt,
-  '밴드 mm': mm(band), '밴드 밖 정점': outBand, '최대 침투 mm': mm(penMax) };
+  '밴드 mm': mm(band), '밴드 밖 정점': outBand, '최대 침투 mm': mm(penMax),
+  '어깨 걸림(어깨선 위 정점)': above, '어깨 걸림 통과(≥172)': above >= 172 };
 if (process.env.OUT) writeFileSync(process.env.OUT, JSON.stringify(out, null, 1));
 console.log(JSON.stringify(out));

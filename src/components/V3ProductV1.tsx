@@ -29,13 +29,18 @@ const BAKE = { fab: "gray" as const, dMm: 9 };
  * A포즈 자산은 v4-46 굽기 산출과 v4-47 재판정을 **포장·복사**한 것이고 값 변형은 0이다
  * (`public/v3diag/v4-a35/` — settled 33 · body 27 · 정본 2).
  * 구판(T포즈) 경로의 파일 이름·형식은 **한 글자도 바뀌지 않았다**(회귀는 그것으로 증명한다). */
-const TPOSE = typeof window !== "undefined"
-  && new URLSearchParams(window.location.search).get("tpose") === "1";
-const DIR = TPOSE ? "v3diag/v3-77" : "v3diag/v4-a35";
+const Q = typeof window !== "undefined" ? new URLSearchParams(window.location.search) : null;
+const TPOSE = Q?.get("tpose") === "1";
+/** ★ C2 §2④ — **자산 갈래**. 기본은 **C2 자산**(`asm1x` · `SH_DROP` 38.1 · 편입 44칸) ·
+ * `?v4=1` 은 **v4 구판**(A포즈 · 편입 50칸 계열) · `?tpose=1` 은 T포즈 구판이다.
+ * 구판 두 경로의 파일 이름·형식은 **한 글자도 바뀌지 않았다**(회귀는 그것으로 증명한다). */
+const V4OLD = Q?.get("v4") === "1";
+const C2 = !TPOSE && !V4OLD;
+const DIR = TPOSE ? "v3diag/v3-77" : V4OLD ? "v3diag/v4-a35" : "v3diag/v5-c2";
 const PROVIDE_FILE = TPOSE ? "v1-provide-35.v3-91.json" : "v1-provide.json";
 const INDEX_FILE = TPOSE ? "index-merged-108.v3-91.json" : "index-merged-108.json";
 /** 표시 포즈 — 자산이 A포즈면 몸도 A포즈다(같은 폴더의 `body-<몸>.bin`). 인쇄·각주용. */
-const POSE_LABEL = TPOSE ? "T포즈(구판)" : "A포즈";
+const POSE_LABEL = TPOSE ? "T포즈(구판)" : V4OLD ? "A포즈(v4 구판)" : "A포즈(C2 · 어깨 경사 38.1mm)";
 
 /** v3-80 §1-① — 캔버스 크기. **가로는 «자산 실측»에서 나온다**: 프레이밍이 몸 높이 하나로 고정된 뒤
  * 27몸 중 최대 팔 스팬(`c122.5-h185-s50` · 2.4911m)의 투영 폭이 **834.5px** 이다(`v3FramingCheck`).
@@ -177,9 +182,23 @@ export function V3ProductV1() {
         sceneRef.current = { pos: m.pos, idx: m.idx, bodyPos: m.bodyPos, bodyIdx: m.bodyIdx, bridgeIdx: m.bridgeIdx };
         setScened(true); setMsg("");
       };
+      /* ★ C2 §2④ — C2 자산은 `asm1x` 패턴으로 구웠다 ⟹ 장면도 **같은 패턴·같은 팔 축**이어야 한다
+       * (v5-8 사고 5 — 이 셋이 없으면 계기가 다른 장면을 세우고 정점 수가 어긋난다). 구판 경로는 그대로다. */
+      let armAxis: unknown;
+      if (C2) {
+        const [ax, or] = await Promise.all([
+          fetch(`${B}${DIR}/axis-${bodyId}.json`).then((r) => r.ok ? r.json() : Promise.reject(new Error(`팔 축 응답 ${r.status}`))),
+          fetch(`${B}${DIR}/origin-${bodyId}.json`).then((r) => r.ok ? r.json() : Promise.reject(new Error(`원점 응답 ${r.status}`))),
+        ]);
+        const pick = (w2: string) => (ax.팔축_후 as { name: string; dir: number[] }[]).find((x) => x.name.includes(w2))!.dir;
+        armAxis = { left: pick("Left"), right: pick("Right"),
+                    origin: { left: or.left.중심선투영, right: or.right.중심선투영 },
+                    pivot: { left: or.left.피벗, right: or.right.피벗 } };
+      }
       w.postMessage({ kind: "start", glbUrl: `${B}models/mannequin.glb`, fabric: BAKE.fab,
         d: BAKE.dMm / 1000, frames: 0, injectStateUrl: `${B}${DIR}/settled-${cellId}.bin`,
-        bodyVerts: new Float32Array(vb), garment: garmentOf(size) });
+        bodyVerts: new Float32Array(vb), garment: garmentOf(size),
+        ...(C2 ? { asm1x: true, armAxis } : {}) });
     })().catch((e) => { if (!dead) { setErr(e.message); setMsg(""); } });
     return () => { dead = true; workerRef.current?.terminate(); };
   }, [canon, cellId, bodyId, size, st?.active, rec?.sha]);

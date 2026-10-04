@@ -4,7 +4,10 @@
  * 물리·조립은 전부 `src/v3/*` 순수 모듈이다 — 이 파일에는 물리가 한 줄도 없다.
  *
  * 프로토콜
- *   ← { kind:'start', glbUrl, fabric, d, frames, garment?, bodyScale?, bodyVerts? }
+ *   ← { kind:'start', glbUrl, fabric, d, frames, garment?, bodyScale?, bodyVerts?, asm1x?, armAxis? }
+ * ★ C2 §2④ — `asm1x`·`armAxis` 는 **선택 인자**다(없으면 종전 호출과 바이트 불변).
+ *   제품이 C2 자산(`v3diag/v5-c2`)을 읽을 때만 넘긴다 — 그 자산은 `asm1x` 패턴으로 구웠으므로
+ *   장면도 같은 패턴이어야 정점 수가 맞는다(v5-8 사고 5 의 그 이유).
  *   ← { kind:'cancel' }
  *   → { kind:'ready',    n, tris, sub, rampN, dims, placeSig }
  *   → { kind:'progress', frame, frames, netMm, elapsedMs }
@@ -31,6 +34,7 @@ let cancelled = false;
 type StartMsg = {
   kind: 'start'; glbUrl: string; fabric: string; d: number; frames: number;
   garment?: typeof DEFAULT_GARMENT; bodyScale?: [number, number, number];
+  asm1x?: boolean; armAxis?: unknown;   // ★ C2 §2④ — 선택 인자
   /** v3-70 §1 — 주입 몸 정점[m]. 규약 3항은 `dressRun.RunInput.bodyVerts` 주석이 정본. */
   bodyVerts?: Float32Array;
   injectStateUrl?: string;   // v3-36 §2 진단 — 주입할 상태 blob 의 URL
@@ -58,7 +62,9 @@ ctx.onmessage = async (e: MessageEvent) => {
     const P: Prepared = prepare({
       glb, fabric, d: m.d, garment: m.garment ?? DEFAULT_GARMENT,
       bodyScale: m.bodyScale, bodyVerts: m.bodyVerts, minPairDistLite, injectState,
-    });
+      ...(m.asm1x ? { asm1x: true } : {}),                    // ★ C2 §2④
+      ...(m.armAxis ? { armAxis: m.armAxis as never } : {}),  // ★ C2 §2④
+    } as never);
     ctx.postMessage({
       kind: 'ready', n: P.sc.n, tris: P.sc.tris.length / 3, sub: P.SUB, rampN: P.RAMP_N,
       placeSig: P.S.PLACE_SIG,
